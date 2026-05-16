@@ -3,6 +3,7 @@ import type {
   RunEventStream,
   StateSnapshot,
 } from "@cemeworm/shared";
+import { classifyEventCategory } from "@cemeworm/shared";
 import {
   applyStreamingRunEvent,
   publishRunStream,
@@ -10,6 +11,10 @@ import {
 } from "./run-streaming.js";
 
 const MAX_UNLEDGERED_DELTA_EVENTS = 256;
+/** Threshold for passive accumulation events before triggering a ledger flush. */
+const MAX_UNLEDGERED_PASSIVE_EVENTS = 64;
+/** Maximum age (ms) for an AbortController before it becomes eligible for cleanup. */
+const ABORT_CONTROLLER_TTL_MS = 30 * 60 * 1000; // 30 minutes
 
 export interface RunStreamingServiceDeps {
   cacheRun: (snapshot: StateSnapshot, flush: boolean) => void;
@@ -33,7 +38,7 @@ export interface RunStreamingSessionParams {
 }
 
 export class RunStreamingService {
-  private readonly activeAbortControllers = new Map<string, AbortController>();
+  private readonly activeAbortControllers = new Map<string, { controller: AbortController; createdAt: number }>();
 
   constructor(private readonly deps: RunStreamingServiceDeps) {}
 
@@ -42,9 +47,9 @@ export class RunStreamingService {
   }
 
   createAbortController(runId: string): AbortController {
-    const abortController = new AbortController();
-    this.activeAbortControllers.set(runId, abortController);
-    return abortController;
+    const controller = new AbortController();
+    this.activeAbortControllers.set(runId, { controller, createdAt: Date.now() });
+    return controller;
   }
 
   deleteAbortController(runId: string): void {
@@ -52,8 +57,22 @@ export class RunStreamingService {
   }
 
   abort(runId: string, reason?: string): void {
-    this.activeAbortControllers.get(runId)?.abort(reason);
+    const entry = this.activeAbortControllers.get(runId);
+    entry?.controller.abort(reason);
     this.activeAbortControllers.delete(runId);
+  }
+
+  /** Clean up stale AbortControllers that exceed the TTL. */
+  cleanupStaleControllers(): number {
+    const now = Date.now();
+    let removed = 0;
+    for (const [runId, entry] of this.activeAbortControllers) {
+      if (now - entry.createdAt > ABORT_CONTROLLER_TTL_MS) {
+        this.activeAbortControllers.delete(runId);
+        removed++;
+      }
+    }
+    return removed;
   }
 }
 
@@ -128,7 +147,8 @@ export class RunStreamingSession {
   private publishAndMaybeFlush(event: OraEventEnvelope): void {
     const shouldFlush = shouldFlushStreamingEvent(event);
     const debugLatency = this.params.debugLatency;
-    if (isPureDeltaEvent(event)) {
+    const category = classifyEventCategory(event.type);
+    if (category === "delta") {
       // Pure delta: publish first so visible stream does not wait for cache/flush.
       const publishStart = debugLatency ? Date.now() : 0;
       this.publish([event]);
@@ -150,7 +170,7 @@ export class RunStreamingSession {
           debugLatency({ label: "flush", elapsedMs: Date.now() - flushStart });
         }
       }
-    } else if (isPassiveAccumulationEvent(event)) {
+    } else if (category === "passive_accumulation") {
       // Passive accumulation (node.updated, context.usage.updated):
       // publish immediately, lightweight cache, defer ledger flush.
       const publishStart = debugLatency ? Date.now() : 0;
@@ -160,7 +180,7 @@ export class RunStreamingSession {
       }
       this.deps.cacheRunDelta?.(this.liveSnapshotValue)
         ?? this.deps.cacheRun(this.liveSnapshotValue, false);
-      if (this.liveSnapshotValue.events.length - this.ledgeredEventCount >= 64) {
+      if (this.liveSnapshotValue.events.length - this.ledgeredEventCount >= MAX_UNLEDGERED_PASSIVE_EVENTS) {
         const flushStart = debugLatency ? Date.now() : 0;
         this.flushLedgerEvents();
         if (debugLatency) {
@@ -184,12 +204,4 @@ export class RunStreamingSession {
       }
     }
   }
-}
-
-function isPureDeltaEvent(event: OraEventEnvelope): boolean {
-  return event.type === "message.delta" || event.type === "token.delta";
-}
-
-function isPassiveAccumulationEvent(event: OraEventEnvelope): boolean {
-  return event.type === "node.updated" || event.type === "context.usage.updated" || event.type === "agent.message";
 }

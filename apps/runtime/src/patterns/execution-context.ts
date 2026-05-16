@@ -7,26 +7,6 @@ import type {
   SharedStateSummary,
 } from "@cemeworm/shared";
 
-// ── Evidence Board ────────────────────────────────────────────────
-
-export interface EvidenceEntry {
-  id: string;
-  agentId: string;
-  nodeId: string;
-  timestamp: number;
-  kind: "file_read" | "search_result" | "tool_output" | "finding";
-  summary: string;
-  /** Key excerpt, not full content — keep under ~2KB per entry. */
-  content: string;
-  /** File path / URL / tool name. */
-  source: string;
-  relevance: "critical" | "supporting" | "background";
-}
-
-export interface EvidenceBoard {
-  entries: EvidenceEntry[];
-}
-
 export interface PatternModeResumeState {
   activeFrameId?: string;
   activeNodeId?: string;
@@ -41,8 +21,6 @@ export interface PatternExecutionContext {
   sharedStateSummary: SharedStateSummary;
   busStats: BusStats;
   modeResume?: PatternModeResumeState;
-  /** Evidence accumulated during mode execution (shared across agents). */
-  evidenceBoard: EvidenceBoard;
   systemPrompt(extra: string): string;
   setPlanStatus(templateId: string, status: "planned" | "ready" | "running" | "blocked" | "done" | "failed" | "skipped"): void;
   setQueueSummary(patch: Partial<QueueSummary>): void;
@@ -114,8 +92,6 @@ export interface PatternExecutionContext {
     mimeType?: string;
     payload: unknown;
   }): void;
-  /** Append an evidence entry to the shared board. Called after tool-use. */
-  writeEvidence(entry: Omit<EvidenceEntry, "id" | "timestamp">): void;
   publishMessage(params: {
     agentId: string;
     topic: string;

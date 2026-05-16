@@ -3,10 +3,18 @@ import type {
   StateSnapshot,
 } from "@cemeworm/shared";
 
+const MAX_CANDIDATE_LEAF_CACHE = 256;
+
 export class RunLedgerBranchService {
   private readonly candidateLeafByRun = new Map<string, string>();
 
   recordCandidateLeaf(runId: string, leafEntryId: string): void {
+    if (this.candidateLeafByRun.size >= MAX_CANDIDATE_LEAF_CACHE) {
+      const oldestKey = this.candidateLeafByRun.keys().next().value;
+      if (oldestKey !== undefined) {
+        this.candidateLeafByRun.delete(oldestKey);
+      }
+    }
     this.candidateLeafByRun.set(runId, leafEntryId);
   }
 

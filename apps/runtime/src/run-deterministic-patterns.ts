@@ -1,6 +1,7 @@
 import {
   BuiltInCoordinationPattern,
   CoordinationPattern,
+  modeUsesSingleOwner as sharedModeUsesSingleOwner,
   ModeSpec,
   StateSnapshot,
   orderedEnabledModeNodes
@@ -15,15 +16,7 @@ export interface DeterministicPatternOutput {
 }
 
 export function modeUsesSingleOwner(modeSpec: ModeSpec): boolean {
-  const nodes = orderedEnabledModeNodes(modeSpec);
-  const fallbackAgentId = modeSpec.profiles[0]?.id;
-  const ownerIds = new Set(
-    nodes.map((node) => node.ownerAgentId ?? fallbackAgentId).filter((id): id is string => typeof id === "string"),
-  );
-  return ownerIds.size <= 1 && !nodes.some((node) => {
-    const atoms = Array.isArray(node.config?.atoms) ? node.config.atoms : [];
-    return atoms.includes("subagent_delegate");
-  });
+  return sharedModeUsesSingleOwner(modeSpec, orderedEnabledModeNodes(modeSpec));
 }
 
 export function primaryOwnerAgentId(modeSpec: ModeSpec): string {

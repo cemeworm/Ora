@@ -1,5 +1,3 @@
-import fs from "node:fs";
-import path from "node:path";
 import {
   LongTermMemoryFact,
   LongTermMemoryFactCategory,
@@ -10,6 +8,9 @@ import {
   ModeMemoryPolicy,
   StateSnapshot,
 } from "@cemeworm/shared";
+
+import { createEmptyLongTermMemory, FileLongTermMemoryStore } from "./memory-storage.js";
+export { createEmptyLongTermMemory, FileLongTermMemoryStore };
 
 const MEMORY_VERSION = "1.0";
 // D14: Fallback defaults — ModeMemoryPolicy.maxFacts / injectionMaxFacts take precedence
@@ -44,132 +45,6 @@ const MEMORY_INTENT_RE = /\b(remember|prefer|always|never|next time|from now on)
 const TEMPORARY_RE = /<uploaded_files>|file upload|上传文件|上传了|附件|临时|这次会话|这次聊天|当前对话|本次会话|本会话|这一次|刚才|刚刚|你发的|发来的|打开那个|看那个|这个文件|那个文件|这段代码|这个会话|本次聊天/im;
 // D12: penalty applied when temporary keywords detected — downgrades instead of hard filtering
 const TEMPORARY_CONFIDENCE_PENALTY = 0.35;
-
-export function createEmptyLongTermMemory(nowIso = new Date().toISOString()): LongTermMemoryProfile {
-  return LongTermMemoryProfileSchema.parse({
-    version: MEMORY_VERSION,
-    lastUpdated: nowIso,
-    user: {
-      workContext: { summary: "", updatedAt: "" },
-      personalContext: { summary: "", updatedAt: "" },
-      topOfMind: { summary: "", updatedAt: "" },
-    },
-    history: {
-      recentMonths: { summary: "", updatedAt: "" },
-      earlierContext: { summary: "", updatedAt: "" },
-      longTermBackground: { summary: "", updatedAt: "" },
-    },
-    facts: [],
-  });
-}
-
-export class FileLongTermMemoryStore {
-  readonly dataDir: string;
-  private readonly memoryPath: string;
-  private cached: LongTermMemoryProfile | undefined;
-  private cachedMtime: number | undefined;
-  private lastSavedLastUpdated: string | undefined;
-
-  constructor(dataDir: string, projectId?: string) {
-    this.dataDir = dataDir;
-    this.memoryPath = projectId
-      ? path.join(dataDir, "projects", projectId, "memory.json")
-      : path.join(dataDir, "memory.json");
-  }
-
-  load(): LongTermMemoryProfile {
-    const mtime = this.fileMtime();
-    if (this.cached && this.cachedMtime === mtime) {
-      return this.cached;
-    }
-    if (!fs.existsSync(this.memoryPath)) {
-      const empty = createEmptyLongTermMemory();
-      this.cached = empty;
-      this.cachedMtime = undefined;
-      this.lastSavedLastUpdated = undefined;
-      return empty;
-    }
-
-    try {
-      const parsed = LongTermMemoryProfileSchema.parse(JSON.parse(fs.readFileSync(this.memoryPath, "utf8")));
-      this.cached = parsed;
-      this.cachedMtime = mtime;
-      this.lastSavedLastUpdated = parsed.lastUpdated;
-      return parsed;
-    } catch (primaryError) {
-      console.error(`[memory] Failed to parse ${this.memoryPath}:`, primaryError instanceof Error ? primaryError.message : primaryError);
-      // Try reading from backup file before falling back to empty
-      const backupPath = this.backupPath();
-      if (fs.existsSync(backupPath)) {
-        try {
-          const backupParsed = LongTermMemoryProfileSchema.parse(JSON.parse(fs.readFileSync(backupPath, "utf8")));
-          console.error(`[memory] Recovered from backup ${backupPath}`);
-          this.cached = backupParsed;
-          this.cachedMtime = mtime;
-          return backupParsed;
-        } catch (backupError) {
-          console.error(`[memory] Backup ${backupPath} also corrupted:`, backupError instanceof Error ? backupError.message : backupError);
-        }
-      }
-      const empty = createEmptyLongTermMemory();
-      this.cached = empty;
-      this.cachedMtime = mtime;
-      return empty;
-    }
-  }
-
-  save(memory: LongTermMemoryProfile): LongTermMemoryProfile {
-    const parsed = LongTermMemoryProfileSchema.parse(memory);
-    fs.mkdirSync(path.dirname(this.memoryPath), { recursive: true });
-
-    // D11: CAS — check if file was modified externally since our last read
-    if (this.lastSavedLastUpdated && fs.existsSync(this.memoryPath)) {
-      try {
-        const onDisk = LongTermMemoryProfileSchema.parse(JSON.parse(fs.readFileSync(this.memoryPath, "utf8")));
-        if (onDisk.lastUpdated !== this.lastSavedLastUpdated) {
-          // File was modified externally — merge facts from on-disk version
-          const merged = mergeExternalFacts(parsed, onDisk);
-          parsed.facts = merged;
-        }
-      } catch {
-        // If we can't read on-disk, proceed with our version (best effort)
-      }
-    }
-
-    // Backup existing file before overwriting
-    const backupPath = this.backupPath();
-    if (fs.existsSync(this.memoryPath)) {
-      try {
-        fs.copyFileSync(this.memoryPath, backupPath);
-      } catch {
-        // Backup failure is non-fatal — best effort
-      }
-    }
-    const tempPath = `${this.memoryPath}.${Math.random().toString(16).slice(2)}.tmp`;
-    fs.writeFileSync(tempPath, `${JSON.stringify(parsed, null, 2)}\n`, "utf8");
-    fs.renameSync(tempPath, this.memoryPath);
-    this.lastSavedLastUpdated = parsed.lastUpdated;
-    this.cached = parsed;
-    this.cachedMtime = this.fileMtime();
-    return parsed;
-  }
-
-  clear(): LongTermMemoryProfile {
-    return this.save(createEmptyLongTermMemory());
-  }
-
-  private fileMtime(): number | undefined {
-    try {
-      return fs.statSync(this.memoryPath).mtimeMs;
-    } catch {
-      return undefined;
-    }
-  }
-
-  private backupPath(): string {
-    return `${this.memoryPath}.bak`;
-  }
-}
 
 export class LongTermMemoryUpdateQueue {
   private readonly queue = new Map<string, LongTermMemoryUpdateTask>();
@@ -838,15 +713,3 @@ function computeRecencyDecay(isoDate: string, nowIso: string): number {
   return Math.exp(-0.0077 * ageDays);
 }
 
-// D11: merge facts from external write that happened between our read and save
-function mergeExternalFacts(ours: LongTermMemoryProfile, theirs: LongTermMemoryProfile): LongTermMemoryFact[] {
-  const ourIds = new Set(ours.facts.map((f) => f.id));
-  // Keep all our facts, plus any facts from external write that we don't have
-  const merged = [...ours.facts];
-  for (const fact of theirs.facts) {
-    if (!ourIds.has(fact.id)) {
-      merged.push(fact);
-    }
-  }
-  return merged;
-}
