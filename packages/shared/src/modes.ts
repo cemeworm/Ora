@@ -475,7 +475,7 @@ const MODE_FAMILY_RULES: Record<
   }
 > = {
   generator_verifier: {
-    allowedTemplates: ["draft", "verify", "decide"],
+    allowedTemplates: ["research", "draft", "verify", "decide"],
     requiredTemplates: ["draft", "verify"],
     stopPolicyTypes: ["max_iterations", "manual"],
   },
@@ -519,12 +519,19 @@ const MODE_NODE_RUNTIME_TEMPLATE_LIBRARY: Record<
   Partial<Record<ModeNodeTemplate, StoredModeNodeRuntimeTemplateDefinition>>
 > = {
   generator_verifier: {
+    research: {
+      description: "Gather focused supporting context to inform the draft.",
+      display: { story: "{{owner}} gathers relevant files, patterns, and evidence before drafting." },
+      supportsPromptOverride: true,
+      fallbackInstructions: "Gather only high-signal supporting context for the prompt. Read relevant files, search for patterns, and collect evidence. Label sources and separate facts from inference. Do NOT produce the candidate yet — only research.",
+      fallbackPrompt: "Prompt: {{prompt}}\n\nGather focused supporting context to inform the draft candidate. Read relevant files, search for patterns, and collect evidence. Label sources or file paths, separate facts from inference, and list evidence gaps or uncertainty. Keep the research concise and actionable — the draft stage will produce the actual candidate.",
+    },
     draft: {
       description: "Draft a candidate answer for verifier review.",
       display: { story: "{{owner}} drafts a candidate answer that the verifier can inspect and improve." },
       supportsPromptOverride: true,
-      fallbackInstructions: "Produce a concrete candidate answer for this generator stage.",
-      fallbackPrompt: "Prompt: {{prompt}}\nAttempt: {{attempt}}\nPrevious verifier notes:\n{{verifierNotes}}\nWrite a better candidate answer. Return only the candidate response.",
+      fallbackInstructions: "Produce a concrete candidate answer for this generator stage. Use the research context — do not redo investigation.",
+      fallbackPrompt: "Prompt: {{prompt}}\nAttempt: {{attempt}}\n\nRESEARCH CONTEXT:\n{{research}}\n\nIMPORTANT CONTEXT:\n- Previous candidate (YOUR last output):\n{{candidate}}\n\n- Verifier feedback on your candidate:\n{{verifierNotes}}\n\nYOUR TASK: Revise the previous candidate to address every item in the verifier feedback. Do NOT start from scratch — improve what you already wrote. If this is attempt 1 with no previous candidate, produce the initial candidate based on the research context above. Produce exactly ONE candidate — do not iterate or produce multiple versions inline.",
     },
     verify: {
       description: "Evaluate the candidate against the current rubric.",
@@ -1304,7 +1311,8 @@ export const MVP_PATTERN_DEFINITIONS: Record<CoordinationPattern, PatternDefinit
       ]
     },
     planTemplate: [
-      { id: "draft", title: "Draft candidate output", ownerAgentId: "generator", dependencies: [] },
+      { id: "research", title: "Research context", ownerAgentId: "generator", dependencies: [] },
+      { id: "draft", title: "Draft candidate output", ownerAgentId: "generator", dependencies: ["research"] },
       { id: "verify", title: "Verify against rubric", ownerAgentId: "verifier", dependencies: ["draft"] }
     ]
   },
