@@ -96,6 +96,14 @@ export class WechatChannelAdapter implements ChannelAdapter {
       typeof config.config.qrCodeKey === "string"
         ? config.config.qrCodeKey
         : "";
+    const storedTokens = config.config.contextTokens;
+    if (storedTokens && typeof storedTokens === "object" && !Array.isArray(storedTokens)) {
+      for (const [chatId, token] of Object.entries(storedTokens as Record<string, unknown>)) {
+        if (typeof token === "string" && token.trim()) {
+          this.contextTokenMap.set(chatId, token);
+        }
+      }
+    }
   }
 
   // -----------------------------------------------------------------------
@@ -378,21 +386,33 @@ export class WechatChannelAdapter implements ChannelAdapter {
 
       const inboundItems = normalizeGetUpdatesItems(data);
       if (inboundItems.length && this.deps?.onIngest) {
+        let tokensChanged = false;
         for (const item of inboundItems) {
           const normalized = normalizeWechatMessage(item);
           if (normalized) {
             if (typeof item.context_token === "string" && item.context_token.trim()) {
               this.contextTokenMap.set(normalized.externalChatId, item.context_token);
+              tokensChanged = true;
             }
             try {
-              await this.deps.onIngest({
+              const result = await this.deps.onIngest({
                 channelId: this.channelId,
                 ...normalized,
-              });
+              }) as Record<string, unknown> | undefined;
+              if (result && !result.accepted) {
+                console.warn(`[WeChat:${this.channelId}] Ingest rejected: ${normalized.externalChatId}`);
+              }
             } catch {
               // swallow ingest errors to keep polling
             }
           }
+        }
+        if (tokensChanged) {
+          const tokens: Record<string, string> = {};
+          for (const [chatId, token] of this.contextTokenMap) {
+            tokens[chatId] = token;
+          }
+          this.deps?.onConfigUpdate(this.channelId, { contextTokens: tokens });
         }
       }
     } catch (err) {

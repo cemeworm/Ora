@@ -246,6 +246,11 @@ export class ChannelStore {
     return this.updateDelivery(parsed.deliveryId, { status: "queued", nextAttemptAt: undefined });
   }
 
+  listRetryableDeliveries(now: number): ChannelDelivery[] {
+    return this.backend.listChannelDeliveries({ status: "retry_scheduled" })
+      .filter((d) => d.nextAttemptAt != null && d.nextAttemptAt <= now);
+  }
+
   listDeliveries(params: unknown = {}): ChannelDelivery[] {
     const parsed = ChannelDeliveriesListParamsSchema.parse(params ?? {});
     return this.backend.listChannelDeliveries(parsed);

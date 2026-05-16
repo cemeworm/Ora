@@ -184,10 +184,13 @@ export class TelegramChannelAdapter implements ChannelAdapter {
           const normalized = normalizeTelegramUpdate(update);
           if (normalized) {
             try {
-              await this.deps.onIngest({
+              const result = await this.deps.onIngest({
                 channelId: this.channelId,
                 ...normalized,
-              });
+              }) as Record<string, unknown> | undefined;
+              if (result && !result.accepted) {
+                console.warn(`[Telegram:${this.channelId}] Ingest rejected: ${normalized.externalChatId}`);
+              }
             } catch {
               // swallow ingest errors to keep polling
             }

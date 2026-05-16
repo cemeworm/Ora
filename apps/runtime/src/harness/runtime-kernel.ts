@@ -68,7 +68,7 @@ import {
   type RecoveryIncident,
 } from "./recovery-policy.js";
 import { executeModeSpec } from "../patterns/driver-registry.js";
-import type { EvidenceBoard, PatternExecutionContext } from "../patterns/execution-context.js";
+import type { PatternExecutionContext } from "../patterns/execution-context.js";
 import type { ModelMessage, ModelRequest, ModelResponse } from "../providers/index.js";
 import { RuntimeCompletionController } from "./runtime-completion.js";
 import {
@@ -127,9 +127,10 @@ import {
 } from "./node-runtime-loop.js";
 import { createKernelPatternExecutionContextAdapter } from "./runtime-pattern-context.js";
 import { KernelRunner, createKernelRunnerDeps } from "./runtime-kernel-runner.js";
-import { assertRunCanBecomeTerminal } from "./runtime-completion-guards.js";
+import { assertRunCanBecomeTerminal, TerminalStateIntegrityError, type TerminalStateAssertionInput } from "./runtime-completion-guards.js";
 import { activePlanStepId, advancePlanListFromLifecycle, planListUpdatedPayload } from "./runtime-plan-list-state.js";
 import { classifyContinuationDispatch } from "../run-continuation-dispatcher.js";
+import { DIAGNOSTIC_FAILURE_SYMBOL } from "../run-kernel-execution-service.js";
 import { createResumeCheckpoint } from "../run-resume-mutation.js";
 import {
   injectRootAgentTopology,
@@ -166,6 +167,9 @@ export interface RuntimeKernelOptions {
   signal?: AbortSignal;
   onEvent?: (event: OraEventEnvelope) => void;
   promptCache?: PromptSectionCache;
+  /** auto_review 模式自动批准时调用，携带被批准的 action IDs。
+      实现方应写入 gate.resolved ledger entries。 */
+  onApprovalAutoResolved?: (actionIds: string[]) => void;
 }
 
 class KernelRuntimeContext {
@@ -807,7 +811,10 @@ export async function executeRuntimeKernel(
   const agentLabel = (agentId: string): string => profilesById.get(agentId)?.label ?? agentId;
   const suspendedFrameDispatch = options.resumeState ? classifyContinuationDispatch(options.resumeState) : undefined;
   if (suspendedFrameDispatch?.kind === "diagnostic_failure") {
-    throw new Error(suspendedFrameDispatch.message);
+    throw Object.assign(
+      new Error(suspendedFrameDispatch.message),
+      { [DIAGNOSTIC_FAILURE_SYMBOL]: true as const },
+    );
   }
   const suspendedFrameDecision = suspendedFrameDispatch?.kind === "resume_suspended_node" && suspendedFrameDispatch.frame.status === "awaiting_model"
     ? suspendedFrameDispatch
@@ -996,6 +1003,7 @@ export async function executeRuntimeKernel(
       appendToolCall({ ...record, status });
     },
     appendToolCall,
+    onApprovalAutoResolved: options.onApprovalAutoResolved,
   });
 
   const emitNodeRuntimeState = (
@@ -2155,19 +2163,62 @@ export async function executeRuntimeKernel(
     // Shared terminal-state integrity gate for the resumed-frame path:
     // refuse to finalize if unresolved approvals, tool calls, or
     // continuation frames remain.
+    const pendingApprovalActions = actionLedger.list()
+      .filter((action) => action.status === "approval_required");
+    const resumeGates: { gateId: string; kind: "clarification" | "approval" | "plan_decision"; status: "open" | "resolved" }[] = [];
+    for (const pc of kernelRuntimeContext.pendingClarifications) {
+      resumeGates.push({ gateId: pc.id, kind: "clarification" as const, status: "open" as const });
+    }
+    if (pendingApprovalActions.length > 0) {
+      resumeGates.push({ gateId: `${runId}:approval`, kind: "approval" as const, status: "open" as const });
+    }
     const resumeAssertInput = {
       actions: actionLedger.list(),
       toolCalls: kernelRuntimeContext.toolCalls,
-      pendingApprovals: actionLedger.list()
-        .filter((action) => action.status === "approval_required")
-        .map((action) => action.id),
+      pendingApprovals: pendingApprovalActions.map((action) => action.id),
       pendingClarifications: kernelRuntimeContext.pendingClarifications,
       continuation: continuationWithActiveFrameStatus("completed") ?? options.resumeState?.continuation ?? { frames: [] },
       planList: kernelRuntimeContext.planList,
       plan: planService.list(),
       todos: todoService.list(),
+      gates: resumeGates,
     };
-    assertRunCanBecomeTerminal(resumeAssertInput);
+    try {
+      assertRunCanBecomeTerminal(resumeAssertInput);
+    } catch (caught) {
+      if (caught instanceof TerminalStateIntegrityError) {
+        emit("run.failed", {
+          status: "failed",
+          error: caught.message,
+          output: { text: caught.message, pattern: resolvedModeSpec.family, modeId: resolvedModeSpec.id },
+        });
+        return kernelRuntimeContext.assembleFinalSnapshot({
+          status: "failed",
+          input,
+          config,
+          modeSpec: resolvedModeSpec,
+          profiles,
+          memory: memoryService.list(),
+          plan: planService.list(),
+          todos: todoService.list(),
+          actions: actionLedger.list(),
+          conversation: options.resumeState?.conversation ?? [],
+          toolResults: options.resumeState?.toolResults ?? [],
+          checkpoint: createResumeCheckpoint({
+            runId,
+            index: 0,
+            now: now(),
+            eventSeq: kernelRuntimeContext.eventCount(),
+            stateHash: caught.message,
+          }),
+          previousContinuation: continuationWithActiveFrameStatus("completed"),
+          conversationCursor: options.resumeState?.conversation.length ?? 0,
+          output: { text: caught.message, pattern: resolvedModeSpec.family, modeId: resolvedModeSpec.id },
+          updatedAt: now(),
+        });
+      }
+      throw caught;
+    }
 
     skillRegistry.flushTelemetry();
     skillRegistry.evaluateCuratorIfDue();
@@ -2554,15 +2605,6 @@ export async function executeRuntimeKernel(
     }
   };
 
-  const evidenceBoard: EvidenceBoard = { entries: [] };
-  const writeEvidence: PatternExecutionContext["writeEvidence"] = (entry) => {
-    evidenceBoard.entries.push({
-      ...entry,
-      id: `${entry.agentId}-evidence-${evidenceBoard.entries.length}`,
-      timestamp: Date.now(),
-    });
-  };
-
   const kernelPatternExecutionContextAdapter =
     createKernelPatternExecutionContextAdapter({
       projectId,
@@ -2570,7 +2612,6 @@ export async function executeRuntimeKernel(
       sharedStateSummary: () => kernelRuntimeContext.sharedStateSummary,
       busStats: () => kernelRuntimeContext.busStats,
       modeResume,
-      evidenceBoard,
       systemPrompt,
       setPlanStatus,
       setQueueSummary: (patch) => {
@@ -2593,7 +2634,6 @@ export async function executeRuntimeKernel(
       routeMessage,
       emitAgentMessage,
       writeSharedState,
-      writeEvidence,
       currentSharedState: () => kernelRuntimeContext.sharedStateSummary,
     });
 
@@ -2664,6 +2704,13 @@ export async function executeRuntimeKernel(
           conversationCursor: options.resumeState?.conversation.length ?? 0,
           now: now(),
         });
+        const gateRecords: { gateId: string; kind: "clarification" | "approval" | "plan_decision"; status: "open" | "resolved" }[] = [];
+        for (const pc of kernelRuntimeContext.pendingClarifications) {
+          gateRecords.push({ gateId: pc.id, kind: "clarification" as const, status: "open" as const });
+        }
+        if (pendingApprovals.length > 0) {
+          gateRecords.push({ gateId: `${runId}:approval`, kind: "approval" as const, status: "open" as const });
+        }
         return {
           actions,
           toolCalls: kernelRuntimeContext.toolCalls,
@@ -2673,6 +2720,7 @@ export async function executeRuntimeKernel(
           planList: kernelRuntimeContext.planList,
           plan: planService.list(),
           todos: todoService.list(),
+          gates: gateRecords,
         };
       },
     },

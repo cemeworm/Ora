@@ -1518,6 +1518,8 @@ export class LocalRunStore {
       sessionId: session.sessionId,
       turnIndex,
       conversationMessages,
+      onApprovalAutoResolved: (actionIds) =>
+        this.resolveApprovalGatesForAutoReview(runId, session.sessionId, turnIndex, actionIds),
     });
     const tracedSnapshot = this.normalizeSnapshotForPersistence(attachTraceMetadata(this.withSnapshotContextState(sessionBoundSnapshot)));
     this.appendRuntimeEventBatchToLedger(tracedSnapshot, tracedSnapshot.events, tracedSnapshot.status);
@@ -1662,28 +1664,7 @@ export class LocalRunStore {
         streamingSession.publish([], cancelled);
         return;
       }
-      const isInterrupt = isApprovalInterruptError(error) || isClarificationInterruptError(error);
-      const reason = isClarificationInterruptError(error)
-        ? "clarification_required"
-        : isApprovalInterruptError(error)
-          ? "approval_required"
-          : undefined;
-      const result = isInterrupt
-        ? createStreamingInterrupt({
-            liveSnapshot,
-            runId,
-            pattern: fullConfig.pattern,
-            reason: reason!,
-            error: error instanceof Error ? error.message : String(error),
-            interruptedAt: this.now(),
-          })
-        : createStreamingFailure({
-            liveSnapshot,
-            runId,
-            pattern: fullConfig.pattern,
-            error,
-            failedAt: this.now(),
-          });
+      const { result } = this.#classifyResumeError(error, liveSnapshot, runId, fullConfig.pattern);
       liveSnapshot = streamingSession.replaceSnapshot(attachTraceMetadata(result.snapshot));
       liveSnapshot = streamingSession.flushLedgerEvents(liveSnapshot.status);
       const projectedSnapshot = this.appendAssistantMessageToLedger(liveSnapshot);
@@ -1747,6 +1728,53 @@ export class LocalRunStore {
         runId: params.snapshot.runId,
       });
     }
+  }
+
+  /**
+   * Classify a resume error as interrupt or failure and build the
+   * corresponding streaming result struct. Shared by resumeStreamingRun
+   * and resumeRun for consistent error handling.
+   */
+  #classifyResumeError(error: unknown, liveSnapshot: StateSnapshot, runId: string, pattern: string) {
+    const isInterrupt = isApprovalInterruptError(error) || isClarificationInterruptError(error);
+    const reason = isClarificationInterruptError(error)
+      ? "clarification_required" as const
+      : isApprovalInterruptError(error)
+        ? "approval_required" as const
+        : undefined;
+    const result = isInterrupt
+      ? createStreamingInterrupt({
+          liveSnapshot,
+          runId,
+          pattern,
+          reason: reason!,
+          error: error instanceof Error ? error.message : String(error),
+          interruptedAt: this.now(),
+        })
+      : createStreamingFailure({
+          liveSnapshot,
+          runId,
+          pattern,
+          error,
+          failedAt: this.now(),
+        });
+    return { isInterrupt, reason, result };
+  }
+
+  /**
+   * Determine whether an approved-tool continuation result should still
+   * enter the kernel — e.g. when a composite patch carries both
+   * approvedActionIds and clarification answers that the tool-only path
+   * did not inject into the conversation.
+   */
+  #shouldContinueApprovedToolToKernel(
+    result: { kind: string; snapshot: StateSnapshot },
+    clarificationPatch: Record<string, unknown>,
+  ): boolean {
+    if (result.kind === "continue") return true;
+    if (result.kind !== "completed") return false;
+    if (Object.keys(clarificationPatch).length === 0) return false;
+    return currentPendingClarifications(result.snapshot).length > 0;
   }
 
   async resumeStreamingRun(params: unknown, options: StreamingRunOptions = {}): Promise<RunHandle> {
@@ -1823,7 +1851,7 @@ export class LocalRunStore {
           return;
         }
         let completedSnapshot: StateSnapshot;
-        if (result.kind === "continue") {
+        if (this.#shouldContinueApprovedToolToKernel(result, clarificationPatch)) {
           const continuationSnapshot = result.snapshot;
           liveSnapshot = streamingSession.replaceSnapshot(continuationSnapshot);
           completedSnapshot = await this.runKernelExecutionService.continueAfterApprovedTool({
@@ -1862,28 +1890,7 @@ export class LocalRunStore {
           streamingSession.publish([], cancelled);
           return;
         }
-        const isInterrupt = isApprovalInterruptError(error) || isClarificationInterruptError(error);
-        const reason = isClarificationInterruptError(error)
-          ? "clarification_required"
-          : isApprovalInterruptError(error)
-            ? "approval_required"
-            : undefined;
-        const result = isInterrupt
-          ? createStreamingInterrupt({
-              liveSnapshot,
-              runId: snapshot.runId,
-              pattern: snapshot.config.pattern,
-              reason: reason!,
-              error: error instanceof Error ? error.message : String(error),
-              interruptedAt: this.now(),
-            })
-          : createStreamingFailure({
-              liveSnapshot,
-              runId: snapshot.runId,
-              pattern: snapshot.config.pattern,
-              error,
-              failedAt: this.now(),
-            });
+        const { result } = this.#classifyResumeError(error, liveSnapshot, snapshot.runId, snapshot.config.pattern);
         liveSnapshot = await this.runResumeFinalizationService.persistStreamingFailure({
           snapshot: attachTraceMetadata(result.snapshot),
           events: [result.event],
@@ -1935,28 +1942,7 @@ export class LocalRunStore {
         streamingSession.publish([], cancelled);
         return;
       }
-      const isInterrupt = isApprovalInterruptError(error) || isClarificationInterruptError(error);
-      const reason = isClarificationInterruptError(error)
-        ? "clarification_required"
-        : isApprovalInterruptError(error)
-          ? "approval_required"
-          : undefined;
-      const result = isInterrupt
-        ? createStreamingInterrupt({
-            liveSnapshot,
-            runId: snapshot.runId,
-            pattern: snapshot.config.pattern,
-            reason: reason!,
-            error: error instanceof Error ? error.message : String(error),
-            interruptedAt: this.now(),
-          })
-        : createStreamingFailure({
-            liveSnapshot,
-            runId: snapshot.runId,
-            pattern: snapshot.config.pattern,
-            error,
-            failedAt: this.now(),
-          });
+      const { result } = this.#classifyResumeError(error, liveSnapshot, snapshot.runId, snapshot.config.pattern);
       liveSnapshot = await this.runResumeFinalizationService.persistStreamingFailure({
         snapshot: attachTraceMetadata(result.snapshot),
         events: [result.event],
@@ -2149,7 +2135,7 @@ export class LocalRunStore {
         deps: this.approvedFileWriteResumeDeps(),
       });
       if (approvedToolContinuation) {
-        const completedApprovedTool = approvedToolContinuation.kind === "continue"
+        const completedApprovedTool = this.#shouldContinueApprovedToolToKernel(approvedToolContinuation, clarificationPatch)
           ? await this.runKernelExecutionService.continueAfterApprovedTool({
             originalSnapshot: snapshot,
             continuationSnapshot: approvedToolContinuation.snapshot,
@@ -2219,36 +2205,18 @@ export class LocalRunStore {
         approvedActionIds,
       });
     } catch (error) {
-      const isInterrupt = isApprovalInterruptError(error) || isClarificationInterruptError(error);
+      const { isInterrupt, result } = this.#classifyResumeError(error, liveSnapshot, snapshot.runId, snapshot.config.pattern);
       if (isInterrupt) {
-        const reason = isClarificationInterruptError(error)
-          ? "clarification_required"
-          : "approval_required";
-        const interrupt = createStreamingInterrupt({
-          liveSnapshot,
-          runId: snapshot.runId,
-          pattern: snapshot.config.pattern,
-          reason,
-          error: error instanceof Error ? error.message : String(error),
-          interruptedAt: this.now(),
-        });
         liveSnapshot = await this.runResumeFinalizationService.persistInterrupted({
-          snapshot: attachTraceMetadata(interrupt.snapshot),
+          snapshot: attachTraceMetadata(result.snapshot),
           original: snapshot,
           clarificationPatch,
           approvedActionIds,
         });
         return liveSnapshot;
       }
-      const failure = createStreamingFailure({
-        liveSnapshot,
-        runId: snapshot.runId,
-        pattern: snapshot.config.pattern,
-        error,
-        failedAt: this.now(),
-      });
       liveSnapshot = await this.runResumeFinalizationService.persistTerminal({
-        snapshot: attachTraceMetadata(failure.snapshot),
+        snapshot: attachTraceMetadata(result.snapshot),
         original: snapshot,
         clarificationPatch,
         approvedActionIds,
@@ -2261,6 +2229,25 @@ export class LocalRunStore {
     const runId = this.requireRunId(params);
     this.runStreamingService.abort(runId, USER_CANCELLED_MESSAGE);
     return cancelRun(params, this.runStateOperationDeps(), USER_CANCELLED_MESSAGE);
+  }
+
+  /**
+   * Rebuild a run that failed due to an unrecoverable diagnostic failure.
+   * Creates a new run with the same input and mode as the failed run,
+   * preserving the original user intent. The failed run is cancelled.
+   */
+  async rebuildRun(params: unknown): Promise<RunHandle> {
+    const runId = this.requireRunId(params);
+    const snapshot = this.getRunState({ runId });
+    if (snapshot.status !== "failed") {
+      throw new Error(`Run ${runId} is not in failed state (current: ${snapshot.status}). Refusing to rebuild.`);
+    }
+    const { input, config, sessionId } = snapshot;
+    if (!sessionId) {
+      throw new Error(`Run ${runId} has no sessionId — cannot rebuild.`);
+    }
+    cancelRun({ runId }, this.runStateOperationDeps(), "Run rebuilt by user after diagnostic failure.");
+    return this.startRun({ input, config, sessionId });
   }
 
   getRunState(params: unknown): StateSnapshot {
@@ -3056,6 +3043,33 @@ export class LocalRunStore {
     return this.appendRunSnapshotUpdateToLedger(this.normalizeSnapshotForPersistence(
       runningSnapshotForApprovedActions(snapshot, approvedActionIds, this.now()),
     ));
+  }
+
+  /**
+   * auto_review 模式自动批准时写入 gate.resolved 条目。
+   * 此方法解决 terminal_run_with_open_gates 根因：
+   * 原 auto_review 路径仅 emit() 事件，不写 gate.resolved → ledger replay
+   * 时 gate 保持 open 与终端状态共存 → deriveLedgerRunAttention 降级为 failed。
+   */
+  resolveApprovalGatesForAutoReview(
+    runId: string,
+    sessionId: string,
+    turnIndex: number,
+    actionIds: string[],
+  ): void {
+    if (!this.isLedgerBackedSession(sessionId) || actionIds.length === 0) return;
+    const resolutions: RuntimeGateResolution[] = actionIds.map((actionId) => ({
+      kind: "approval" as const,
+      actionId,
+    }));
+    // gateLifecycleAppendAdapter 需要 Pick<StateSnapshot, "runId" | "sessionId" | "config">
+    const snapshot = { runId, sessionId, turnIndex, config: { profileIds: [] as string[] } };
+    this.runtimeGateLedgerService.appendResumeResolveLifecycle({
+      snapshot: snapshot as StateSnapshot,
+      resolutions,
+      resolvedAt: this.now(),
+      appendAdapter: this.gateLifecycleAppendAdapter(snapshot as StateSnapshot),
+    });
   }
 
   private appendGateResolutionsForResume(

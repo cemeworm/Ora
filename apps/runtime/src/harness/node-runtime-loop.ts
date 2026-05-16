@@ -227,6 +227,24 @@ function isInternalRuntimeStatusTrigger(trigger: string): boolean {
   return trigger === "plan_list.incomplete" || trigger === "runtime_work.pending";
 }
 
+/**
+ * Build a normalized fingerprint from a guard rejection result so the
+ * cycle counter detects no-progress loops even when the model rephrases
+ * the same logical error or generates new action/plan IDs.
+ */
+function buildGuardFingerprint(guardResult: { reason: string; detail: string }): string {
+  let normalized = guardResult.detail
+    // Strip parenthesized IDs: (action-abc), (plan-xyz), (todo-123)
+    .replace(/\s*\([^)]+\)/g, "")
+    // Normalize numbered list prefixes: "plan 1." → "plan", "todo 2." → "todo"
+    .replace(/\b(plan|todo|action|tool call)\s+\d+\./gi, "$1")
+    // Collapse whitespace
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+  return `${guardResult.reason}:${normalized}`;
+}
+
 export async function runNodeRuntimeLoop(
   params: RunNodeRuntimeLoopParams,
   deps: RunNodeRuntimeLoopDeps,
@@ -702,11 +720,11 @@ export async function runNodeRuntimeLoop(
       return { kind: "complete", response: currentResponse };
     }
 
-    // Strip parenthesized IDs (e.g. "(action-xxx)") from detail so the
-    // guard-cycle counter isn't reset when the model re-proposes the same
-    // logical action with a new action ID — which otherwise creates an
-    // unbounded approval→execute→guard→re-approval loop.
-    const guardFingerprint = `${guardResult.reason}:${guardResult.detail.replace(/\s*\([^)]+\)/g, "")}`;
+    // Build a normalized guard fingerprint to detect no-progress loops.
+    // Strip parenthesized IDs (e.g. "(action-xxx)"), normalize whitespace,
+    // and remove leading numbered prefixes (e.g. "plan 1." → "plan") so
+    // minor rephrasings don't reset the cycle counter.
+    const guardFingerprint = buildGuardFingerprint(guardResult);
     const guardCycleCount = (guardCycleCounts.get(guardFingerprint) ?? 0) + 1;
     guardCycleCounts.set(guardFingerprint, guardCycleCount);
     if (guardCycleCount > 3) {
@@ -983,18 +1001,18 @@ export async function runNodeRuntimeLoop(
       response,
       iteration,
     });
-    if (toolTurnResult.kind === "retry") {
-      continue;
+    switch (toolTurnResult.kind) {
+      case "retry":
+        continue;
+      case "return":
+        return toolTurnResult.response;
+      case "continue":
+        hasExecutedTool = true;
+        response = toolTurnResult.response;
+        continue;
+      case "throw":
+        throw toolTurnResult.error;
     }
-    if (toolTurnResult.kind === "return") {
-      return toolTurnResult.response;
-    }
-    if (toolTurnResult.kind === "continue") {
-      hasExecutedTool = true;
-      response = toolTurnResult.response;
-      continue;
-    }
-    throw toolTurnResult.error;
   }
 
   completion.forceFinalAnswer("runtime_tool_loop_limit");

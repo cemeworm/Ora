@@ -80,7 +80,7 @@ export function evaluateRuntimeCompletionGuards(
  * empty final model response.
  */
 /** Minimum visible content length to guard against truncated model output. */
-const MIN_VISIBLE_CONTENT_LENGTH = 80;
+const MIN_VISIBLE_CONTENT_LENGTH = 60;
 
 export function finalOutputGuard(
   responseText: string,
@@ -336,6 +336,35 @@ export class TerminalStateIntegrityError extends Error {
     super(message);
     this.name = "TerminalStateIntegrityError";
   }
+}
+
+/**
+ * Derive a TerminalStateAssertionInput from a StateSnapshot.
+ * Used by persistence-layer callers (RunResumeFinalizationService,
+ * approved tool continuation, non-kernel resume) that don't have
+ * direct access to kernel context.
+ */
+export function deriveTerminalStateAssertionFromSnapshot(
+  snapshot: { actions: readonly ActionRecord[]; toolCalls: readonly OraToolCallEnvelope[]; pendingApprovals: readonly string[]; pendingClarifications: readonly { id: string }[]; continuation: { frames: readonly { id: string; status: string; reason: string; pendingActionIds: readonly string[]; pendingToolCallIds: readonly string[]; pendingClarificationIds: readonly string[] }[] }; planList: readonly PlanListStep[]; plan?: readonly { id: string; status: string }[]; todos?: readonly { id: string; status: string }[] },
+  ): TerminalStateAssertionInput {
+  const gates: { gateId: string; kind: "clarification" | "approval" | "plan_decision"; status: "open" | "resolved" }[] = [];
+  for (const pc of snapshot.pendingClarifications) {
+    gates.push({ gateId: pc.id, kind: "clarification" as const, status: "open" as const });
+  }
+  if (snapshot.pendingApprovals.length > 0) {
+    gates.push({ gateId: "approval", kind: "approval" as const, status: "open" as const });
+  }
+  return {
+    actions: snapshot.actions,
+    toolCalls: snapshot.toolCalls,
+    pendingApprovals: snapshot.pendingApprovals,
+    pendingClarifications: snapshot.pendingClarifications as TerminalStateAssertionInput["pendingClarifications"],
+    continuation: snapshot.continuation as TerminalStateAssertionInput["continuation"],
+    planList: snapshot.planList,
+    plan: snapshot.plan as TerminalStateAssertionInput["plan"],
+    todos: snapshot.todos as TerminalStateAssertionInput["todos"],
+    gates,
+  };
 }
 
 export function pendingRuntimeWorkGuard(

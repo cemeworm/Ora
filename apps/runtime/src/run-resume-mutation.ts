@@ -18,7 +18,7 @@ import {
   currentPendingApprovalActionIds,
   currentPendingClarifications,
 } from "./run-orchestration.js";
-import { pendingRuntimeWorkGuard } from "./harness/runtime-completion-guards.js";
+import { pendingRuntimeWorkGuard, assertRunCanBecomeTerminal, deriveTerminalStateAssertionFromSnapshot, TerminalStateIntegrityError } from "./harness/runtime-completion-guards.js";
 
 export type AppendRunEvent = (
   snapshot: StateSnapshot,
@@ -224,6 +224,24 @@ export function completeNonKernelResumeMutation(
       status: "interrupted",
       updatedAt: deps.now(),
     });
+  }
+
+  // Shared terminal-state integrity gate: refuse to proceed if any
+  // open gates, pending approvals/clarifications, or active continuation
+  // frames remain.
+  try {
+    assertRunCanBecomeTerminal(deriveTerminalStateAssertionFromSnapshot(snapshot));
+  } catch (caught) {
+    if (caught instanceof TerminalStateIntegrityError) {
+      return StateSnapshotSchema.parse({
+        ...snapshot,
+        status: "failed",
+        error: caught.message,
+        output: { text: caught.message, violations: caught.violations },
+        updatedAt: deps.now(),
+      });
+    }
+    throw caught;
   }
 
   let working = snapshot;

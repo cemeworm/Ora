@@ -95,89 +95,98 @@ export class RunResumeService {
         approvedActionIds: patch.approvedActionIds,
       }),
       hasKernelWork,
-      strategy: classifyRunResumeStrategy({
+      strategy: this.classifyStrategy({
         snapshot,
         approvedActionIds: patch.approvedActionIds,
         hasKernelWork,
       }),
     };
   }
-}
 
-export function classifyRunResumeStrategy(params: {
-  snapshot: StateSnapshot;
-  approvedActionIds: string[];
-  hasKernelWork?: boolean;
-}): RunResumeStrategy {
-  const hasKernelWork = params.hasKernelWork ?? hasKernelResumeWork(params.snapshot);
-  const continuationActions = approvedToolContinuationActions(params.snapshot, params.approvedActionIds);
-  if (continuationActions.length > 0) {
+  classifyStrategy(params: {
+    snapshot: StateSnapshot;
+    approvedActionIds: string[];
+    hasKernelWork?: boolean;
+  }): RunResumeStrategy {
+    const hasKernelWork = params.hasKernelWork ?? hasKernelResumeWork(params.snapshot);
+    const continuationActions = approvedToolContinuationActions(params.snapshot, params.approvedActionIds);
+    if (continuationActions.length > 0) {
+      return {
+        kind: "approved_tool_continuation",
+        approvedActionIds: params.approvedActionIds,
+        continuationActionIds: continuationActions.map((action) => action.id),
+        continueKernelAfterTool: hasKernelWork,
+      };
+    }
+    if (hasKernelWork) {
+      return {
+        kind: "kernel",
+        approvedActionIds: params.approvedActionIds,
+      };
+    }
     return {
-      kind: "approved_tool_continuation",
+      kind: "non_kernel",
       approvedActionIds: params.approvedActionIds,
-      continuationActionIds: continuationActions.map((action) => action.id),
-      continueKernelAfterTool: hasKernelWork,
     };
   }
-  if (hasKernelWork) {
+
+  executeNonKernelResume(params: {
+    snapshot: StateSnapshot;
+    reason: string;
+    patch: unknown;
+    clarificationPatch: Record<string, unknown>;
+    deps: NonKernelResumeMutationDeps;
+  }): NonKernelResumeStrategyResult {
+    let working = beginNonKernelResume({
+      snapshot: params.snapshot,
+      reason: params.reason,
+      patch: params.patch,
+      deps: params.deps,
+    });
+    working = resolveNonKernelResumeClarifications({
+      snapshot: working,
+      clarificationPatch: params.clarificationPatch,
+      appendEvent: params.deps.appendEvent,
+    });
+    working = applyNonKernelResumeApprovals(working, params.deps);
+
+    if (nonKernelResumeNeedsInput(working)) {
+      return {
+        kind: "needs_input",
+        snapshot: interruptedNonKernelResumeSnapshot(working, params.deps.now()),
+      };
+    }
+
+    const completed = completeNonKernelResumeMutation(working, params.deps);
     return {
-      kind: "kernel",
-      approvedActionIds: params.approvedActionIds,
-    };
-  }
-  return {
-    kind: "non_kernel",
-    approvedActionIds: params.approvedActionIds,
-  };
-}
-
-export function executeNonKernelResumeStrategy(params: {
-  snapshot: StateSnapshot;
-  reason: string;
-  patch: unknown;
-  clarificationPatch: Record<string, unknown>;
-  deps: NonKernelResumeMutationDeps;
-}): NonKernelResumeStrategyResult {
-  let working = beginNonKernelResume({
-    snapshot: params.snapshot,
-    reason: params.reason,
-    patch: params.patch,
-    deps: params.deps,
-  });
-  working = resolveNonKernelResumeClarifications({
-    snapshot: working,
-    clarificationPatch: params.clarificationPatch,
-    appendEvent: params.deps.appendEvent,
-  });
-  working = applyNonKernelResumeApprovals(working, params.deps);
-
-  if (nonKernelResumeNeedsInput(working)) {
-    return {
-      kind: "needs_input",
-      snapshot: interruptedNonKernelResumeSnapshot(working, params.deps.now()),
+      kind: "completed",
+      snapshot: params.deps.syncTodos(completed, "resume.completed"),
     };
   }
 
-  const completed = completeNonKernelResumeMutation(working, params.deps);
-  return {
-    kind: "completed",
-    snapshot: params.deps.syncTodos(completed, "resume.completed"),
-  };
+  executeApprovedToolContinuation(params: {
+    snapshot: StateSnapshot;
+    approvedActionIds: string[];
+    reason?: string;
+    patch?: unknown;
+    deps: ApprovedFileWriteResumeDeps;
+    onEvent?: (event: OraEventEnvelope, snapshot: StateSnapshot) => void;
+  }): Promise<ApprovedToolContinuationResult | undefined> {
+    return completeApprovedToolContinuation(
+      params.snapshot,
+      params.approvedActionIds,
+      { reason: params.reason, patch: params.patch },
+      params.deps,
+      params.onEvent,
+    );
+  }
 }
 
-export function executeApprovedToolContinuationStrategy(params: {
-  snapshot: StateSnapshot;
-  approvedActionIds: string[];
-  reason?: string;
-  patch?: unknown;
-  deps: ApprovedFileWriteResumeDeps;
-  onEvent?: (event: OraEventEnvelope, snapshot: StateSnapshot) => void;
-}): Promise<ApprovedToolContinuationResult | undefined> {
-  return completeApprovedToolContinuation(
-    params.snapshot,
-    params.approvedActionIds,
-    { reason: params.reason, patch: params.patch },
-    params.deps,
-    params.onEvent,
-  );
-}
+/** @deprecated Use RunResumeService.classifyStrategy instead. */
+export const classifyRunResumeStrategy = RunResumeService.prototype.classifyStrategy;
+
+/** @deprecated Use RunResumeService.executeNonKernelResume instead. */
+export const executeNonKernelResumeStrategy = RunResumeService.prototype.executeNonKernelResume;
+
+/** @deprecated Use RunResumeService.executeApprovedToolContinuation instead. */
+export const executeApprovedToolContinuationStrategy = RunResumeService.prototype.executeApprovedToolContinuation;

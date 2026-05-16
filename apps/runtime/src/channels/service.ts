@@ -1,5 +1,6 @@
 import type {
   ChannelConfig,
+  ChannelDelivery,
   ChannelStatus,
   ChannelStatusResult,
 } from "@cemeworm/shared";
@@ -19,6 +20,9 @@ import { TelegramChannelAdapter } from "./telegram.js";
 import { WechatChannelAdapter } from "./wechat.js";
 import { WecomChannelAdapter } from "./wecom.js";
 
+const MAX_RETRY_ATTEMPTS = 5;
+const MAX_BACKOFF_MS = 60_000;
+
 export interface ChannelServiceOptions {
   clock?: () => number;
   idFactory?: () => string;
@@ -35,6 +39,7 @@ export class ChannelService {
   private readonly clock: () => number;
   private readonly fetchImpl: typeof fetch;
   private readonly autoStartAdapters: boolean;
+  private retryTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(backend: RuntimePersistenceBackend, runtime: ChannelRunRuntime, options: ChannelServiceOptions = {}) {
     this.clock = options.clock ?? Date.now;
@@ -43,6 +48,7 @@ export class ChannelService {
     this.store = new ChannelStore(backend, options);
     this.bus = new ChannelMessageBus();
     this.manager = new ChannelManager(this.store, runtime, this.bus, options);
+    this.startRetryLoop();
   }
 
   create(params: unknown): ChannelConfig {
@@ -212,28 +218,64 @@ export class ChannelService {
       if (message.channelId !== channelId) {
         return;
       }
-      const result = await adapter.send(message);
       const delivery = this.store.listDeliveries({ channelId, runId: message.runId, limit: 20 })
         .find((candidate) => candidate.outboundMessageId === message.id);
       if (!delivery) {
         return;
       }
-      if (!result.ok) {
-        this.store.updateDelivery(delivery.deliveryId, {
-          status: "retry_scheduled",
-          attemptCount: delivery.attemptCount + 1,
-          nextAttemptAt: this.clock() + 1000,
-          lastError: result.error,
-        });
-        return;
-      }
+      this.store.updateDelivery(delivery.deliveryId, { status: "sending" });
+      const result = await adapter.send(message);
+      this.applyDeliveryResult(delivery, result);
+    });
+    return adapter;
+  }
+
+  private applyDeliveryResult(
+    delivery: ChannelDelivery,
+    result: { ok: boolean; error?: string },
+  ): void {
+    const now = this.clock();
+    if (result.ok) {
       this.store.updateDelivery(delivery.deliveryId, {
         status: "sent",
         attemptCount: delivery.attemptCount + 1,
         lastError: undefined,
       });
-    });
-    return adapter;
+    } else if (delivery.attemptCount + 1 >= MAX_RETRY_ATTEMPTS) {
+      this.store.updateDelivery(delivery.deliveryId, {
+        status: "failed",
+        attemptCount: delivery.attemptCount + 1,
+        lastError: result.error,
+      });
+    } else {
+      const delay = Math.min(1000 * Math.pow(2, delivery.attemptCount), MAX_BACKOFF_MS);
+      this.store.updateDelivery(delivery.deliveryId, {
+        status: "retry_scheduled",
+        attemptCount: delivery.attemptCount + 1,
+        nextAttemptAt: now + delay,
+        lastError: result.error,
+      });
+    }
+  }
+
+  private startRetryLoop(): void {
+    this.retryTimer = setInterval(() => {
+      const now = this.clock();
+      const retryable = this.store.listRetryableDeliveries(now);
+      for (const delivery of retryable) {
+        this.processRetry(delivery);
+      }
+    }, 1000);
+  }
+
+  private async processRetry(delivery: ChannelDelivery): Promise<void> {
+    const adapter = this.adapters.get(delivery.channelId);
+    if (!adapter) {
+      return;
+    }
+    this.store.updateDelivery(delivery.deliveryId, { status: "sending" });
+    const result = await adapter.send(delivery.message);
+    this.applyDeliveryResult(delivery, result);
   }
 
   private createAdapter(config: ChannelConfig): ChannelAdapter {
