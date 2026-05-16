@@ -2,7 +2,7 @@
 
 本文解释 runtime 产生的执行事实如何经过 snapshot、projection、trails 三层加工，最终变成 desktop UI 可消费的七个标签页。它把 `StateSnapshot` → `toFlowRunDetail` / `toSessionTurn` → `synthesizeLocalTrail` → `trailViewModel` → `TrailsTabs` 串成一条完整的消费链。
 
-> **最近更新 (2026-05-16)**：preservedSettledSnapshot、GateProjection 共享层、snapshot 缓存指纹含 turnIndex、Trail 面板信息审计。
+> **最近更新 (2026-05-16)**：Gate 投影路径统一 (toFlowRunDetail→deriveSnapshotGateProjection)、Ledger snapshot 字段从 events 重建 (toolCalls/actions/topology/agentMessages)、preservedSettledSnapshot 竞态修复 (sessionId/runId 守卫)、Attention 派生函数统一 (attentionKindForStatus)、UI 绕过 GateProjection 修复 (isApprovalGateSnapshot)。
 
 ## 阅读地图
 
@@ -447,7 +447,7 @@ Desktop 在 session 切换时保留非 terminal session 的 turn snapshots，确
 
 ### 5.7 collectTrailFindings
 
-15 条诊断规则，从 snapshot + trace 中检测问题：
+16 条诊断规则，从 snapshot + trace 中检测问题：
 
 | 规则 | 检测内容 | 数据来源 |
 | --- | --- | --- |
@@ -478,7 +478,7 @@ Desktop 在 session 切换时保留非 terminal session 的 turn snapshots，确
 | 阶段 | `activeAgents`, `attention`, `status` |
 | 焦点 | `topology.nodes` |
 | 证据数 | `events.length`, `checkpoints.length`, `artifacts.length` |
-| 发现列表 | `collectTrailFindings` 的 15 条规则（见上表） |
+| 发现列表 | `collectTrailFindings` 的 16 条规则（见上表） |
 | 运行策略 | `config.effectiveStrategy` |
 | 主动记忆 | `config.metadata.activeMemory` |
 | 阻塞关卡 | `attention`, `pendingClarifications`, `pendingApprovals`, `actions`, `toolCalls` |
