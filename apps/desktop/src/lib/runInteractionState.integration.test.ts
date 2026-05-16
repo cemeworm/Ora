@@ -257,6 +257,7 @@ describe("runInteractionState cross-surface consistency", () => {
       selectedSessionId: "session-1",
       activeSnapshot: activeSnapshot({
         status: "running",
+        pendingApprovals: ["a1"],
         attention: {
           kind: "needs_approval",
           blocking: true,
@@ -280,6 +281,7 @@ describe("runInteractionState cross-surface consistency", () => {
       selectedSessionId: "session-1",
       activeSnapshot: activeSnapshot({
         status: "running",
+        pendingClarifications: [{ id: "c1", key: "scope", question: "What scope?", nodeId: "n1", nodeLabel: "Review", requestedAt: 1000, options: [] }],
         attention: {
           kind: "needs_clarification",
           blocking: true,

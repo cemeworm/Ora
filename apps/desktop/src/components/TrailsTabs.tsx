@@ -108,6 +108,7 @@ interface TrailsTabsProps {
   onForkAndResumeRun: () => void;
   onReplaySelection: () => void;
   onResumeRun: () => void;
+  onRebuildRun?: () => void;
   onCancelRun: () => void;
 }
 
@@ -130,6 +131,7 @@ export function TrailsTabs({
   onForkAndResumeRun,
   onReplaySelection,
   onResumeRun,
+  onRebuildRun,
   onCancelRun,
 }: TrailsTabsProps) {
   const runtimeClient = getSharedRuntimeClient();
@@ -300,6 +302,7 @@ export function TrailsTabs({
             onFindingClick={jumpToFinding}
             onForkAndResumeRun={onForkAndResumeRun}
             onForkRun={onForkRun}
+            onRebuildRun={onRebuildRun}
             onReplaySelection={onReplaySelection}
             onResumeRun={onResumeRun}
             pendingApprovals={pendingApprovals}
@@ -430,6 +433,7 @@ function TrailOverview({
   onForkRun,
   onReplaySelection,
   onResumeRun,
+  onRebuildRun,
 }: {
   activeSnapshot: OraStateSnapshot;
   activeMemorySummary?: ReturnType<typeof buildActiveMemorySummary>;
@@ -459,6 +463,7 @@ function TrailOverview({
   onForkRun: () => void;
   onReplaySelection: () => void;
   onResumeRun: () => void;
+  onRebuildRun?: () => void;
 }) {
   return (
     <>
@@ -692,6 +697,11 @@ function TrailOverview({
           <Button variant="secondary" size="sm" onClick={onResumeRun} disabled={busyCommand !== undefined || !runInteractionState.canResume} title={busyCommand !== undefined ? "当前命令执行中" : !runInteractionState.canResume ? "当前状态不支持继续" : undefined}>
             继续
           </Button>
+          {onRebuildRun && (
+            <Button variant="secondary" size="sm" onClick={onRebuildRun} disabled={busyCommand !== undefined || !runInteractionState.canRebuild} title={busyCommand !== undefined ? "当前命令执行中" : !runInteractionState.canRebuild ? "当前状态不支持重建" : undefined}>
+              重建
+            </Button>
+          )}
           <Button variant="secondary" size="sm" onClick={onCancelRun} disabled={busyCommand !== undefined || !runInteractionState.canStop} title={busyCommand !== undefined ? "当前命令执行中" : !runInteractionState.canStop ? "当前状态不支持取消" : undefined}>
             取消
           </Button>

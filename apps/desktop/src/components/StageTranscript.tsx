@@ -17,6 +17,7 @@ type TranscriptLayout = NonNullable<TranscriptMetadata["layout"]>;
 type TranscriptRendererId =
   | "stage_list"
   | "two_sided_duel"
+  | "role_lanes"
   | "rubric_matrix"
   | "judge_panel"
   | "evidence_board"
@@ -97,6 +98,7 @@ function renderTranscriptGroup(renderer: TranscriptRendererId, group: StageTrans
     case "comparison_table": return <ComparisonTableRenderer group={group} />;
     case "artifact_gallery": return <ArtifactGalleryRenderer group={group} />;
     case "kanban_pipeline": return <KanbanPipelineRenderer group={group} />;
+    case "role_lanes": return <RoleLanesRenderer group={group} />;
     default: return group.entries.map((message) => (
       <StageTranscriptEntry key={message.id} message={message} />
     ));
@@ -135,6 +137,7 @@ export function StageTranscript({ messages }: { messages: TurnAgentConversationM
 function resolveTranscriptRenderer(group: StageTranscriptGroup): TranscriptRendererId {
   switch (group.layout?.style) {
     case "two_sided_duel":
+    case "role_lanes":
     case "rubric_matrix":
     case "judge_panel":
     case "evidence_board":
@@ -510,6 +513,74 @@ function ArtifactCard({ group, message }: { group: StageTranscriptGroup; message
       <div className="flex-1 px-3 py-3">
         <MarkdownContent content={message.content} className="text-sm leading-7 text-foreground" />
       </div>
+    </section>
+  );
+}
+
+// ── role_lanes ────────────────────────────────────────────────────────
+
+function RoleLanesRenderer({ group }: { group: StageTranscriptGroup }) {
+  const layout = group.layout;
+  const lanes = layout?.lanes;
+  const columns: Array<{ id: string; label: string; entries: TurnAgentConversationMessage[] }> = lanes
+    ? lanes.map((lane) => ({
+        id: lane.id,
+        label: lane.label,
+        entries: group.entries
+          .filter((e) => {
+            const assigned = layout?.laneBySpeaker?.[e.transcript!.speakerId ?? ""] ?? e.transcript!.stageId;
+            return assigned === lane.id;
+          })
+          .sort((a, b) => (a.transcript?.sequence ?? 0) - (b.transcript?.sequence ?? 0)),
+      }))
+    : [...groupByTranscriptField(group.entries, "speakerId").entries()].map(([id, entries]) => ({
+        id,
+        label: entries[0]?.transcript?.speakerLabel ?? id,
+        entries: [...entries].sort((a, b) => (a.transcript?.sequence ?? 0) - (b.transcript?.sequence ?? 0)),
+      }));
+
+  return (
+    <div className="space-y-4 px-2 py-3">
+      {columns.map((col) => (
+        <div key={col.id} className="rounded-xl border border-border bg-muted/15">
+          <div className="flex items-center gap-2 border-b border-border px-4 py-2">
+            <span className="text-xs font-semibold text-foreground">{col.label}</span>
+            <span className="text-xs text-muted-foreground">{col.entries.length}</span>
+          </div>
+          <div className="flex flex-wrap gap-3 p-3">
+            {col.entries.length === 0 ? (
+              <span className="px-2 py-4 text-xs text-muted-foreground">暂无输出</span>
+            ) : (
+              col.entries.map((message) => (
+                <RoleLaneCard key={message.id} group={group} message={message} />
+              ))
+            )}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function RoleLaneCard({ group, message }: { group: StageTranscriptGroup; message: TurnAgentConversationMessage }) {
+  const transcript = message.transcript!;
+  return (
+    <section className={cn(
+      "flex min-w-[18rem] max-w-md flex-col rounded-lg border bg-background p-3 shadow-sm",
+      cardTone(transcript.stance, group.layout),
+    )}>
+      <div className="flex items-center gap-2">
+        <span className={cn(
+          "flex h-5 w-5 shrink-0 items-center justify-center rounded-full border text-[10px] font-semibold",
+          stanceTone(transcript.stance, group.layout),
+        )}>
+          {transcript.sequence + 1}
+        </span>
+        <span className="truncate text-xs font-semibold text-foreground">{transcript.speakerLabel}</span>
+        <span className="truncate text-xs text-muted-foreground">{transcript.stageLabel}</span>
+        <TranscriptStatusIcon status={transcript.status} />
+      </div>
+      <MarkdownContent content={message.content} className="mt-2 text-sm leading-7 text-foreground" />
     </section>
   );
 }
