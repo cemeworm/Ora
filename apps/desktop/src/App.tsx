@@ -114,7 +114,7 @@ function hasVerifiedRealProvider(
   );
   return providers.some(
     (provider) =>
-      provider.type !== "local_smoke" && verifiedProviderIds.has(provider.id),
+      verifiedProviderIds.has(provider.id),
   );
 }
 

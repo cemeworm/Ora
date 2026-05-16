@@ -64,7 +64,7 @@ export interface ProviderCatalogEntry {
   saved: boolean;
 }
 
-export const BUILT_IN_PROVIDER_IDS = new Set(["openai-gpt", "anthropic-claude", "local-smoke"]);
+export const BUILT_IN_PROVIDER_IDS = new Set(["openai-gpt", "anthropic-claude"]);
 
 const MODEL_PROVIDER_SEPARATOR = "--model-";
 const DEEPSEEK_V4_CONTEXT_WINDOW = 1_048_576;
@@ -134,21 +134,6 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     anthropicVersion: "2023-06-01",
     capabilities: ["chat", "tool_use", "reasoning"],
     maxTokens: 8192,
-  },
-  {
-    id: "local-smoke",
-    label: "Local Smoke",
-    description: "Deterministic local smoke provider for offline testing.",
-    type: "local_smoke",
-    group: "official",
-    category: "local",
-    iconLabel: "L",
-    fixedProviderId: "local-smoke",
-    suggestedIdBase: "local-smoke",
-    defaultModelId: "smoke-model",
-    modelSuggestions: ["smoke-model"],
-    capabilities: ["chat"],
-    maxTokens: 1024,
   },
   {
     id: "openai-compatible-generic",

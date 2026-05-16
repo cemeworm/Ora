@@ -74,7 +74,7 @@ export function EvaluationView({
   const [selectedDatasetId, setSelectedDatasetId] = useState("");
   const [selectedProfileId, setSelectedProfileId] = useState<EvalProfile>("outcome");
   const [selectedModes, setSelectedModes] = useState<string[]>(["orchestrator_subagent", "agent_teams"]);
-  const [modelRef, setModelRef] = useState("local/smoke-model");
+  const [modelRef, setModelRef] = useState("");
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
 
@@ -141,7 +141,7 @@ export function EvaluationView({
       const result = await runtimeClient.planEvaluationBlueprintTurn({
         blueprintId,
         message: plannerInput,
-        providerId: activeProvider?.id ?? "local-smoke",
+        providerId: activeProvider?.id ?? "",
         modelRef,
       });
       await refresh();
@@ -177,7 +177,7 @@ export function EvaluationView({
     const result = await runtimeClient.compileEvaluationBlueprint({
       blueprintId: blueprint.id,
       datasetId: selectedDatasetId || blueprint.datasetPlan.datasetId,
-      providerId: activeProvider?.id ?? "local-smoke",
+      providerId: activeProvider?.id ?? "",
       modelRef,
       modeIds: blueprint.recipe === "mode_comparison" ? selectedModes : undefined,
     });
@@ -340,7 +340,7 @@ export function EvaluationView({
           runs={runs}
           baselines={baselines}
           annotations={annotations}
-          activeProvider={activeProvider?.label ?? activeProvider?.id ?? "local-smoke"}
+          activeProvider={activeProvider?.label ?? activeProvider?.id ?? ""}
         />
       </div>
     </div>

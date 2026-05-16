@@ -962,9 +962,7 @@ export function ChatInput({
                               {provider.label}
                             </span>
                             <span className="rounded-full border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                              {provider.type === "local_smoke"
-                                ? "local"
-                                : provider.type}
+                              {provider.type}
                             </span>
                           </div>
                           <div className="mt-1 truncate font-mono text-[11px] text-muted-foreground">

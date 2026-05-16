@@ -72,13 +72,7 @@ export function useProviderSetup({
     state.providerStatuses.find(
       (status) => status.providerId === providerDraft.id,
     ) ??
-    (draftProvider.type === "local_smoke"
-      ? {
-          providerId: providerDraft.id,
-          state: "verified",
-          detail: "Local smoke provider is ready.",
-        }
-      : draftSecretStatus?.hasSecret
+    (draftSecretStatus?.hasSecret
         ? {
             providerId: providerDraft.id,
             state: "key_stored",
@@ -102,7 +96,7 @@ export function useProviderSetup({
     (provider) => provider.id === providerDraft.id,
   );
   const canDeleteProvider = isSavedProvider && !isBuiltInProvider;
-  const needsSecret = providerDraft.type !== "local_smoke";
+  const needsSecret = true;
   const saveDisabled =
     !providerDraft.label.trim() ||
     !providerDraft.modelId.trim() ||
@@ -127,8 +121,7 @@ export function useProviderSetup({
   useEffect(() => {
     if (
       !syncSelectedProvider ||
-      !selectedProvider ||
-      selectedProvider.type === "local_smoke"
+      !selectedProvider
     ) {
       return;
     }

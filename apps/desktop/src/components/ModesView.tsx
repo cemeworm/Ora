@@ -347,7 +347,7 @@ export function ModesView({ runtimeClient }: { runtimeClient: RuntimeClient }) {
         draftBundle: builderBundle,
         providerId: state.selectedProviderId,
         providerConfig: provider,
-        modelRef: provider?.modelId ?? "local/smoke-model",
+        modelRef: provider?.modelId ?? "",
       });
       setBuilderRun(handle);
       const result = await runtimeClient.modeStudioBuilderResult(handle.runId);

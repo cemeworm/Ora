@@ -277,7 +277,7 @@ function createEmptySessionPreview(
       profileIds: definition.profiles.map((profile) => profile.id),
       skillIds: [],
       toolIds: [],
-      modelRef: "local/smoke-model",
+      modelRef: "",
       budget: definition.defaultBudget,
       approvalMode: "high_risk_only",
       permissionMode: "default",

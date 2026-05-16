@@ -812,7 +812,7 @@ export function useRunActions() {
           providerId: state.selectedProviderId,
           providerConfig: provider,
           customAgentId: state.selectedCustomAgentId,
-          modelRef: provider?.modelId ?? "local/smoke-model",
+          modelRef: provider?.modelId ?? "",
           ...(selectedRunSkillIds.length > 0 ? { skillIds: selectedRunSkillIds } : {}),
           toolIds: filteredToolIds,
           permissionMode: state.permissionMode,

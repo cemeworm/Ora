@@ -4,9 +4,6 @@ export function isProviderRunnable(
   provider: OraProviderConfig,
   secretStatuses: readonly OraProviderSecretStatus[],
 ) {
-  if (provider.type === "local_smoke") {
-    return false;
-  }
   if (provider.enabled === false) {
     return false;
   }
@@ -20,5 +17,5 @@ export function runnableProviderOptions(
   const runnable = providers.filter((provider) => isProviderRunnable(provider, secretStatuses));
   return runnable.length > 0
     ? runnable
-    : providers.filter((provider) => provider.enabled !== false && provider.type !== "local_smoke");
+    : providers.filter((provider) => provider.enabled !== false);
 }
