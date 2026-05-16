@@ -224,13 +224,21 @@ describe("runtime completion guards", () => {
 // ---------------------------------------------------------------------------
 describe("finalOutputGuard", () => {
   it("allows complete when response text is non-empty", () => {
-    expect(finalOutputGuard("Here is the final answer.")).toEqual({
+    expect(finalOutputGuard("Here is the final answer with all the details and complete implementation steps.")).toEqual({
       allowComplete: true,
     });
   });
 
-  it("allows complete with minimal non-whitespace text", () => {
-    expect(finalOutputGuard("OK")).toEqual({ allowComplete: true });
+  it("allows complete with text meeting minimum length threshold", () => {
+    expect(finalOutputGuard("This is a valid response that meets the minimum character length requirement.")).toEqual({ allowComplete: true });
+  });
+
+  it("blocks complete when response text is below minimum length", () => {
+    const result = finalOutputGuard("OK");
+    expect(result.allowComplete).toBe(false);
+    if (!result.allowComplete) {
+      expect(result.reason).toBe("final_output_too_short");
+    }
   });
 
   it("blocks complete when response text is empty", () => {
@@ -277,12 +285,11 @@ describe("finalOutputGuard", () => {
 
   it("does not inspect language-specific unfinished phrases", () => {
     // The guard is purely structural: it only checks text length, not content.
-    // Even Chinese "unfinished" phrases like 以下是完整计划 should pass
-    // because they are non-empty text.
-    expect(finalOutputGuard("以下是完整计划。")).toEqual({
+    // Text ≥ 60 chars passes regardless of language.
+    expect(finalOutputGuard("以下是完整的实施计划，包含所有实现细节和测试用例的具体安排。请仔细阅读并按照步骤逐一执行，确保每一步都经过充分验证和确认。")).toEqual({
       allowComplete: true,
     });
-    expect(finalOutputGuard("Here is the complete plan.")).toEqual({
+    expect(finalOutputGuard("Here is the complete plan with all implementation details and test cases. Please review and execute.")).toEqual({
       allowComplete: true,
     });
   });

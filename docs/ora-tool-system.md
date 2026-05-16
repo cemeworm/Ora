@@ -586,7 +586,7 @@ throw new ApprovalInterruptError(action.id);
 - 非终态的 actions/tool calls
 - 活跃的 continuation frames
 
-`finalOutputGuard` 拒绝空内容或过短（<80 chars）的最终输出。
+`finalOutputGuard` 拒绝空内容或过短（<60 chars）的最终输出。
 
 ## 9. 文件操作与变更队列
 

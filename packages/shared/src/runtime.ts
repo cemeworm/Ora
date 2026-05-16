@@ -314,7 +314,7 @@ export const RunConfigSchema = z.object({
   providerId: z.string().min(1).optional(),
   providerConfig: z.lazy(() => ProviderConfigSchema).optional(),
   customAgentId: z.string().min(1).optional(),
-  modelRef: z.string().min(1).default("local/smoke-model"),
+  modelRef: z.string().min(1).optional(),
   budget: ResourceBudgetSchema.optional(),
   completionPolicy: ModeCompletionPolicySchema.optional(),
   effectiveStrategy: EffectiveRunStrategySchema.optional(),
@@ -566,13 +566,13 @@ export type OraEventEnvelope = z.infer<typeof OraEventEnvelopeSchema>;
 export type EventCategory = "delta" | "passive_accumulation" | "durable_projection";
 
 /** Delta events — user-visible incremental text/token output. */
-const DELTA_EVENT_TYPES: ReadonlySet<OraEventType> = new Set([
+export const DELTA_EVENT_TYPES: ReadonlySet<OraEventType> = new Set([
   "message.delta",
   "token.delta",
 ]);
 
 /** Passive accumulation events — status updates with no state change. */
-const PASSIVE_EVENT_TYPES: ReadonlySet<OraEventType> = new Set([
+export const PASSIVE_EVENT_TYPES: ReadonlySet<OraEventType> = new Set([
   "node.updated",
   "context.usage.updated",
   "agent.message",
