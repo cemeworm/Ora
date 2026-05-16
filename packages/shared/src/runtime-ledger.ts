@@ -28,6 +28,7 @@ import {
   type PlanDecisionGate,
   type RunAttention,
   type RunConfig,
+  attentionKindForStatus,
   type RuntimeToolResultLedgerEntry,
   type SessionBranchGroup,
   type SessionContextState,
@@ -543,10 +544,11 @@ export function deriveLedgerRunAttention(run: Pick<RuntimeRunProjection, "runId"
       planDecisionId: planDecision.planDecisionId ?? planDecision.gateId,
     });
   }
-  if (run.status === "queued" || run.status === "running") {
+  const kind = attentionKindForStatus(run.status);
+  if (kind === "running") {
     return RunAttentionSchema.parse({ kind: "running", blocking: false, sourceRunId: run.runId });
   }
-  if (run.status === "interrupted") {
+  if (kind === "paused") {
     if (hasIncompleteResolvedHumanGateResume(run)) {
       return RunAttentionSchema.parse({
         kind: "failed",
@@ -557,11 +559,8 @@ export function deriveLedgerRunAttention(run: Pick<RuntimeRunProjection, "runId"
     }
     return RunAttentionSchema.parse({ kind: "paused", blocking: false, sourceRunId: run.runId, reason: "manual_interrupt" });
   }
-  if (run.status === "failed") {
-    return RunAttentionSchema.parse({ kind: "failed", blocking: false, sourceRunId: run.runId, reason: run.error });
-  }
-  if (run.status === "cancelled") {
-    return RunAttentionSchema.parse({ kind: "cancelled", blocking: false, sourceRunId: run.runId, reason: run.error });
+  if (kind === "failed" || kind === "cancelled") {
+    return RunAttentionSchema.parse({ kind, blocking: false, sourceRunId: run.runId, reason: run.error });
   }
   return RunAttentionSchema.parse({ kind: "idle", blocking: false, sourceRunId: run.runId });
 }
@@ -978,6 +977,144 @@ function toLedgerSessionTurn(run: RuntimeRunProjection): SessionTurn {
   });
 }
 
+function toolCallsFromEvents(events: readonly OraEventEnvelope[], toolResults: readonly unknown[]): unknown[] {
+  const byId = new Map<string, Record<string, unknown>>();
+  for (const event of events) {
+    if (event.type === "tool.called") {
+      const p = event.payload as Record<string, unknown>;
+      const id = p.id as string;
+      if (!id) continue;
+      byId.set(id, {
+        id,
+        runId: event.runId,
+        nodeId: event.nodeId,
+        agentId: event.agentId,
+        toolId: p.toolId,
+        args: p.args ?? {},
+        source: "agent",
+        status: "called",
+        requestedAt: event.createdAt,
+        updatedAt: event.createdAt,
+        providerCallId: p.providerCallId,
+        actionId: p.actionId,
+        planStepId: p.planStepId,
+      });
+    } else if (event.type === "tool.repaired") {
+      const p = event.payload as Record<string, unknown>;
+      const id = p.id as string;
+      const existing = id ? byId.get(id) : undefined;
+      if (existing && id) {
+        existing.status = "repaired";
+        existing.updatedAt = event.createdAt;
+        if (p.repairReason !== undefined) existing.repairReason = p.repairReason;
+      }
+    }
+  }
+  for (const tr of toolResults) {
+    const r = tr as Record<string, unknown>;
+    const callId = (r.callId ?? r.toolCallId) as string | undefined;
+    if (!callId) continue;
+    const existing = byId.get(callId);
+    if (existing) {
+      existing.status = r.status ?? "completed";
+      if (r.result !== undefined) existing.result = r.result;
+      if (r.error) existing.error = r.error;
+    }
+  }
+  return [...byId.values()];
+}
+
+function agentMessagesFromEvents(events: readonly OraEventEnvelope[]): unknown[] {
+  return events
+    .filter((e) => e.type === "agent.message")
+    .map((e) => {
+      const p = e.payload as Record<string, unknown>;
+      return {
+        id: p.id ?? `${e.runId}:${e.seq}`,
+        runId: e.runId,
+        fromAgentId: p.fromAgentId ?? e.agentId,
+        toAgentIds: p.toAgentIds ?? p.toAgentId ? [p.toAgentId] : [],
+        kind: p.kind ?? "info",
+        topic: p.topic,
+        content: p.content,
+        nodeId: e.nodeId,
+        createdAt: e.createdAt,
+        status: "sent",
+      };
+    });
+}
+
+function topologyFromEvents(events: readonly OraEventEnvelope[]): { nodes: unknown[]; edges: unknown[] } {
+  for (let i = events.length - 1; i >= 0; i--) {
+    if (events[i].type === "topology.updated") {
+      const p = events[i].payload as Record<string, unknown>;
+      return {
+        nodes: (p.nodes as unknown[]) ?? [],
+        edges: (p.edges as unknown[]) ?? [],
+      };
+    }
+  }
+  return { nodes: [], edges: [] };
+}
+
+function actionsFromEvents(events: readonly OraEventEnvelope[]): unknown[] {
+  const byId = new Map<string, Record<string, unknown>>();
+  for (const event of events) {
+    if (event.type === "action.updated") {
+      const p = event.payload as Record<string, unknown>;
+      const id = (p.id ?? p.actionId) as string;
+      if (!id) continue;
+      byId.set(id, { ...p, id, runId: event.runId, updatedAt: event.createdAt });
+    }
+  }
+  return [...byId.values()];
+}
+
+function continuationFromEvents(events: readonly OraEventEnvelope[]): { frames: unknown[] } {
+  const frames: unknown[] = [];
+  for (const event of events) {
+    if (event.type === "run.interrupted") {
+      const p = event.payload as Record<string, unknown>;
+      if (p.frame) frames.push(p.frame);
+    }
+  }
+  return { frames };
+}
+
+function profilesFromRunConfig(run: RuntimeRunProjection): unknown[] {
+  const profileIds = run.config.profileIds ?? [];
+  if (profileIds.length === 0) return [];
+  // 从 profile.updated 事件提取完整的 AgentProfile 对象
+  const profileById = new Map<string, Record<string, unknown>>();
+  for (const event of run.events) {
+    if (event.type === "profile.updated") {
+      const p = event.payload as Record<string, unknown>;
+      const profiles = p.profiles as Array<Record<string, unknown>> | undefined;
+      if (profiles) {
+        for (const profile of profiles) {
+          const id = profile.id as string;
+          if (id) profileById.set(id, profile);
+        }
+      }
+    }
+  }
+  return profileIds.map((id: string) => {
+    const found = profileById.get(id);
+    if (found) return found;
+    // 最小有效 AgentProfile 回退
+    return {
+      id,
+      label: id,
+      role: "agent",
+      toolPolicyId: `${run.pattern}.default_policy`,
+      toolIds: [],
+      skillIds: [],
+      memoryNamespaces: [],
+      budget: { maxTokens: 1, maxToolCalls: 0, maxRuntimeMs: 1, maxCostUsd: 0 },
+    };
+  });
+}
+
 function runtimeRunProjectionToSnapshot(run: RuntimeRunProjection, contextState?: SessionContextState): StateSnapshot {
   if (run.finalSnapshot) {
     return reconcileSnapshotRuntimeFields(StateSnapshotSchema.parse({
@@ -997,6 +1134,7 @@ function runtimeRunProjectionToSnapshot(run: RuntimeRunProjection, contextState?
       snapshotSource: "ledger" as const,
     }), run.gates);
   }
+  const events = run.events;
   return StateSnapshotSchema.parse({
     runId: run.runId,
     sessionId: run.sessionId,
@@ -1008,23 +1146,23 @@ function runtimeRunProjectionToSnapshot(run: RuntimeRunProjection, contextState?
     modeId: run.modeId,
     input: run.input,
     config: run.config,
-    topology: { nodes: [], edges: [] },
-    profiles: [],
+    topology: topologyFromEvents(events),
+    profiles: profilesFromRunConfig(run),
     memory: [],
     plan: [],
     planList: [],
     todos: [],
     actions: [],
-    toolCalls: [],
-    continuation: { frames: [] },
+    toolCalls: toolCallsFromEvents(events, run.toolResults),
+    continuation: continuationFromEvents(events),
     planDecisions: run.planDecisions,
     conversation: [],
     contextState,
     toolResults: run.toolResults,
     policyDecisions: [],
     checkpoints: run.checkpoints,
-    events: run.events,
-    agentMessages: [],
+    events,
+    agentMessages: agentMessagesFromEvents(events),
     artifacts: [],
     activeAgents: fallbackActiveAgentsForRun(run),
     queueSummary: { mode: "dag", pending: 0, inProgress: run.status === "running" ? 1 : 0, completed: run.status === "succeeded" ? 1 : 0, topics: [] },
@@ -1060,328 +1198,251 @@ function fallbackActiveAgentsForRun(run: RuntimeRunProjection): string[] {
  * 2. 消费者从 toolResult ledger entries 读取工具结果
  * 3. 不再依赖 events 数组中的 ledger-projected 事件
  *
- * 消费者清单 (需逐一迁移):
- * - apps/desktop/src/lib/viewModel.ts:921-922 (clarification/approval resolved)
- * - apps/desktop/src/lib/trailViewModel.ts:1669,1673
- * - apps/desktop/src/lib/state.tsx:1125
- * - apps/desktop/src/lib/runtimeClient.ts:4893
- * - apps/runtime/src/run-store.ts (withResumeResolutionEvents)
+ * 消费者迁移评估 (2026-05-16):
+ * ✗ 需迁移 - viewModel.ts:921-922 (beatGroup: clarification.resolved/approval.resolved → group "approval")
+ *   → 可改用 snapshot.actions/pendingClarifications 判断，或为 LEDGER 来源事件合成 Beat
+ * ✗ 需迁移 - trailViewModel.ts:1669,1673 (timelineLabel: clarification.resolved/approval.resolved → 中文标签)
+ *   → 同上，可改用 gate projection 判断
+ * ✓ 无需迁移 - state.tsx:1125 (mergeStreamClarificationUpdates 只处理 stream.events，不读 snapshot.events)
+ * ✓ 无需迁移 - runtimeClient.ts:4893 (模拟客户端，自行创建事件，不经过 reconcile)
+ * ✓ 无需迁移 - run-store.ts (withResumeResolutionEvents 是事件生产者，平行于 reconcile)
  *
- * 迁移完成后删除此函数。
+ * 性能优化 (已实施): gates.length === 0 时 early-exit (O(1) 替代 O(events × gates))
  */
 function reconcileSnapshotRuntimeFields(snapshot: StateSnapshot, gates: readonly RuntimeGateProjection[]): StateSnapshot {
+  if (gates.length === 0) {
+    return snapshot;
+  }
+  const step1 = replayFromEvents(snapshot);
+  const step2 = projectGateResolutionEvents(step1, gates, snapshot);
+  const step3 = reconcilePostGateApprovals(step2, gates, snapshot);
+  return StateSnapshotSchema.parse({
+    ...snapshot,
+    actions: step3.actions,
+    toolCalls: step3.toolCalls,
+    toolResults: step3.toolResults,
+    conversation: step3.conversation,
+    continuation: step3.continuation,
+    artifacts: step3.artifacts,
+    events: step3.events,
+  });
+}
+
+/** -- reconcile helpers ------------------------------------------------- */
+
+interface ReconciledState {
+  actions: StateSnapshot["actions"];
+  toolCalls: StateSnapshot["toolCalls"];
+  events: StateSnapshot["events"];
+  toolResults: StateSnapshot["toolResults"];
+  conversation: StateSnapshot["conversation"];
+  continuation: StateSnapshot["continuation"];
+  artifacts: StateSnapshot["artifacts"];
+}
+
+function replayFromEvents(snapshot: StateSnapshot): ReconciledState {
   let actions = snapshot.actions;
   let toolCalls = snapshot.toolCalls;
-  let events = snapshot.events;
-  let toolResults = snapshot.toolResults;
-  let conversation = snapshot.conversation;
-  let continuation = snapshot.continuation;
   let artifacts = snapshot.artifacts;
 
   for (const event of snapshot.events) {
-    if (!event.payload || typeof event.payload !== "object") {
-      continue;
-    }
+    if (!event.payload || typeof event.payload !== "object") continue;
     const payload = event.payload as Record<string, unknown>;
     if (event.type === "action.updated" && payload.record && typeof payload.record === "object") {
       const record = payload.record as StateSnapshot["actions"][number];
-      if (typeof record.id !== "string") {
-        continue;
-      }
+      if (typeof record.id !== "string") continue;
       actions = actions.map((action) => action.id === record.id ? record : action);
       toolCalls = toolCalls.map((call) =>
         call.actionId === record.id
-          ? {
-              ...call,
-              status: record.status === "approval_required"
-                ? "approval_required"
-                : record.status === "running"
-                  ? "running"
-                  : record.status === "succeeded"
-                    ? "succeeded"
-                    : record.status === "failed"
-                      ? "failed"
-                      : call.status,
-              updatedAt: event.createdAt,
-            }
+          ? { ...call, status: mapActionStatus(record.status, call.status), updatedAt: event.createdAt }
           : call
       );
     }
     if (event.type === "tool.called") {
       const toolCallId = typeof payload.toolCallId === "string" ? payload.toolCallId : undefined;
-      const status = payload.status;
-      if (!toolCallId || (status !== "succeeded" && status !== "failed")) {
-        continue;
-      }
+      if (!toolCallId || (payload.status !== "succeeded" && payload.status !== "failed")) continue;
+      const resolvedStatus = payload.status === "succeeded" ? "succeeded" as const : "failed" as const;
       const resultPreview = payload.resultPreview && typeof payload.resultPreview === "object"
-        ? RuntimeToolResultPreviewSchema.safeParse(payload.resultPreview).data
-        : undefined;
+        ? RuntimeToolResultPreviewSchema.safeParse(payload.resultPreview).data : undefined;
       toolCalls = toolCalls.map((call) =>
         call.id === toolCallId
-          ? {
-              ...call,
-              status,
-              result: {
-                status,
-                output: payload.output,
+          ? { ...call, status: resolvedStatus,
+              result: { status: resolvedStatus, output: payload.output,
                 error: typeof payload.error === "string" ? payload.error : undefined,
                 content: payload.output === undefined ? undefined : JSON.stringify(payload.output),
-                resultPreview,
-                createdAt: event.createdAt,
-                updatedAt: event.createdAt,
-              },
-              updatedAt: event.createdAt,
-            }
+                resultPreview, createdAt: event.createdAt, updatedAt: event.createdAt },
+              updatedAt: event.createdAt }
           : call
       );
     }
-    if ((event.type === "artifact.exported" || event.type === "artifact.degraded") && payload.artifact && typeof payload.artifact === "object") {
+    if ((event.type === "artifact.exported" || event.type === "artifact.degraded")
+        && payload.artifact && typeof payload.artifact === "object") {
       artifacts = upsertById(artifacts, payload.artifact as StateSnapshot["artifacts"][number]);
     }
   }
 
-  let nextSeq = events.reduce((max, event) => Math.max(max, event.seq), -1) + 1;
-  const appendProjectedEvent = (type: OraEventEnvelope["type"], payload: unknown, createdAt: number): void => {
-    events = [
-      ...events,
-      OraEventEnvelopeSchema.parse({
-        id: `${snapshot.runId}:ledger-projected-${nextSeq}`,
-        runId: snapshot.runId,
-        seq: nextSeq,
-        type,
-        createdAt,
-        pattern: snapshot.pattern,
-        payload,
-      }),
-    ];
+  return { actions, toolCalls, artifacts,
+    events: snapshot.events, toolResults: snapshot.toolResults,
+    conversation: snapshot.conversation, continuation: snapshot.continuation };
+}
+
+function mapActionStatus(status: string, fallback: string): StateSnapshot["toolCalls"][number]["status"] {
+  if (status === "approval_required") return "approval_required";
+  if (status === "running") return "running";
+  if (status === "succeeded") return "succeeded";
+  if (status === "failed") return "failed";
+  return fallback as StateSnapshot["toolCalls"][number]["status"];
+}
+
+/** 从 gate 决议反向投影事件。标记为 ledger-projected 来源。
+    理想设计应在写入 gate.resolved entry 时包含这些事件。 */
+function projectGateResolutionEvents(
+  state: ReconciledState, gates: readonly RuntimeGateProjection[], snapshot: StateSnapshot,
+): ReconciledState {
+  let events = state.events;
+  let nextSeq = events.reduce((max, e) => Math.max(max, e.seq), -1) + 1;
+  const append = (type: OraEventEnvelope["type"], payload: unknown, createdAt: number) => {
+    events = [...events, OraEventEnvelopeSchema.parse({
+      id: `${snapshot.runId}:ledger-projected-${nextSeq}`,
+      runId: snapshot.runId, seq: nextSeq, type, createdAt, pattern: snapshot.pattern, payload,
+    })];
     nextSeq += 1;
   };
 
   for (const gate of gates) {
-    if (gate.status !== "resolved") {
-      continue;
-    }
+    if (gate.status !== "resolved") continue;
     if (gate.kind === "clarification") {
-      for (const clarificationId of gate.pendingClarificationIds) {
-        const exists = events.some((event) =>
-          event.type === "clarification.resolved" &&
-          event.payload &&
-          typeof event.payload === "object" &&
-          (event.payload as Record<string, unknown>).clarificationId === clarificationId
-        );
-        if (!exists) {
-          appendProjectedEvent("clarification.resolved", {
-            clarificationId,
-            mode: "ledger_projection",
-          }, gate.resolvedAt ?? gate.openedAt);
+      for (const cid of gate.pendingClarificationIds) {
+        if (!events.some((e) => e.type === "clarification.resolved"
+            && (e.payload as Record<string, unknown>)?.clarificationId === cid)) {
+          append("clarification.resolved", { clarificationId: cid, mode: "ledger_projection" },
+            gate.resolvedAt ?? gate.openedAt);
         }
       }
     }
     if (gate.kind === "approval") {
-      for (const actionId of gate.pendingActionIds) {
-        const exists = events.some((event) =>
-          event.type === "approval.resolved" &&
-          event.payload &&
-          typeof event.payload === "object" &&
-          (event.payload as Record<string, unknown>).actionId === actionId
-        );
-        if (!exists) {
-          appendProjectedEvent("approval.resolved", {
-            actionId,
-            decision: "approved",
-            mode: "ledger_projection",
-          }, gate.resolvedAt ?? gate.openedAt);
+      for (const aid of gate.pendingActionIds) {
+        if (!events.some((e) => e.type === "approval.resolved"
+            && (e.payload as Record<string, unknown>)?.actionId === aid)) {
+          append("approval.resolved", { actionId: aid, decision: "approved", mode: "ledger_projection" },
+            gate.resolvedAt ?? gate.openedAt);
         }
       }
     }
   }
 
-  const resolvedApprovalActionIds = new Set(
-    gates
-      .filter((gate) => gate.status === "resolved" && gate.kind === "approval")
-      .flatMap((gate) => gate.pendingActionIds),
+  return { ...state, events };
+}
+
+function reconcilePostGateApprovals(
+  state: ReconciledState, gates: readonly RuntimeGateProjection[], snapshot: StateSnapshot,
+): ReconciledState {
+  let { actions, toolCalls, events } = state;
+  let { toolResults, conversation, continuation } = state;
+
+  const resolvedIds = new Set(
+    gates.filter((g) => g.status === "resolved" && g.kind === "approval")
+      .flatMap((g) => g.pendingActionIds),
   );
-  if (snapshot.status === "succeeded" && resolvedApprovalActionIds.size > 0) {
-    actions = actions.map((action) =>
-      resolvedApprovalActionIds.has(action.id) &&
-      (action.status === "approval_required" || action.status === "approved" || action.status === "running")
-        ? { ...action, status: "succeeded" as const }
-        : action
-    );
-    toolCalls = toolCalls.map((call) =>
-      call.actionId && resolvedApprovalActionIds.has(call.actionId) &&
-      (call.status === "approval_required" || call.status === "approved" || call.status === "running")
-        ? { ...call, status: "succeeded" as const, updatedAt: snapshot.updatedAt }
-        : call
-    );
-    continuation = {
-      ...continuation,
-      frames: continuation.frames.map((frame) =>
-        frame.reason === "approval_required" &&
-        frame.pendingActionIds.some((actionId) => resolvedApprovalActionIds.has(actionId))
-          ? {
-              ...frame,
-              status: "completed" as const,
-              pendingActionIds: [],
-              pendingToolCallIds: [],
-              approvedActionIds: [...new Set([...frame.approvedActionIds, ...resolvedApprovalActionIds])],
-              updatedAt: snapshot.updatedAt,
-            }
-          : frame
-      ),
+  if (resolvedIds.size === 0) return state;
+
+  const appendEvent = (type: OraEventEnvelope["type"], payload: unknown, createdAt: number) => {
+    const maxSeq = events.reduce((m, e) => Math.max(m, e.seq), -1);
+    events = [...events, OraEventEnvelopeSchema.parse({
+      id: `${snapshot.runId}:ledger-projected-${maxSeq + 1}`,
+      runId: snapshot.runId, seq: maxSeq + 1, type, createdAt, pattern: snapshot.pattern, payload,
+    })];
+  };
+
+  if (snapshot.status === "succeeded") {
+    actions = actions.map((a) =>
+      resolvedIds.has(a.id) && (a.status === "approval_required" || a.status === "approved" || a.status === "running")
+        ? { ...a, status: "succeeded" as const } : a);
+    toolCalls = toolCalls.map((c) =>
+      c.actionId && resolvedIds.has(c.actionId) && (c.status === "approval_required" || c.status === "approved" || c.status === "running")
+        ? { ...c, status: "succeeded" as const, updatedAt: snapshot.updatedAt } : c);
+    continuation = { ...continuation,
+      frames: continuation.frames.map((f) =>
+        f.reason === "approval_required" && f.pendingActionIds.some((id) => resolvedIds.has(id))
+          ? { ...f, status: "completed" as const, pendingActionIds: [], pendingToolCallIds: [],
+              approvedActionIds: [...new Set([...f.approvedActionIds, ...resolvedIds])], updatedAt: snapshot.updatedAt }
+          : f),
     };
   }
+
   for (const call of toolCalls) {
-    if (call.status !== "succeeded" && call.status !== "failed") {
-      continue;
-    }
-    if (!call.actionId || !resolvedApprovalActionIds.has(call.actionId)) {
-      continue;
-    }
-    const exists = events.some((event) =>
-      event.type === "tool.called" &&
-      event.payload &&
-      typeof event.payload === "object" &&
-      (event.payload as Record<string, unknown>).toolCallId === call.id
-    );
-    if (!exists) {
-      appendProjectedEvent("tool.called", {
-        toolCallId: call.id,
-        actionId: call.actionId,
-        toolId: call.toolId,
-        source: "ledger_projection",
-        status: call.status,
-        input: call.args,
-        output: call.result?.output,
-        error: call.result?.error,
-        resultPreview: call.result?.resultPreview,
-        cacheHit: false,
+    if (call.status !== "succeeded" && call.status !== "failed") continue;
+    if (!call.actionId || !resolvedIds.has(call.actionId)) continue;
+    if (!events.some((e) => e.type === "tool.called"
+        && (e.payload as Record<string, unknown>)?.toolCallId === call.id)) {
+      appendEvent("tool.called", {
+        toolCallId: call.id, actionId: call.actionId, toolId: call.toolId,
+        source: "ledger_projection", status: call.status, input: call.args,
+        output: call.result?.output, error: call.result?.error,
+        resultPreview: call.result?.resultPreview, cacheHit: false,
       }, call.updatedAt);
     }
   }
   for (const action of actions) {
-    if ((action.status !== "succeeded" && action.status !== "failed") || !resolvedApprovalActionIds.has(action.id)) {
-      continue;
-    }
-    const exists = events.some((event) =>
-      event.type === "tool.called" &&
-      event.payload &&
-      typeof event.payload === "object" &&
-      (event.payload as Record<string, unknown>).actionId === action.id
-    );
-    if (exists) {
-      continue;
-    }
-    const call = toolCalls.find((candidate) => candidate.actionId === action.id);
-    appendProjectedEvent("tool.called", {
-      toolCallId: call?.id,
-      actionId: action.id,
-      toolId: action.type,
-      source: "ledger_projection",
-      status: action.status,
-      input: action.input,
-      output: action.output,
-      error: action.error,
-      cacheHit: false,
+    if ((action.status !== "succeeded" && action.status !== "failed") || !resolvedIds.has(action.id)) continue;
+    if (events.some((e) => e.type === "tool.called"
+        && (e.payload as Record<string, unknown>)?.actionId === action.id)) continue;
+    const call = toolCalls.find((c) => c.actionId === action.id);
+    appendEvent("tool.called", {
+      toolCallId: call?.id, actionId: action.id, toolId: action.type,
+      source: "ledger_projection", status: action.status, input: action.input,
+      output: action.output, error: action.error, cacheHit: false,
     }, call?.updatedAt ?? snapshot.updatedAt);
-    if (call && !toolResults.some((result) => result.resultToolCallId === call.id)) {
-      toolResults = [
-        ...toolResults,
-        {
-          key: `${action.type}:${JSON.stringify(action.input ?? {})}`,
-          toolId: action.type,
-          argsDigest: JSON.stringify(action.input ?? {}),
-          resultToolCallId: call.id,
-          status: action.status,
-          output: action.output,
-          error: action.error,
-          resultPreview: call.result?.resultPreview,
-          createdAt: call.updatedAt,
-          updatedAt: call.updatedAt,
-        },
-      ];
+    if (call && !toolResults.some((r) => r.resultToolCallId === call.id)) {
+      toolResults = [...toolResults, {
+        key: `${action.type}:${JSON.stringify(action.input ?? {})}`, toolId: action.type,
+        argsDigest: JSON.stringify(action.input ?? {}), resultToolCallId: call.id,
+        status: action.status, output: action.output, error: action.error,
+        resultPreview: call.result?.resultPreview, createdAt: call.updatedAt, updatedAt: call.updatedAt,
+      }];
     }
   }
 
-  const preferredResolvedCallIds = new Set<string>();
-  for (const actionId of resolvedApprovalActionIds) {
-    const preferred = [...toolCalls]
-      .reverse()
-      .find((call) => call.actionId === actionId && (call.status === "succeeded" || call.status === "failed"))
-      ?? [...toolCalls].reverse().find((call) => call.actionId === actionId);
-    if (preferred) {
-      preferredResolvedCallIds.add(preferred.id);
-    }
+  const preferredCallIds = new Set<string>();
+  for (const aid of resolvedIds) {
+    const p = [...toolCalls].reverse().find((c) => c.actionId === aid && (c.status === "succeeded" || c.status === "failed"))
+      ?? [...toolCalls].reverse().find((c) => c.actionId === aid);
+    if (p) preferredCallIds.add(p.id);
   }
-  toolCalls = toolCalls.filter((call) => !call.actionId || !resolvedApprovalActionIds.has(call.actionId) || preferredResolvedCallIds.has(call.id));
-  const replayedApprovedToolKeys = new Set<string>();
-  toolCalls = [...toolCalls].reverse().filter((call) => {
-    if (call.status !== "succeeded" || !isDeterministicApprovedTool(call.toolId)) {
-      return true;
-    }
-    const action = call.actionId ? actions.find((candidate) => candidate.id === call.actionId) : undefined;
-    if (!call.actionId || !action || !resolvedApprovalActionIds.has(call.actionId)) {
-      return true;
-    }
-    const key = `${call.toolId}:${JSON.stringify(call.args ?? {})}`;
-    if (replayedApprovedToolKeys.has(key)) {
-      return false;
-    }
-    replayedApprovedToolKeys.add(key);
+  toolCalls = toolCalls.filter((c) => !c.actionId || !resolvedIds.has(c.actionId) || preferredCallIds.has(c.id));
+
+  const seen = new Set<string>();
+  toolCalls = [...toolCalls].reverse().filter((c) => {
+    if (c.status !== "succeeded" || !isDeterministicApprovedTool(c.toolId)) return true;
+    const a = c.actionId ? actions.find((ca) => ca.id === c.actionId) : undefined;
+    if (!c.actionId || !a || !resolvedIds.has(c.actionId)) return true;
+    const k = `${c.toolId}:${JSON.stringify(c.args ?? {})}`;
+    if (seen.has(k)) return false;
+    seen.add(k);
     return true;
   }).reverse();
+
   for (const call of toolCalls) {
-    if (!call.actionId || !resolvedApprovalActionIds.has(call.actionId) || (call.status !== "succeeded" && call.status !== "failed")) {
-      continue;
+    if (!call.actionId || !resolvedIds.has(call.actionId) || (call.status !== "succeeded" && call.status !== "failed")) continue;
+    if (!toolResults.some((r) => r.resultToolCallId === call.id && r.status === call.status)) {
+      toolResults = [...toolResults, {
+        key: `${call.toolId}:${JSON.stringify(call.args ?? {})}`, toolId: call.toolId,
+        argsDigest: JSON.stringify(call.args ?? {}), resultToolCallId: call.id,
+        status: call.status, output: call.result?.output, error: call.result?.error,
+        createdAt: call.updatedAt, updatedAt: call.updatedAt,
+      }];
     }
-    if (toolResults.some((result) => result.resultToolCallId === call.id && result.status === call.status)) {
-      continue;
-    }
-    toolResults = [
-      ...toolResults,
-      {
-        key: `${call.toolId}:${JSON.stringify(call.args ?? {})}`,
-        toolId: call.toolId,
-        argsDigest: JSON.stringify(call.args ?? {}),
-        resultToolCallId: call.id,
-        status: call.status,
-        output: call.result?.output,
-        error: call.result?.error,
-        createdAt: call.updatedAt,
-        updatedAt: call.updatedAt,
-      },
-    ];
-    if (!conversation.some((entry) =>
-      entry.role === "tool" &&
-      entry.toolCallId === call.id &&
-      entry.toolId === call.toolId &&
-      entry.status === call.status
-    )) {
-      conversation = [
-        ...conversation,
-        {
-          role: "tool",
-          toolCallId: call.id,
-          providerCallId: call.providerCallId,
-          toolId: call.toolId,
-          content: call.result?.content ?? JSON.stringify(call.result?.output ?? ""),
-          status: call.status,
-          createdAt: call.updatedAt,
-        },
-      ];
+    if (!conversation.some((e) => e.role === "tool" && e.toolCallId === call.id
+        && e.toolId === call.toolId && e.status === call.status)) {
+      conversation = [...conversation, {
+        role: "tool", toolCallId: call.id, providerCallId: call.providerCallId,
+        toolId: call.toolId, content: call.result?.content ?? JSON.stringify(call.result?.output ?? ""),
+        status: call.status, createdAt: call.updatedAt,
+      }];
     }
   }
 
-  return StateSnapshotSchema.parse({
-    ...snapshot,
-    actions,
-    toolCalls,
-    toolResults,
-    conversation,
-    continuation,
-    artifacts,
-    events,
-  });
+  return { actions, toolCalls, events, toolResults, conversation, continuation, artifacts: state.artifacts };
 }
 
 function upsertById<T extends { id: string }>(items: readonly T[], next: T): T[] {

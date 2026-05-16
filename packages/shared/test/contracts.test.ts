@@ -629,7 +629,7 @@ describe("Ora shared contracts", () => {
 
     expect(config.pattern).toBe("orchestrator_subagent");
     expect(config.modeId).toBeUndefined();
-    expect(config.modelRef).toBe("local/smoke-model");
+    expect(config.modelRef).toBeUndefined();
     expect(config.providerId).toBeUndefined();
     expect(config.providerConfig).toBeUndefined();
     expect(config.customAgentId).toBeUndefined();
@@ -650,7 +650,7 @@ describe("Ora shared contracts", () => {
     expect(sharedStateResearch.promptVariables).toEqual(["prompt", "sharedBoard"]);
     expect(messagePublish.supportsPromptOverride).toBe(false);
     expect(messagePublish.display.story).toContain("initial event");
-    expect(messagePublish.promptVariables).toEqual([]);
+    expect(messagePublish.promptVariables).toEqual(["prompt"]);
 
     const missing = getModeNodeRuntimeTemplateDefinition("message_bus", "unknown_stage");
     expect(missing.display.story).toContain("No runtime template metadata");
@@ -3410,8 +3410,6 @@ describe("DEFAULT_PROVIDERS", () => {
     expect(DEFAULT_PROVIDERS.find((provider) => provider.id === "openai-gpt")).toMatchObject({
       enabled: false,
     });
-    expect(DEFAULT_PROVIDERS.find((provider) => provider.id === "local-smoke")).toMatchObject({
-      enabled: true,
-    });
+    expect(DEFAULT_PROVIDERS.find((provider) => provider.id === "local-smoke")).toBeUndefined();
   });
 });
