@@ -186,9 +186,6 @@ export async function createModeStudioBuilderResult(
   config: RunConfig,
   deps: ModeStudioStoreDeps,
 ): Promise<ModeStudioBuilderRunResult> {
-  if (config.providerId === "local-smoke" || config.modelRef === "local/smoke-model") {
-    return { draftBundle: buildModeStudioDraft(params, deps), issues: [] };
-  }
   try {
     const firstResponse = await invokeRunProvider(config, {
       system: modeStudioBuilderSystemPrompt(),

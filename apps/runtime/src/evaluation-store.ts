@@ -2209,8 +2209,8 @@ function compileEvaluationBlueprint(
     throw new Error(`Evaluation blueprint ${blueprint.id} is missing a dataset.`);
   }
 
-  const providerId = overrides.providerId ?? blueprint.runPlan.providerId ?? "local-smoke";
-  const modelRef = overrides.modelRef ?? blueprint.runPlan.modelRef ?? "local/smoke-model";
+  const providerId = overrides.providerId ?? blueprint.runPlan.providerId ?? "";
+  const modelRef = overrides.modelRef ?? blueprint.runPlan.modelRef ?? "";
   const evaluatorPlan = normalizeEvaluatorPlan(blueprint.evaluatorPlan);
   const baseMetadata = {
     blueprintId: blueprint.id,
@@ -2364,8 +2364,8 @@ function draftEvaluationBlueprint(params: {
       },
       runPlan: {
         profileId: "outcome",
-        providerId: params.providerId ?? "local-smoke",
-        modelRef: params.modelRef ?? "local/smoke-model",
+        providerId: params.providerId ?? "",
+        modelRef: params.modelRef ?? "",
         repetitions: 1,
         concurrency: 1,
         routerOnly: true,
@@ -2409,8 +2409,8 @@ function draftEvaluationBlueprint(params: {
     },
     runPlan: {
       profileId: "outcome",
-      providerId: params.providerId ?? "local-smoke",
-      modelRef: params.modelRef ?? "local/smoke-model",
+      providerId: params.providerId ?? "",
+      modelRef: params.modelRef ?? "",
       repetitions: 1,
       concurrency: 1,
       routerOnly: false,

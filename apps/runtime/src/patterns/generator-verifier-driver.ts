@@ -25,7 +25,7 @@ export async function executeGeneratorVerifier(input: ModeExecutionInput): Promi
   };
   let previousMissingRequirements: string[] = [];
   const metadataProviderId = typeof config.metadata.providerId === "string" ? config.metadata.providerId : undefined;
-  const selectedProviderId = config.providerConfig?.id ?? config.providerId ?? metadataProviderId ?? "local-smoke";
+  const selectedProviderId = config.providerConfig?.id ?? config.providerId ?? metadataProviderId ?? "";
   const generatorId = ownerForTemplate(nodes, "draft", "generator");
   const verifierId = ownerForTemplate(nodes, "verify", "verifier");
 

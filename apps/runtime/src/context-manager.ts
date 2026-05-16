@@ -31,10 +31,7 @@ export function resolveRunProviderConfig(config: RunConfig): ProviderConfig | un
       ]
     : DEFAULT_PROVIDERS;
   return providers.find((provider) => provider.enabled !== false && provider.id === providerId)
-    ?? providers.find((provider) => provider.enabled !== false && provider.modelId === providerId)
-    ?? (providerId === "local/smoke-model"
-      ? providers.find((provider) => provider.enabled !== false && provider.type === "local_smoke")
-      : undefined);
+    ?? providers.find((provider) => provider.enabled !== false && provider.modelId === providerId);
 }
 
 export function resolvedContextWindow(provider: ProviderConfig | undefined): number | undefined {

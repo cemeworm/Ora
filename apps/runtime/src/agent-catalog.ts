@@ -221,7 +221,7 @@ export function buildAgentCatalog(params: {
 }
 
 function explicitSystemAgentModelRef(modelRef: string | undefined): string | undefined {
-  return modelRef === "local/smoke-model" ? undefined : modelRef;
+  return modelRef || undefined;
 }
 
 function rootAgentCatalogItem(systemAgentOverrideStore: SystemAgentOverrideFileStore): SystemAgentCatalogItem {

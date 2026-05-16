@@ -58,7 +58,7 @@ export function createModeStudioBuilderConfig(
     modeId: modeSpec.id,
     providerId: params.providerId,
     providerConfig: params.providerConfig,
-    modelRef: params.modelRef ?? params.providerConfig?.modelId ?? "local/smoke-model",
+    modelRef: params.modelRef ?? params.providerConfig?.modelId ?? "",
     approvalMode: "auto",
     metadata: {
       modeStudioBuilder: true,

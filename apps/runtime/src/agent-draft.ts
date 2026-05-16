@@ -51,7 +51,7 @@ export async function generateCustomAgentDraft(
     modeId: SINGLE_AGENT_MODE_ID,
     providerId: parsed.providerId,
     providerConfig: parsed.providerConfig,
-    modelRef: parsed.modelRef ?? parsed.providerConfig?.modelId ?? "local/smoke-model",
+    modelRef: parsed.modelRef ?? parsed.providerConfig?.modelId ?? "",
     deterministicSeed: "agent-draft-generation",
   });
   const request = {
