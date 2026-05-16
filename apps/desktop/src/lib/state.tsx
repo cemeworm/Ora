@@ -263,6 +263,7 @@ export interface WorkbenchState {
   sessionLocalFileAttachments: Record<string, ComposerLocalFileAttachment[]>;
   runLifecycle: RunLifecycle;
   preservedSettledSnapshot: OraStateSnapshot | undefined;
+  preservedSettledSessionId: string | undefined;
   liveMessageDeltaBuffer: LiveMessageDeltaBuffer;
   pendingPlanDecisionResolution: PendingPlanDecisionResolution | undefined;
   isLoading: boolean;
@@ -435,7 +436,7 @@ export const initialWorkbenchState: WorkbenchState = {
   skillRegistry: undefined,
   providerSecretStatuses: [],
   providerStatuses: [],
-  selectedProviderId: "local-smoke",
+  selectedProviderId: "",
   selectedCustomAgentId: undefined,
   bridgeStatus: {
     mode: "initializing",
@@ -455,6 +456,7 @@ export const initialWorkbenchState: WorkbenchState = {
   sessionLocalFileAttachments: {},
   runLifecycle: { stage: "idle" },
   preservedSettledSnapshot: undefined,
+  preservedSettledSessionId: undefined,
   liveMessageDeltaBuffer: {},
   pendingPlanDecisionResolution: undefined,
   isLoading: false,
@@ -1004,7 +1006,7 @@ function normalizeStateSnapshot(snapshot: OraStateSnapshot): OraStateSnapshot {
 function isFinalRunStatus(
   status: OraStateSnapshot["status"] | undefined,
 ): status is OraStateSnapshot["status"] {
-  return status === "succeeded" || status === "failed" || status === "cancelled";
+  return status === "succeeded" || status === "failed" || status === "cancelled" || status === "interrupted";
 }
 
 export function mergeStateSnapshot(
@@ -1771,7 +1773,7 @@ function normalizeDesktopSnapshot(snapshot: OraStateSnapshot): OraStateSnapshot 
   if (
     snapshot.status === "queued" ||
     snapshot.status === "running" ||
-    snapshot.attention?.kind !== "running"
+    (snapshot.attention != null && snapshot.attention.kind !== "running")
   ) {
     return snapshot;
   }
@@ -2193,7 +2195,7 @@ function createPendingRunSnapshot(
       modeSelection: "manual",
       profileIds: [],
       providerId: "",
-      modelRef: "local/smoke-model",
+      modelRef: "",
       approvalMode: "high_risk_only",
       permissionMode: "default",
       patternOptions: {},
@@ -2849,7 +2851,7 @@ export function workbenchReducer(
           (provider) => provider.id !== action.providerId,
         ) ?? [];
       const defaultProviderId =
-        state.providerRegistry?.defaultProviderId ?? "local-smoke";
+        state.providerRegistry?.defaultProviderId ?? "";
       const providerRegistry = state.providerRegistry
         ? { providers, defaultProviderId }
         : state.providerRegistry;
@@ -3121,6 +3123,9 @@ export function workbenchReducer(
         action.stream.events.every(e =>
           e.type === "node.updated" || e.type === "context.usage.updated");
       if (isPassiveOnlyStream) {
+        if (currentActiveSnapshot && isSettledRunStatus(currentActiveSnapshot.status)) {
+          return state;
+        }
         const selectedBeatId = action.stream.events.at(-1)?.id ?? state.selectedBeatId;
         if (selectedBeatId === state.selectedBeatId && state.isLoading) {
           return state;
@@ -3212,9 +3217,21 @@ export function workbenchReducer(
         ...state,
         sessions,
         activeSessionDetail,
-        preservedSettledSnapshot: streamBelongsToActiveTurn
-          ? undefined
-          : state.preservedSettledSnapshot,
+        preservedSettledSnapshot:
+          streamBelongsToActiveTurn &&
+          streamSnapshot &&
+          // 仅当 stream 属于同一 session 且不同于被保留的 run 时才清除
+          (!state.preservedSettledSessionId || streamSessionId === state.preservedSettledSessionId) &&
+          streamSnapshot.runId !== state.preservedSettledSnapshot?.runId
+            ? undefined
+            : state.preservedSettledSnapshot,
+        preservedSettledSessionId:
+          streamBelongsToActiveTurn &&
+          streamSnapshot &&
+          (!state.preservedSettledSessionId || streamSessionId === state.preservedSettledSessionId) &&
+          streamSnapshot.runId !== state.preservedSettledSnapshot?.runId
+            ? undefined
+            : state.preservedSettledSessionId,
         sessionDetailsById: (() => {
           let next = activeSessionDetail
             ? cacheSessionDetail(state.sessionDetailsById, activeSessionDetail)
@@ -3403,6 +3420,9 @@ export function workbenchReducer(
         preservedSettledSnapshot: currentSnapshot && isSettledRunStatus(currentSnapshot.status)
           ? currentSnapshot
           : state.preservedSettledSnapshot,
+        preservedSettledSessionId: currentSnapshot && isSettledRunStatus(currentSnapshot.status)
+          ? currentSnapshot.sessionId ?? state.selectedSessionId
+          : state.preservedSettledSessionId,
         pendingPlanDecisionResolution: undefined,
         selectedSkillIds: [],
         sessionSkillIds: clearSessionSkillIds(state, action.sessionId),
@@ -3424,6 +3444,7 @@ export function workbenchReducer(
         ...state,
         selectedTurnRunId: action.runId,
         preservedSettledSnapshot: undefined,
+        preservedSettledSessionId: undefined,
         runLifecycle:
           state.runLifecycle.stage === "pending"
             ? { ...state.runLifecycle, runId: action.runId }
