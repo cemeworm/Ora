@@ -1,7 +1,7 @@
 import { ORA_ROOT_AGENT_ID, orderedEnabledModeLayers, orderedEnabledModeNodes, type ModeNodeSpec, type ModeSpec, type ModeStageSpec } from "@cemeworm/shared";
 import type { PatternExecutionContext, PatternExecutionResult } from "./execution-context.js";
 import type { ModeExecutionInput } from "./mode-driver-registry.js";
-import { asText, dispatchNodeTemplate, evidenceBoardContext, initializeQueueSummary, interpolate, modeUsesSingleOwner, nodeCustomAgentId, nodeInstructions, nodeSystemPrompt, primaryOwnerAgentId, promptTemplate, runtimeFallbackPrompt, titleForNode } from "./driver-utils.js";
+import { asText, dispatchNodeTemplate, initializeQueueSummary, interpolate, modeUsesSingleOwner, nodeCustomAgentId, nodeInstructions, nodeSystemPrompt, primaryOwnerAgentId, promptTemplate, runtimeFallbackPrompt, titleForNode } from "./driver-utils.js";
 import { runGenericModeNode, runModeLayer } from "./generic-node-executor.js";
 import { type ExecutionBag, type OrchestratorSubagentBag, DELEGATION_PLAN_INSTRUCTION, parseDelegationPlan, type DelegationPlan, writeBag } from "./mode-driver-helpers.js";
 
@@ -314,15 +314,11 @@ export async function executeOrchestratorSubagent(input: ModeExecutionInput): Pr
               : runtimeFallbackPrompt(modeSpec.family, node.template),
           bag,
         );
-        const evidenceBlock = evidenceBoardContext(context.evidenceBoard);
-        const effectivePrompt = evidenceBlock
-          ? `${synthesizePrompt}\n\n${evidenceBlock}\n\nUse the evidence above to ground your synthesis in facts the team discovered.`
-          : synthesizePrompt;
         bag.synthesis = await resumeOrCallAgent(node, {
           agentId: node.ownerAgentId ?? ORA_ROOT_AGENT_ID,
           planItemId: node.id,
           title: titleForNode(node, "Synthesize result"),
-          prompt: effectivePrompt,
+          prompt: synthesizePrompt,
           system: nodeSystemPrompt(context, modeSpec, node, bag),
           customAgentId: nodeCustomAgentId(node),
           riskLevel: node.riskLevel,

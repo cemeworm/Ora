@@ -7,6 +7,7 @@ import {
 import type { RuntimePersistenceBackend } from "./persistence/types.js";
 import { OraRuntimeError } from "./runtime-errors.js";
 import type { RunLedgerBranchService } from "./run-ledger-branch-service.js";
+import { invalidateProjectionCache } from "./persistence/session-ledger-projections.js";
 
 export class RunLedgerService {
   constructor(private readonly deps: {
@@ -70,8 +71,12 @@ export class RunLedgerService {
       return next;
     });
     const nextLeafEntryId = options.updateLeaf === false ? currentLeafEntryId : parsed.at(-1)?.id;
-    this.deps.backend.appendSessionEntriesFast?.(sessionId, parsed, nextLeafEntryId)
-      ?? this.deps.backend.appendSessionEntries(sessionId, parsed, nextLeafEntryId);
+    if (this.deps.backend.appendSessionEntriesFast) {
+      this.deps.backend.appendSessionEntriesFast(sessionId, parsed, nextLeafEntryId);
+    } else {
+      this.deps.backend.appendSessionEntries(sessionId, parsed, nextLeafEntryId);
+    }
+    invalidateProjectionCache(sessionId);
     return parsed;
   }
 

@@ -1,5 +1,6 @@
 import {
   getModeNodeRuntimeTemplateDefinition,
+  modeUsesSingleOwner,
   orderedEnabledModeLayers,
   type BuiltInCoordinationPattern,
   type CoordinationPattern,
@@ -7,7 +8,7 @@ import {
   type ModeSpec,
   type QueueSummary,
 } from "@cemeworm/shared";
-import type { EvidenceBoard, PatternExecutionContext } from "./execution-context.js";
+import type { PatternExecutionContext } from "./execution-context.js";
 
 export function correlationId(base: string): string {
   return `${base}-${Math.random().toString(36).slice(2, 8)}`;
@@ -319,13 +320,7 @@ export function nodeAtomIds(node: ModeNodeSpec): Set<string> {
   );
 }
 
-export function modeUsesSingleOwner(modeSpec: ModeSpec, nodes: ModeNodeSpec[]): boolean {
-  const fallbackAgentId = modeSpec.profiles[0]?.id;
-  const ownerIds = new Set(
-    nodes.map((node) => node.ownerAgentId ?? fallbackAgentId).filter((id): id is string => typeof id === "string"),
-  );
-  return ownerIds.size <= 1 && !nodes.some((node) => nodeAtomIds(node).has("subagent_delegate"));
-}
+export { modeUsesSingleOwner };
 
 export function primaryOwnerAgentId(modeSpec: ModeSpec, nodes: ModeNodeSpec[]): string {
   return nodes.find((node) => node.ownerAgentId)?.ownerAgentId ?? modeSpec.profiles[0]?.id ?? "agent";
@@ -349,25 +344,6 @@ export function createObservableBag(debug?: boolean): Record<string, unknown> {
       return Reflect.get(_target, key);
     },
   });
-}
-
-/**
- * Serializes the evidence board into a compact prompt context block.
- * Entries are ordered by relevance (critical first) and each entry is
- * limited to a one-line summary + source reference to avoid token bloat.
- */
-export function evidenceBoardContext(board: EvidenceBoard): string {
-  const entries = board.entries;
-  if (entries.length === 0) return "";
-
-  const order = { critical: 0, supporting: 1, background: 2 } as const;
-  const sorted = [...entries].sort((a, b) => order[a.relevance] - order[b.relevance]);
-
-  const lines = sorted.map((e) =>
-    `- [${e.kind}] ${e.summary} (source: ${e.source}, by ${e.agentId})`,
-  );
-
-  return `<evidence-board>\n${lines.join("\n")}\n</evidence-board>`;
 }
 
 /**
