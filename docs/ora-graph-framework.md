@@ -2,6 +2,8 @@
 
 这份文档描述 Ora 当前如何把工作模式、智能体、运行阶段和运行时能力统一建模为有向图。重点看四层：共享契约里的拓扑原语、`ModeSpec` 的可编辑图、`PatternDefinition` 的运行时投影，以及 runtime kernel 如何消费这张图。
 
+> **最近更新 (2026-05-16)**：DAG 并行执行、Evidence Board 共享工作区、Bag 类型安全（16 个 Zod schema）、generator_verifier 三节点（research → draft → verify）。
+
 ## 1. 概述
 
 Ora 的核心设计仍然是：**工作模式是一张有向图，运行时围绕这张图执行、记录状态和生成观测事件。** Generator-Verifier 的验证循环、Orchestrator-Subagent 的层级委派、Agent Teams 的队列协作、Message Bus 的事件路由、Shared State 的共享黑板，都会落到同一组拓扑原语：节点和边。
@@ -422,6 +424,38 @@ setTopologyStatus(agentId, status) {
 | `shared_state` | `apps/runtime/src/patterns/shared-state-driver.ts` |
 
 大多数 driver 用 `orderedEnabledModeNodes(modeSpec)` 顺序执行。`shared_state` 使用 `orderedEnabledModeLayers(modeSpec)`，同一层没有依赖的节点可以通过 `runModeLayer` 并发执行。条件边跳过目前也主要出现在这一类分层执行路径中。
+
+### 6.4 DAG 并行执行
+
+新增 `dag_parallel` 执行类型（`packages/shared/src/driver-manifest.ts`）：基于层（layer）的并行执行模型，同一层内无依赖的节点通过 `runModeLayer` 并发执行，不同层之间串行。3 种模式（`orchestrator_subagent`、`generator_verifier`、`agent_teams`）已迁移到基于层的 DAG 并行执行，消除了原先串行瓶颈。
+
+### 6.5 Evidence Board 共享工作区
+
+Evidence Board 是 agent 间的共享工作区概念，由 `apps/runtime/src/patterns/execution-context.ts` 定义：
+
+- `writeEvidence(key, value, agentId)`：agent 向共享板写入证据
+- `evidenceBoardContext()`：生成传递给下一个 agent 的上下文片段
+- Board 内容被序列化到 ExecutionBag 中，随 agent 交接传递
+
+Evidence Board 叠加在 ExecutionBag 之上——Bag 仍是主要上下文载体，Board 提供结构化的共享视角。
+
+### 6.6 Bag 类型安全
+
+ExecutionBag（agent 间的上下文交接载体）原先为 `Record<string, unknown>`。新增 16 个 Zod schema（`packages/shared/src/bag-schema.ts`），覆盖：
+
+- 通用字段：`plan`, `research`, `review`, `draft`, `synthesize`
+- Mode 特定：orchestrator、generator_verifier、agent_teams 等
+- Mustache 模板渲染使用 schema 验证，schema 不匹配时产生硬错误（而非静默降级）
+
+### 6.7 Generator-Verifier 三节点结构
+
+`generator_verifier` mode 从原来的两节点（`draft → verify`）扩展为三节点（`research → draft → verify`）：
+
+- **Research**：在迭代循环外执行一次，调研背景信息（借鉴 `orchestrator_subagent` 的分层设计）
+- **Draft**：基于 research 结果 + Verifier 反馈迭代改进文档。prompt 明确指示"精确输出一个方案——请勿内联迭代或生成多个版本"。`{{candidate}}` 变量注入 fallbackPrompt 使 Generator 能看到之前输出的内容
+- **Verify**：按 rubric 验证草稿（不变）
+
+这解决了 Generator 在单次 draft 调用中内联迭代输出多个方案（30+ 次工具调用 + 多次 `<proposed_plan>` 版本）的问题，将调研/生成/审核拆分为独立节点。
 
 ## 7. `AgentProfile` 与节点绑定
 

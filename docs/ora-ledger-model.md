@@ -2,6 +2,8 @@
 
 本文描述 Ora 的 **Ledger 事实层** — 它不只是一份运行时日志，而是 Ora 的事件溯源、状态投影与恢复事实的 source of truth。读完本文，对 Ora 的架构理解会从「流程图」升级到「状态模型」。
 
+> **最近更新 (2026-05-16)**：Gate 重开支持（`state.gates.set()` 语义）、SessionSummary.interactionGate 字段。
+
 ## 阅读地图
 
 | 关注点 | 对应章节 |
@@ -784,7 +786,7 @@ Slim 和 compaction 都不会丢失投影所需的关键信息：
 
 ### 11.5 "gate.resolved 后再次 gate.opened 会创建新 gate"
 
-**不会。** 投影中检查：如果 gateId 已存在且 `status === "resolved"`，则忽略新的 `gate.opened` entry。这是幂等性保证。
+**新语义（已更新）。** Ledger 投影使用 `state.gates.set(gateId, gate)`（Map.set 语义）。如果 `gateId` 已存在，新的 `gate.opened` entry 覆盖旧 entry——gate 状态从 `resolved` 回到 `open`。同一 run 内的多次审批可以正确触发 gate 重开。新 entry 的 entry ID 包含时间戳，与首次 `gate.opened` 的 entry ID 区分。原始设计中 gate resolved 后忽略后续 `gate.opened` 的幂等性保证已不再适用。
 
 ### 11.6 "slim 后的 ledger 无法重建完整的 run 状态"
 
@@ -800,7 +802,8 @@ Slim 和 compaction 都不会丢失投影所需的关键信息：
 | Slim / Compaction | 写入时高频 `:events-` batch 不写 snapshot，低频 `:update-` 保留 compact snapshot；`buildVisibleLedger` 移 events；SQLite maintenance 可清理历史 snapshot | Historical compaction 仅显式触发；JSON-file backend 实现为 no-op |
 | 终态完整性 | `assertRunCanBecomeTerminal()` 守卫所有 terminal writer；投影层检测矛盾组合（如 succeeded + open_gate）并降级 attention 为 failed | 依赖 writer 端守卫 + projection 端降级双重保护，但不修正已写入的非法 entry |
 | Branch 投影 | 通过 `hiddenRunIds` 过滤被替换的 run | 被替换的 run 仍在 `entries` 中，只是不在投影中。长期运行可能导致 ledger 膨胀 |
-| Gate 幂等 | `gate.opened` 在 resolved 后忽略 | 依赖 gateId 不变，不支持 gate 重开 |
+| Gate 重开 | 使用 `state.gates.set()` 语义，新 `gate.opened` 覆盖旧 entry | entry ID 含时间戳区分多次打开；多 run 间 gate 重开尚未支持 |
+| SessionSummary gate | `SessionSummary.interactionGate` 字段（`GateProjection`）携带来 compact gate projection | 摘要 snapshots 非实时，需要 desktop 端覆盖写入 |
 | Event 反向投影 | `reconcileSnapshotRuntimeFields` 从 gate 决议生成事件 | 反向投影的事件标记为 `ledger-projected` 来源，但不回到 ledger 存储 |
 | Live/Ledger handoff | `StateSnapshot` / `FlowRunDetail` / desktop interaction state 携带 `snapshotSource` | 仍保留 streaming live path；不能把每个 per-token delta 都改成 ledger replay |
 | 跨 session 能力 | 不支持 | Ledger 是 session-scoped。如果需要跨 session 的 run 关系（如 fork/replay 溯源），需要额外机制 |

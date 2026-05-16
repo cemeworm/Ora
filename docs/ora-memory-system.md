@@ -35,6 +35,8 @@
 
 ## 1. 系统总览
 
+> **最近更新 (2026-05-16)**：混合语义检索（embedding + FTS5）、CAS 并发控制、Dreaming 全链路接入、Section summaries 质量门控、Memory 损坏保护、Provider 更新降级、2-gram Jaccard 语义去重、组合淘汰评分。
+
 Ora 的 memory 系统由五个子系统组成，每个负责生命周期的一个阶段：
 
 ```mermaid
@@ -300,9 +302,16 @@ Active Memory 是每次 run 启动时执行的检索-评分-准入-渲染链路�
 5. 过滤 score > 0，排序，截断到 maxCandidates
 ```
 
-### 4.2 词汇匹配
+### 4.2 词汇匹配与语义检索
 
-使用中英文混合分词（`tokenize` 函数），过滤停用词后对 query 和候选 content 做 token 集合交集匹配。
+**基础匹配**：使用中英文混合分词（`tokenize` 函数），过滤停用词后对 query 和候选 content 做 token 集合交集匹配。
+
+**混合语义检索**（新增）：新增 `embedding-provider.ts`，复用现有 provider 框架实现向量嵌入生成。检索链路支持三种模式：
+- **hybrid**（默认）：FTS5 关键词 + 向量相似度混合评分
+- **semantic**：纯向量相似度检索
+- **fts_only**：纯 FTS5 关键词检索（确定性，作为降级回退）
+
+Embedding provider 不可用时自动降级到 `fts_only` 模式，确保检索路径始终可用。
 
 ### 4.3 准入门槛（Admission）
 
@@ -406,9 +415,11 @@ Memory 更新是 run 结束后的异步过程，将对话中提取的事实沉�
 3. 过滤:
    - 去临时内容（file upload / 上传文件 / 临时 / 这次会话）
    - 置信度需 ≥ factConfidenceThreshold（默认 0.7）
-   - 去重（基于 content 小写比较）
+   - **语义去重（2-gram Jaccard）**：content 的 2-gram 字符集 Jaccard 相似度 > 0.7 视为重复，阻止插入
+   - **确定性提取使用对话消息**：后续轮次的纠正/偏好提取基于完整对话消息，不仅限于 prompt
 
-4. 插入 facts，按 confidence 降序 + createdAt 排序，截断到 maxFacts
+4. **组合淘汰评分**：当 facts 超过上限时，计算每个 fact 的淘汰评分 = `confidence × exp(-age_days / 90)`（90 天半衰期），淘汰最低分事实
+5. 插入 facts，按 confidence 降序 + createdAt 排序，截断到 maxFacts
 5. 自动更新 topOfMind 和 recentMonths 摘要
 ```
 
@@ -430,10 +441,16 @@ Memory 更新是 run 结束后的异步过程，将对话中提取的事实沉�
      factsToRemove: ["fact_id"] }
 
 4. 应用 patch: 更新 section、删除标记的 facts、添加新 facts
-5. 如果 Provider 调用失败 → 降级到规则驱动更新
+5. 如果 Provider 调用失败 → **分级降级**：区分可重试错误（网络超时、短暂不可用）和不可重试错误（认证失败、额度不足）。可重试错误使用指数退避重试（最多 3 次），不可重试错误直接降级到规则驱动更新并记录日志。
 ```
 
-### 6.4 事件写入
+### 6.4 Memory 损坏保护与 CAS 并发控制
+
+**损坏保护**：写入 `memory.json` 前自动创建 `.bak` 备份。写入异常时记录详细日志（含原始大小、失败原因），下次读取时自动尝试从 `.bak` 恢复。
+
+**CAS 并发控制**：每次更新携带版本号（`_version`），写入时检查版本是否匹配。版本冲突时实施 **自动合并**（merge facts/sections），而非覆盖或拒绝。版本追踪确保并发写入不丢失数据。
+
+### 6.5 事件写入
 
 更新完成后，`processLongTermMemoryUpdate` 将新增的 facts 转为 `MemoryRecord`，写入 `snapshot.memory`，并发出 `memory.updated` 事件。这些记录最终进入 RunLedger。
 
@@ -513,7 +530,18 @@ Deep Phase（深度）
   → 产出 PromotionPreview（预览，不自动应用）
 ```
 
-**从预览到事实**：`factsFromPromotionPreview` 将 `recommendPromote` 候补转为 `LongTermMemoryFact`（confidence 略做增量 +0.05）。应用时机由上层调度决定，不在此模块内。
+**从预览到事实**：`factsFromPromotionPreview` 将 `recommendPromote` 候补转为 `LongTermMemoryFact`（confidence 略做增量 +0.05）。
+
+**Dreaming 全链路接入**（新增）：Dreaming 调度器（`memory-dreaming-scheduler.ts`）已正式接入 `AutomationService` 模式，按配置节律自动触发三阶段分析。Journal 写入路径已打通的 dreaming 晋升管道——promotion 候选通过 ledged journal 写入后，在后续 run 中进入 active memory 候选池。
+
+### 7.4 Section Summaries 质量门控与空过滤
+
+**质量门控**：Section summary 更新前检查以下条件：
+- 新 summary 内容长度 ≥ `MIN_SECTION_CONTENT_LENGTH`（默认 10 字符）
+- 与 `previousSummary` 比较，实质性变更时才更新
+- 变更时记录 diff 日志（旧/新摘要对比）
+
+**空 section 过滤**：`MIN_SECTION_CONTENT_LENGTH` 阈值过滤空白或几乎为空的内容，防止无用信号污染 section summaries。
 
 ## 8. Memory Observability
 
@@ -591,17 +619,23 @@ Active Memory 检索时会同时收集用户级和项目级候选，项目级候
 
 ### 10.1 当前保守边界
 
-- **语义检索未落地**：`MemorySearchRequest.semanticEnabled` 已定义，`retrievalMode` 支持 `hybrid` / `semantic`，但当前实际检索链路仅 `lexical` 完整实现。`MemoryIndexStore.search` 使用 SQLite FTS5，没有 semantic embedding。
-- **MMR 多样性重排**：`mmrRerank` 已有基于 Jaccard 的近似实现，但无 embedding 支持。
-- **Dreaming 晋升未自动化**：`PromotionPreview` 已生成，但从候补到 Long-Term Memory 的自动写入仍需要上层调度。
+- **语义检索**：已实现——`embedding-provider.ts` 支持 hybrid/semantic/fts_only 三种模式，embedding provider 不可用时自动降级到 FTS5。
+- **Dreaming 自动晋升**：已实现——`memory-dreaming-scheduler.ts` 接入 `AutomationService`，按配置节律自动运行三阶段分析并写入 journal。
+- **Facts 淘汰**：已实现——组合淘汰评分（`confidence × exp(-age_days/90)`，90 天半衰期）。
+- **Semantic 去重**：已实现——2-gram Jaccard > 0.7 语义去重。
+- **Memory 损坏保护**：已实现——`.bak` 备份 + 自动恢复。
+- **Provider 降级**：已实现——区分可重试/不可重试错误，指数退避重试。
+- **CAS 并发控制**：已实现——版本追踪 + 自动合并事实。
+- **Provider admission 超时**：已实现——EWMA 自适应超时跟踪器。
+- **Section summaries 质量门控**：已实现——最小长度检查、previousSummary 比较、diff 日志。
+- **空 section 过滤**：已实现——`MIN_SECTION_CONTENT_LENGTH = 10`。
+- **MMR 多样性重排**：已有基于 Jaccard 的近似实现，无 embedding 支持。
 - **Wiki 编辑不通过 runtime**：Wiki 的编译和更新在 runtime 侧，但没有暴露给前端编辑的 RPC 接口。
-- **Provider admission 超时**：固定 5 秒默认超时，没有自适应调整。
-- **Facts 上限**：硬限制 120 条，删除策略只是截断末尾（按 confidence 排序），没有更复杂的淘汰逻辑。
 
 ### 10.2 可演进方向
 
-- **语义检索接入**：接入 embedding provider，实现 `retrievalMode: "hybrid"` 的完整链路（lexical + semantic 融合排序）。
-- **Dreaming 自动晋升**：在合适的调度点（如夜间、run 批处理完成后）自动执行 deep phase 并写入 Long-Term Memory。
+- **MMR 重排 embedding 支持**：为 `mmrRerank` 添加 embedding 支持，提升多样性重排精度。
 - **Wiki 前端化**：暴露 Wiki 页面的 RPC/get/save/lint 接口，让 Mode Studio 或设置面板可以查看和编辑知识页面。
 - **Memory 联邦**：支持跨项目 memory 共享（如全局用户偏好 vs 项目特定约束的分层优先级）。
-- **Fact 生命周期管理**：引入 TTL、访问频率计数、遗忘曲线等淘汰机制，替代简单的 confidence 排序截断。
+- **TEMPORARY_RE 信号降权**：已从硬过滤改为信号强度降权，后续可进一步细化衰减曲线。
+- **Memory 上限可配置**：已通过 policy 支持配置上限，后续可增加 per-section 的差异化上限。
