@@ -14,6 +14,7 @@ export async function executeGeneratorVerifier(input: ModeExecutionInput): Promi
   const maxIterations = modeSpec.stopPolicy.maxIterations ?? 3;
   const bag: GeneratorVerifierBag = {
     prompt,
+    research: "",
     rubric: [
       "addresses the user request",
       "uses explicit verification criteria",
@@ -28,11 +29,47 @@ export async function executeGeneratorVerifier(input: ModeExecutionInput): Promi
   const generatorId = ownerForTemplate(nodes, "draft", "generator");
   const verifierId = ownerForTemplate(nodes, "verify", "verifier");
 
+  const researchNodes = nodes.filter((n) => n.template === "research");
+  const iterationNodes = nodes.filter((n) => n.template !== "research");
+
+  // Phase 1: Research runs once before the iteration loop.
+  let completedNodes = 0;
+  for (const node of researchNodes) {
+    completedNodes = await runGenericModeNode(context, modeSpec, node, totalActiveNodes, completedNodes, async () => {
+      if (node.template === "research") {
+        const generatorForResearch = node.ownerAgentId ?? generatorId;
+        const researchResult = await context.callAgent({
+          agentId: generatorForResearch,
+          planItemId: node.id,
+          title: titleForNode(node, node.label),
+          prompt: promptTemplate(
+            node,
+            runtimeFallbackPrompt(modeSpec.family, node.template),
+            bag,
+          ),
+          system: nodeSystemPrompt(context, modeSpec, node, bag),
+          customAgentId: nodeCustomAgentId(node),
+          riskLevel: node.riskLevel,
+        });
+        bag.research = asText(researchResult);
+        return researchResult;
+      }
+      return dispatchNodeTemplate(context, modeSpec, node, bag, {
+        bagKey: node.template,
+        agentId: node.ownerAgentId ?? generatorId,
+        title: titleForNode(node, node.label),
+        fallbackPrompt: runtimeFallbackPrompt(modeSpec.family, node.template),
+      });
+    }, bag);
+  }
+  const researchCompletedCount = completedNodes;
+
+  // Phase 2: Draft-Verify iteration loop.
   for (let attempt = 1; attempt <= maxIterations; attempt += 1) {
     bag.retryCount = attempt;
-    let completedNodes = 0;
     let converged = false;
-    for (const node of nodes) {
+    completedNodes = researchCompletedCount;
+    for (const node of iterationNodes) {
       completedNodes = await runGenericModeNode(context, modeSpec, node, totalActiveNodes, completedNodes, async () => {
         if (node.template === "draft") {
           const currentGeneratorId = node.ownerAgentId ?? generatorId;

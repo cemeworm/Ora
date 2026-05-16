@@ -116,12 +116,6 @@ export interface PatternExecutionContext {
   }): void;
   /** Append an evidence entry to the shared board. Called after tool-use. */
   writeEvidence(entry: Omit<EvidenceEntry, "id" | "timestamp">): void;
-  /**
-   * Request an upstream agent to clarify or re-execute based on a downstream
-   * finding.  The runtime will re-invoke the upstream agent with the clarification
-   * question injected into its prompt.  Limited to 1 round-trip per mode execution.
-   */
-  requestClarification(req: ClarificationRequest): Promise<ClarificationResult>;
   publishMessage(params: {
     agentId: string;
     topic: string;
@@ -162,30 +156,6 @@ export interface PatternExecutionContext {
 
 export interface PatternExecutionResult {
   output: unknown;
-}
-
-// ── Clarification Request (feedback loop) ───────────────────────────
-
-export interface ClarificationRequest {
-  /** The node that is requesting clarification. */
-  fromNodeId: string;
-  /** The upstream node being asked to clarify. */
-  toNodeId: string;
-  /** The question the downstream agent needs answered. */
-  question: string;
-  /** The context in which the downstream agent discovered the issue. */
-  context: string;
-}
-
-/**
- * Result of processing a clarification request.
- * `revisedOutput` contains the upstream agent's response to the question.
- */
-export interface ClarificationResult {
-  fromNodeId: string;
-  toNodeId: string;
-  question: string;
-  revisedOutput: unknown;
 }
 
 export interface PatternDriver {

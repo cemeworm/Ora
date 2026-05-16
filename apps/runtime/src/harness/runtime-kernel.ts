@@ -68,7 +68,7 @@ import {
   type RecoveryIncident,
 } from "./recovery-policy.js";
 import { executeModeSpec } from "../patterns/driver-registry.js";
-import type { ClarificationRequest, EvidenceBoard, PatternExecutionContext } from "../patterns/execution-context.js";
+import type { EvidenceBoard, PatternExecutionContext } from "../patterns/execution-context.js";
 import type { ModelMessage, ModelRequest, ModelResponse } from "../providers/index.js";
 import { RuntimeCompletionController } from "./runtime-completion.js";
 import {
@@ -860,6 +860,14 @@ export async function executeRuntimeKernel(
         nodeId: message.nodeId ?? message.fromAgentId,
       },
     );
+    if (
+      params.toAgentIds &&
+      params.toAgentIds.length > 0
+    ) {
+      for (const toAgentId of params.toAgentIds) {
+        kernelRuntimeContext.enqueueAgentMessage(toAgentId, params.content);
+      }
+    }
     return message;
   };
 
@@ -1807,6 +1815,22 @@ export async function executeRuntimeKernel(
 
   runtimeToolExecutor.setEnqueueMessage(({ to, message }) => {
     kernelRuntimeContext.enqueueAgentMessage(to, message);
+    const agentMsg = AgentConversationMessageSchema.parse({
+      id: `${runId}:agent-message:${kernelRuntimeContext.agentMessageCount()}`,
+      runId,
+      createdAt: now(),
+      fromAgentId: lastCallAgentId || "agent",
+      toAgentIds: [to],
+      kind: "mention",
+      status: "sent",
+      content: message,
+    });
+    kernelRuntimeContext.appendAgentMessage(agentMsg);
+    emit(
+      "agent.message",
+      { message: agentMsg },
+      { agentId: agentMsg.fromAgentId, nodeId: agentMsg.fromAgentId },
+    );
   });
 
   runtimeToolExecutor.setSpawnAgent(async ({ description, prompt, agentType, runInBackground, inheritContext, systemPrompt: customSystemPrompt, toolIds: customToolIds }) => {
@@ -2463,7 +2487,8 @@ export async function executeRuntimeKernel(
     try {
       kernelRuntimeContext.activateAgent(ORA_ROOT_AGENT_ID);
       setTopologyStatus(ORA_ROOT_AGENT_ID, "running");
-      const response = await invokeRunProvider(config, {
+      let accumulatedText = "";
+      const response = await invokeRunProviderStream(config, {
         system: [
           "You are Ora, the root conversation agent for Ora.",
           "The selected mode has returned its work product. Write the final user-facing answer.",
@@ -2484,6 +2509,15 @@ export async function executeRuntimeKernel(
         temperature: 0,
         maxTokens: config.budget?.maxTokens,
         toolChoice: "none",
+      }, {
+        onTextDelta: (chunk) => {
+          accumulatedText += chunk.delta;
+          emit(
+            "token.delta",
+            { delta: chunk.delta, text: accumulatedText, metadata: { phase: "ora.finalizing" } },
+            { agentId: ORA_ROOT_AGENT_ID, nodeId: ORA_ROOT_AGENT_ID },
+          );
+        },
       });
       const text = response.text.trim() || modeOutputText(modeOutput);
       setTopologyStatus(ORA_ROOT_AGENT_ID, "done");
@@ -2529,39 +2563,6 @@ export async function executeRuntimeKernel(
     });
   };
 
-  let clarificationUsed = false;
-  const requestClarification: PatternExecutionContext["requestClarification"] = async (req) => {
-    if (clarificationUsed) {
-      throw new Error("Clarification already used — only 1 round-trip allowed per mode execution.");
-    }
-    clarificationUsed = true;
-
-    const clarificationPrompt = [
-      `<clarification-request from="${req.fromNodeId}">`,
-      `The downstream agent needs clarification on your previous output.`,
-      `Question: ${req.question}`,
-      `Context: ${req.context}`,
-      `</clarification-request>`,
-      "",
-      "Please revise your previous output to address the question above. Return the revised output directly.",
-    ].join("\n");
-
-    const revised = await callAgent({
-      agentId: req.toNodeId,
-      title: `Clarification from ${req.fromNodeId}`,
-      prompt: `${lastCallAgentPrompt ?? input.prompt}\n\n${clarificationPrompt}`,
-      system: lastCallAgentSystem ?? systemPrompt(""),
-      riskLevel: "medium",
-    });
-
-    return {
-      fromNodeId: req.fromNodeId,
-      toNodeId: req.toNodeId,
-      question: req.question,
-      revisedOutput: revised,
-    };
-  };
-
   const kernelPatternExecutionContextAdapter =
     createKernelPatternExecutionContextAdapter({
       projectId,
@@ -2593,7 +2594,6 @@ export async function executeRuntimeKernel(
       emitAgentMessage,
       writeSharedState,
       writeEvidence,
-      requestClarification,
       currentSharedState: () => kernelRuntimeContext.sharedStateSummary,
     });
 

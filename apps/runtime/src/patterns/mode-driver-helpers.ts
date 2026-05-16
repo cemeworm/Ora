@@ -50,9 +50,10 @@ export interface OrchestratorSubagentBag extends ExecutionBag {
   isGitWorktree?: boolean;
 }
 
-/** Bag keys for generator-verifier pattern: draft → verify → decide. */
+/** Bag keys for generator-verifier pattern: research → draft → verify → decide. */
 export interface GeneratorVerifierBag extends ExecutionBag {
   prompt: string;
+  research?: string;
   candidate?: string;
   verdict?: string;
   rubric?: string[];

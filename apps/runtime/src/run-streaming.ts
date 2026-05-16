@@ -75,6 +75,16 @@ export function applyStreamingRunEvent(
     liveSnapshot.events.push(event);
     liveSnapshot.status = statusForRunEvent(event.type, liveSnapshot.status);
     liveSnapshot.updatedAt = event.createdAt;
+    if (event.type === "agent.message") {
+      liveSnapshot.agentMessages = mergeStreamingAgentMessage(liveSnapshot.agentMessages, event);
+    }
+    return liveSnapshot;
+  }
+
+  if (noProjectionEventTypes.has(event.type)) {
+    liveSnapshot.events.push(event);
+    liveSnapshot.status = statusForRunEvent(event.type, liveSnapshot.status);
+    liveSnapshot.updatedAt = event.createdAt;
     return liveSnapshot;
   }
 
@@ -89,6 +99,20 @@ export function applyStreamingRunEvent(
   };
   return normalizeRunAttention(StateSnapshotSchema.parse(next));
 }
+
+export const noProjectionEventTypes = new Set([
+  "completion.updated",
+  "task.started", "task.progress", "task.completed", "task.failed",
+  "recovery.detected", "recovery.retry_scheduled", "recovery.applied", "recovery.exhausted",
+  "tool.repaired",
+  "node.skipped",
+  "memory.updated", "memory.queued", "memory.flushed",
+  "message.published", "message.routed",
+  "worker.claimed", "worker.released",
+  "agent.started", "agent.completed",
+  "profile.updated",
+  "context.compaction.completed", "context.compaction.skipped",
+]);
 
 function finalizeTerminalRuntimeProjection(
   snapshot: StateSnapshot,
@@ -279,12 +303,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-function isPureDeltaEvent(event: OraEventEnvelope): boolean {
+export function isPureDeltaEvent(event: OraEventEnvelope): boolean {
   return event.type === "message.delta" || event.type === "token.delta";
 }
 
-function isPassiveAccumulationEvent(event: OraEventEnvelope): boolean {
-  return event.type === "node.updated" || event.type === "context.usage.updated";
+export function isPassiveAccumulationEvent(event: OraEventEnvelope): boolean {
+  return event.type === "node.updated" || event.type === "context.usage.updated" || event.type === "agent.message";
 }
 
 function isPureDeltaStream(events: readonly OraEventEnvelope[]): boolean {

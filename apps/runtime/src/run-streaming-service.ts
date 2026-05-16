@@ -191,5 +191,5 @@ function isPureDeltaEvent(event: OraEventEnvelope): boolean {
 }
 
 function isPassiveAccumulationEvent(event: OraEventEnvelope): boolean {
-  return event.type === "node.updated" || event.type === "context.usage.updated";
+  return event.type === "node.updated" || event.type === "context.usage.updated" || event.type === "agent.message";
 }
