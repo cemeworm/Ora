@@ -134,7 +134,7 @@ function detectProviderOrToolFailure(snapshot: StateSnapshot): DiagnosticSignal[
     id: "diagnostic.provider-or-tool-failure",
     kind: "provider_or_tool_failure",
     severity: "error",
-    title: "Provider or tool failure",
+    title: "提供方或工具失败",
     summary: detail,
     traceRefs: [
       ...failedToolCalls.map((call) => ({ type: "tool_call" as const, id: call.id })),
@@ -158,8 +158,8 @@ function detectRepeatedToolCalls(snapshot: StateSnapshot): DiagnosticSignal[] {
         id: `diagnostic.repeated-tool-call:${shortHash(key)}`,
         kind: "repeated_tool_call" as const,
         severity: calls.length >= 5 ? "warning" as const : "info" as const,
-        title: "Repeated tool call",
-        summary: `${toolId} was called ${calls.length} times with the same arguments.`,
+        title: "工具重复调用",
+        summary: `${toolId} 被相同参数调用了 ${calls.length} 次。`,
         traceRefs: calls.map((call) => ({ type: "tool_call" as const, id: call.id })),
         count: calls.length,
       };
@@ -178,8 +178,8 @@ function detectCostOrEventBlowup(snapshot: StateSnapshot): DiagnosticSignal[] {
       id: "diagnostic.cost-blowup:tool-budget",
       kind: "cost_or_event_blowup",
       severity: "warning",
-      title: "Tool budget exceeded",
-      summary: `Tool calls ${snapshot.toolCalls.length} exceeded the configured budget of ${maxToolCalls}.`,
+      title: "工具调用超预算",
+      summary: `工具调用 ${snapshot.toolCalls.length} 次，超出配置预算 ${maxToolCalls} 次。`,
       traceRefs: snapshot.toolCalls.map((call) => ({ type: "tool_call", id: call.id })),
       count: snapshot.toolCalls.length,
     });
@@ -189,8 +189,8 @@ function detectCostOrEventBlowup(snapshot: StateSnapshot): DiagnosticSignal[] {
       id: "diagnostic.cost-blowup:token-budget",
       kind: "cost_or_event_blowup",
       severity: "warning",
-      title: "Token budget exceeded",
-      summary: `Token usage ${totalTokens.toLocaleString()} exceeded the configured budget of ${maxTokens.toLocaleString()}.`,
+      title: "Token 预算超限",
+      summary: `Token 用量 ${totalTokens.toLocaleString()} 超出配置预算 ${maxTokens.toLocaleString()}。`,
       traceRefs: snapshot.events.filter((event) => event.type === "context.usage.updated").map(eventTraceRef),
       count: totalTokens,
     });
@@ -200,8 +200,8 @@ function detectCostOrEventBlowup(snapshot: StateSnapshot): DiagnosticSignal[] {
       id: "diagnostic.cost-blowup:event-volume",
       kind: "cost_or_event_blowup",
       severity: "warning",
-      title: "Large event volume",
-      summary: `This run recorded ${snapshot.events.length} events, which can hide the failure point in the raw timeline.`,
+      title: "事件量过大",
+      summary: `本轮运行记录了 ${snapshot.events.length} 个事件，可能掩盖原始时间线中的失败点。`,
       traceRefs: snapshot.events.slice(-10).map(eventTraceRef),
       count: snapshot.events.length,
     });
@@ -224,8 +224,8 @@ function detectBlockingGate(snapshot: StateSnapshot): DiagnosticSignal[] {
     id: "diagnostic.blocking-gate",
     kind: "blocking_gate",
     severity: "warning",
-    title: "Blocking gate",
-    summary: `${Math.max(1, gateRefs.length)} gate${gateRefs.length === 1 ? " is" : "s are"} waiting for user input.`,
+    title: "阻塞关卡",
+    summary: `${Math.max(1, gateRefs.length)} 个关卡正在等待用户输入。`,
     traceRefs: [
       ...gateRefs.map((gateRef) => ({ type: "gate" as const, id: gateRef.id })),
       ...gateEvents.map(eventTraceRef),
@@ -242,8 +242,8 @@ function detectModeMismatch(snapshot: StateSnapshot): DiagnosticSignal[] {
       id: "diagnostic.mode-mismatch:provider-policy",
       kind: "mode_mismatch",
       severity: "warning",
-      title: "Mode policy degraded",
-      summary: snapshot.config.effectiveStrategy?.notes?.[0] ?? "The selected provider could not satisfy the requested mode policy.",
+      title: "模式策略降级",
+      summary: snapshot.config.effectiveStrategy?.notes?.[0] ?? "所选提供方无法满足请求的模式策略。",
       traceRefs: snapshot.events.filter((event) => event.type === "run.started").map(eventTraceRef),
     });
   }
@@ -253,8 +253,8 @@ function detectModeMismatch(snapshot: StateSnapshot): DiagnosticSignal[] {
       id: "diagnostic.mode-mismatch:resolved-mode",
       kind: "mode_mismatch",
       severity: "warning",
-      title: "Resolved mode differs",
-      summary: `Requested mode ${requestedModeId}, but runtime resolved ${snapshot.modeId}.`,
+      title: "模式解析不一致",
+      summary: `请求模式 ${requestedModeId}，但运行时解析为 ${snapshot.modeId}。`,
       traceRefs: snapshot.events.filter((event) => event.type === "run.started").map(eventTraceRef),
     });
   }
@@ -270,38 +270,38 @@ function deriveSuggestedActions(snapshot: StateSnapshot, signals: DiagnosticSign
   if (signalKinds.has("blocking_gate")) {
     actions.push({
       kind: resumableFrame ? "resume" : "review_gate",
-      label: resumableFrame ? "Resume from blocking gate" : "Review blocking gate",
+      label: resumableFrame ? "从阻塞关卡恢复" : "检查阻塞关卡",
       target: {
         checkpointId: latestCheckpoint?.id,
         gateId: snapshot.pendingApprovals[0] ?? snapshot.pendingClarifications[0]?.id,
         eventSeq: latestCheckpoint?.eventSeq,
       },
-      disabledReason: resumableFrame ? undefined : "No continuation frame is linked to the open gate.",
+      disabledReason: resumableFrame ? undefined : "没有关联到开放关卡的延续帧。",
     });
   }
   if (signalKinds.has("provider_or_tool_failure")) {
     const failedTool = snapshot.toolCalls.find((call) => call.status === "failed");
     actions.push({
       kind: latestCheckpoint ? "replay" : "retry_tool",
-      label: latestCheckpoint ? "Replay from latest checkpoint" : "Retry failed tool",
+      label: latestCheckpoint ? "从最新检查点回放" : "重试失败工具",
       target: {
         checkpointId: latestCheckpoint?.id,
         toolCallId: failedTool?.id,
         eventSeq: latestCheckpoint?.eventSeq,
       },
-      disabledReason: latestCheckpoint ? undefined : "This run has no checkpoint to replay from.",
+      disabledReason: latestCheckpoint ? undefined : "本轮运行没有可回放的检查点。",
     });
   }
   if (signalKinds.has("repeated_tool_call") || signalKinds.has("cost_or_event_blowup")) {
     actions.push({
       kind: "compare",
-      label: "Compare with another attempt",
+      label: "与其他尝试对比",
     });
   }
   if (signalKinds.has("mode_mismatch")) {
     actions.push({
       kind: "adjust_mode",
-      label: "Adjust mode or provider policy",
+      label: "调整模式或提供方策略",
     });
   }
   return dedupeActions(actions);
