@@ -36,32 +36,32 @@ export function compareRuns(base: StateSnapshot, target: StateSnapshot): RunComp
   const dimensions = {
     outcome: compareOutcome(base.status, target.status),
     costOrEvents: compareLowerIsBetter({
-      label: "Events",
+      label: "事件数",
       base: base.events.length,
       target: target.events.length,
       weight: "medium",
-      detail: "Lower event volume usually makes failure points easier to inspect.",
+      detail: "较少的事件量通常更容易定位失败点。",
     }),
     toolUsage: compareLowerIsBetter({
-      label: "Tool calls",
+      label: "工具调用",
       base: base.toolCalls.length,
       target: target.toolCalls.length,
       weight: "low",
       detail: repeatedToolDetail(base, target),
     }),
     gateEfficiency: compareLowerIsBetter({
-      label: "Open gates",
+      label: "开放关卡",
       base: countOpenGates(base),
       target: countOpenGates(target),
       weight: "low",
-      detail: "Open approvals, clarifications, and plan decisions.",
+      detail: "未处理的确认、补充信息和计划决策。",
     }),
     recovery: compareLowerIsBetter({
-      label: "Recovery signals",
+      label: "恢复信号",
       base: countRecoverySignals(base, baseDiagnostics.signals.length),
       target: countRecoverySignals(target, targetDiagnostics.signals.length),
       weight: "medium",
-      detail: "Recovery events, failed tool calls, interrupted tool calls, and paused continuation frames.",
+      detail: "恢复事件、失败的工具调用、中断的工具调用和暂停的延续帧。",
     }),
   };
   const { verdict, verdictReason } = deriveVerdict(Object.values(dimensions));
@@ -83,10 +83,10 @@ function compareOutcome(base: RunStatus, target: RunStatus): DimensionDiff<RunSt
       ? "degraded"
       : "unchanged";
   return {
-    label: "Outcome",
+    label: "结果",
     base,
     target,
-    delta: direction === "unchanged" ? "no change" : `${base} -> ${target}`,
+    delta: direction === "unchanged" ? "无变化" : `${base} -> ${target}`,
     direction,
     weight: "high",
   };
@@ -126,7 +126,7 @@ function deriveVerdict(dimensions: Array<DimensionDiff<unknown>>): {
   if (highDegraded.length > 0) {
     return {
       verdict: "worse",
-      verdictReason: `${highDegraded[0]?.label ?? "A high-weight dimension"} degraded.`,
+      verdictReason: `${highDegraded[0]?.label ?? "高权重维度"} 退化。`,
     };
   }
 
@@ -139,24 +139,24 @@ function deriveVerdict(dimensions: Array<DimensionDiff<unknown>>): {
   if (improved.length === 0 && degraded.length === 0) {
     return {
       verdict: "inconclusive",
-      verdictReason: "No compared dimension changed.",
+      verdictReason: "所有对比维度均未变化。",
     };
   }
   if (degraded.length === 0 && (highImproved.length > 0 || mediumImproved.length > 0)) {
     return {
       verdict: "better",
-      verdictReason: `${improved.map((dimension) => dimension.label).join(", ")} improved without measured regressions.`,
+      verdictReason: `${improved.map((dimension) => dimension.label).join(", ")} 改进，未发现退化。`,
     };
   }
   if (mediumDegraded.length > 0 && improved.length === 0) {
     return {
       verdict: "worse",
-      verdictReason: `${mediumDegraded[0]?.label ?? "A medium-weight dimension"} degraded without offsetting improvements.`,
+      verdictReason: `${mediumDegraded[0]?.label ?? "中等权重维度"} 退化，且无改进项对冲。`,
     };
   }
   return {
     verdict: "mixed",
-    verdictReason: `Improved: ${improved.map((dimension) => dimension.label).join(", ") || "none"}; degraded: ${degraded.map((dimension) => dimension.label).join(", ") || "none"}.`,
+    verdictReason: `改进：${improved.map((dimension) => dimension.label).join(", ") || "无"}；退化：${degraded.map((dimension) => dimension.label).join(", ") || "无"}。`,
   };
 }
 
@@ -195,7 +195,7 @@ function countRecoverySignals(snapshot: StateSnapshot, diagnosticSignalCount: nu
 function repeatedToolDetail(base: StateSnapshot, target: StateSnapshot): string {
   const baseRepeated = repeatedToolGroupCount(base);
   const targetRepeated = repeatedToolGroupCount(target);
-  return `Repeated tool groups: ${baseRepeated} -> ${targetRepeated}.`;
+  return `重复工具组：${baseRepeated} → ${targetRepeated}。`;
 }
 
 function repeatedToolGroupCount(snapshot: StateSnapshot): number {
@@ -208,7 +208,7 @@ function repeatedToolGroupCount(snapshot: StateSnapshot): number {
 }
 
 function formatNumericDelta(delta: number, base: number): string {
-  if (delta === 0) return "no change";
+  if (delta === 0) return "无变化";
   const sign = delta > 0 ? "+" : "";
   if (base === 0) return `${sign}${delta}`;
   const percent = Math.round((delta / base) * 100);
