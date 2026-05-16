@@ -2145,6 +2145,7 @@ function buildAssistantTurnAttachment(
     clarificationCount: snapshotPendingClarifications(snapshot).length,
     hasProposedPlan: Boolean(proposedPlan),
     proposedPlanStatus: proposedPlan?.status === "streaming" ? "streaming" : proposedPlan ? "complete" : undefined,
+    planContent: proposedPlan?.planContent,
     activeLoadingTarget: activeLoadingTargetFromSnapshot(snapshot, status, timelineItems),
   };
   if (!liveProposedPlan) {

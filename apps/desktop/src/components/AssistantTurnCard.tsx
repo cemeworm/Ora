@@ -38,6 +38,7 @@ import {
   TaskListHeader,
 } from "./ai-elements/task";
 import { MarkdownContent } from "./MarkdownContent";
+import { PlanCard } from "./PlanCard";
 import { SourcesPopover } from "./SourcesPopover";
 import { StageTranscript } from "./StageTranscript";
 import {
@@ -205,6 +206,14 @@ export const AssistantTurnCard = memo(function AssistantTurnCard({
 
           {clarificationExchanges.length > 0 ? (
             <ClarificationExchangeList exchanges={clarificationExchanges} />
+          ) : null}
+
+          {turn?.hasProposedPlan ? (
+            <PlanCard
+              planSteps={planList}
+              planContent={turn.planContent}
+              isStreaming={turn.proposedPlanStatus === "streaming"}
+            />
           ) : null}
 
           {(hasTimeline && timelineContainsAssistantBody && !turn?.hasProposedPlan) || !bodyContent.trim() ? null : (

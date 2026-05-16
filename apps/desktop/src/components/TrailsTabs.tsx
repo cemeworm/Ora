@@ -344,6 +344,7 @@ export function TrailsTabs({
             selectedAgentId={selectedAgent?.id}
             topologyEdges={activeSnapshot.topology.edges}
             topologyNodes={activeSnapshot.topology.nodes}
+            trailLoading={trailLoading}
           />
           <TrailTools
             commandFeedback={commandFeedback}
@@ -466,8 +467,8 @@ function TrailOverview({
       <div className="grid gap-3 sm:grid-cols-2">
         <OverviewMetric label="运行" value={runInteractionState.status.replace(/_/g, " ")} detail={activeSnapshot.runId} />
         <OverviewMetric label="阶段" value={summary.currentStage} detail={summary.blockingGate === "无" ? "暂无人工关卡" : summary.blockingGate} />
-        <OverviewMetric label="焦点" value={selectedNode?.label ?? "运行概览"} detail={selectedCheckpoint?.label ?? "未选择检查点"} />
-        <OverviewMetric label="证据" value={`${timelineItems.length} 个事件`} detail={`${checkpoints.length} 个检查点 · ${artifacts.length} 个产物`} />
+        <OverviewMetric label="模式" value={activeSnapshot.modeId ?? activeSnapshot.pattern} detail={activeSnapshot.coordinationKind ? `${activeSnapshot.coordinationKind} · #${activeSnapshot.turnIndex}` : `#${activeSnapshot.turnIndex}`} />
+        <OverviewMetric label="证据" value={`${activeSnapshot.events.length} 个事件`} detail={`${checkpoints.length} 个检查点 · ${artifacts.length} 个产物`} />
       </div>
 
       <DockCard title="发现" icon={<Radar size={16} />}>
@@ -475,7 +476,7 @@ function TrailOverview({
           <p className="text-xs leading-5 text-bench-700">本轮运行没有需要关注的发现。原始观测可在「证据」中查看。</p>
         ) : (
           <div className="space-y-2">
-            {findings.map((finding) => (
+            {findings.filter((f) => f.severity === "error" || f.severity === "warning").map((finding) => (
               <button
                 key={finding.id}
                 onClick={() => onFindingClick(finding)}
@@ -488,6 +489,28 @@ function TrailOverview({
                 <p className="mt-1 text-xs leading-5 text-bench-700">{finding.message}</p>
               </button>
             ))}
+            {findings.some((f) => f.severity === "info") && (
+              <details className="mt-2">
+                <summary className="cursor-pointer text-xs font-semibold text-bench-600 hover:text-bench-900 transition">
+                  参考信息（{findings.filter((f) => f.severity === "info").length} 条）
+                </summary>
+                <div className="mt-2 space-y-2">
+                  {findings.filter((f) => f.severity === "info").map((finding) => (
+                    <button
+                      key={finding.id}
+                      onClick={() => onFindingClick(finding)}
+                      className="block w-full rounded-md bg-bench-50 px-3 py-2 text-left ring-1 ring-inset ring-bench-200 transition hover:bg-white active:scale-[0.99]"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-sm font-semibold text-bench-900">{finding.title}</span>
+                        <SeverityPill severity={finding.severity} />
+                      </div>
+                      <p className="mt-1 text-xs leading-5 text-bench-700">{finding.message}</p>
+                    </button>
+                  ))}
+                </div>
+              </details>
+            )}
           </div>
         )}
       </DockCard>
@@ -549,24 +572,6 @@ function TrailOverview({
                   <span className="text-[11px] font-semibold text-sky-900">补充信息</span>
                 </div>
                 <p className="mt-1 text-xs leading-5 text-sky-900">{item.question}</p>
-              </div>
-            ))}
-          </div>
-        )}
-      </DockCard>
-
-      <DockCard title="执行地图" icon={<Network size={16} />}>
-        {activeSnapshot.topology.nodes.length === 0 ? (
-          <p className="text-xs leading-5 text-bench-700">本轮运行没有记录拓扑节点。</p>
-        ) : (
-          <div className="space-y-2">
-            {activeSnapshot.topology.nodes.slice(0, 8).map((node) => (
-              <div key={node.id} className={`rounded-md px-3 py-2 ring-1 ring-inset ${node.id === selectedNode?.id ? "bg-bench-100 ring-bench-900" : "bg-bench-50 ring-bench-200"}`}>
-                <div className="flex items-center justify-between gap-2">
-                  <span className="truncate font-semibold text-bench-900">{node.label}</span>
-                  <span className="shrink-0 text-[11px] capitalize text-bench-700">{node.status}</span>
-                </div>
-                <p className="truncate text-[11px] text-bench-700">{node.kind}{node.agentId ? ` · ${node.agentId}` : ""}</p>
               </div>
             ))}
           </div>
@@ -675,19 +680,19 @@ function TrailOverview({
       <DockCard title="操作" icon={<Activity size={16} />}>
         <p className="mb-3 text-xs leading-5 text-bench-700">{commandFeedback}</p>
         <div className="flex flex-wrap gap-2">
-          <Button variant="secondary" size="sm" onClick={onForkAndResumeRun} disabled={busyCommand !== undefined || !selectedCheckpoint}>
+          <Button variant="secondary" size="sm" onClick={onForkAndResumeRun} disabled={busyCommand !== undefined || !selectedCheckpoint} title={!selectedCheckpoint ? "需要先在时间线中选择一个检查点" : undefined}>
             从检查点恢复
           </Button>
-          <Button variant="secondary" size="sm" onClick={onForkRun} disabled={busyCommand !== undefined || !selectedCheckpoint}>
+          <Button variant="secondary" size="sm" onClick={onForkRun} disabled={busyCommand !== undefined || !selectedCheckpoint} title={!selectedCheckpoint ? "需要先在时间线中选择一个检查点" : undefined}>
             仅分叉
           </Button>
-          <Button variant="secondary" size="sm" onClick={onReplaySelection} disabled={busyCommand !== undefined || !selectedCheckpoint}>
+          <Button variant="secondary" size="sm" onClick={onReplaySelection} disabled={busyCommand !== undefined || !selectedCheckpoint} title={!selectedCheckpoint ? "需要先在时间线中选择一个检查点" : undefined}>
             回放
           </Button>
-          <Button variant="secondary" size="sm" onClick={onResumeRun} disabled={busyCommand !== undefined || !runInteractionState.canResume}>
+          <Button variant="secondary" size="sm" onClick={onResumeRun} disabled={busyCommand !== undefined || !runInteractionState.canResume} title={busyCommand !== undefined ? "当前命令执行中" : !runInteractionState.canResume ? "当前状态不支持继续" : undefined}>
             继续
           </Button>
-          <Button variant="secondary" size="sm" onClick={onCancelRun} disabled={busyCommand !== undefined || !runInteractionState.canStop}>
+          <Button variant="secondary" size="sm" onClick={onCancelRun} disabled={busyCommand !== undefined || !runInteractionState.canStop} title={busyCommand !== undefined ? "当前命令执行中" : !runInteractionState.canStop ? "当前状态不支持取消" : undefined}>
             取消
           </Button>
         </div>
@@ -713,10 +718,10 @@ function DiagnosticBanner({
     <div className={`rounded-md border px-3 py-3 ${tone}`}>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="text-[11px] font-semibold uppercase opacity-75">Run diagnostic</p>
-          <h3 className="mt-1 text-sm font-semibold">{primary ? primary.title : "No major diagnostic signals"}</h3>
+          <p className="text-[11px] font-semibold uppercase opacity-75">运行诊断</p>
+          <h3 className="mt-1 text-sm font-semibold">{primary ? primary.title : "未发现主要诊断信号"}</h3>
           <p className="mt-1 text-xs leading-5 opacity-85">
-            {primary ? primary.summary : "当前 run 没有失败、阻塞关卡、重复工具调用、成本膨胀或模式不匹配信号。"}
+            {primary ? primary.summary : "当前运行没有发现失败、阻塞关卡、重复工具调用、成本膨胀或模式不匹配等诊断信号。"}
           </p>
         </div>
         <div className="shrink-0 text-right text-[11px] leading-5 opacity-80">
@@ -763,9 +768,9 @@ function DiagnosticBanner({
 function diagnosticSignalLabel(kind: RunDiagnosticSummary["signals"][number]["kind"]): string {
   switch (kind) {
     case "provider_or_tool_failure":
-      return "失败";
+      return "提供方/工具失败";
     case "repeated_tool_call":
-      return "重复工具";
+      return "重复工具调用";
     case "cost_or_event_blowup":
       return "成本/事件膨胀";
     case "blocking_gate":
@@ -982,7 +987,13 @@ function TrailConversation({ entries }: { entries: ConversationViewEntry[] }) {
             </span>
             <span className="text-[10px] text-bench-500">{entry.timestamp}</span>
           </div>
-          <p className="text-xs leading-5 text-bench-800 whitespace-pre-wrap break-words">{entry.content}</p>
+          {typeof entry.rawContent === "string" ? (
+            <p className="text-xs leading-5 text-bench-800 whitespace-pre-wrap break-words">{entry.content}</p>
+          ) : (
+            <div className="mt-1 rounded-md bg-white/70 p-2 ring-1 ring-inset ring-bench-200">
+              <JsonTree data={entry.rawContent} defaultExpanded={1} />
+            </div>
+          )}
           {entry.toolId && (
             <p className="mt-1 text-[10px] text-bench-500">
               工具: {entry.toolId}{entry.toolCallId ? ` · ${entry.toolCallId}` : ""}{entry.toolStatus ? ` · ${entry.toolStatus}` : ""}
@@ -1064,6 +1075,7 @@ function TrailCompare({
   const currentToolCount = activeSnapshot.toolCalls.length;
   const currentAgentCount = activeSnapshot.activeAgents.length;
   const currentCheckpointCount = activeSnapshot.checkpoints.length;
+  const currentCostUsd = (activeSnapshot.trace?.generationRefs ?? []).reduce((sum, ref) => sum + (ref.totalCostUsd ?? 0), 0);
   const otherRuns = sessionRuns.filter((r) => r.runId !== activeSnapshot.runId);
   const comparison = useMemo(
     () => compareSnapshot ? compareRuns(compareSnapshot, activeSnapshot) : undefined,
@@ -1123,7 +1135,7 @@ function TrailCompare({
                 <CompareRow label="消息数" current={String(currentMessageCount)} other={String(compareTrail.liveMetrics.messageCount)} />
                 <CompareRow label="活跃智能体" current={String(currentAgentCount)} other={String(compareTrail.liveMetrics.activeAgentCount)} />
                 <CompareRow label="检查点数" current={String(currentCheckpointCount)} other={String(compareTrail.liveMetrics.checkpointCount)} />
-                <CompareRow label="成本" current="—" other={compareTrail.liveMetrics.costAvailable ? formatUsd(compareTrail.liveMetrics.estimatedCostUsd) : "不可用"} />
+                <CompareRow label="成本" current={currentCostUsd > 0 ? formatUsd(currentCostUsd) : "—"} other={compareTrail.liveMetrics.costAvailable ? formatUsd(compareTrail.liveMetrics.estimatedCostUsd) : "不可用"} />
               </tbody>
             </table>
           </div>
@@ -1139,7 +1151,6 @@ function TrailCompare({
                   <th className="py-1.5 pr-2 font-semibold">状态</th>
                   <th className="py-1.5 pr-2 font-semibold">模式</th>
                   <th className="py-1.5 pr-2 font-semibold">事件</th>
-                  <th className="py-1.5 pr-2 font-semibold">工具</th>
                   <th className="py-1.5 font-semibold">时间</th>
                 </tr>
               </thead>
@@ -1152,7 +1163,6 @@ function TrailCompare({
                     <td className="py-1.5 pr-2">{run.status}</td>
                     <td className="py-1.5 pr-2 max-w-[120px] truncate">{run.modeId ?? run.pattern}</td>
                     <td className="py-1.5 pr-2">{run.eventCount}</td>
-                    <td className="py-1.5 pr-2">—</td>
                     <td className="py-1.5 text-bench-500">{new Date(run.updatedAt).toLocaleString("zh-CN", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</td>
                   </tr>
                 ))}
@@ -1238,13 +1248,13 @@ function CompareRow({ label, current, other }: { label: string; current: string;
 function verdictLabel(verdict: RunComparisonVerdict): string {
   switch (verdict) {
     case "better":
-      return "Better";
+      return "改进";
     case "worse":
-      return "Worse";
+      return "退化";
     case "mixed":
-      return "Mixed";
+      return "混合";
     case "inconclusive":
-      return "Inconclusive";
+      return "无定论";
   }
 }
 
@@ -1292,12 +1302,14 @@ function TrailAgents({
   selectedAgentId,
   topologyEdges,
   topologyNodes,
+  trailLoading,
 }: {
   communicationEdges: CommunicationEdge[];
   lanes: ReturnType<typeof buildAgentLanes>;
   selectedAgentId?: string;
   topologyEdges: OraStateSnapshot["topology"]["edges"];
   topologyNodes: OraStateSnapshot["topology"]["nodes"];
+  trailLoading: boolean;
 }) {
   const agentLabels = new Map(topologyNodes.map((n) => [n.id, n.label]));
 
@@ -1362,7 +1374,7 @@ function TrailAgents({
             </div>
             <div className="shrink-0 text-right text-[11px] leading-5 text-bench-700">
               <p>{lane.messageCount} 条消息 · {lane.toolCount} 次工具</p>
-              <p>{formatUsd(lane.costUsd)}</p>
+              <p>{trailLoading && lane.costUsd === 0 ? "成本加载中…" : formatUsd(lane.costUsd)}</p>
             </div>
           </div>
           <p className="mt-2 rounded-md bg-bench-50 px-3 py-2 text-xs leading-5 text-bench-700 ring-1 ring-inset ring-bench-200">{lane.latestActivity}</p>
@@ -1637,25 +1649,34 @@ function TrailEvidence({
   return (
     <>
       <DockCard title="追踪状态" icon={<GitBranch size={16} />}>
-        <div className="space-y-2">
-          <EvidenceRow label="提供方" value={trace?.provider === "langfuse" ? "Langfuse" : "Ora Trails"} />
-          <EvidenceRow label="来源" value={trace?.source ?? "追踪不可用"} />
-          <EvidenceRow label="Trace ID" value={trace?.traceId ?? "未记录"} />
-          <EvidenceRow label="可用性" value={trace?.available ? "可用" : trace?.enabled ? "等待中 / 已降级" : "未启用"} />
-        </div>
-        {trace?.reason && <p className="mt-3 text-xs leading-5 text-bench-700">{trace.reason}</p>}
-        <div className="mt-3 flex flex-wrap gap-2">
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={handleOpenTrace}
-            disabled={traceOpenDisabled}
-            title={traceOpenUnavailable ? "这个本地 Trail 没有关联 Langfuse 追踪。" : undefined}
-          >
-            <ExternalLink size={14} />
-            {traceOpenUnavailable ? "仅本地 Trail" : openingTrace ? "正在打开" : "在 Langfuse 中打开"}
-          </Button>
-        </div>
+        {trace?.available ? (
+          <>
+            <div className="space-y-2">
+              <EvidenceRow label="提供方" value={trace?.provider === "langfuse" ? "Langfuse" : "Ora Trails"} />
+              <EvidenceRow label="来源" value={trace?.source ?? "追踪不可用"} />
+              <EvidenceRow label="Trace ID" value={trace?.traceId ?? "未记录"} />
+              <EvidenceRow label="可用性" value="可用" />
+            </div>
+            {trace?.reason && <p className="mt-3 text-xs leading-5 text-bench-700">{trace.reason}</p>}
+            <div className="mt-3 flex flex-wrap gap-2">
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={handleOpenTrace}
+                disabled={traceOpenDisabled}
+                title={traceOpenUnavailable ? "这个本地 Trail 没有关联 Langfuse 追踪。" : undefined}
+              >
+                <ExternalLink size={14} />
+                {traceOpenUnavailable ? "仅本地 Trail" : openingTrace ? "正在打开" : "在 Langfuse 中打开"}
+              </Button>
+            </div>
+          </>
+        ) : (
+          <p className="text-xs leading-5 text-bench-700">
+            本地 Trails 模式 · 追踪数据来自 Ora 运行时快照
+            {trace?.traceId && <span className="block mt-1 text-[11px] text-bench-500">Trace: {trace.traceId}</span>}
+          </p>
+        )}
       </DockCard>
 
       <DockCard title="生成引用" icon={<Clock3 size={16} />}>
