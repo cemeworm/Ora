@@ -2,6 +2,8 @@
 
 本文解释 Ora 的工具系统如何从一次模型 tool call 走完 proposal、risk、approval、execution、recovery、ledger、snapshot 和 desktop projection 的完整治理链。它不是简单 tool calling 说明书，而是解释 **Ora 如何在 agent runtime 层面把工具调用变成可恢复、可审计、可治理的执行事实**。
 
+> **最近更新 (2026-05-16)**：缓存键完整性规则、写工具内容键、重复工具决策统一、Symbol.for() 中断识别、Image 内容块、skills.patch 工具。
+
 ## 阅读地图
 
 ### 核心类型
@@ -39,7 +41,7 @@
 | Action Proposal | `apps/runtime/src/harness/runtime-tool-action-proposal.ts` | 从 tool call 创建 ActionRecord 和 tool call envelope |
 | Action Runner | `apps/runtime/src/harness/runtime-action-runner.ts` | action 状态转换、审批决议、成功/失败记录 |
 | Approval | `apps/runtime/src/harness/runtime-tool-approval.ts` | approval copy 生成、中文/英文自动选择 |
-| Interrupts | `apps/runtime/src/harness/runtime-interrupts.ts` | ApprovalInterruptError、ClarificationInterruptError、resume 审批匹配 |
+| Interrupts | `apps/runtime/src/harness/runtime-interrupts.ts` | ApprovalInterruptError/ClarificationInterruptError（Symbol.for() 双重识别）、resume 审批匹配 |
 | Boundary | `apps/runtime/src/harness/runtime-tool-boundary.ts` | Code Development mode 下 orchestrator 的工具边界守卫 |
 | Recovery Policy | `apps/runtime/src/harness/recovery-policy.ts` | 错误分类引擎、恢复规则匹配、重试退避计算 |
 
@@ -334,7 +336,7 @@ throw new ApprovalInterruptError(action.id);
 
 ```ts
 .catch((error) => {
-  if (error instanceof ApprovalInterruptError) {
+  if (isApprovalInterruptError(error)) {
     nodeLoopController.emitGateRequired({
       agentId, title, actionId, toolId, detail, iteration,
     });
@@ -342,6 +344,8 @@ throw new ApprovalInterruptError(action.id);
   throw error; // 继续向上传播
 });
 ```
+
+> **中断错误识别**：全仓库使用 `isApprovalInterruptError()` / `isClarificationInterruptError()` / `isAnyInterruptError()` 三个 helper 函数（`Symbol.for()` + `instanceof` 双重检查），不再直接使用 `instanceof`。详见 `runtime-interrupts.ts`。
 
 ### 4.3 Node Loop 层中断
 
@@ -414,6 +418,60 @@ Snapshot 中的 `actions` 和 `toolCalls` 随后通过 `RuntimeSessionLedger` �
 
 - Snapshot 是**内存 live 视图**，Ledger 是**耐久事实**。恢复时应该信 Ledger projection，而不是直接信快照。`continuation.frame` 中的 `pendingActionIds` 和 `approvedActionIds` 是 resume 的关键锚点。
 - Tool result 有两条可见路径：运行中通过 `OraToolCallEnvelope.result` / `tool.called` 事件进入 live snapshot；终态和 reload 后以 `RuntimeToolResultLedgerEntry` / `snapshot.toolResults` 为 durable 结果来源。Tools tab 会合并两者，ledger-backed result 不应被 live envelope 覆盖。
+
+## 5.4 只读工具缓存键完整性
+
+所有只读工具的缓存键（`cacheKeyForRuntimeTool()`）必须包含所有影响输出内容或范围的参数。规则：**每个影响输出内容或范围的参数必须包含在键中**。
+
+| 工具 | 缓存键参数 |
+| --- | --- |
+| `file.read` | `path` + `offset` + `limit` |
+| `file.glob` | `patterns` + `path` + `limit` |
+| `file.grep` | `pattern` + `path` + `include` + `caseSensitive` + `limit` |
+| `file.list` | `path` + `recursive` + `limit` |
+| `web.fetch` | `url` + `extract_pattern` |
+| `web.search` | `query` |
+
+> 任何改变返回内容的参数都必须体现在缓存键中。缓存命中率可能略微降低，但结果正确性优先。
+
+## 5.5 写工具内容键与重复检测
+
+写工具的重复检测原先仅使用 `salientArgs`（如 `path`），导致同一文件的不同编辑被误判为重复。新增 `writeToolContentKey()` 函数：
+
+- **`file.patch`**：对 `oldText` 使用 DJB2 哈希（32 位，无外部依赖）
+- **`file.write`**：对内容使用内容哈希
+- **`file.apply_patch`**：对 patch 内容使用内容哈希
+
+仅使用 `oldText`（而非完整编辑内容），因为同一位置的重复尝试（不同的 `newText`）应计入重复计数。单次运行内的 DJB2 碰撞概率可忽略。
+
+## 5.6 重复工具决策统一
+
+重复工具守卫的所有阈值和历史追踪收拢到单一决策点 `decideRepeatedToolAttempt()`（`runtime-completion.ts`）。原先 `registerToolAttempt()` 在 `repeatCount > repeatedToolLimit` 时设限，但 `markToolResultObserved()` 在 `repeatCount >= repeatedToolLimit` 时强制终态——两个阈值的不一致产生了边界误杀。统一后，缓存命中观察仅为元数据记录，不影响重复计数阈值。
+
+## 5.7 Image 内容块支持
+
+Ora 支持用户粘贴截图作为 agent 上下文输入。全链路如下：
+
+- **Desktop 层**：粘贴处理 + ImagePill 渲染 → `ChatInput.tsx` / `ChatView.tsx`
+- **状态层**：`pastedImages` 数组（base64 data URLs） → `state.tsx` reducer
+- **Runtime 上下文**：`buildDesktopRunContext` 提取图像 → `workspaceContext`
+- **系统提示词**：`attachedImagesSystemPrompt` 注入用法说明 → `runtime-prompts.ts`
+- **Provider 层**：`ModelImageBlock` 类型 + Anthropic provider 图像内容块构建 → `providers/anthropic.ts`
+
+图像以 base64 data URLs 形式存储和传输，复用文件 attachment 的分层架构（编辑器 → 状态 → runtime 上下文 → provider 内容块）。
+
+## 5.8 skills.patch 工具
+
+新增 `skills.patch` 工具供 agent 修改/创建 skill：
+
+- **分层模糊匹配**：精确 ID 匹配 → 空白归一化匹配 → 预览报错
+- **动态 approval 策略**：`background_auto` 创建的 skill 走低风险审批路径
+- **Provance 检查前置**：在 execute 阶段检查 provenance，而非在 patch 阶段
+- **并行批量审批**：同 run 内的多个 skill 修改合并为单次审批
+
+## 5.9 auto_review Gate 关闭
+
+`auto_review` 权限模式下，`runtime-action-runner.ts` 主动扫描 ledger 中所有 `approval_required` 的残留 action 并自动关闭对应 gate。这是防御性修复——确保 `auto_review` 模式下 ledger 中无残余 gate，审计日志与用户感知一致。
 
 ## 6. Tool Recovery 与 Provider Recovery
 

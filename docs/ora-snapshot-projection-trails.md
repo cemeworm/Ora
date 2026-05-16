@@ -2,6 +2,8 @@
 
 本文解释 runtime 产生的执行事实如何经过 snapshot、projection、trails 三层加工，最终变成 desktop UI 可消费的七个标签页。它把 `StateSnapshot` → `toFlowRunDetail` / `toSessionTurn` → `synthesizeLocalTrail` → `trailViewModel` → `TrailsTabs` 串成一条完整的消费链。
 
+> **最近更新 (2026-05-16)**：preservedSettledSnapshot、GateProjection 共享层、snapshot 缓存指纹含 turnIndex、Trail 面板信息审计。
+
 ## 阅读地图
 
 | 关注点 | 对应章节 |
@@ -90,7 +92,7 @@ StateSnapshot {
   RuntimeSessionLedger → deriveSessionProjection → deriveRunSnapshot → snapshot 重建
 ```
 
-desktop UI 在 run 运行期间消费 live snapshot（路径 A），run 完成后切换到 ledger-backed snapshot（路径 B）。Streaming 热路径已做分层优化：纯 delta（`message.delta`/`token.delta`）先 publish 再 cache/flush，确保可见流不被 ledger I/O 阻塞；desktop RAF 批次内合并同 run 的 live delta stream，减少 per-token reducer dispatch。这两条路径的关键区别：
+desktop UI 在 run 运行期间消费 live snapshot（路径 A），run 完成后切换到 ledger-backed snapshot（路径 B）。Streaming 热路径已做分层优化：采用三级事件分类（delta / passive_accumulation / durable_projection），被动事件跳过 Zod parse 和 ledger flush；desktop RAF 批次内合并同 run 的 live delta stream，减少 per-token reducer dispatch。两条路径均携带可选的 `latency` marks 用于跨层延迟诊断。这两条路径的关键区别：
 
 | 维度 | Live Snapshot | Ledger-backed Snapshot |
 | --- | --- | --- |
@@ -155,6 +157,21 @@ StateSnapshot
 ```
 
 全部定义在 `apps/runtime/src/run-projections.ts`。
+
+#### 3.1.1 GateProjection 统一
+
+`packages/shared/src/runtime.ts` 中的 `deriveSnapshotGateProjection()` 是所有 UI 表面消费 gate 状态的唯一入口。它返回 `GateProjection` 结构（含 kind、source、durable、staleRisk、gateIds、pendingActionIds 等字段）。所有 projection 函数在需要 gate 信息时统一调用此函数，不各自推断。
+
+#### 3.1.2 preservedSettledSnapshot：防止 turn 切换时内容消失
+
+当 Turn A 完成、用户开始 Turn B 时，`BEGIN_RUN_REQUEST` 同步切换 `runLifecycle` 为 pending 状态，而 Turn A 的最终 settlement stream 可能尚未到达 `turnSnapshots`（存在 RAF 缓冲区竞态）。新增 `preservedSettledSnapshot` 作为第三状态层：
+
+- `BEGIN_RUN_REQUEST` 时，在切换 pending 之前将当前已完成的 active snapshot 保存到 reducer state
+- `deriveRenderableTurnSnapshots` 将其作为确定性回退（fallback 到 `preservedSettledSnapshot` 当 live snapshot 不可用时）
+
+#### 3.1.3 Snapshot 缓存指纹含 turnIndex
+
+`snapshotCacheFingerprint` 现在在缓存键中包含 `turnIndex`，确保不同 turn 的 snapshot 不会错误命中同一缓存。这修复了审批后 assistant 消息流式输出位置错乱的 bug（流式输出出现在历史消息上方而非底部）。
 
 ### 3.2 toRunHandle / toFlowRunHandle
 
@@ -501,15 +518,18 @@ Desktop 在 session 切换时保留非 terminal session 的 turn snapshots，确
 
 | 消费内容 | snapshot 字段 |
 | --- | --- |
-| 延迟 marks | `latency.marks` (name, source, at, detail) |
+| 延迟 marks | `latency.marks` (name, source, at, detail)，含跨 5 层标记（provider → runtime → stdio → tauri → desktop） |
 | 首文本证据 | `latency.marks` + `output` + shared assistant text projection + `events` (message.delta fallback) |
-| 分段诊断 | marks 匹配 14 个预定义段定义 |
+| 分段诊断 | marks 匹配 14 个预定义段定义，desktop 端额外提供 5 段传输/UI 延迟分段 |
 
 ### 6.6 Evidence（证据）
 
 | 消费内容 | 数据来源 |
 | --- | --- |
 | 追踪状态 | `trace` (provider, source, traceId, available) |
+| 对话内容 | `trailViewModel.ts` 中 `ConversationViewEntry.rawContent`（JSON 格式化展示） |
+
+> **Trail 面板信息审计 (2026-05-16)**：修复了 11 项无效/不准确的信息展示，涵盖数据源准确性（概览事件计数、成本加载态、对比标签页死列）、可用性（焦点→模式卡片、disabled tooltips、追踪状态精简）、信息分层（发现列表分层、移除诊断中重复的执行地图）、中文化（诊断信号、对比裁决）。
 | 生成引用 | `trace.generationRefs` |
 | 观测记录 | `trail.observations` (本地合成 + Langfuse) |
 | 运行附件 | `artifacts`, `checkpoints`, `plan` |

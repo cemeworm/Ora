@@ -2,6 +2,8 @@
 
 本文描述当前 Ora runtime loop 的主结构：Task Flow 兼容层、run 外层生命周期、continuation dispatcher、mode 编排层、单个 node 内部的 model-tool loop，以及 plan list、gate、streaming finalization 如何进入持久 projection。
 
+> **最近更新 (2026-05-16)**：事件分类三级模型、消息架构统一、final output guard 60 字符阈值、流式延迟标记。
+
 ## 阅读地图
 
 Ora 的 runtime loop 不是单一循环，而是几层边界叠在一起：
@@ -395,32 +397,23 @@ Agent/tool context 里发出的 runtime event 应该带上执行上下文。`Run
 
 ## Ledger 和 streaming finalization
 
-```mermaid
-flowchart TD
-  A["streaming runtime events"] --> B{"event kind"}
-  B -->|"pure delta (message.delta / token.delta)"| C["publish first, then cache/flush"]
-  B -->|"non-delta (gate/tool/terminal)"| D["cache → flush → publish"]
+### 事件分类三级模型
 
-  E["runtime.event_batch"] --> F{"flush tier"}
-  F -->|"high-freq :events-"| G["payload: events/eventCount/status/output/error; NO snapshot"]
-  F -->|"low-freq :update- (durable boundary)"| H["payload: + compact snapshot"]
+流式事件不再只有二元（delta / non-delta）区分，而是三级分类：
 
-  G --> I["ledger projection reconstructs from nearest :update- snapshot"]
-  H --> I
+| 类别 | 描述 | flush 行为 | Zod parse | 典型事件 |
+| --- | --- | --- | --- | --- |
+| `delta` | 用户可见的增量内容 | publish-first | 否（直接拼接） | `message.delta`, `token.delta` |
+| `passive_accumulation` | 无状态变更的累积更新 | 跳过 flush，仅累积在内存 | 否 | `node.updated`, `context.usage.updated`, `agent.message`（纯累积） |
+| `durable_projection` | 影响 durability 的状态变更 | 即时 flush | 是（关键字段） | `tool_called`, `action.updated`, `run.done` |
 
-  J["provider SSE"] --> K{"terminal signal"}
-  K -->|"data: [DONE]"| L["finish provider stream"]
-  K -->|"idle watchdog timeout"| M["fail stream"]
-  L --> N["run.done / terminal snapshot"]
-  M --> O["run.failed projection"]
+**被动事件快路径**：`passive_accumulation` 类事件（如高频的 `node.updated`、`context.usage.updated`）完全不触发 Zod parse、ledger flush 或数组复制。它们仅在内存中累积状态更新，避免了 O(n) 的每事件投影开销。Desktop 端的 `APPLY_RUN_STREAM` reducer 对纯被动流事件也实施早期退出。
 
-  P["maintenance staleRunningMs"] --> Q["ledger-projected queued/running with no progress"]
-  Q --> R["append terminal run.failed"]
-```
+**Durable boundary 智能 flush**：`durable_projection` 类事件中，仅关键状态变更（`approval_required`、`completed`、`failed`）触发即时 flush。非关键 durable 事件按批次延迟 flush。
 
-**Event batch 分层 compaction**：高频 `:events-` batch（流式运行期间定期 flush）不再写入 `snapshot` 字段，仅保留 `events`/`eventCount`/`status`/`output`/`error`；低频 `:update-` batch（在 `run.done`、`run.failed`、`checkpoint.created` 等 durable boundary）携带 compact snapshot。投影从最近的 `:update-` snapshot 结合 gate/tool result 等独立 entry 重建必要状态。
+**每事件投影次数削减**：原先每个 work projection 事件执行 4 次 Zod parse，优化后降至 1 次（复用 parsed snapshot，仅在状态确实变更时重新 parse）。
 
-**Publish-before-flush**：纯 delta 事件（`message.delta`、`token.delta`）先 publish 到 subscriber，再 cache 和 flush ledger，确保可见流不被 flush I/O 阻塞。Non-delta 事件（gate、tool、terminal）保持 cache→flush→publish 顺序，确保状态完整性。
+### Event batch 分层与发布策略
 
 `RunStreamingService` 还维护 per-run `AbortController`，`runs.interrupt` / `runs.cancel` 会 abort active controller，并把 signal 传给 kernel、node loop 和 provider request。Runtime maintenance 可以把超过 `staleRunningMs` 的 stale queued/running ledger projection 收敛成 terminal failed run。
 
@@ -430,9 +423,9 @@ run 能否自然完成进入三阶段 completion guard 检查：
 
 1. **Plan-list lifecycle**：基于当前 agent/node 的 successful non-plan tool evidence 推进 active step，不从纯文本语义猜测完成状态。
 2. **Pending work guard**：验证无 pending action、approval、tool call、plan step 或 runtime work 残留。
-3. **Final output guard**（`finalOutputGuard`）：验证最新模型回复在修剪后包含非空用户可见文本；若 post-tool 回复为空，触发 one-shot `toolChoice: "none"` repair turn；若 repair 同样返回空结果，run 以 `failed`/degraded 终止并附带具体错误。
+3. **Final output guard**（`finalOutputGuard`）：验证最新模型回复在修剪后包含足够长度的用户可见文本。新增 `MIN_VISIBLE_CONTENT_LENGTH = 60` 字符阈值——短于 60 字符的响应即使非空也视为截断并触发一次修复轮次。若 post-tool 回复为空，触发 one-shot `toolChoice: "none"` repair turn；若 repair 同样返回空结果或仍短于阈值，run 以 `failed`/degraded 终止并附带具体错误。
 
-Final output guard 为结构性检查，不依赖中文/英文的"未完成引言"短语匹配。同时，kernel 不再对空模型回复发出 `message.delta` / `token.delta`，避免把空响应误渲染为有意义的输出。
+Final output guard 为结构性检查，不依赖中文/英文的"未完成引言"短语匹配。同时，kernel 不再对空模型回复发出 `message.delta` / `token.delta`，避免把空响应误渲染为有意义的输出。注意：良性短回复（如"巴黎是法国的首都"）也会触发修复——这仅增加一次 API 调用，不会造成功能性损害。
 
 ### Terminal State Invariant
 
@@ -497,6 +490,38 @@ orchestrator 负责计划和协调，实际代码修改必须落到 builder 阶�
 - Agent 间可通过 `message.send` 工具发送消息，实现通信协调。
 
 这与 mode driver delegation 是互补关系：mode driver 提供模式级别的结构性编排，`agent.spawn` 提供运行时级别的动态灵活性。
+
+### 消息架构统一
+
+原先存在两套独立的消息系统——`emitAgentMessage`（对 UI 可见但未投递到 agent）和 `message.send`（投递成功但 UI 不可见）。现已统一为单通道：
+
+- **emitAgentMessage**：对所有有 `toAgentIds` 的类型自动入队（actor 系统投递）。不再仅 emit event，而是确保消息实际到达目标 agent。
+- **message.send** 工具：同步发出 `agent.message` 事件作为 UI 可见事件，同时执行 actor 投递。这打通了 UI 可见 + 投递双通道。
+- **agent.message 事件分类**：此事件被分类为 `passive_accumulation`（而非 `durable_projection`），不触发 Zod parse 或 ledger flush，确保高频 agent 间通信不成为性能瓶颈。
+
+### 流式延迟标记
+
+流式链路新增跨层延迟标记，用于区分各层的延迟贡献。`RunEventStream` 携带可选的 `latency` 字段，在各关键节点打标记：
+
+| 层 | 打标点 | 路径 |
+| --- | --- | --- |
+| Provider | provider 响应到达时 | `run-streaming.ts` |
+| Runtime transport | stdio 写入前 | `stdio.ts` |
+| Tauri bridge | sidecar 读取/发送 | `sidecar.rs` |
+| Desktop receive | 监听器接收 | `App.tsx` |
+| Desktop flush | 批处理刷新 | `App.tsx` / `state.tsx` |
+
+所有 marks 合并入 `latency.marks`，通过 Trail 面板的 Latency 标签页可视化。Desktop 端在 `trailViewModel.ts` 中额外提供 5 段传输/UI 延迟分段。
+
+### Plan card 流式
+
+Plan 模式下含有 `<proposed_plan>` 的 session 输出现在支持流式传输期间即时显示 PlanCard——不需等待整个输出完成。关键改动在 `overlayLiveMessageDeltas()` 中：
+
+1. 流式传输期间检测 `<proposed_plan>` 标签
+2. 首次检测到时立即更新 `hasProposedPlan`、`proposedPlanStatus` 和 `activeLoadingTarget`
+3. 新增 `extractProposedPlanBody` 辅助函数提取计划正文
+
+这确保用户在流式传输中就能看到计划的结构化卡片，而非等待全部 token 到达后才渲染。
 
 ### Accepted plan handoff
 
