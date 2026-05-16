@@ -31,11 +31,13 @@ describe("driver capability manifest", () => {
     }
   });
 
-  it("shared_state is the only family with parallel layers", () => {
+  it("families with parallel layers support", () => {
     for (const manifest of Object.values(BUILT_IN_DRIVER_MANIFESTS)) {
       if (manifest.family === "shared_state") {
         expect(manifest.supportsParallelLayers).toBe(true);
         expect(manifest.execution).toBe("layered_parallel");
+      } else if (manifest.family === "orchestrator_subagent" || manifest.family === "agent_teams" || manifest.family === "message_bus") {
+        expect(manifest.supportsParallelLayers).toBe(true);
       } else {
         expect(manifest.supportsParallelLayers).toBe(false);
       }
