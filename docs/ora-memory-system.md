@@ -35,7 +35,7 @@
 
 ## 1. 系统总览
 
-> **最近更新 (2026-05-16)**：混合语义检索（embedding + FTS5）、CAS 并发控制、Dreaming 全链路接入、Section summaries 质量门控、Memory 损坏保护、Provider 更新降级、2-gram Jaccard 语义去重、组合淘汰评分。
+> **最近更新 (2026-05-16)**：混合语义检索（embedding + FTS5）、CAS 并发控制（`_version` 单调版本号）、Dreaming 全链路接入、Section summaries 质量门控、Memory 损坏保护、Provider 更新降级、2-gram Jaccard 语义去重、组合淘汰评分。
 
 Ora 的 memory 系统由五个子系统组成，每个负责生命周期的一个阶段：
 
@@ -260,7 +260,7 @@ ModeMemoryPolicy {
 
 ### 3.2 Policy 解析
 
-`resolveMemoryPolicy`（`mode-selection.ts:253`）的逻辑：
+`resolveMemoryPolicy`（`mode-selection.ts:365`）的逻辑：
 
 ```text
 1. 取 modeSpec.memoryPolicy（来自 ModeSpec 的默认值或用户配置）
@@ -278,7 +278,7 @@ Active Memory 是每次 run 启动时执行的检索-评分-准入-渲染链路�
 
 ### 4.1 检索（Retrieval）
 
-入口：`buildActiveMemoryContext`（`active-memory.ts:65`）
+入口：`buildActiveMemoryContext`（`active-memory.ts:66`）
 
 ```text
 1. 从 Long-Term Memory 收集候选:
@@ -348,7 +348,7 @@ Memory cards:
 
 Admission 有两条路径：确定性（deterministic）和 Provider 驱动。
 
-### 5.1 确定性 Admission（`active-memory.ts:145`）
+### 5.1 确定性 Admission（`active-memory.ts:147`）
 
 即上述 4.3 的评分门槛过滤。始终可用，不产生 Provider 调用成本。
 
@@ -392,7 +392,7 @@ Memory 更新是 run 结束后的异步过程，将对话中提取的事实沉�
 
 ### 6.1 触发时机
 
-`scheduleLongTermMemoryUpdate`（`memory-updates.ts:23`）在 run 状态变为 `completed` / `failed` / `cancelled` 时被调用。规则：
+`scheduleLongTermMemoryUpdate`（`memory-updates.ts:25`）在 run 状态变为 `completed` / `failed` / `cancelled` 时被调用。规则：
 
 - 如果 snapshot.status 仍是 `queued` 或 `running`：跳过（等待最终状态）
 - 如果 policy.enabled 为 false：跳过
@@ -418,7 +418,7 @@ Memory 更新是 run 结束后的异步过程，将对话中提取的事实沉�
    - **语义去重（2-gram Jaccard）**：content 的 2-gram 字符集 Jaccard 相似度 > 0.7 视为重复，阻止插入
    - **确定性提取使用对话消息**：后续轮次的纠正/偏好提取基于完整对话消息，不仅限于 prompt
 
-4. **组合淘汰评分**：当 facts 超过上限时，计算每个 fact 的淘汰评分 = `confidence × exp(-age_days / 90)`（90 天半衰期），淘汰最低分事实
+4. **组合淘汰评分**：当 facts 超过上限时，计算每个 fact 的淘汰评分 = `confidence × exp(-0.0077 × age_days)`（90 天半衰期），淘汰最低分事实
 5. 插入 facts，按 confidence 降序 + createdAt 排序，截断到 maxFacts
 5. 自动更新 topOfMind 和 recentMonths 摘要
 ```
@@ -493,7 +493,7 @@ Memory 更新是 run 结束后的异步过程，将对话中提取的事实沉�
    - 为每个新 fact 创建 claim
 
 2. 检测矛盾（detectContradictions）:
-   - 扫描 always/never、do/don't、should/should not、prefer/avoid 对立
+   - 扫描 always/never、do/don't、should/should not、is/is not、prefer/avoid 对立
    - 检测相同话题包含 correction 标记的 claim 对
 
 3. 保留已有 openQuestions
@@ -532,7 +532,7 @@ Deep Phase（深度）
 
 **从预览到事实**：`factsFromPromotionPreview` 将 `recommendPromote` 候补转为 `LongTermMemoryFact`（confidence 略做增量 +0.05）。
 
-**Dreaming 全链路接入**（新增）：Dreaming 调度器（`memory-dreaming-scheduler.ts`）已正式接入 `AutomationService` 模式，按配置节律自动触发三阶段分析。Journal 写入路径已打通的 dreaming 晋升管道——promotion 候选通过 ledged journal 写入后，在后续 run 中进入 active memory 候选池。
+**Dreaming 全链路接入**（新增）：Dreaming 调度器（`memory-dreaming-scheduler.ts`）作为 `RunStore` 独立组件运行，按配置节律自动触发三阶段分析（`setInterval` 60s 检查，触发条件：signalCount ≥ 50 或距上次 ≥ 24h）。Journal 写入路径已打通的 dreaming 晋升管道——promotion 候选通过 ledged journal 写入后，在后续 run 中进入 active memory 候选池。
 
 ### 7.4 Section Summaries 质量门控与空过滤
 
@@ -605,7 +605,7 @@ Journal 记录「发生了什么」（短期、信号级别），Long-Term Memor
 
 ### 9.5 Memory Policy 的 enabled 不等于生效
 
-`enabled` 需要 AND `runtimeAtoms.includes("long_term_memory")` 才真正生效（`resolveMemoryPolicy` 第 258 行）。配置 policy 但忘记在 mode 的 runtimeAtoms 中声明该能力，memory 不会工作。
+`enabled` 需要 AND `runtimeAtoms.includes("long_term_memory")` 才真正生效（`resolveMemoryPolicy` 第 370 行）。配置 policy 但忘记在 mode 的 runtimeAtoms 中声明该能力，memory 不会工作。
 
 ### 9.6 项目和用户 memory 的隔离
 
@@ -620,12 +620,12 @@ Active Memory 检索时会同时收集用户级和项目级候选，项目级候
 ### 10.1 当前保守边界
 
 - **语义检索**：已实现——`embedding-provider.ts` 支持 hybrid/semantic/fts_only 三种模式，embedding provider 不可用时自动降级到 FTS5。
-- **Dreaming 自动晋升**：已实现——`memory-dreaming-scheduler.ts` 接入 `AutomationService`，按配置节律自动运行三阶段分析并写入 journal。
-- **Facts 淘汰**：已实现——组合淘汰评分（`confidence × exp(-age_days/90)`，90 天半衰期）。
+- **Dreaming 自动晋升**：已实现——`memory-dreaming-scheduler.ts` 作为 `RunStore` 独立组件按配置节律运行三阶段分析并写入 journal。
+- **Facts 淘汰**：已实现——组合淘汰评分（`confidence × exp(-0.0077 × age_days)`，90 天半衰期）。
 - **Semantic 去重**：已实现——2-gram Jaccard > 0.7 语义去重。
 - **Memory 损坏保护**：已实现——`.bak` 备份 + 自动恢复。
 - **Provider 降级**：已实现——区分可重试/不可重试错误，指数退避重试。
-- **CAS 并发控制**：已实现——版本追踪 + 自动合并事实。
+- **CAS 并发控制**：已实现——`_version` 单调递增版本号 + 自动合并事实。
 - **Provider admission 超时**：已实现——EWMA 自适应超时跟踪器。
 - **Section summaries 质量门控**：已实现——最小长度检查、previousSummary 比较、diff 日志。
 - **空 section 过滤**：已实现——`MIN_SECTION_CONTENT_LENGTH = 10`。
