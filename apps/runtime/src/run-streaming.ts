@@ -1,7 +1,9 @@
 import {
   AgentConversationMessageSchema,
+  DELTA_EVENT_TYPES,
   normalizeRunAttention,
   OraEventEnvelope,
+  PASSIVE_EVENT_TYPES,
   PendingClarificationSchema,
   RunEventStream,
   RunEventStreamSchema,
@@ -304,11 +306,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 export function isPureDeltaEvent(event: OraEventEnvelope): boolean {
-  return event.type === "message.delta" || event.type === "token.delta";
+  return DELTA_EVENT_TYPES.has(event.type);
 }
 
 export function isPassiveAccumulationEvent(event: OraEventEnvelope): boolean {
-  return event.type === "node.updated" || event.type === "context.usage.updated" || event.type === "agent.message";
+  return PASSIVE_EVENT_TYPES.has(event.type);
 }
 
 function isPureDeltaStream(events: readonly OraEventEnvelope[]): boolean {

@@ -40,7 +40,7 @@ export type RunStatus = z.infer<typeof RunStatusSchema>;
 
 export const ResourceBudgetSchema = z.object({
   maxTokens: z.number().int().positive(),
-  maxToolCalls: z.number().int().nonnegative(),
+  maxToolCalls: z.number().int().nonnegative().default(256),
   maxRuntimeMs: z.number().int().positive(),
   maxCostUsd: z.number().nonnegative().optional()
 });
