@@ -557,6 +557,33 @@ export const OraEventEnvelopeSchema = z.object({
 });
 export type OraEventEnvelope = z.infer<typeof OraEventEnvelopeSchema>;
 
+/**
+ * Event category for streaming classification.
+ * - delta: user-visible incremental content (publish-first, lightweight cache)
+ * - passive_accumulation: status updates without state change (publish, accumulator-only)
+ * - durable_projection: state-changing events (cache-flush-first, ledger-persisted)
+ */
+export type EventCategory = "delta" | "passive_accumulation" | "durable_projection";
+
+/** Delta events — user-visible incremental text/token output. */
+const DELTA_EVENT_TYPES: ReadonlySet<OraEventType> = new Set([
+  "message.delta",
+  "token.delta",
+]);
+
+/** Passive accumulation events — status updates with no state change. */
+const PASSIVE_EVENT_TYPES: ReadonlySet<OraEventType> = new Set([
+  "node.updated",
+  "context.usage.updated",
+  "agent.message",
+]);
+
+export function classifyEventCategory(eventType: OraEventType): EventCategory {
+  if (DELTA_EVENT_TYPES.has(eventType)) return "delta";
+  if (PASSIVE_EVENT_TYPES.has(eventType)) return "passive_accumulation";
+  return "durable_projection";
+}
+
 export const AgentConversationMessageKindSchema = z.enum([
   "mention",
   "reply",
@@ -719,6 +746,12 @@ export const RunAttentionKindSchema = z.enum([
 ]);
 export type RunAttentionKind = z.infer<typeof RunAttentionKindSchema>;
 
+export const RunAttentionSecondaryKindSchema = z.object({
+  kind: RunAttentionKindSchema,
+  gateIds: z.array(z.string().min(1)),
+});
+export type RunAttentionSecondaryKind = z.infer<typeof RunAttentionSecondaryKindSchema>;
+
 export const RunAttentionSchema = z.object({
   kind: RunAttentionKindSchema,
   blocking: z.boolean().default(false),
@@ -728,6 +761,10 @@ export const RunAttentionSchema = z.object({
   pendingToolCallIds: z.array(z.string().min(1)).default([]),
   pendingClarificationIds: z.array(z.string().min(1)).default([]),
   planDecisionId: z.string().min(1).optional(),
+  /** Secondary blocking gate kinds, exposed so the UI can surface
+   *  "you also need to approve X" even when a higher-priority gate
+   *  (e.g. clarification) is the primary attention. */
+  secondaryKinds: z.array(RunAttentionSecondaryKindSchema).optional(),
 });
 export type RunAttention = z.infer<typeof RunAttentionSchema>;
 

@@ -222,6 +222,34 @@ const BranchGroupPayloadSchema = SessionBranchGroupSchema.partial().extend({
   dismissedRunIds: z.array(z.string().min(1)).optional(),
 });
 
+/** Maps each entry type to its validated payload schema. */
+const RUNTIME_SESSION_ENTRY_PAYLOAD_SCHEMAS: Record<RuntimeSessionEntryType, z.ZodTypeAny> = {
+  "session.created": SessionCreatedPayloadSchema,
+  "session.info": SessionInfoPayloadSchema,
+  "user.message": UserMessagePayloadSchema,
+  "run.started": RunStartedPayloadSchema,
+  "runtime.event_batch": RuntimeEventBatchPayloadSchema,
+  "assistant.checkpoint": AssistantCheckpointPayloadSchema,
+  "assistant.message": AssistantMessagePayloadSchema,
+  "tool.result": ToolResultPayloadSchema,
+  "gate.opened": GateOpenedPayloadSchema,
+  "gate.resolved": GateResolvedPayloadSchema,
+  "handoff.accepted_plan": AcceptedPlanHandoffPayloadSchema,
+  "compaction.summary": CompactionSummaryPayloadSchema,
+  "branch.created": BranchGroupPayloadSchema,
+  "branch.candidate_started": BranchGroupPayloadSchema,
+  "branch.adopted": BranchGroupPayloadSchema,
+  "branch.dismissed": BranchGroupPayloadSchema,
+};
+
+/** Parse an entry payload using the correct schema for its type. */
+export function parseEntryPayload<T extends RuntimeSessionEntryType>(
+  type: T,
+  payload: unknown,
+): z.infer<(typeof RUNTIME_SESSION_ENTRY_PAYLOAD_SCHEMAS)[T]> {
+  return RUNTIME_SESSION_ENTRY_PAYLOAD_SCHEMAS[type].parse(payload);
+}
+
 interface ProjectionState {
   title: string;
   projectId: string | undefined;
@@ -455,6 +483,17 @@ export function deriveRunSnapshot(
 export function deriveLedgerRunAttention(run: Pick<RuntimeRunProjection, "runId" | "status" | "gates" | "error" | "events">): RunAttention {
   const openGates = run.gates.filter((gate) => gate.status === "open");
 
+  // Build secondary kind list: any open gate whose kind would not be
+  // the primary attention gets listed as secondary so the UI can show
+  // "waiting for approval (also needs clarification)".
+  const secondaryKinds = openGates
+    .filter((gate) => gate.kind !== "plan_decision")
+    .map((gate) => ({
+      kind: gate.kind === "clarification" ? "needs_clarification" as const
+        : "needs_approval" as const,
+      gateIds: [gate.gateId],
+    }));
+
   // Projection-level integrity guard: a terminal run (succeeded /
   // failed / cancelled) must not carry open gates. If open gates
   // exist alongside a terminal status, the projection has been
@@ -479,6 +518,7 @@ export function deriveLedgerRunAttention(run: Pick<RuntimeRunProjection, "runId"
       sourceRunId: run.runId,
       reason: "clarification_required",
       pendingClarificationIds: clarification.pendingClarificationIds,
+      secondaryKinds: secondaryKinds.filter((s) => s.kind !== "needs_clarification"),
     });
   }
   const approval = openGates.find((gate) => gate.kind === "approval");
@@ -490,6 +530,7 @@ export function deriveLedgerRunAttention(run: Pick<RuntimeRunProjection, "runId"
       reason: "approval_required",
       pendingActionIds: approval.pendingActionIds,
       pendingToolCallIds: approval.pendingToolCallIds,
+      secondaryKinds: secondaryKinds.filter((s) => s.kind !== "needs_approval"),
     });
   }
   const planDecision = openGates.find((gate) => gate.kind === "plan_decision");
@@ -554,21 +595,21 @@ function applyEntryToProjection(state: ProjectionState, entry: RuntimeSessionEnt
   state.updatedAt = Math.max(state.updatedAt, entry.createdAt);
   switch (entry.type) {
     case "session.created": {
-      const payload = SessionCreatedPayloadSchema.parse(entry.payload);
+      const payload = parseEntryPayload(entry.type, entry.payload);
       state.title = payload.title ?? state.title;
       state.projectId = payload.projectId ?? state.projectId;
       state.createdAt = state.createdAt ?? entry.createdAt;
       break;
     }
     case "session.info": {
-      const payload = SessionInfoPayloadSchema.parse(entry.payload);
+      const payload = parseEntryPayload(entry.type, entry.payload);
       state.title = payload.title ?? state.title;
       state.projectId = payload.projectId ?? state.projectId;
       state.archivedAt = payload.archivedAt ?? state.archivedAt;
       break;
     }
     case "user.message": {
-      const payload = UserMessagePayloadSchema.parse(entry.payload);
+      const payload = parseEntryPayload(entry.type, entry.payload);
       if (entry.runId) {
         state.transcript.push(SessionTranscriptMessageSchema.parse({
           id: entry.id,
@@ -585,7 +626,7 @@ function applyEntryToProjection(state: ProjectionState, entry: RuntimeSessionEnt
       break;
     }
     case "run.started": {
-      const payload = RunStartedPayloadSchema.parse(entry.payload);
+      const payload = parseEntryPayload(entry.type, entry.payload);
       if (!entry.runId) break;
       const run = RuntimeRunProjectionSchema.parse({
         runId: entry.runId,
@@ -609,7 +650,7 @@ function applyEntryToProjection(state: ProjectionState, entry: RuntimeSessionEnt
       break;
     }
     case "runtime.event_batch": {
-      const payload = RuntimeEventBatchPayloadSchema.parse(entry.payload);
+      const payload = parseEntryPayload(entry.type, entry.payload);
       const batchEventCount = payload.eventCount ?? payload.events.length;
       const eventFacts = runtimeEventBatchFacts(payload.events);
       updateRun(state, entry, (run) => ({
@@ -627,7 +668,7 @@ function applyEntryToProjection(state: ProjectionState, entry: RuntimeSessionEnt
       break;
     }
     case "assistant.checkpoint": {
-      const payload = AssistantCheckpointPayloadSchema.parse(entry.payload);
+      const payload = parseEntryPayload(entry.type, entry.payload);
       updateRun(state, entry, (run) => ({
         ...run,
         checkpoints: [...run.checkpoints, payload.checkpoint],
@@ -635,7 +676,7 @@ function applyEntryToProjection(state: ProjectionState, entry: RuntimeSessionEnt
       break;
     }
     case "assistant.message": {
-      const payload = AssistantMessagePayloadSchema.parse(entry.payload);
+      const payload = parseEntryPayload(entry.type, entry.payload);
       updateRun(state, entry, (run) => ({
         ...run,
         status: payload.status ?? run.status,
@@ -660,7 +701,7 @@ function applyEntryToProjection(state: ProjectionState, entry: RuntimeSessionEnt
       break;
     }
     case "tool.result": {
-      const payload = ToolResultPayloadSchema.parse(entry.payload);
+      const payload = parseEntryPayload(entry.type, entry.payload);
       updateRun(state, entry, (run) => ({
         ...run,
         toolResults: [...run.toolResults, payload.result],
@@ -668,7 +709,7 @@ function applyEntryToProjection(state: ProjectionState, entry: RuntimeSessionEnt
       break;
     }
     case "gate.opened": {
-      const payload = GateOpenedPayloadSchema.parse(entry.payload);
+      const payload = parseEntryPayload(entry.type, entry.payload);
       if (!entry.runId) break;
       const gate = RuntimeGateProjectionSchema.parse({
         gateId: payload.gateId,
@@ -692,7 +733,7 @@ function applyEntryToProjection(state: ProjectionState, entry: RuntimeSessionEnt
       break;
     }
     case "gate.resolved": {
-      const payload = GateResolvedPayloadSchema.parse(entry.payload);
+      const payload = parseEntryPayload(entry.type, entry.payload);
       const existing = state.gates.get(payload.gateId);
       if (existing) {
         const resolved = RuntimeGateProjectionSchema.parse({
@@ -718,19 +759,19 @@ function applyEntryToProjection(state: ProjectionState, entry: RuntimeSessionEnt
     case "handoff.accepted_plan": {
       state.acceptedPlanHandoffs = upsertAcceptedPlanHandoff(
         state.acceptedPlanHandoffs,
-        AcceptedPlanHandoffPayloadSchema.parse(entry.payload),
+        parseEntryPayload(entry.type, entry.payload),
       );
       break;
     }
     case "compaction.summary": {
-      state.contextState = CompactionSummaryPayloadSchema.parse(entry.payload).contextState;
+      state.contextState = parseEntryPayload(entry.type, entry.payload).contextState;
       break;
     }
     case "branch.created":
     case "branch.candidate_started":
     case "branch.adopted":
     case "branch.dismissed": {
-      const payload = BranchGroupPayloadSchema.parse(entry.payload);
+      const payload = parseEntryPayload(entry.type, entry.payload);
       const existing = state.branchGroups.get(payload.branchGroupId);
       state.branchGroups.set(payload.branchGroupId, SessionBranchGroupSchema.parse({
         branchGroupId: payload.branchGroupId,
@@ -1009,6 +1050,25 @@ function fallbackActiveAgentsForRun(run: RuntimeRunProjection): string[] {
   return firstProfileId ? [firstProfileId] : [];
 }
 
+/**
+ * @deprecated 事件反向投影 (event back-projection)
+ * 此函数从 gate 决议反向生成 clarification.resolved / approval.resolved /
+ * tool.called 事件，以填补 live snapshot 与 ledger projection 之间的鸿沟。
+ *
+ * 迁移路径：
+ * 1. 消费者从 gate projection 读取 gate 状态 (gates 数组)
+ * 2. 消费者从 toolResult ledger entries 读取工具结果
+ * 3. 不再依赖 events 数组中的 ledger-projected 事件
+ *
+ * 消费者清单 (需逐一迁移):
+ * - apps/desktop/src/lib/viewModel.ts:921-922 (clarification/approval resolved)
+ * - apps/desktop/src/lib/trailViewModel.ts:1669,1673
+ * - apps/desktop/src/lib/state.tsx:1125
+ * - apps/desktop/src/lib/runtimeClient.ts:4893
+ * - apps/runtime/src/run-store.ts (withResumeResolutionEvents)
+ *
+ * 迁移完成后删除此函数。
+ */
 function reconcileSnapshotRuntimeFields(snapshot: StateSnapshot, gates: readonly RuntimeGateProjection[]): StateSnapshot {
   let actions = snapshot.actions;
   let toolCalls = snapshot.toolCalls;

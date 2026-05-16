@@ -96,7 +96,7 @@ export const ModeNodeSpecSchema = z.object({
     clarificationKey: z.string().optional(),
     story: z.unknown().optional(),
     timeoutMs: z.number().int().positive().optional(),
-  }).passthrough().default({}),
+  }).strip().default({}),
 });
 export type ModeNodeSpec = z.infer<typeof ModeNodeSpecSchema>;
 
@@ -192,7 +192,6 @@ export type ModeStageSpec = z.infer<typeof ModeStageSpecSchema>;
 
 export const TranscriptLayoutStyleSchema = z.enum([
   "stage_list",
-  "timeline",
   "two_sided_duel",
   "role_lanes",
   "kanban_pipeline",
@@ -201,11 +200,6 @@ export const TranscriptLayoutStyleSchema = z.enum([
   "evidence_board",
   "comparison_table",
   "artifact_gallery",
-  "branch_compare",
-  "state_board",
-  "event_stream",
-  "graph_topology",
-  "report_builder",
 ]);
 export type TranscriptLayoutStyle = z.infer<typeof TranscriptLayoutStyleSchema>;
 
@@ -480,7 +474,7 @@ const MODE_FAMILY_RULES: Record<
     stopPolicyTypes: ["max_iterations", "manual"],
   },
   orchestrator_subagent: {
-    allowedTemplates: ["decompose", "research", "review", "synthesize"],
+    allowedTemplates: ["decompose", "research", "review", "synthesize", "triage", "build", "check", "handoff"],
     requiredTemplates: ["decompose", "synthesize"],
     stopPolicyTypes: ["queue_drained", "manual"],
   },
@@ -990,7 +984,7 @@ export const MVP_MODE_RUNTIME_ATOMS: ModeRuntimeAtomDefinition[] = [
     scope: "mode",
     label: "Dynamic Stage Skipping",
     description: "Let triage assess task complexity and skip downstream stages for trivial/simple tasks to reduce latency.",
-    compatibleFamilies: ["agent_teams"],
+    compatibleFamilies: ["agent_teams", "orchestrator_subagent"],
     requiresTools: [],
     requiresFlags: [],
     topology: {
@@ -1033,12 +1027,17 @@ export function nodeRuntimeAtomIds(node: Pick<ModeNodeSpec, "config">): ModeRunt
     : [];
 }
 
-function modeUsesSingleOwnerTopology(mode: ModeSpec, orderedNodes: ModeNodeSpec[]): boolean {
+export function modeUsesSingleOwner(mode: ModeSpec, orderedNodes: ModeNodeSpec[]): boolean {
   const fallbackAgentId = mode.profiles[0]?.id;
   const ownerIds = new Set(
     orderedNodes.map((node) => node.ownerAgentId ?? fallbackAgentId).filter((id): id is string => typeof id === "string"),
   );
   return ownerIds.size <= 1 && !orderedNodes.some((node) => nodeRuntimeAtomIds(node).includes("subagent_delegate"));
+}
+
+// Legacy alias — prefer modeUsesSingleOwner
+function modeUsesSingleOwnerTopology(mode: ModeSpec, orderedNodes: ModeNodeSpec[]): boolean {
+  return modeUsesSingleOwner(mode, orderedNodes);
 }
 
 function modePrimaryOwnerAgent(mode: ModeSpec, orderedNodes: ModeNodeSpec[]): AgentProfile | undefined {
@@ -1615,7 +1614,7 @@ export function getModeNodeRuntimeTemplateDefinition(
   family: CoordinationPattern,
   template: ModeNodeTemplate,
 ): ModeNodeRuntimeTemplateDefinition {
-  const definition = MODE_NODE_RUNTIME_TEMPLATE_LIBRARY[family][template];
+  const definition = MODE_NODE_RUNTIME_TEMPLATE_LIBRARY[family]?.[template];
   if (!definition) {
     return {
       description: `No runtime template metadata is registered for '${template}' in family '${family}'.`,
@@ -2472,7 +2471,7 @@ function createCodeDevelopmentModeSpec(): ModeSpec {
 
   return autoLayoutModeSpec(ModeSpecSchema.parse({
     id: CODE_DEVELOPMENT_MODE_ID,
-    family: "agent_teams",
+    family: "orchestrator_subagent",
     label: "Code Development",
     summary: "A project-development team mode that plans, edits, reviews, debugs, and verifies code changes with explicit gates.",
     description: "Use this mode for real project coding tasks where Ora should keep scope tight, use long-task-protocol as the task source of truth, write code, review the diff, diagnose failures, and hand off verifiable evidence instead of only chatting about implementation.",
@@ -2637,7 +2636,7 @@ function createCodeDevelopmentModeSpec(): ModeSpec {
       skillIds: ["long-task-protocol"],
       toolIds: [...DEFAULT_AGENT_MODE_TOOL_IDS],
     },
-    runtimeAtoms: [...defaultRuntimeAtomsForFamily("agent_teams"), "dynamic_stage_skipping"],
+    runtimeAtoms: [...defaultRuntimeAtomsForFamily("orchestrator_subagent"), "dynamic_stage_skipping"],
     complexitySkipRules: {
       L0: ["review", "debug", "handoff"],
       L1: ["debug", "handoff"],
@@ -2894,7 +2893,9 @@ export function validateModeSpec(spec: ModeSpec): ModeValidationResult {
       errors.push(`Runtime atom '${atomId}' cannot be attached at mode scope.`);
     }
     for (const requiredFlag of atom.requiresFlags) {
-      if (!spec.capabilityFlags[requiredFlag as keyof ModeCapabilityFlags]) {
+      if (!(requiredFlag in ModeCapabilityFlagsSchema.shape)) {
+        warnings.push(`Runtime atom '${atomId}' requires unknown capability flag '${requiredFlag}'.`);
+      } else if (!spec.capabilityFlags[requiredFlag as keyof ModeCapabilityFlags]) {
         errors.push(`Runtime atom '${atomId}' requires capability flag '${requiredFlag}'.`);
       }
     }
@@ -2934,7 +2935,9 @@ export function validateModeSpec(spec: ModeSpec): ModeValidationResult {
         errors.push(`Node '${node.id}' cannot attach mode-scoped atom '${atom.id}'.`);
       }
       for (const requiredFlag of atom.requiresFlags) {
-        if (!spec.capabilityFlags[requiredFlag as keyof ModeCapabilityFlags]) {
+        if (!(requiredFlag in ModeCapabilityFlagsSchema.shape)) {
+          warnings.push(`Node atom '${atom.id}' requires unknown capability flag '${requiredFlag}'.`);
+        } else if (!spec.capabilityFlags[requiredFlag as keyof ModeCapabilityFlags]) {
           errors.push(`Node atom '${atom.id}' requires capability flag '${requiredFlag}'.`);
         }
       }
@@ -2970,6 +2973,12 @@ export function validateModeSpec(spec: ModeSpec): ModeValidationResult {
       if (!configuredSides.has("left") || !configuredSides.has("right")) {
         warnings.push("Transcript layout 'two_sided_duel' should configure both left and right sides.");
       }
+    }
+  }
+
+  for (const node of spec.nodes) {
+    if (node.ownerAgentId && !profileIds.has(node.ownerAgentId)) {
+      errors.push(`Node '${node.id}' references unknown owner agent '${node.ownerAgentId}'.`);
     }
   }
 
@@ -3094,6 +3103,26 @@ export function validateModeSpec(spec: ModeSpec): ModeValidationResult {
   };
   for (const node of spec.nodes.filter((candidate) => candidate.enabled)) {
     visit(node.id);
+  }
+
+  // 孤立节点 / 死胡同检测
+  if (enabledNodeIds.size > 1) {
+    const hasIncoming = new Set<string>();
+    for (const edge of spec.edges.filter((e) => e.enabled)) {
+      if (enabledNodeIds.has(edge.target)) {
+        hasIncoming.add(edge.target);
+      }
+    }
+    for (const nodeId of enabledNodeIds) {
+      const targets = adjacency.get(nodeId) ?? [];
+      if (!hasIncoming.has(nodeId) && targets.length === 0) {
+        warnings.push(`Node '${nodeId}' is isolated — it has no connecting edges.`);
+      } else if (!hasIncoming.has(nodeId)) {
+        warnings.push(`Node '${nodeId}' has no incoming edges and may be unreachable.`);
+      } else if (targets.length === 0) {
+        warnings.push(`Node '${nodeId}' has no outgoing edges and may be a dead end.`);
+      }
+    }
   }
 
   const orderedNodes = orderedEnabledModeNodes(spec);

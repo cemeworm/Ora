@@ -603,7 +603,7 @@ describe("runtime session ledger projection", () => {
     }));
   });
 
-  it("does not let duplicate opened gate facts resurrect a resolved gate", () => {
+  it("allows gate.opened to overwrite a resolved gate (Map.set semantics for gate reopening)", () => {
     const ledger = baseLedger([
       entry({
         id: "e-run",
@@ -656,11 +656,13 @@ describe("runtime session ledger projection", () => {
 
     const projection = deriveSessionProjection(ledger);
 
+    // Map.set 语义：重复的 gate.opened 覆盖已 resolved 的 gate 回到 open。
+    // 支持同一 run 内多次审批的 gate 重开。
     expect(projection.gates.find((gate) => gate.gateId === "gate-approval")).toMatchObject({
-      status: "resolved",
-      resolvedAt: BASE_TIME + 3,
+      status: "open",
+      openedAt: BASE_TIME + 4,
     });
-    expect(projection.latestSnapshot?.pendingApprovals).toEqual([]);
+    expect(projection.latestSnapshot?.pendingApprovals).toEqual(["action-1"]);
   });
 
   it("does not project a resolved human gate with no completion snapshot as an ordinary pause", () => {

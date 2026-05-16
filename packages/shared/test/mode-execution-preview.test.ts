@@ -24,7 +24,7 @@ describe("generateModeExecutionPreview — built-in presets", () => {
   it("generates preview for orchestrator_subagent", () => {
     const preview = presetPreview("orchestrator_subagent");
     expect(preview.family).toBe("orchestrator_subagent");
-    expect(preview.manifest!.execution).toBe("sequential");
+    expect(preview.manifest!.execution).toBe("dag_parallel");
     expect(preview.manifest!.consumesConditions).toBe(false);
     expect(preview.manifest!.supportsStaging).toBe(true);
     expect(preview.orderedNodes.length).toBeGreaterThanOrEqual(1);
@@ -34,7 +34,7 @@ describe("generateModeExecutionPreview — built-in presets", () => {
   it("generates preview for agent_teams", () => {
     const preview = presetPreview("agent_teams");
     expect(preview.family).toBe("agent_teams");
-    expect(preview.manifest!.execution).toBe("sequential");
+    expect(preview.manifest!.execution).toBe("dag_parallel");
     expect(preview.manifest!.consumesConditions).toBe(false);
     expect(preview.orderedNodes.length).toBeGreaterThanOrEqual(1);
   });
@@ -42,7 +42,7 @@ describe("generateModeExecutionPreview — built-in presets", () => {
   it("generates preview for message_bus", () => {
     const preview = presetPreview("message_bus");
     expect(preview.family).toBe("message_bus");
-    expect(preview.manifest!.execution).toBe("sequential");
+    expect(preview.manifest!.execution).toBe("dag_parallel");
     expect(preview.manifest!.consumesConditions).toBe(false);
     expect(preview.orderedNodes.length).toBeGreaterThanOrEqual(1);
   });
@@ -55,12 +55,11 @@ describe("generateModeExecutionPreview — built-in presets", () => {
     expect(preview.manifest!.supportsParallelLayers).toBe(true);
   });
 
-  it("generates preview for code_development (agent_teams family with extra atoms)", () => {
+  it("generates preview for code_development (orchestrator_subagent family with staging)", () => {
     const preview = presetPreview("code_development");
-    expect(preview.family).toBe("agent_teams");
-    expect(preview.manifest!.execution).toBe("sequential");
-    // code_development has dynamic_stage_skipping which is unsupported by agent_teams
-    expect(preview.warnings.some((w) => w.includes("dynamic_stage_skipping"))).toBe(true);
+    expect(preview.family).toBe("orchestrator_subagent");
+    expect(preview.manifest!.execution).toBe("dag_parallel");
+    expect(preview.manifest!.supportsStaging).toBe(true);
   });
 });
 

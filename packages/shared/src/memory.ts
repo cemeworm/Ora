@@ -53,6 +53,7 @@ export type LongTermMemoryFact = z.infer<typeof LongTermMemoryFactSchema>;
 
 export const LongTermMemoryProfileSchema = z.object({
   version: z.literal("1.0").default("1.0"),
+  _version: z.number().int().positive().default(1),
   lastUpdated: z.string().min(1),
   user: z.object({
     workContext: LongTermMemorySectionSchema.default({}),

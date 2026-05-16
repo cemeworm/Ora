@@ -457,6 +457,10 @@ describe("terminal state integrity", () => {
     status,
   });
 
+  function terminalEvent(runId: string, type: string, payload: Record<string, unknown>, seq: number, createdAt: number) {
+    return { id: `evt-${type}-${seq}`, runId, type, seq, createdAt, payload };
+  }
+
   it("downgrades succeeded+open_approval_gate to failed attention with integrity diagnostic", () => {
     // Regression for session-0020 / run-0019: ledger replay must not
     // silently render "succeeded" when an open approval gate exists.
@@ -464,7 +468,7 @@ describe("terminal state integrity", () => {
       entry({ id: "root", type: "session.created", seq: 1, createdAt: 1 }),
       entry({ id: "run1", type: "run.started", runId: "run-1", parentId: "root", turnIndex: 1, seq: 2, createdAt: 2, payload: runPayload("test") }),
       entry({ id: "gate1", type: "gate.opened", runId: "run-1", parentId: "run1", turnIndex: 1, seq: 3, createdAt: 3, payload: { gateId: "gate-approval", kind: "approval", pendingActionIds: ["action-write"], pendingToolCallIds: ["tool-write"] } }),
-      entry({ id: "batch1", type: "runtime.event_batch", runId: "run-1", parentId: "gate1", turnIndex: 1, seq: 4, createdAt: 4, payload: { events: [{ type: "run.done", payload: { status: "succeeded" } }], status: "succeeded" } }),
+      entry({ id: "batch1", type: "runtime.event_batch", runId: "run-1", parentId: "gate1", turnIndex: 1, seq: 4, createdAt: 4, payload: { events: [terminalEvent("run-1", "run.done", { status: "succeeded" }, 4, 4)], status: "succeeded" } }),
     ];
     const projection = deriveSessionProjection(ledger(entries));
     const run = projection.runs.find((r) => r.runId === "run-1");
@@ -483,7 +487,7 @@ describe("terminal state integrity", () => {
       entry({ id: "root", type: "session.created", seq: 1, createdAt: 1 }),
       entry({ id: "run1", type: "run.started", runId: "run-1", parentId: "root", turnIndex: 1, seq: 2, createdAt: 2, payload: runPayload("test") }),
       entry({ id: "gate1", type: "gate.opened", runId: "run-1", parentId: "run1", turnIndex: 1, seq: 3, createdAt: 3, payload: { gateId: "gate-clarify", kind: "clarification", pendingClarificationIds: ["clarify-scope"] } }),
-      entry({ id: "batch1", type: "runtime.event_batch", runId: "run-1", parentId: "gate1", turnIndex: 1, seq: 4, createdAt: 4, payload: { events: [{ type: "run.done", payload: { status: "succeeded" } }], status: "succeeded" } }),
+      entry({ id: "batch1", type: "runtime.event_batch", runId: "run-1", parentId: "gate1", turnIndex: 1, seq: 4, createdAt: 4, payload: { events: [terminalEvent("run-1", "run.done", { status: "succeeded" }, 4, 4)], status: "succeeded" } }),
     ];
     const projection = deriveSessionProjection(ledger(entries));
     const run = projection.runs.find((r) => r.runId === "run-1");
@@ -499,7 +503,7 @@ describe("terminal state integrity", () => {
       entry({ id: "root", type: "session.created", seq: 1, createdAt: 1 }),
       entry({ id: "run1", type: "run.started", runId: "run-1", parentId: "root", turnIndex: 1, seq: 2, createdAt: 2, payload: runPayload("test") }),
       entry({ id: "gate1", type: "gate.opened", runId: "run-1", parentId: "run1", turnIndex: 1, seq: 3, createdAt: 3, payload: { gateId: "gate-approval", kind: "approval", pendingActionIds: ["action-write"] } }),
-      entry({ id: "batch1", type: "runtime.event_batch", runId: "run-1", parentId: "gate1", turnIndex: 1, seq: 4, createdAt: 4, payload: { events: [{ type: "run.failed", payload: { status: "failed", error: "crashed" } }], status: "failed" } }),
+      entry({ id: "batch1", type: "runtime.event_batch", runId: "run-1", parentId: "gate1", turnIndex: 1, seq: 4, createdAt: 4, payload: { events: [terminalEvent("run-1", "run.failed", { status: "failed", error: "crashed" }, 4, 4)], status: "failed" } }),
     ];
     const projection = deriveSessionProjection(ledger(entries));
     const run = projection.runs.find((r) => r.runId === "run-1");
@@ -514,7 +518,7 @@ describe("terminal state integrity", () => {
       entry({ id: "root", type: "session.created", seq: 1, createdAt: 1 }),
       entry({ id: "run1", type: "run.started", runId: "run-1", parentId: "root", turnIndex: 1, seq: 2, createdAt: 2, payload: runPayload("test") }),
       entry({ id: "gate1", type: "gate.opened", runId: "run-1", parentId: "run1", turnIndex: 1, seq: 3, createdAt: 3, payload: { gateId: "gate-plan", kind: "plan_decision", pendingClarificationIds: ["plan-1"] } }),
-      entry({ id: "batch1", type: "runtime.event_batch", runId: "run-1", parentId: "gate1", turnIndex: 1, seq: 4, createdAt: 4, payload: { events: [{ type: "run.cancelled", payload: { status: "cancelled" } }], status: "cancelled" } }),
+      entry({ id: "batch1", type: "runtime.event_batch", runId: "run-1", parentId: "gate1", turnIndex: 1, seq: 4, createdAt: 4, payload: { events: [terminalEvent("run-1", "run.cancelled", { status: "cancelled" }, 4, 4)], status: "cancelled" } }),
     ];
     const projection = deriveSessionProjection(ledger(entries));
     const run = projection.runs.find((r) => r.runId === "run-1");
@@ -532,7 +536,7 @@ describe("terminal state integrity", () => {
       entry({ id: "run1", type: "run.started", runId: "run-1", parentId: "root", turnIndex: 1, seq: 2, createdAt: 2, payload: runPayload("test") }),
       entry({ id: "gate1", type: "gate.opened", runId: "run-1", parentId: "run1", turnIndex: 1, seq: 3, createdAt: 3, payload: { gateId: "gate-approval", kind: "approval", pendingActionIds: ["action-write"] } }),
       entry({ id: "resolve1", type: "gate.resolved", runId: "run-1", parentId: "gate1", turnIndex: 1, seq: 4, createdAt: 4, payload: { gateId: "gate-approval", status: "resolved", resolvedAt: 4 } }),
-      entry({ id: "batch1", type: "runtime.event_batch", runId: "run-1", parentId: "resolve1", turnIndex: 1, seq: 5, createdAt: 5, payload: { events: [{ type: "run.done", payload: { status: "succeeded" } }], status: "succeeded" } }),
+      entry({ id: "batch1", type: "runtime.event_batch", runId: "run-1", parentId: "resolve1", turnIndex: 1, seq: 5, createdAt: 5, payload: { events: [terminalEvent("run-1", "run.done", { status: "succeeded" }, 5, 5)], status: "succeeded" } }),
     ];
     const projection = deriveSessionProjection(ledger(entries));
     const run = projection.runs.find((r) => r.runId === "run-1");
@@ -564,7 +568,7 @@ describe("terminal state integrity", () => {
       // Second approval gate opened for action-28 (after permission mode switch context)
       entry({ id: "gate28", type: "gate.opened", runId: "run-0019", parentId: "resolve102", turnIndex: 1, seq: 5, createdAt: 5, payload: { gateId: "gate-28", kind: "approval", pendingActionIds: ["action-28"], pendingToolCallIds: ["tool-28"] } }),
       // The bug: event batch records run.done/succeeded BEFORE gate-28 is resolved
-      entry({ id: "batchDone", type: "runtime.event_batch", runId: "run-0019", parentId: "gate28", turnIndex: 1, seq: 6, createdAt: 6, payload: { events: [{ type: "run.done", payload: { status: "succeeded" } }], status: "succeeded", output: { text: "Done." } } }),
+      entry({ id: "batchDone", type: "runtime.event_batch", runId: "run-0019", parentId: "gate28", turnIndex: 1, seq: 6, createdAt: 6, payload: { events: [terminalEvent("run-0019", "run.done", { status: "succeeded" }, 6, 6)], status: "succeeded", output: { text: "Done." } } }),
     ];
     const projection = deriveSessionProjection(ledger(entries));
     const run = projection.runs.find((r) => r.runId === "run-0019");

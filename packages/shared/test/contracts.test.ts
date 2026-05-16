@@ -270,7 +270,7 @@ describe("Ora shared contracts", () => {
     const debate = MVP_MODES.find((mode) => mode.id === DEBATE_MODE_ID)!;
     expect(debate.systemPreset).toBe(true);
     expect(debate.family).toBe("orchestrator_subagent");
-    expect(debate.profiles.map((profile) => profile.id)).toEqual(["moderator", "debate_agent"]);
+    expect(debate.profiles.map((profile) => profile.id)).toEqual(["ora", "debate_agent"]);
     expect(debate.nodes.map((node) => node.id)).toEqual(["frame", "debate", "synthesis"]);
     expect(debate.stages?.map((stage) => stage.nodeId)).toEqual([
       "debate",
@@ -296,7 +296,7 @@ describe("Ora shared contracts", () => {
     const codeDevelopment = MVP_MODES.find((mode) => mode.id === CODE_DEVELOPMENT_MODE_ID)!;
     expect(codeDevelopment.systemPreset).toBe(true);
     expect(codeDevelopment.visibility).toBe("user");
-    expect(codeDevelopment.family).toBe("agent_teams");
+    expect(codeDevelopment.family).toBe("orchestrator_subagent");
     expect(codeDevelopment.completionPolicy.preset).toBe("persistent");
     expect(codeDevelopment.description).toContain("long-task-protocol");
     expect(codeDevelopment.recommendedUse).toContain("long-task-protocol");
@@ -308,17 +308,17 @@ describe("Ora shared contracts", () => {
       providerThinking: "required",
     });
     expect(codeDevelopment.profiles.map((profile) => profile.id)).toEqual([
-      "orchestrator",
+      "ora",
       "builder",
       "reviewer",
       "debugger",
     ]);
     expect(codeDevelopment.nodes.map((node) => [node.id, node.template, node.ownerAgentId])).toEqual([
-      ["triage", "triage", "orchestrator"],
+      ["triage", "triage", "ora"],
       ["build", "build", "builder"],
       ["review", "check", "reviewer"],
       ["debug", "check", "debugger"],
-      ["handoff", "handoff", "orchestrator"],
+      ["handoff", "handoff", "ora"],
     ]);
     expect(codeDevelopment.nodes.find((node) => node.id === "triage")?.instructions).toContain("long-task-protocol");
     expect(codeDevelopment.nodes.find((node) => node.id === "handoff")?.prompt).toContain("DONE gates");
@@ -329,7 +329,7 @@ describe("Ora shared contracts", () => {
       groupId: "code-development",
       groupBy: "speakerId",
       laneBySpeaker: {
-        orchestrator: "orchestrator",
+        ora: "ora",
         builder: "builder",
         reviewer: "reviewer",
         debugger: "debugger",
@@ -449,15 +449,11 @@ describe("Ora shared contracts", () => {
       "debate_agent",
       "debugger",
       "generator",
-      "moderator",
       "ora",
-      "orchestrator",
       "release_reviewer",
       "researcher",
       "responder",
       "reviewer",
-      "router",
-      "team_lead",
       "verifier",
     ]);
 
