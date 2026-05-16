@@ -187,6 +187,7 @@ export interface ActiveMemorySummary {
 export interface ConversationViewEntry {
   id: string;
   role: "system" | "user" | "assistant" | "tool";
+  rawContent: unknown;
   content: string;
   createdAt: number;
   timestamp: string;
@@ -196,16 +197,20 @@ export interface ConversationViewEntry {
 }
 
 export function buildConversationView(snapshot: OraStateSnapshot): ConversationViewEntry[] {
-  return (snapshot.conversation ?? []).map((entry, index) => ({
-    id: `${entry.role}:${index}`,
-    role: entry.role,
-    content: typeof entry.content === "string" ? entry.content : JSON.stringify(entry.content),
-    createdAt: entry.createdAt,
-    timestamp: formatTimestamp(entry.createdAt),
-    toolCallId: entry.role === "tool" ? (entry as { toolCallId?: string }).toolCallId : undefined,
-    toolId: entry.role === "tool" ? (entry as { toolId?: string }).toolId : undefined,
-    toolStatus: entry.role === "tool" ? (entry as { status?: string }).status : undefined,
-  }));
+  return (snapshot.conversation ?? []).map((entry, index) => {
+    const isString = typeof entry.content === "string";
+    return {
+      id: `${entry.role}:${index}`,
+      role: entry.role,
+      rawContent: entry.content,
+      content: isString ? entry.content : JSON.stringify(entry.content, null, 2),
+      createdAt: entry.createdAt,
+      timestamp: formatTimestamp(entry.createdAt),
+      toolCallId: entry.role === "tool" ? (entry as { toolCallId?: string }).toolCallId : undefined,
+      toolId: entry.role === "tool" ? (entry as { toolId?: string }).toolId : undefined,
+      toolStatus: entry.role === "tool" ? (entry as { status?: string }).status : undefined,
+    };
+  });
 }
 
 export function buildTrailDebugSummary(

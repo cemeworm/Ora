@@ -368,6 +368,7 @@ export interface AssistantTurnAttachment {
   clarificationCount: number;
   hasProposedPlan: boolean;
   proposedPlanStatus?: "streaming" | "complete";
+  planContent?: string;
   activeLoadingTarget?: AssistantTurnActiveLoadingTarget;
 }
 
