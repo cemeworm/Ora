@@ -607,7 +607,7 @@ sequenceDiagram
 ```
 
 投影应用规则：
-- `gate.opened`：创建新 gate（status = `open`）。如果 gateId 已存在且为 resolved，忽略（防止 replay 覆盖已完成的决议）。
+- `gate.opened`：使用 `state.gates.set(gateId, gate)` 语义（Map.set）。如果 gateId 已存在，新 entry 覆盖旧 gate——gate 从 `resolved` 回到 `open`，支持同一 run 内多次审批的 gate 重开。每次 `gate.opened` 的 entry ID 包含时间戳，与首次 entry 区分。
 - `gate.resolved`：更新 status 为 `resolved`，设置 `resolvedAt`。同时更新关联的 `planDecision.status`。
 
 ### 6.3 Plan Decision Gate 的特殊性

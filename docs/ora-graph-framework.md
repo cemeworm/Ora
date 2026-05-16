@@ -2,7 +2,7 @@
 
 这份文档描述 Ora 当前如何把工作模式、智能体、运行阶段和运行时能力统一建模为有向图。重点看四层：共享契约里的拓扑原语、`ModeSpec` 的可编辑图、`PatternDefinition` 的运行时投影，以及 runtime kernel 如何消费这张图。
 
-> **最近更新 (2026-05-16)**：DAG 并行执行、Evidence Board 共享工作区、Bag 类型安全（16 个 Zod schema）、generator_verifier 三节点（research → draft → verify）。
+> **最近更新 (2026-05-16)**：DAG 并行执行、Bag 类型安全（16 个 Zod schema）、generator_verifier 三节点（research → draft → verify）、TranscriptLayoutStyle 清理（移除 6 种未实现风格）、Evidence Board 移除（由 Shared State 的 writeSharedState 替代）、modeUsesSingleOwner 统一到 shared 包。
 
 ## 1. 概述
 
@@ -540,7 +540,7 @@ const seed = forceCreate || base.systemPreset
 
 ### 9.3 Stage Transcript 与拓扑视图
 
-`ModeTranscriptLayoutSchema` 里保留了 15 种布局风格，其中包括 `graph_topology`。不过截至当前代码，`apps/desktop/src/components/StageTranscript.tsx` 并没有实现 `graph_topology` renderer；它实际支持的 renderer 主要是：
+`ModeTranscriptLayoutSchema` 当前包含 9 种布局风格，其中 `role_lanes` 用于 `code_development` 模式但 renderer 尚未在 `StageTranscript.tsx` 中实现（回退为 `stage_list`）。实际支持 8 种 renderer：
 
 - `stage_list`
 - `two_sided_duel`
@@ -551,9 +551,11 @@ const seed = forceCreate || base.systemPreset
 - `artifact_gallery`
 - `kanban_pipeline`
 
+未实现的 6 种风格（`timeline`、`branch_compare`、`state_board`、`event_stream`、`graph_topology`、`report_builder`）已从 schema 中移除，待有具体实现需求时再加回。
+
 运行时拓扑目前主要在 Trails Drawer 里展示，入口在 `apps/desktop/src/components/TrailsTabs.tsx`。它读取 `activeSnapshot.topology.nodes` 和 `activeSnapshot.topology.edges`，展示执行拓扑、智能体泳道、通信关系和事件证据。
 
-`apps/desktop/src/components/TopologyPanel.tsx` 仍存在，但当前没有主路径引用。需要做拓扑图 UI 时，优先以 Trails 当前实现和 Mode Studio canvas 为准。
+`apps/desktop/src/components/TopologyPanel.tsx` 已移除——Trails 当前实现和 Mode Studio canvas 是拓扑可视化的主要入口。
 
 ## 10. 添加新模式时要改哪里
 
