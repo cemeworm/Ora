@@ -25,6 +25,8 @@ export interface DesktopRunInteractionState {
   canSubmit: boolean;
   canStop: boolean;
   canResume: boolean;
+  /** Indicates the run can be rebuilt from its original input/mode after a non-recoverable failure. */
+  canRebuild: boolean;
   gateKind?: "approval" | "clarification" | "plan_decision";
   authority:
     | "pending_run"
@@ -187,6 +189,7 @@ function deriveFromPendingRun(
     canSubmit: false,
     canStop: true,
     canResume: false,
+    canRebuild: false,
     authority: "pending_run",
     snapshotSource: "live",
   };
@@ -206,6 +209,7 @@ function deriveFromSnapshot(
     canSubmit: !PROCESSING_STATUSES.has(status),
     canStop: STOPPABLE_STATUSES.has(status),
     canResume: RESUMABLE_STATUSES.has(status),
+    canRebuild: status === "failed",
     authority: "active_snapshot",
     snapshotSource: snapshot.snapshotSource,
   };
@@ -231,6 +235,7 @@ function deriveFromTurn(
     canSubmit: !PROCESSING_STATUSES.has(status),
     canStop: STOPPABLE_STATUSES.has(status),
     canResume: RESUMABLE_STATUSES.has(status),
+    canRebuild: status === "failed",
     authority: "active_turn",
     snapshotSource,
   };
@@ -271,6 +276,7 @@ function deriveFromSession(
     canSubmit: !PROCESSING_STATUSES.has(status),
     canStop: STOPPABLE_STATUSES.has(status),
     canResume: RESUMABLE_STATUSES.has(status),
+    canRebuild: status === "failed",
     authority,
     snapshotSource,
   };
@@ -284,6 +290,7 @@ function idleState(sessionId?: string): DesktopRunInteractionState {
     canSubmit: true,
     canStop: false,
     canResume: false,
+    canRebuild: false,
     authority: "session_summary",
   };
 }
@@ -370,8 +377,12 @@ export function deriveRunInteractionState(
 
 /**
  * Returns true when a live snapshot should be replaced by a ledger-backed one.
- * This happens when the run has reached a terminal state and the ledger
- * projection is available as the authoritative read model.
+ *
+ * Design constraint: live snapshots carry streaming-only fields (text deltas,
+ * progress). Structural fields (attention, status, gate state) must eventually
+ * come from ledger projection. This switch exists because the two sources
+ * coexist — eliminating it requires refactoring consumers to read structural
+ * fields exclusively from gate/toolResult projections, not from events.
  */
 export function shouldSwitchToLedgerSnapshot(
   current: DesktopRunInteractionState,

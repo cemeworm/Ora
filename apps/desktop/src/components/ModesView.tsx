@@ -2754,6 +2754,37 @@ function ModeSummaryCards({
           </div>
         </div>
       )}
+
+      {executionPreview?.preview && executionPreview.preview.warnings.length > 0 && (
+        <div className="rounded-2xl bg-amber-50 p-5 shadow-pane ring-1 ring-inset ring-amber-200">
+          <h4 className="text-sm font-semibold text-amber-900">Runtime compatibility warnings</h4>
+          <div className="mt-3 space-y-2">
+            {executionPreview.preview.warnings.map((warning, index) => (
+              <div key={index} className="rounded-lg border border-amber-200 bg-white px-3 py-2 text-sm text-amber-800">
+                {warning}
+              </div>
+            ))}
+          </div>
+          {executionPreview.preview.conditionalEdges.length > 0 && (
+            <div className="mt-3">
+              <p className="text-xs font-semibold text-amber-700">
+                Conditional edges ({executionPreview.preview.conditionalEdges.filter(e => !e.consumed).length} of {executionPreview.preview.conditionalEdges.length} will be ignored)
+              </p>
+              <div className="mt-2 space-y-1">
+                {executionPreview.preview.conditionalEdges.map((edge) => (
+                  <div key={edge.id} className={cn(
+                    "rounded border px-2 py-1 text-xs",
+                    edge.consumed ? "border-green-200 bg-green-50 text-green-800" : "border-red-200 bg-red-50 text-red-800",
+                  )}>
+                    {edge.source} → {edge.target}: {edge.condition}
+                    {!edge.consumed && " (ignored at runtime)"}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </>
   );
 }

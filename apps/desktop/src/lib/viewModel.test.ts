@@ -1041,7 +1041,7 @@ describe("desktop session view model", () => {
     expect(timelineText).not.toContain("## 流式计划卡片");
     expect(timelineText).not.toContain("opening tag 出现后立即渲染卡片");
     expect(assistant?.turn?.proposedPlanStatus).toBe("streaming");
-    expect(assistant?.turn?.activeLoadingTarget).toEqual({ kind: "proposed_plan" });
+    expect(assistant?.turn?.activeLoadingTarget).toEqual({ kind: "thinking" });
   });
 
   it("uses the latest timeline status group as the active loading target when no plan is streaming", () => {
@@ -1710,7 +1710,7 @@ describe("desktop session view model", () => {
 
     expect(assistant?.turn?.hasProposedPlan).toBe(true);
     expect(assistant?.turn?.proposedPlanStatus).toBe("streaming");
-    expect(assistant?.turn?.activeLoadingTarget).toEqual({ kind: "proposed_plan" });
+    expect(assistant?.turn?.activeLoadingTarget).toEqual({ kind: "thinking" });
     expect(assistant?.content).toContain("核对第 240 个流式输出细节");
     expect(assistant?.content).not.toContain("<proposed_plan>");
   });

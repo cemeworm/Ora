@@ -354,6 +354,7 @@ describe("deriveRunInteractionState", () => {
       selectedSessionId: "session-1",
       activeSnapshot: activeSnapshot({
         status: "running",
+        pendingApprovals: ["action-1"],
         attention: {
           kind: "needs_approval",
           blocking: true,
@@ -379,6 +380,7 @@ describe("deriveRunInteractionState", () => {
       selectedSessionId: "session-1",
       activeSnapshot: activeSnapshot({
         status: "running",
+        pendingClarifications: [{ id: "clar-1", key: "scope", question: "What?", nodeId: "n1", nodeLabel: "Review", requestedAt: 1000, options: [] }],
         attention: {
           kind: "needs_clarification",
           blocking: true,
