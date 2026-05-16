@@ -70,10 +70,7 @@ export function createProviderRegistry(
   const resolveConfig = (providerId?: string) => {
     const id = providerId ?? config.defaultProviderId;
     const providerConfig = providerConfigs.find((entry) => entry.enabled !== false && entry.id === id)
-      ?? providerConfigs.find((entry) => entry.enabled !== false && entry.modelId === id)
-      ?? (id === "local/smoke-model"
-        ? providerConfigs.find((entry) => entry.enabled !== false && entry.type === "local_smoke")
-        : undefined);
+      ?? providerConfigs.find((entry) => entry.enabled !== false && entry.modelId === id);
     if (!providerConfig) {
       const available = providerConfigs.map((entry) => entry.id).join(", ");
       throw new Error(`Unknown provider ${id}. Available providers: ${available}`);
@@ -138,7 +135,7 @@ export function createDefaultProviderRegistry(options: ProviderRegistryOptions =
   return createProviderRegistry(
     {
       providers: DEFAULT_PROVIDERS,
-      defaultProviderId: "local-smoke",
+      defaultProviderId: "",
     },
     options
   );
@@ -158,7 +155,7 @@ export function createProviderRegistryForRun(
   return createProviderRegistry(
     {
       providers,
-      defaultProviderId: runConfig.providerConfig?.id ?? "local-smoke",
+      defaultProviderId: runConfig.providerConfig?.id ?? "",
     },
     options
   );
@@ -244,15 +241,6 @@ export async function verifyProviderConfig(
         checkedAt: Date.now(),
       };
     }
-  }
-
-  if (config.type === "local_smoke") {
-    return {
-      providerId: config.id,
-      state: "verified",
-      detail: "Local smoke provider is ready.",
-      checkedAt: Date.now(),
-    };
   }
 
   try {

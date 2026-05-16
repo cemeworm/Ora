@@ -88,6 +88,7 @@ export class LocalSelfIterationStore {
     this.statePath = path.join(baseDir, "state.json");
     fs.mkdirSync(baseDir, { recursive: true });
     this.state = this.readState();
+    this.recoverOrphanedEvaluations();
   }
 
   async scan(params: unknown, input: SelfIterationDerivationInput, deps: Pick<SelfIterationApplyDeps, "applyEvaluationCandidate">) {
@@ -96,12 +97,15 @@ export class LocalSelfIterationStore {
     const generated = candidateGenerators(projectId, input, this.clock())
       .filter((candidate) => parsed.projectId ? candidate.projectId === parsed.projectId : true);
     const enriched = input.enrichCandidate
-      ? await Promise.all(generated.map((c) => input.enrichCandidate!(c, input).catch(() => c)))
+      ? await Promise.all(generated.map((c) => input.enrichCandidate!(c, input).catch((error) => {
+          console.warn(`Self-iteration candidate enrich failed for ${c.id}:`, error instanceof Error ? error.message : String(error));
+          return c;
+        })))
       : generated;
     const upserted = enriched.map((candidate) => this.upsertCandidate(candidate));
     const policy = this.policyForProject(projectId);
     const autoApplied: SelfIterationCandidate[] = [];
-    if ((parsed.autoApplyEvaluation ?? policy.evaluationAutoApply) && policy.autonomy === "low_risk_auto") {
+    if ((parsed.autoApplyEvaluation ?? policy.evaluationAutoApply) && (policy.autonomy === "low_risk_auto" || policy.autonomy === "experimental_auto")) {
       for (const candidate of upserted.filter((item) => item.targetKind === "evaluation" && item.status === "draft")) {
         autoApplied.push(this.applyCandidate({ candidateId: candidate.id, confirmed: true }, deps));
       }
@@ -124,6 +128,9 @@ export class LocalSelfIterationStore {
     const lastScanAt = this.state.curator[projectId]?.lastScanAt;
     if (!policy.curatorEnabled) {
       return { scanned: false as const, reason: "disabled", projectId, trigger: parsed.trigger };
+    }
+    if (policy.autonomy === "human_review" && !parsed.force) {
+      return { scanned: false as const, reason: "human_review", projectId, trigger: parsed.trigger };
     }
     if (!parsed.force && typeof lastScanAt === "number" && now - lastScanAt < policy.scanCadenceMs) {
       return { scanned: false as const, reason: "cadence", projectId, trigger: parsed.trigger, lastScanAt };
@@ -157,6 +164,11 @@ export class LocalSelfIterationStore {
   async evaluateCandidate(params: unknown, deps?: SelfIterationEvaluateDeps) {
     const parsed = SelfIterationCandidateEvaluateParamsSchema.parse(params);
     const candidate = this.getCandidate(parsed);
+    if (candidate.status !== "draft" && candidate.status !== "failed") {
+      throw new Error(
+        `Candidate ${candidate.id} cannot be evaluated from "${candidate.status}" status. Only "draft" or "failed" candidates can enter evaluation.`,
+      );
+    }
     if (this.inflightEvaluations.has(candidate.id)) {
       throw new Error(`Candidate ${candidate.id} is already being evaluated.`);
     }
@@ -235,6 +247,11 @@ export class LocalSelfIterationStore {
   rejectCandidate(params: unknown) {
     const parsed = SelfIterationCandidateRejectParamsSchema.parse(params);
     const candidate = this.getCandidate(parsed);
+    if (candidate.status === "applied") {
+      throw new Error(
+        `Candidate ${candidate.id} is in "applied" status. Use rollback to revert applied changes before rejecting.`,
+      );
+    }
     const next = SelfIterationCandidateSchema.parse({
       ...candidate,
       status: "rejected",
@@ -383,7 +400,23 @@ export class LocalSelfIterationStore {
       metadata: params.metadata ?? {},
     });
     this.state.runs.push(run);
+    const MAX_RUNS = 500;
+    if (this.state.runs.length > MAX_RUNS) {
+      this.state.runs = this.state.runs.slice(-MAX_RUNS);
+    }
     return run;
+  }
+
+  private recoverOrphanedEvaluations(): void {
+    for (const candidate of Object.values(this.state.candidates)) {
+      if (candidate.status === "evaluating") {
+        this.state.candidates[candidate.id] = {
+          ...candidate,
+          status: "draft",
+          updatedAt: this.clock(),
+        };
+      }
+    }
   }
 
   private readState(): SelfIterationState {
@@ -396,7 +429,9 @@ export class LocalSelfIterationStore {
       const tmpPath = `${this.statePath}.tmp`;
       if (fs.existsSync(tmpPath)) {
         try {
-          return SelfIterationStateSchema.parse(JSON.parse(fs.readFileSync(tmpPath, "utf8")));
+          if (fs.statSync(tmpPath).size > 0) {
+            return SelfIterationStateSchema.parse(JSON.parse(fs.readFileSync(tmpPath, "utf8")));
+          }
         } catch {
           // tmp backup also corrupted
         }
@@ -448,7 +483,7 @@ function feedbackEvaluationCandidates(projectId: string, input: SelfIterationDer
 function runtimePromptCandidates(projectId: string, input: SelfIterationDerivationInput, now: number): SelfIterationCandidate[] {
   const signals = input.signals.filter((signal) =>
     signal.projectId === projectId
-    && ((signal.source === "recovery_event" && signal.severity === "critical") || signal.metadata.runStatus === "failed")
+    && ((signal.source === "recovery_event" && signal.severity === "critical") || (signal.source === "run_event" && signal.metadata.runStatus === "failed"))
   );
   return uniqueBy(signals, (signal) => String(signal.metadata.modeId ?? "unknown-mode")).map((signal) => {
     const modeId = String(signal.metadata.modeId ?? signal.metadata.pattern ?? "single_agent");

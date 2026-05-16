@@ -1,10 +1,13 @@
 import {
   deriveRunAttention,
+  deriveSnapshotGateProjection,
   FlowActivitySummary,
+  FlowGate,
   FlowRunDetail,
   FlowRunDetailSchema,
   FlowRunHandle,
   FlowRunHandleSchema,
+  GateProjection,
   RunHandle,
   RunHandleSchema,
   RunSummary,
@@ -36,6 +39,59 @@ export function toFlowRunHandle(snapshot: StateSnapshot): FlowRunHandle {
     ...handle,
     flowRunId: handle.runId,
   });
+}
+
+function gateProjectionToFlowGates(gp: GateProjection, snapshot: StateSnapshot): FlowGate[] {
+  const flowRunId = snapshot.runId;
+  const gates: FlowGate[] = [];
+
+  if (gp.kind === "clarification") {
+    for (const cid of gp.pendingClarificationIds) {
+      const clarification = snapshot.pendingClarifications.find((c) => c.id === cid);
+      gates.push({
+        gateId: cid,
+        kind: "clarification" as const,
+        status: "open" as const,
+        runId: snapshot.runId,
+        flowRunId,
+        sessionId: snapshot.sessionId,
+        pendingActionIds: [],
+        pendingToolCallIds: [],
+        pendingClarificationIds: [cid],
+        openedAt: clarification?.requestedAt,
+      });
+    }
+  } else if (gp.kind === "approval") {
+    gates.push({
+      gateId: `${snapshot.runId}:approval`,
+      kind: "approval" as const,
+      status: "open" as const,
+      runId: snapshot.runId,
+      flowRunId,
+      sessionId: snapshot.sessionId,
+      pendingActionIds: gp.pendingActionIds,
+      pendingToolCallIds: gp.pendingToolCallIds,
+      pendingClarificationIds: [],
+      openedAt: snapshot.events.find((event) => event.type === "approval.required")?.createdAt,
+    });
+  } else if (gp.kind === "plan_decision" && gp.planDecisionId) {
+    const decision = snapshot.planDecisions.find((d) => d.id === gp.planDecisionId);
+    gates.push({
+      gateId: gp.planDecisionId,
+      kind: "plan_decision" as const,
+      status: "open" as const,
+      runId: snapshot.runId,
+      flowRunId,
+      sessionId: decision?.sessionId ?? snapshot.sessionId,
+      pendingActionIds: [],
+      pendingToolCallIds: [],
+      pendingClarificationIds: [],
+      planDecisionId: gp.planDecisionId,
+      openedAt: decision?.createdAt,
+    });
+  }
+
+  return gates;
 }
 
 export function toFlowRunDetail(snapshot: StateSnapshot): FlowRunDetail {
@@ -85,52 +141,46 @@ export function toFlowRunDetail(snapshot: StateSnapshot): FlowRunDetail {
       label: snapshot.modeSpec?.label,
     },
     checkpoints: snapshot.checkpoints,
-    gates: [
-      ...snapshot.pendingClarifications.map((clarification) => ({
-        gateId: clarification.id,
-        kind: "clarification" as const,
-        status: "open" as const,
-        runId: snapshot.runId,
-        flowRunId,
-        sessionId: snapshot.sessionId,
-        pendingClarificationIds: [clarification.id],
-        openedAt: clarification.requestedAt,
-      })),
-      ...(snapshot.pendingApprovals.length > 0 ? [{
-        gateId: `${snapshot.runId}:approval`,
-        kind: "approval" as const,
-        status: "open" as const,
-        runId: snapshot.runId,
-        flowRunId,
-        sessionId: snapshot.sessionId,
-        pendingActionIds: snapshot.pendingApprovals,
-        pendingToolCallIds: snapshot.toolCalls
-          .filter((call) => call.status === "approval_required")
-          .map((call) => call.id),
-        openedAt: snapshot.events.find((event) => event.type === "approval.required")?.createdAt,
-      }] : []),
-      ...snapshot.planDecisions.map((decision) => ({
-        gateId: decision.id,
-        kind: "plan_decision" as const,
-        status: decision.status === "pending" ? "open" as const : "resolved" as const,
-        runId: snapshot.runId,
-        flowRunId,
-        sessionId: decision.sessionId,
-        planDecisionId: decision.id,
-        openedAt: decision.createdAt,
-        resolvedAt: decision.resolvedAt,
-      })),
-      ...(snapshot.status === "cancelled" ? [{
-        gateId: `${snapshot.runId}:cancellation`,
-        kind: "cancellation" as const,
-        status: "cancelled" as const,
-        runId: snapshot.runId,
-        flowRunId,
-        sessionId: snapshot.sessionId,
-        reason: snapshot.error,
-        openedAt: snapshot.events.find((event) => event.type === "run.cancelled")?.createdAt ?? snapshot.updatedAt,
-      }] : []),
-    ],
+    gates: (() => {
+      const gateProjection = deriveSnapshotGateProjection(snapshot, { includeRawPending: true });
+      const gates: FlowGate[] = gateProjection
+        ? gateProjectionToFlowGates(gateProjection, snapshot)
+        : [];
+      // 已解决的 plan decisions 仍作为历史 gate 保留
+      for (const decision of snapshot.planDecisions) {
+        if (decision.status === "pending") continue; // gateProjection 已覆盖
+        gates.push({
+          gateId: decision.id,
+          kind: "plan_decision" as const,
+          status: "resolved" as const,
+          runId: snapshot.runId,
+          flowRunId,
+          sessionId: decision.sessionId,
+          pendingActionIds: [],
+          pendingToolCallIds: [],
+          pendingClarificationIds: [],
+          planDecisionId: decision.id,
+          openedAt: decision.createdAt,
+          resolvedAt: decision.resolvedAt,
+        });
+      }
+      if (snapshot.status === "cancelled") {
+        gates.push({
+          gateId: `${snapshot.runId}:cancellation`,
+          kind: "cancellation" as const,
+          status: "cancelled" as const,
+          runId: snapshot.runId,
+          flowRunId,
+          sessionId: snapshot.sessionId,
+          pendingActionIds: [],
+          pendingToolCallIds: [],
+          pendingClarificationIds: [],
+          reason: snapshot.error,
+          openedAt: snapshot.events.find((event) => event.type === "run.cancelled")?.createdAt ?? snapshot.updatedAt,
+        });
+      }
+      return gates;
+    })(),
     activities,
     eventCount: snapshot.events.length,
     latestEventSeq: snapshot.events.at(-1)?.seq,

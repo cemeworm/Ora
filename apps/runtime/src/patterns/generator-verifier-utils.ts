@@ -134,13 +134,6 @@ export function assessGeneratorVerifierResponse(params: AssessmentParams): Gener
     );
   }
 
-  if (params.providerId === "local-smoke") {
-    return passAssessment(
-      "Local smoke provider produced a deterministic non-empty candidate without runtime failure markers.",
-      verifierResponse,
-    );
-  }
-
   const jsonAssessment = parseJsonAssessment(verifierResponse);
   if (jsonAssessment) {
     return jsonAssessment;

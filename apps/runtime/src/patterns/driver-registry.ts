@@ -38,7 +38,7 @@ export function getPatternDriver(pattern: CoordinationPattern): PatternDriver {
           modeId: modeSpec.id,
           modeSelection: "manual",
           profileIds: [],
-          modelRef: "local/smoke-model",
+          modelRef: "",
           skillIds: [],
           toolIds: [],
           approvalMode: "high_risk_only",

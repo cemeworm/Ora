@@ -41,7 +41,7 @@ function fallbackStagePrompt(stage: ModeStageSpec): string {
 }
 
 function shouldApplyStanceLock(stage: ModeStageSpec): boolean {
-  return Boolean(stage.stance && stage.stance !== "moderator" && stage.stance !== "neutral");
+  return stage.adversarialStance === true && Boolean(stage.stance);
 }
 
 function stageSpeakerLabel(modeSpec: ModeSpec, node: ModeNodeSpec, stage: ModeStageSpec): string {

@@ -17,11 +17,15 @@ export function selfIterationToolRuntimeFields(toolId: string): Partial<RuntimeT
     case "selfIteration.scan":
       return {
         promptExample: "{\"tool\":\"selfIteration.scan\",\"args\":{\"projectId\":\"local-project\"}}",
+        requiresApprovalCopy: true,
+        actionRiskLevel: () => "medium",
         execute: (args, context) => ({ output: scanRuntimeSelfIteration(context.selfIterationRegistry, args) }),
       };
     case "selfIteration.evaluate":
       return {
         promptExample: "{\"tool\":\"selfIteration.evaluate\",\"args\":{\"candidateId\":\"project:self:prompt:single_agent\"}}",
+        requiresApprovalCopy: true,
+        actionRiskLevel: () => "medium",
         execute: async (args, context) => ({ output: await evaluateRuntimeSelfIterationCandidate(context.selfIterationRegistry, args) }),
       };
     case "selfIteration.apply":
@@ -94,5 +98,5 @@ function applyRuntimeSelfIterationCandidate(registry: SelfIterationRegistryTools
   if (!approved) {
     throw new Error("selfIteration.apply requires user approval before execution.");
   }
-  return registry.applySelfIterationCandidate({ ...args, confirmed: true });
+  return registry.applySelfIterationCandidate({ ...args, confirmed: approved });
 }

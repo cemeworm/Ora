@@ -512,11 +512,12 @@ describe("LocalSelfIterationStore", () => {
     });
 
     // Second evaluation should throw immediately because status is "evaluating"
+    // (state machine validation rejects non-draft/non-failed candidates before duplicate check)
     await expect(
       store.evaluateCandidate({ candidateId: candidate.id }, {
         evaluateCandidate: () => ({ evaluationRunId: "eval-dup", passed: true }),
       }),
-    ).rejects.toThrow(/already being evaluated/);
+    ).rejects.toThrow(/cannot be evaluated from "evaluating" status/);
 
     await firstPromise;
     expect(store.getCandidate({ candidateId: candidate.id }).status).toBe("ready");
