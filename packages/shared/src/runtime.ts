@@ -1812,16 +1812,13 @@ export function deriveRunInteraction(snapshot: StateSnapshot): RunInteraction {
   }
 
   const activeFrame = activePausedContinuationFrame(snapshot);
-  if (snapshot.status === "queued" || snapshot.status === "running") {
+  const kind = attentionKindForStatus(snapshot.status);
+  if (kind === "running") {
     return RunInteractionSchema.parse({
-      attention: {
-        kind: "running",
-        blocking: false,
-        sourceRunId: snapshot.runId,
-      },
+      attention: { kind: "running", blocking: false, sourceRunId: snapshot.runId },
     });
   }
-  if (snapshot.status === "interrupted") {
+  if (kind === "paused") {
     return RunInteractionSchema.parse({
       attention: {
         kind: "paused",
@@ -1831,37 +1828,27 @@ export function deriveRunInteraction(snapshot: StateSnapshot): RunInteraction {
       },
     });
   }
-  if (snapshot.status === "failed") {
+  if (kind === "failed" || kind === "cancelled") {
     return RunInteractionSchema.parse({
-      attention: {
-        kind: "failed",
-        blocking: false,
-        sourceRunId: snapshot.runId,
-        reason: snapshot.error,
-      },
-    });
-  }
-  if (snapshot.status === "cancelled") {
-    return RunInteractionSchema.parse({
-      attention: {
-        kind: "cancelled",
-        blocking: false,
-        sourceRunId: snapshot.runId,
-        reason: snapshot.error,
-      },
+      attention: { kind, blocking: false, sourceRunId: snapshot.runId, reason: snapshot.error },
     });
   }
   return RunInteractionSchema.parse({
-    attention: {
-      kind: "idle",
-      blocking: false,
-      sourceRunId: snapshot.runId,
-    },
+    attention: { kind: "idle", blocking: false, sourceRunId: snapshot.runId },
   });
 }
 
 export function deriveRunAttention(snapshot: StateSnapshot): RunAttention {
   return deriveRunInteraction(snapshot).attention;
+}
+
+/** status 到 attention 的统一映射，供 live 和 ledger 两条 attention 派生路径共享 */
+export function attentionKindForStatus(status: string): RunAttention["kind"] {
+  if (status === "queued" || status === "running") return "running";
+  if (status === "interrupted") return "paused";
+  if (status === "failed") return "failed";
+  if (status === "cancelled") return "cancelled";
+  return "idle";
 }
 
 export type RuntimeAttentionStatus =
