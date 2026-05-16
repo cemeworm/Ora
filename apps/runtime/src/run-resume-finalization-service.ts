@@ -1,4 +1,5 @@
 import type { OraEventEnvelope, StateSnapshot } from "@cemeworm/shared";
+import { assertRunCanBecomeTerminal, deriveTerminalStateAssertionFromSnapshot, TerminalStateIntegrityError } from "./harness/runtime-completion-guards.js";
 
 interface RunResumeFinalizationServiceDeps {
   withResumeResolutionEvents: (
@@ -13,6 +14,26 @@ interface RunResumeFinalizationServiceDeps {
   persistRunWithGeneratedTitle: (snapshot: StateSnapshot) => Promise<void>;
 }
 
+/**
+ * Downgrade a snapshot to failed when the terminal state assertion fails.
+ * Keeps the original snapshot's content but marks it as failed with diagnostic
+ * information, consistent with the kernel's behavior in runtime-kernel-runner.ts.
+ */
+function downgradeToFailed(
+  snapshot: StateSnapshot,
+  error: TerminalStateIntegrityError,
+): StateSnapshot {
+  return {
+    ...snapshot,
+    status: "failed" as const,
+    error: error.message,
+    output: {
+      text: error.message,
+      violations: error.violations,
+    },
+  };
+}
+
 export class RunResumeFinalizationService {
   constructor(private readonly deps: RunResumeFinalizationServiceDeps) {}
 
@@ -22,7 +43,22 @@ export class RunResumeFinalizationService {
     clarificationPatch: Record<string, unknown>;
     approvedActionIds: string[];
   }): Promise<StateSnapshot> {
-    const projected = this.projectResumeSnapshot(params);
+    let finalSnapshot = params.snapshot;
+    try {
+      assertRunCanBecomeTerminal(
+        deriveTerminalStateAssertionFromSnapshot(finalSnapshot),
+      );
+    } catch (caught) {
+      if (caught instanceof TerminalStateIntegrityError) {
+        finalSnapshot = downgradeToFailed(finalSnapshot, caught);
+      } else {
+        throw caught;
+      }
+    }
+    const projected = this.projectResumeSnapshot({
+      ...params,
+      snapshot: finalSnapshot,
+    });
     await this.deps.persistRunWithGeneratedTitle(projected);
     return projected;
   }
@@ -46,7 +82,22 @@ export class RunResumeFinalizationService {
     stream: RunResumeFinalizationStreamCallbacks;
     markLedgerSynced?: boolean;
   }): Promise<StateSnapshot> {
-    const projected = this.projectResumeSnapshot(params);
+    let finalSnapshot = params.snapshot;
+    try {
+      assertRunCanBecomeTerminal(
+        deriveTerminalStateAssertionFromSnapshot(finalSnapshot),
+      );
+    } catch (caught) {
+      if (caught instanceof TerminalStateIntegrityError) {
+        finalSnapshot = downgradeToFailed(finalSnapshot, caught);
+      } else {
+        throw caught;
+      }
+    }
+    const projected = this.projectResumeSnapshot({
+      ...params,
+      snapshot: finalSnapshot,
+    });
     await this.deps.persistRunWithGeneratedTitle(projected);
     const liveSnapshot = params.stream.replaceSnapshot(projected);
     if (params.markLedgerSynced) {

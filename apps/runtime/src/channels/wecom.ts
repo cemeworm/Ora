@@ -183,10 +183,13 @@ export class WecomChannelAdapter implements ChannelAdapter {
       const normalized = normalizeWecomCallback(msg.body);
       if (normalized && this.deps?.onIngest) {
         try {
-          await this.deps.onIngest({
+          const result = await this.deps.onIngest({
             channelId: this.channelId,
             ...normalized,
-          });
+          }) as Record<string, unknown> | undefined;
+          if (result && !result.accepted) {
+            console.warn(`[WeCom:${this.channelId}] Ingest rejected: ${normalized.externalChatId}`);
+          }
         } catch {
           // swallow
         }

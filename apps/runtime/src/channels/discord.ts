@@ -297,10 +297,13 @@ export class DiscordChannelAdapter implements ChannelAdapter {
     if (!normalized || !this.deps?.onIngest) return;
 
     try {
-      await this.deps.onIngest({
+      const result = await this.deps.onIngest({
         channelId: this.channelId,
         ...normalized,
-      });
+      }) as Record<string, unknown> | undefined;
+      if (result && !result.accepted) {
+        console.warn(`[Discord:${this.channelId}] Ingest rejected: ${normalized.externalChatId}`);
+      }
     } catch {
       // swallow
     }

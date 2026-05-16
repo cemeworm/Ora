@@ -10,6 +10,9 @@ import { invokeRunProvider, type ModelMessage } from "./providers/index.js";
 import {
   evaluateRuntimeCompletionGuards,
   type RuntimeCompletionGuardResult,
+  assertRunCanBecomeTerminal,
+  deriveTerminalStateAssertionFromSnapshot,
+  TerminalStateIntegrityError,
 } from "./harness/runtime-completion-guards.js";
 import {
   currentPendingApprovalActions,
@@ -532,6 +535,32 @@ export async function completeApprovedToolContinuation(
     content: finalText,
   });
   const output = { text: finalText };
+
+  // Shared terminal-state integrity gate: refuse to emit run.done if any
+  // open gates, pending approvals/clarifications, or active continuation
+  // frames remain.
+  try {
+    assertRunCanBecomeTerminal(deriveTerminalStateAssertionFromSnapshot(working));
+  } catch (caught) {
+    if (caught instanceof TerminalStateIntegrityError) {
+      const detail = `Terminal state integrity violation: ${caught.message}`;
+      append("run.failed", { status: "failed", error: detail, output: { text: detail, violations: caught.violations } });
+      updateContinuationStatus("failed");
+      return {
+        kind: "completed",
+        snapshot: deps.attachTraceMetadata(StateSnapshotSchema.parse({
+          ...working,
+          status: "failed",
+          error: detail,
+          activeAgents: [],
+          output: { text: detail, violations: caught.violations },
+          updatedAt: deps.now(),
+        })),
+      };
+    }
+    throw caught;
+  }
+
   append("run.done", { status: "succeeded", output });
   updateContinuationStatus("completed");
   return {

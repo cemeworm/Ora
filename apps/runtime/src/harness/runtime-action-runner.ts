@@ -37,6 +37,10 @@ export interface RuntimeActionDeps {
   emit: RuntimeActionEmit;
   appendToolCallStatus?: AppendToolCallStatus;
   appendToolCall?: AppendToolCall;
+  /** 当 auto_review 模式自动批准 action 时调用。
+      调用方应在此回调中写入 gate.resolved ledger entries，
+      防止 ledger replay 时出现 terminal_run_with_open_gates。 */
+  onApprovalAutoResolved?: (actionIds: string[]) => void;
 }
 
 export interface RuntimeActionContext {
@@ -83,10 +87,12 @@ export async function resolveRuntimeActionApproval({
   }
 
   if (permissionMode === "auto_review") {
-    // Close any lingering approval gates left open by a previous mode switch
+    // Close any lingering approval gates left open by a previous mode switch.
+    const autoResolvedIds: string[] = [];
     for (const record of deps.actionLedger.list()) {
       if (record.status === "approval_required" && record.id !== action.id) {
         deps.actionLedger.transition(record.id, "approved");
+        autoResolvedIds.push(record.id);
         deps.emit(
           "approval.resolved",
           {
@@ -104,6 +110,7 @@ export async function resolveRuntimeActionApproval({
       }
     }
     const approved = deps.actionLedger.transition(action.id, "approved");
+    autoResolvedIds.push(action.id);
     if (toolCallRecord) {
       deps.appendToolCallStatus?.(toolCallRecord, "approved");
     }
@@ -121,6 +128,7 @@ export async function resolveRuntimeActionApproval({
       { actionId: action.id, status: "approved", record: approved },
       { agentId: context.agentId, nodeId: context.nodeId },
     );
+    deps.onApprovalAutoResolved?.(autoResolvedIds);
     return { decision, approvedForRiskyExecution: true };
   }
 

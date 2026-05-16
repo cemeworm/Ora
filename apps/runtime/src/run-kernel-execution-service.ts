@@ -63,6 +63,8 @@ interface ExecutePreparedRunParams {
   streamProvider?: boolean;
   signal?: AbortSignal;
   onEvent?: (event: OraEventEnvelope) => void;
+  /** auto_review 自动批准时调用。RunStore 应在此写入 gate.resolved entries */
+  onApprovalAutoResolved?: (actionIds: string[]) => void;
 }
 
 interface ExecutePreparedResumeParams {
@@ -253,14 +255,21 @@ export class RunKernelExecutionService {
   }
 }
 
+/** Symbolic marker for diagnostic_failure errors, so upstream
+ *  callers can identify them without matching on error messages. */
+export const DIAGNOSTIC_FAILURE_SYMBOL: unique symbol = Symbol.for("ora.DiagnosticFailure");
+
 function suspendedFrameResumeSnapshot(snapshot: StateSnapshot): StateSnapshot | undefined {
   const decision = classifyContinuationDispatch(snapshot);
   if (decision.kind === "diagnostic_failure") {
-    throw new OraRuntimeError(decision.message, -32004, {
-      runId: snapshot.runId,
-      frameId: decision.frame.id,
-      reason: decision.reason,
-    });
+    throw Object.assign(
+      new OraRuntimeError(decision.message, -32004, {
+        runId: snapshot.runId,
+        frameId: decision.frame.id,
+        reason: decision.reason,
+      }),
+      { [DIAGNOSTIC_FAILURE_SYMBOL]: true as const },
+    );
   }
   if (decision.kind !== "resume_suspended_node" || decision.frame.status !== "paused") {
     return undefined;

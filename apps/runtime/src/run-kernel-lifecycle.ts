@@ -36,6 +36,8 @@ interface KernelLifecycleBaseParams {
   forkedFrom?: { runId: string; checkpointId: string; eventSeq: number };
   streamProvider?: boolean;
   onEvent?: (event: OraEventEnvelope) => void;
+  /** auto_review 模式自动批准时调用，实现方应写入 gate.resolved ledger entries */
+  onApprovalAutoResolved?: (actionIds: string[]) => void;
 }
 
 interface KernelResumeParams extends KernelLifecycleBaseParams {
@@ -95,6 +97,7 @@ function kernelOptions(params: KernelLifecycleBaseParams & CancellableKernelLife
     streamProvider: params.streamProvider,
     signal: params.signal,
     onEvent: params.onEvent,
+    onApprovalAutoResolved: params.onApprovalAutoResolved,
   };
 }
 

@@ -174,22 +174,18 @@ export class RuntimeToolRecoveryService {
     const recoveryDecision = this.deps.recoveryCoordinator.resolve(incident);
     this.deps.emitRecoveryDecision(incident, recoveryDecision);
 
-    if (recoveryDecision.action === "retry") {
-      await this.deps.sleep(recoveryDecision.retryDelayMs ?? 0);
-      return { kind: "retry" };
+    switch (recoveryDecision.action) {
+      case "retry":
+        await this.deps.sleep(recoveryDecision.retryDelayMs ?? 0);
+        return { kind: "retry" };
+      case "alternate_tool":
+        if (recoveryDecision.alternateToolId) {
+          return this.recoverWithAlternateTool(failure, recoveryDecision);
+        }
+        break;
+      case "fallback_artifact":
+        return this.recoverWithFallbackArtifact(failure, incident, recoveryDecision, detail);
     }
-
-    if (
-      recoveryDecision.action === "alternate_tool" &&
-      recoveryDecision.alternateToolId
-    ) {
-      return this.recoverWithAlternateTool(failure, recoveryDecision);
-    }
-
-    if (recoveryDecision.action === "fallback_artifact") {
-      return this.recoverWithFallbackArtifact(failure, incident, recoveryDecision, detail);
-    }
-
     return { kind: "throw", error };
   }
 
