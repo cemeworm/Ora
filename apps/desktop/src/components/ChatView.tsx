@@ -567,7 +567,7 @@ function BranchComparisonPanel({
   disabled: boolean;
   onCreateAndRunBranchGroup: (params: OraSessionBranchGroupCreateParams) => void;
 }) {
-  const defaultProviderId = selectedProviderId ?? providerOptions[0]?.id ?? "local-smoke";
+  const defaultProviderId = selectedProviderId ?? providerOptions[0]?.id ?? "";
   const defaultModeId = selectedModeId || modeCards[0]?.id || "single_agent";
   const t = (value: string) => translateCopy(language, value);
   const [drafts, setDrafts] = useState<BranchDraft[]>([
@@ -590,7 +590,7 @@ function BranchComparisonPanel({
         modeSelection: "manual",
         providerId: draft.providerId,
         providerConfig: provider as OraRunConfig["providerConfig"],
-        modelRef: provider?.modelId ?? "local/smoke-model",
+        modelRef: provider?.modelId ?? "",
         permissionMode: permissionMode as OraRunConfig["permissionMode"],
         metadata: {
           source: "desktop-branch-panel",

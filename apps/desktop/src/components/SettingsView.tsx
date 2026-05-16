@@ -288,8 +288,6 @@ function providerTypeLabel(type: ProviderDraft["type"]) {
       return "OpenAI";
     case "openai_compatible":
       return "OpenAI-compatible";
-    case "local_smoke":
-      return "Local";
   }
 }
 
@@ -492,7 +490,7 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
   } = providerSetup;
   const enabledToolModelProviders = useMemo(() => {
     return (state.providerRegistry?.providers ?? []).filter(
-      (provider) => provider.enabled !== false && provider.type !== "local_smoke",
+      (provider) => provider.enabled !== false,
     );
   }, [state.providerRegistry?.providers]);
 
@@ -1320,13 +1318,10 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
                             (status) => status.providerId === draft.id,
                           );
                         const ready =
-                          draft.type === "local_smoke" ||
-                          (draft.enabled &&
-                            Boolean(entrySecretStatus?.hasSecret));
+                          draft.enabled &&
+                            Boolean(entrySecretStatus?.hasSecret);
                         const stateText =
-                          draft.type === "local_smoke"
-                            ? "Ready"
-                            : draft.enabled
+                          draft.enabled
                               ? "Enabled"
                               : entrySecretStatus?.hasSecret
                                 ? "Key saved"

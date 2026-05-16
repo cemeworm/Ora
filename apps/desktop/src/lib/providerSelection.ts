@@ -43,7 +43,7 @@ export function chooseEnabledProviderId(
     return nonLocal.id;
   }
 
-  return providers.find(isEnabled)?.id ?? registry?.defaultProviderId ?? "local-smoke";
+  return providers.find(isEnabled)?.id ?? registry?.defaultProviderId ?? "";
 }
 
 export function chooseBootstrapProviderId(
@@ -64,5 +64,5 @@ export function chooseBootstrapProviderId(
     return defaultProvider.id;
   }
 
-  return providers.find(isEnabled)?.id ?? registry?.defaultProviderId ?? "local-smoke";
+  return providers.find(isEnabled)?.id ?? registry?.defaultProviderId ?? "";
 }

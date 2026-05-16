@@ -1025,15 +1025,6 @@ export function createRuntimeClient() {
 }
 
 function mockProviderModels(provider: OraProviderConfig): OraProviderModelsResult {
-  if (provider.type === "local_smoke") {
-    return {
-      models: [{ id: "smoke-model", source: "local" }],
-      status: "ok",
-      authoritative: true,
-      fetchedAt: new Date().toISOString(),
-    };
-  }
-
   const preset = PROVIDER_PRESETS.find((entry) => {
     if (entry.fixedProviderId && provider.id.startsWith(entry.fixedProviderId)) {
       return true;
@@ -1082,7 +1073,7 @@ function mergeCustomProviders(registry: OraProviderRegistry): OraProviderRegistr
     providers: [...merged.values()],
     defaultProviderId: merged.has(registry.defaultProviderId)
       ? registry.defaultProviderId
-      : registry.providers[0]?.id ?? "local-smoke",
+      : registry.providers[0]?.id ?? "",
   };
 }
 
@@ -1124,15 +1115,6 @@ function deriveProviderStatuses(
   const secretById = new Map(secretStatuses.map((status) => [status.providerId, status]));
 
   return providers.map((provider) => {
-    if (provider.type === "local_smoke") {
-      return {
-        providerId: provider.id,
-        state: "verified",
-        detail: "Local smoke provider is ready.",
-        checkedAt: currentById.get(provider.id)?.checkedAt,
-      } satisfies OraProviderStatus;
-    }
-
     const secretStatus = secretById.get(provider.id);
     if (!secretStatus?.hasSecret) {
       return {
@@ -1211,11 +1193,9 @@ async function getProviderSecretStatuses(providers: OraProviderConfig[]): Promis
   if (!isTauriAvailable()) {
     return providers.map((provider) => ({
       providerId: provider.id,
-      hasSecret: provider.type === "local_smoke",
+      hasSecret: false,
       storage: "unavailable",
-      detail: provider.type === "local_smoke"
-        ? "Local smoke provider does not require a secret."
-        : "Open the Tauri desktop shell to store this provider key in Keychain.",
+      detail: "Open the Tauri desktop shell to store this provider key in Keychain.",
     }));
   }
 
@@ -1381,7 +1361,7 @@ class LocalJsonRpcRuntime {
           },
           providers: {
             providers: DEFAULT_PROVIDERS,
-            defaultProviderId: "local-smoke",
+            defaultProviderId: "",
           },
         };
       case "runtime.workbenchBootstrap": {
@@ -1508,7 +1488,7 @@ class LocalJsonRpcRuntime {
       case "providers.list":
         return {
           providers: DEFAULT_PROVIDERS,
-          defaultProviderId: "local-smoke",
+          defaultProviderId: "",
         };
       case "providers.verify": {
         const provider = isRecord(params) && isRecord(params.provider)
@@ -1516,14 +1496,6 @@ class LocalJsonRpcRuntime {
           : undefined;
         if (!provider) {
           throw new Error("Provider config is required for verification.");
-        }
-        if (provider.type === "local_smoke") {
-          return {
-            providerId: provider.id,
-            state: "verified",
-            detail: "Local smoke provider is ready.",
-            checkedAt: Date.now(),
-          } satisfies OraProviderStatus;
         }
         if ((provider.type === "openai_compatible" || provider.type === "anthropic_compatible") && !provider.baseUrl) {
           return {
@@ -2059,7 +2031,7 @@ class LocalJsonRpcRuntime {
             eventSeq: checkpoint.eventSeq,
           },
           {
-            providerId: parsed.config?.providerId ?? source.config.providerId ?? "local-smoke",
+            providerId: parsed.config?.providerId ?? source.config.providerId ?? "",
             modelRef: parsed.config?.modelRef ?? source.config.modelRef,
             customAgentId: parsed.config?.customAgentId ?? source.config.customAgentId,
             projectId: source.input.projectId,
@@ -3538,7 +3510,7 @@ class LocalJsonRpcRuntime {
       now,
       "succeeded",
       undefined,
-      { providerId: "local-smoke", modelRef: "local/smoke-model" },
+      { providerId: "", modelRef: "" },
     );
     const completed = {
       ...snapshot,
@@ -4103,8 +4075,8 @@ class LocalJsonRpcRuntime {
       const modeId = typeof config.modeId === "string" ? config.modeId : SINGLE_AGENT_MODE_ID;
       const mode = this.resolveMode(modeId, typeof config.pattern === "string" ? config.pattern as CoordinationPattern : "orchestrator_subagent");
       const runId = `run-${String(this.nextRunNumber++).padStart(4, "0")}`;
-      const providerId = typeof config.providerId === "string" ? config.providerId : "local-smoke";
-      const modelRef = typeof config.modelRef === "string" ? config.modelRef : "local/smoke-model";
+      const providerId = typeof config.providerId === "string" ? config.providerId : "";
+      const modelRef = typeof config.modelRef === "string" ? config.modelRef : "";
       const snapshot = this.createSnapshot(
         runId,
         mode,
@@ -4268,8 +4240,8 @@ class LocalJsonRpcRuntime {
     const turnIndex = [...this.runs.values()].filter((snapshot) => snapshot.sessionId === sessionId).length + 1;
     const mockStatus = mode.id === DEBATE_MODE_ID ? "succeeded" : "interrupted";
     const snapshot = this.createSnapshot(runId, mode, parsed.input.prompt, startedAt, mockStatus, undefined, {
-      providerId: parsed.config?.providerId ?? "local-smoke",
-      modelRef: parsed.config?.modelRef ?? "local/smoke-model",
+      providerId: parsed.config?.providerId ?? "",
+      modelRef: parsed.config?.modelRef ?? "",
       customAgentId: parsed.config?.customAgentId,
       projectId: parsed.input.projectId ?? this.sessions.get(sessionId)?.projectId,
       modeSelection,
@@ -5094,9 +5066,9 @@ class LocalJsonRpcRuntime {
         profileIds: definition.profiles.map((profile) => profile.id),
         skillIds: mode.capabilityFlags.skillIds,
         toolIds: mode.capabilityFlags.toolIds,
-        providerId: provider?.providerId ?? "local-smoke",
+        providerId: provider?.providerId ?? "",
         customAgentId: provider?.customAgentId,
-        modelRef: provider?.modelRef ?? "local/smoke-model",
+        modelRef: provider?.modelRef ?? "",
         budget: definition.defaultBudget,
         approvalMode: mode.capabilityFlags.approvalMode,
         permissionMode: "default",
@@ -5104,7 +5076,7 @@ class LocalJsonRpcRuntime {
         metadata: {
           source: "desktop-smoke",
           modeId: mode.id,
-          providerId: provider?.providerId ?? "local-smoke",
+          providerId: provider?.providerId ?? "",
           ...(provider?.autoModeRouter ? { autoModeRouter: provider.autoModeRouter } : {}),
           ...(provider?.customAgentId ? { customAgentId: provider.customAgentId } : {}),
         },
@@ -5430,10 +5402,10 @@ function createMockTraceMetadata(
       observationId: `${runId}:generation-0`,
       traceId: `ora-local-${runId}`,
       parentObservationId: `${runId}:trace-root`,
-      name: "model.local-smoke",
-      providerId: providerId ?? "local-smoke",
-      providerType: "local_smoke",
-      model: modelRef ?? "local/smoke-model",
+      name: "model.local",
+      providerId: providerId ?? "",
+      providerType: "local",
+      model: modelRef ?? "",
       latencySeconds: 1.2,
       totalCostUsd: 0,
     }],
@@ -6048,8 +6020,8 @@ function compileMockEvaluationBlueprint(
 ): OraEvaluationBlueprintCompileResult {
   const datasetId = overrides.datasetId ?? blueprint.datasetPlan.datasetId ?? blueprint.datasetPlan.linkedDatasetIds[0];
   if (!datasetId) throw new Error(`Evaluation blueprint ${blueprint.id} is missing a dataset.`);
-  const providerId = overrides.providerId ?? blueprint.runPlan.providerId ?? "local-smoke";
-  const modelRef = overrides.modelRef ?? blueprint.runPlan.modelRef ?? "local/smoke-model";
+  const providerId = overrides.providerId ?? blueprint.runPlan.providerId ?? "";
+  const modelRef = overrides.modelRef ?? blueprint.runPlan.modelRef ?? "";
   const evaluators = blueprint.evaluatorPlan.evaluators.length > 0
     ? blueprint.evaluatorPlan.evaluators
     : [{
@@ -6187,8 +6159,8 @@ function draftMockEvaluationBlueprint(params: {
       runPlan: {
         timeoutMs: 300000,
         profileId: "outcome",
-        providerId: params.providerId ?? "local-smoke",
-        modelRef: params.modelRef ?? "local/smoke-model",
+        providerId: params.providerId ?? "",
+        modelRef: params.modelRef ?? "",
         repetitions: 1,
         concurrency: 1,
         routerOnly: true,
@@ -6234,8 +6206,8 @@ function draftMockEvaluationBlueprint(params: {
     runPlan: {
       timeoutMs: 300000,
       profileId: "outcome",
-      providerId: params.providerId ?? "local-smoke",
-      modelRef: params.modelRef ?? "local/smoke-model",
+      providerId: params.providerId ?? "",
+      modelRef: params.modelRef ?? "",
       repetitions: 1,
       concurrency: 1,
       routerOnly: false,
@@ -6853,7 +6825,7 @@ function buildMockEvaluationEvents(run: OraEvaluationRun, attempts: OraEvaluatio
 }
 
 function explicitSystemAgentModelRef(modelRef: string | undefined): string | undefined {
-  return modelRef === "local/smoke-model" ? undefined : modelRef;
+  return modelRef || undefined;
 }
 
 function mockAutomationOccurrences(schedule: OraAutomationSchedule, from: number, limit: number): number[] {

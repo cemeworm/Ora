@@ -41,7 +41,7 @@ const TEAM_FAMILIES: BuiltInCoordinationPattern[] = [
   "message_bus",
   "shared_state",
 ];
-const DEFAULT_AGENT_MODEL_REF = "local/smoke-model";
+const DEFAULT_AGENT_MODEL_REF = "";
 
 function explicitAgentModelRef(modelRef: string | undefined): string | undefined {
   return modelRef === DEFAULT_AGENT_MODEL_REF ? undefined : modelRef;
@@ -165,7 +165,7 @@ export function AgentsView({
         partialDraft: draftFromEditor(draft),
         providerId: state.selectedProviderId,
         providerConfig: provider,
-        modelRef: provider?.modelId ?? "local/smoke-model",
+        modelRef: provider?.modelId ?? "",
       });
       setDraftChat((current) => [...current, { role: "assistant", content: result.assistantMessage }]);
       setDraftIssues(result.issues ?? []);

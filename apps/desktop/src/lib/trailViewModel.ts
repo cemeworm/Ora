@@ -8,6 +8,7 @@ import type { OraRunTrail, OraStateSnapshot } from "./runtimeClient";
 import type { ActionRecord, AgentProfile } from "../types";
 import type { DebuggerTrailTab } from "./debuggerSurface";
 import { deriveSnapshotInteractionProjection, snapshotPendingPlanDecision, type SnapshotInteractionProjection } from "./runInteractionState";
+import { deriveSnapshotGateProjection } from "@cemeworm/shared";
 
 export type TrailDebuggerTab = "overview" | "flow" | "agents" | "tools" | "latency" | "evidence" | "compare";
 export type TrailFindingSeverity = "error" | "warning" | "info";
@@ -230,7 +231,9 @@ export function buildTrailDebugSummary(
   const liveMetrics = trail?.liveMetrics;
 
   return {
-    statusLabel: interactionStatusLabel(interaction.status),
+    statusLabel: snapshot.snapshotSource === "live"
+      ? `${interactionStatusLabel(interaction.status)} (实时)`
+      : interactionStatusLabel(interaction.status),
     statusTone: interactionStatusTone(interaction.status),
     currentStage: inferCurrentStage(snapshot, lastImportantEvent, interaction),
     blockingGate,
@@ -1546,11 +1549,6 @@ function inferCurrentStage(
   if (snapshot.status === "succeeded") {
     return stopReasonLabel(stopReasonFromSnapshot(snapshot)) ?? "已完成";
   }
-  if (
-    snapshot.attention?.kind === "needs_clarification"
-  ) {
-    return "等待用户输入";
-  }
   if (snapshot.activeAgents.length > 0) {
     return `进行中：${snapshot.activeAgents.join(", ")}`;
   }
@@ -1842,16 +1840,11 @@ function isApprovalInterruptDetail(detail: string | undefined): boolean {
 }
 
 function isApprovalGateSnapshot(snapshot: OraStateSnapshot): boolean {
-  if (snapshot.attention?.kind === "needs_approval") {
-    return true;
-  }
+  const gate = deriveSnapshotGateProjection(snapshot, { includeRawPending: true });
+  if (gate?.kind === "approval") return true;
+  // fallback: 检查 failure detail 中是否有 approval interrupt（跨模块 instanceof 不可用）
   const failureDetail = latestFailureDetail(snapshot);
-  if (!isApprovalInterruptDetail(failureDetail)) {
-    return false;
-  }
-  return snapshot.pendingApprovals.length > 0
-    || snapshot.actions.some((action) => action.status === "approval_required")
-    || snapshot.toolCalls.some((call) => call.status === "approval_required" || isApprovalInterruptDetail(call.error ?? call.result?.error));
+  return Boolean(isApprovalInterruptDetail(failureDetail));
 }
 
 function stopReasonFromSnapshot(snapshot: OraStateSnapshot): string | undefined {
