@@ -60,6 +60,12 @@ export function defaultPublicSkillsDir(runtimeDataDir: string): string {
     : path.join(runtimeDataDir, "skills", "public");
 }
 
+export function defaultWidgetsDir(runtimeDataDir: string): string {
+  return runtimeDataDir.endsWith(".db")
+    ? path.join(path.dirname(runtimeDataDir), "widgets")
+    : path.join(runtimeDataDir, "widgets");
+}
+
 export function defaultMemoryDir(runtimeDataDir: string): string {
   return runtimeDataDir.endsWith(".db")
     ? path.join(path.dirname(runtimeDataDir), "memory")

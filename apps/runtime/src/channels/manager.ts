@@ -32,7 +32,7 @@ import { ChannelStore } from "./store.js";
 export interface ChannelRunRuntime {
   createSession(params?: unknown): SessionSummary;
   createProject(params?: unknown): { projectId: string };
-  getProject(params?: unknown): { project: { rootPath: string } };
+  getProject(params?: unknown): { project: { rootPath?: string } };
   getSession(params?: unknown): { session: SessionSummary };
   listProjects(params?: unknown): ProjectSummary[];
   setSessionProject(params?: unknown): SessionSummary;
@@ -738,7 +738,7 @@ export class ChannelManager {
     inbound: ChannelInboundMessage,
     channel: ChannelConfig,
     binding: ChannelBinding,
-    project: { projectId: string; label: string; rootPath: string },
+    project: { projectId: string; label: string; rootPath?: string },
     originalPrompt: string,
   ): Promise<ChannelIngestResult> {
     this.runtime.setSessionProject({ sessionId: binding.sessionId, projectId: project.projectId });
@@ -748,7 +748,7 @@ export class ChannelManager {
         inbound,
         channel,
         nextBinding,
-        `已将当前渠道会话的项目文件夹切换为：${formatCandidatePath(project.rootPath)}`,
+        `已将当前渠道会话的项目文件夹切换为：${formatCandidatePath(project.rootPath ?? project.label)}`,
         "command_response",
       );
     }
@@ -911,7 +911,7 @@ export class ChannelManager {
 
   private matchExistingProject(query: string | undefined, excludedPaths: Set<string>): ProjectSummary | undefined {
     const projects = this.runtime.listProjects({ limit: 500 })
-      .filter((project) => !excludedPaths.has(project.rootPath));
+      .filter((project) => project.rootPath && !excludedPaths.has(project.rootPath));
     if (projects.length === 1) {
       return projects[0];
     }
@@ -922,7 +922,7 @@ export class ChannelManager {
     const matches = projects
       .map((project) => ({ project, score: existingProjectScore(project, terms) }))
       .filter((item) => item.score > 0)
-      .sort((left, right) => right.score - left.score || left.project.rootPath.length - right.project.rootPath.length);
+      .sort((left, right) => right.score - left.score || (left.project.rootPath ?? "").length - (right.project.rootPath ?? "").length);
     if (matches.length === 0) {
       return undefined;
     }
@@ -1013,7 +1013,7 @@ function projectQueryTerms(query: string | undefined): string[] {
 }
 
 function existingProjectScore(project: ProjectSummary, terms: string[]): number {
-  const haystack = `${project.label} ${project.rootPath}`.toLowerCase();
+  const haystack = `${project.label} ${project.rootPath ?? ""}`.toLowerCase();
   return terms.reduce((score, term) => score + (haystack.includes(term) ? 1 : 0), 0);
 }
 

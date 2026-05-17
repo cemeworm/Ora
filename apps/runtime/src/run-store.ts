@@ -113,6 +113,7 @@ import {
   type RuntimeSessionLedger,
 } from "@cemeworm/shared";
 import { AutomationService } from "./automation-service.js";
+import { WidgetStore } from "./widget-store.js";
 import { TodoService } from "./capabilities.js";
 import type { ChannelSessionUpdateEvent } from "./channels/manager.js";
 import { ChannelService } from "./channels/service.js";
@@ -221,6 +222,7 @@ import {
   defaultEvaluationStoreDir,
   defaultFeedbackLoopStoreDir,
   defaultAutomationsDir,
+  defaultWidgetsDir,
   defaultSelfIterationStoreDir,
   defaultMemoryDir,
   defaultModesDir,
@@ -375,6 +377,7 @@ export class LocalRunStore {
   private cachedEmbeddingProvider: EmbeddingProvider | undefined | null = null;
   private readonly channelService: ChannelService;
   private readonly automationService: AutomationService;
+  private readonly widgetStore: WidgetStore;
   private readonly planDecisionService: PlanDecisionService;
   private readonly runResumeFinalizationService: RunResumeFinalizationService;
   private readonly runResumeService: RunResumeService;
@@ -475,6 +478,10 @@ export class LocalRunStore {
       startStreamingRun: (params, options) => this.startStreamingRun(params, options),
       listProjects: () => this.listProjects(),
       agentExists: (agentId) => this.agentExists(agentId),
+    });
+    this.widgetStore = new WidgetStore({
+      rootDir: defaultWidgetsDir(dataDir),
+      clock: this.clock,
     });
     this.runKernelExecutionService = new RunKernelExecutionService({
       clock: this.clock,
@@ -1322,6 +1329,78 @@ export class LocalRunStore {
     return this.automationService.previewSchedule(params);
   }
 
+  // === Widget methods ===
+
+  listWidgets(params: unknown) {
+    return this.widgetStore.list(params as Parameters<typeof this.widgetStore.list>[0]);
+  }
+
+  getWidget(params: unknown) {
+    const { id } = params as { id: string };
+    return this.widgetStore.get(id);
+  }
+
+  createWidget(params: unknown) {
+    return this.widgetStore.create(params as Parameters<typeof this.widgetStore.create>[0]);
+  }
+
+  updateWidget(params: unknown) {
+    return this.widgetStore.update(params as Parameters<typeof this.widgetStore.update>[0]);
+  }
+
+  deleteWidget(params: unknown) {
+    const { id } = params as { id: string };
+    return this.widgetStore.delete(id);
+  }
+
+  archiveWidget(params: unknown) {
+    const { id } = params as { id: string };
+    return this.widgetStore.archive(id);
+  }
+
+  restoreWidget(params: unknown) {
+    const { id } = params as { id: string };
+    return this.widgetStore.restore(id);
+  }
+
+  listWidgetVersions(params: unknown) {
+    const { widgetId } = params as { widgetId: string };
+    return this.widgetStore.listVersions(widgetId);
+  }
+
+  getWidgetVersion(params: unknown) {
+    const { id } = params as { id: string };
+    return this.widgetStore.getVersion(id);
+  }
+
+  compareWidgetVersions(params: unknown) {
+    const { versionIdA, versionIdB } = params as { versionIdA: string; versionIdB: string };
+    return this.widgetStore.compareVersions(versionIdA, versionIdB);
+  }
+
+  restoreWidgetVersion(params: unknown) {
+    return this.widgetStore.restoreVersion(params as Parameters<typeof this.widgetStore.restoreVersion>[0]);
+  }
+
+  toggleWidgetPin(params: unknown) {
+    const { id } = params as { id: string };
+    return this.widgetStore.togglePin(id);
+  }
+
+  listStaleWidgets() {
+    return this.widgetStore.listStale();
+  }
+
+  listWidgetEvents(params: unknown) {
+    const { widgetId, limit } = (params ?? {}) as { widgetId?: string; limit?: number };
+    return this.widgetStore.listEvents(widgetId, limit);
+  }
+
+  findDuplicateWidget(params: unknown) {
+    const { title, kind } = (params ?? {}) as { title: string; kind?: string };
+    return this.widgetStore.findDuplicate(title, kind as Parameters<typeof this.widgetStore.findDuplicate>[1]);
+  }
+
   updateSystemAgentOverride(params: SystemAgentOverrideUpdateParams | unknown): SystemAgentOverride {
     const parsed = SystemAgentOverrideUpdateParamsSchema.parse(params);
     if (!this.systemAgentIds().has(parsed.agentId)) {
@@ -1790,6 +1869,15 @@ export class LocalRunStore {
     } = this.runResumeService.prepare(params);
     this.assertResumeStrategyBoundary({ snapshot, approvedActionIds, hasKernelWork, strategy });
 
+    if (!hasKernelWork && snapshot.pendingClarifications.length > 0) {
+      console.warn(
+        "[resumeStreamingRun] hasKernelWork=false but snapshot has",
+        snapshot.pendingClarifications.length,
+        "pending clarifications — attention kind:",
+        snapshot.attention?.kind ?? "(derived)",
+        ". The run may be entering non-kernel path without kernel restart.",
+      );
+    }
     if (!hasKernelWork) {
       const resumed = await this.resumeRun(params);
       publishRunStream({
@@ -2123,6 +2211,15 @@ export class LocalRunStore {
       strategy,
     } = this.runResumeService.prepare(params);
     this.assertResumeStrategyBoundary({ snapshot, approvedActionIds, hasKernelWork, strategy });
+    if (!hasKernelWork && snapshot.pendingClarifications.length > 0) {
+      console.warn(
+        "[resumeRun] hasKernelWork=false but snapshot has",
+        snapshot.pendingClarifications.length,
+        "pending clarifications — attention kind:",
+        snapshot.attention?.kind ?? "(derived)",
+        ". The run may be entering non-kernel path without kernel restart.",
+      );
+    }
     this.appendGateResolutionsForResume(snapshot, gateResolutions);
     let liveSnapshot = this.markResumeRunning(snapshot, approvedActionIds);
 
@@ -4440,6 +4537,22 @@ export class LocalRunStore {
 
   private environmentObserverSignal(project: ProjectSummary, policy: SelfIterationEnvironmentObserverPolicy): ProjectSignal {
     const summary = summarizeProjectEnvironment(project, policy, [...this.runs.values()].filter((run) => projectIdForSnapshotLocal(run, this.sessions) === project.projectId));
+    if (!summary) {
+      return ProjectSignalSchema.parse({
+        id: `${project.projectId}:signal:project_file:environment_observer`,
+        projectId: project.projectId,
+        source: "project_file",
+        sourceRef: `environment-observer:${project.projectId}`,
+        title: "Environment observer snapshot",
+        summary: "Environment observer skipped (no filesystem root path).",
+        severity: "info",
+        confidence: 0,
+        createdAt: this.now(),
+        updatedAt: this.now(),
+        evidence: [],
+        metadata: { observerKind: "environment_snapshot", privacy: "metadata_only_no_raw_content" },
+      });
+    }
     const now = this.now();
     return ProjectSignalSchema.parse({
       id: `${project.projectId}:signal:project_file:environment_observer`,
@@ -4978,6 +5091,7 @@ export class LocalRunStore {
 }
 
 function summarizeProjectEnvironment(project: ProjectSummary, policy: SelfIterationEnvironmentObserverPolicy, runs: StateSnapshot[]) {
+  if (!project.rootPath) return undefined;
   const rootPath = path.resolve(project.rootPath);
   const excludes = policy.excludedGlobs.map(globToRegExp);
   const watchedPaths = policy.watchedPaths.map((entry) => entry.trim()).filter(Boolean);
