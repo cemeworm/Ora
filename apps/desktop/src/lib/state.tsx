@@ -3412,7 +3412,10 @@ export function workbenchReducer(
       return {
         ...state,
         selectedSkillIds: action.skillIds,
-        sessionSkillIds: setSessionSkillIds(state, action.skillIds),
+        sessionSkillIds:
+          state.activeView === "space-dashboard"
+            ? state.sessionSkillIds
+            : setSessionSkillIds(state, action.skillIds),
       };
 
     case "ADD_PROJECT_FILE_ATTACHMENT":
@@ -3659,7 +3662,11 @@ export function workbenchReducer(
       return { ...state, filmstripExpanded: !state.filmstripExpanded };
 
     case "SET_VIEW":
-      return { ...state, activeView: action.view };
+      return {
+        ...state,
+        activeView: action.view,
+        selectedSkillIds: action.view === "space-dashboard" ? [] : state.selectedSkillIds,
+      };
 
     case "SET_SETTINGS_OPEN":
       return { ...state, settingsOpen: action.open };

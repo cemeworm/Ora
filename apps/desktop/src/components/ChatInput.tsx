@@ -3,6 +3,7 @@ import {
   BrainCircuit,
   Bot,
   Check,
+  Sparkles,
   ClipboardList,
   FileText,
   LoaderCircle,
@@ -17,6 +18,7 @@ import {
   X,
 } from "lucide-react";
 import {
+  Fragment,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -70,6 +72,7 @@ interface ChatInputProps {
   skillOptions: SkillDescriptor[];
   selectedSkillIds: string[];
   contextChips?: ChatInputContextChip[];
+  placeholder?: string;
   selectedCustomAgentId?: string;
   projectFileAttachments: ComposerProjectFileAttachment[];
   localFileAttachments: ComposerLocalFileAttachment[];
@@ -205,6 +208,7 @@ export function ChatInput({
   skillOptions,
   selectedSkillIds,
   contextChips = [],
+  placeholder = "Message Ora",
   selectedCustomAgentId,
   projectFileAttachments,
   localFileAttachments,
@@ -245,8 +249,10 @@ export function ChatInput({
 
   const overlayRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const chipsRef = useRef<HTMLDivElement>(null);
   const lastOverlayHeightRef = useRef<number | undefined>();
   const shouldScrollPastedTextRef = useRef(false);
+  const skillPickerRef = useRef<HTMLDivElement>(null);
   const [openPicker, setOpenPicker] = useState<
     | "pattern"
     | "provider"
@@ -353,6 +359,18 @@ export function ChatInput({
   }, [composerPrompt]);
 
   useLayoutEffect(() => {
+    const textarea = textareaRef.current;
+    const chips = chipsRef.current;
+    if (!textarea) return;
+    if (chips && hasInlineContextChips) {
+      const chipsWidth = chips.getBoundingClientRect().width;
+      textarea.style.textIndent = `${chipsWidth + 8}px`;
+    } else {
+      textarea.style.textIndent = "";
+    }
+  }, [composerPrompt, hasInlineContextChips, contextChips, selectedSkills]);
+
+  useLayoutEffect(() => {
     const target = textareaRef.current;
     if (!target) return;
     resizeComposerTextarea(target);
@@ -393,24 +411,70 @@ export function ChatInput({
     planSteps,
   ]);
 
-  function handleKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
-    if (
-      e.key === "Backspace" &&
-      textareaRef.current?.selectionStart === 0 &&
-      selectedSkills.length > 0
-    ) {
-      e.preventDefault();
-      removeSkill(selectedSkills[selectedSkills.length - 1].id);
-      return;
+  useEffect(() => {
+    setSkillPickerIndex(0);
+  }, [slashQuery, showSkillPicker]);
+
+  useEffect(() => {
+    if (!showSkillPicker) return;
+    const container = skillPickerRef.current;
+    if (!container) return;
+    const target = container.children[skillPickerIndex] as
+      | HTMLElement
+      | undefined;
+    if (target) {
+      target.scrollIntoView({ block: "nearest" });
     }
+  }, [skillPickerIndex, showSkillPicker]);
+
+  function handleKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
+    if (e.key === "Backspace" && textareaRef.current?.selectionStart === 0) {
+      if (selectedSkills.length > 0) {
+        e.preventDefault();
+        removeSkill(selectedSkills[selectedSkills.length - 1].id);
+        return;
+      }
+      if (contextChips.length > 0) {
+        e.preventDefault();
+        contextChips[contextChips.length - 1].onRemove?.();
+        return;
+      }
+    }
+
     if (e.key === "Escape" && openPicker === "skills") {
       setOpenPicker(undefined);
       return;
     }
+    if (e.key === "ArrowDown" && openPicker === "skills") {
+      e.preventDefault();
+      const maxIndex =
+        hiddenSkillCount > 0
+          ? visibleSkillOptions.length
+          : visibleSkillOptions.length - 1;
+      setSkillPickerIndex((prev) => (prev >= maxIndex ? 0 : prev + 1));
+      return;
+    }
+    if (e.key === "ArrowUp" && openPicker === "skills") {
+      e.preventDefault();
+      const maxIndex =
+        hiddenSkillCount > 0
+          ? visibleSkillOptions.length
+          : visibleSkillOptions.length - 1;
+      setSkillPickerIndex((prev) => (prev <= 0 ? maxIndex : prev - 1));
+      return;
+    }
     if (e.key === "Enter" && openPicker === "skills") {
       e.preventDefault();
-      if (visibleSkillOptions[0]) {
-        selectSkill(visibleSkillOptions[0]);
+      if (
+        hiddenSkillCount > 0 &&
+        skillPickerIndex === visibleSkillOptions.length
+      ) {
+        setSkillListExpanded(true);
+        setSkillPickerIndex(0);
+        return;
+      }
+      if (visibleSkillOptions[skillPickerIndex]) {
+        selectSkill(visibleSkillOptions[skillPickerIndex]);
       }
       return;
     }
@@ -485,9 +549,7 @@ export function ChatInput({
   }
 
   const modeTriggerLabel =
-    selectedModeSelection === "auto"
-      ? "自动"
-      : activeMode?.label ?? "默认";
+    selectedModeSelection === "auto" ? "自动" : (activeMode?.label ?? "默认");
 
   const taskIntentOptions = [
     {
@@ -538,13 +600,19 @@ export function ChatInput({
     >
       <div className="pointer-events-none relative w-full max-w-[88rem] px-4 md:px-6 xl:px-8">
         {showSkillPicker && (
-          <div className="pointer-events-auto absolute bottom-full left-3 z-50 mb-2 max-h-[min(32rem,calc(100vh-12rem))] w-[min(26rem,calc(100%-1.5rem))] overflow-y-auto rounded-xl border border-border bg-popover p-1.5 text-popover-foreground shadow-lift">
-            {visibleSkillOptions.map((skill) => (
+          <div
+            ref={skillPickerRef}
+            className="pointer-events-auto absolute bottom-full left-3 z-50 mb-2 max-h-[min(32rem,calc(100vh-12rem))] w-[min(26rem,calc(100%-1.5rem))] overflow-y-auto rounded-xl border border-border bg-popover p-1.5 text-popover-foreground shadow-lift"
+          >
+            {visibleSkillOptions.map((skill, idx) => (
               <button
                 key={skill.id}
                 type="button"
                 onClick={() => selectSkill(skill)}
-                className="w-full rounded-md px-3 py-2 text-left transition hover:bg-accent"
+                onMouseMove={() => setSkillPickerIndex(idx)}
+                className={`w-full rounded-md px-3 py-2 text-left transition hover:bg-accent ${
+                  idx === skillPickerIndex ? "bg-accent" : ""
+                }`}
               >
                 <div className="flex items-center justify-between gap-2">
                   <span className="truncate text-xs font-medium">
@@ -563,7 +631,14 @@ export function ChatInput({
               <button
                 type="button"
                 onClick={() => setSkillListExpanded(true)}
-                className="mt-1 w-full rounded-md bg-transparent px-3 py-2 text-left text-xs font-medium text-muted-foreground transition hover:bg-accent hover:text-foreground"
+                onMouseMove={() =>
+                  setSkillPickerIndex(visibleSkillOptions.length)
+                }
+                className={`mt-1 w-full rounded-md bg-transparent px-3 py-2 text-left text-xs font-medium text-muted-foreground transition hover:bg-accent hover:text-foreground ${
+                  skillPickerIndex === visibleSkillOptions.length
+                    ? "bg-accent text-foreground"
+                    : ""
+                }`}
               >
                 Show all {filteredSkillOptions.length} skills
               </button>
@@ -637,7 +712,7 @@ export function ChatInput({
               )}
             >
               {hasFileChips && (
-                <div className="absolute left-3 right-3 top-3 z-10 flex max-h-16 flex-wrap items-center gap-1.5 overflow-y-auto pr-1">
+                <div className="absolute left-3 right-3  z-10 flex max-h-16 flex-wrap items-center gap-1.5 overflow-y-auto pr-1">
                   {projectFileAttachments.map((file) => (
                     <button
                       key={`${file.projectId}:${file.path}`}
@@ -689,105 +764,104 @@ export function ChatInput({
                   ))}
                 </div>
               )}
-              <div className="flex items-start">
-                {hasInlineContextChips && (
-                  <div className="flex flex-shrink-0 flex-wrap items-center gap-1.5 pl-3 pt-4">
-                    {contextChips.map((chip) => (
-                      <button
-                        key={chip.id}
-                        type="button"
-                        onClick={chip.onRemove}
-                        disabled={!chip.onRemove}
-                        className={cn(
-                          "inline-flex h-6 max-w-[220px] items-center gap-1 rounded-full border px-2.5 text-xs font-medium transition",
-                          chip.tone === "widget"
-                            ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-                            : "border-border bg-background/80 text-muted-foreground",
-                          chip.onRemove && "hover:bg-accent hover:text-accent-foreground active:scale-95",
-                        )}
-                        title={chip.label}
-                      >
-                        <PanelTop size={11} />
-                        <span className="truncate">{chip.label}</span>
-                        {chip.onRemove && <X size={11} />}
-                      </button>
-                    ))}
-                    {selectedSkills.map((skill) => (
-                      <span
-                        key={skill.id}
-                        className="inline-flex h-6 max-w-[220px] items-center gap-1 rounded-full border border-violet-200 bg-violet-50 px-2.5 text-xs font-medium text-violet-700"
-                      >
-                        <Check size={11} />
-                        <span className="truncate">{skill.name}</span>
-                      </span>
-                    ))}
-                  </div>
-                )}
-                <textarea
-                  ref={textareaRef}
-                  value={composerPrompt}
-                  onChange={(e) => updatePrompt(e.target.value)}
-                  onKeyDown={handleKeyDown}
-                  onClick={(e) =>
-                    setCursorPos(
-                      (e.target as HTMLTextAreaElement).selectionStart,
-                    )
-                  }
-                  onKeyUp={(e) =>
-                    setCursorPos(
-                      (e.target as HTMLTextAreaElement).selectionStart,
-                    )
-                  }
-                  placeholder={
-                    runInteractionState.isProcessing ? "" : "Message Ora"
-                  }
-                  disabled={!interactivity.canEditText}
-                  rows={2}
+              {hasInlineContextChips && (
+                <div
+                  ref={chipsRef}
                   className={cn(
-                    "max-h-[220px] min-w-0 flex-1 resize-none bg-transparent px-4 pb-14 text-sm leading-5 outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-60",
-                    hasFileChips
-                      ? "min-h-[148px] pt-20"
-                      : hasInlineContextChips
-                        ? "min-h-[112px] pt-12"
-                        : "min-h-[96px] pt-4",
+                    "absolute left-3 flex flex-wrap items-center gap-1",
+                    hasFileChips ? "top-12" : "top-4",
                   )}
-                  style={{ height: "auto", overflowY: "auto" }}
-                  onInput={(e) => {
-                    resizeComposerTextarea(e.target as HTMLTextAreaElement);
-                  }}
-                  onPaste={(e) => {
-                    const items = e.clipboardData?.items;
-                    if (items) {
-                      const imageItems: File[] = [];
-                      for (const item of items) {
-                        if (item.kind === "file" && item.type.startsWith("image/")) {
-                          const file = item.getAsFile();
-                          if (file) imageItems.push(file);
-                        }
-                      }
-                      if (imageItems.length > 0) {
-                        e.preventDefault();
-                        let pasteSeq = 0;
-                        for (const file of imageItems) {
-                          const reader = new FileReader();
-                          const seq = pasteSeq++;
-                          reader.onload = () => {
-                            onAddImageAttachment({
-                              dataUrl: reader.result as string,
-                              mimeType: file.type,
-                              name: file.name || `screenshot-${Date.now()}-${seq}.png`,
-                              sizeBytes: file.size,
-                            });
-                          };
-                          reader.readAsDataURL(file);
-                        }
-                        return;
+                >
+                  {contextChips.map((chip) => (
+                    <span
+                      key={chip.id}
+                      className={cn(
+                        "inline-flex max-w-[220px] items-center gap-1 text-sm font-medium",
+                        chip.tone === "widget"
+                          ? "text-emerald-700"
+                          : "text-muted-foreground",
+                      )}
+                    >
+                      <PanelTop size={14} />
+                      <span className="truncate">{chip.label}</span>
+                    </span>
+                  ))}
+                  {selectedSkills.map((skill) => (
+                    <span
+                      key={skill.id}
+                      className="inline-flex max-w-[220px] items-center gap-1 text-sm font-medium text-violet-700"
+                    >
+                      <Sparkles size={14} />
+                      <span className="truncate">{skill.name}</span>
+                    </span>
+                  ))}
+                </div>
+              )}
+              <textarea
+                ref={textareaRef}
+                value={composerPrompt}
+                onChange={(e) => updatePrompt(e.target.value)}
+                onKeyDown={handleKeyDown}
+                onClick={(e) =>
+                  setCursorPos((e.target as HTMLTextAreaElement).selectionStart)
+                }
+                onKeyUp={(e) =>
+                  setCursorPos((e.target as HTMLTextAreaElement).selectionStart)
+                }
+                placeholder={
+                  runInteractionState.isProcessing ? "" : placeholder
+                }
+                disabled={!interactivity.canEditText}
+                rows={2}
+                className={cn(
+                  "max-h-[220px] w-full resize-none bg-transparent px-4 pb-14 text-sm leading-5 outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-60",
+                  hasFileChips
+                    ? "min-h-[116px] pt-12"
+                    : hasInlineContextChips
+                      ? "min-h-[80px] pt-4"
+                      : "min-h-[96px] pt-4",
+                )}
+                style={{ height: "auto", overflowY: "auto" }}
+                onInput={(e) => {
+                  resizeComposerTextarea(e.target as HTMLTextAreaElement);
+                }}
+                onPaste={(e) => {
+                  const items = e.clipboardData?.items;
+                  if (items) {
+                    const imageItems: File[] = [];
+                    for (const item of items) {
+                      if (
+                        item.kind === "file" &&
+                        item.type.startsWith("image/")
+                      ) {
+                        const file = item.getAsFile();
+                        if (file) imageItems.push(file);
                       }
                     }
-                    shouldScrollPastedTextRef.current = true;
-                  }}
-                />
-              </div>
+                    if (imageItems.length > 0) {
+                      e.preventDefault();
+                      let pasteSeq = 0;
+                      for (const file of imageItems) {
+                        const reader = new FileReader();
+                        const seq = pasteSeq++;
+                        reader.onload = () => {
+                          onAddImageAttachment({
+                            dataUrl: reader.result as string,
+                            mimeType: file.type,
+                            name:
+                              file.name ||
+                              `screenshot-${Date.now()}-${seq}.png`,
+                            sizeBytes: file.size,
+                          });
+                        };
+                        reader.readAsDataURL(file);
+                      }
+                      return;
+                    }
+                  }
+                  shouldScrollPastedTextRef.current = true;
+                }}
+              />
               <div className="absolute bottom-2 left-2 right-2 flex items-center justify-between gap-2">
                 <div className="flex min-w-0 items-center gap-1">
                   <Button
@@ -938,8 +1012,7 @@ export function ChatInput({
                         </span>
                       </div>
                       <div className="mt-1 line-clamp-1 text-[11px] text-muted-foreground">
-                        由 Ora 从当前模式列表中自动选择最适合本轮的
-                        模式。
+                        由 Ora 从当前模式列表中自动选择最适合本轮的 模式。
                       </div>
                     </button>
                     {modeOptions.map((mode) => (
