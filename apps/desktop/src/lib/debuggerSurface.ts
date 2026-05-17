@@ -1,6 +1,6 @@
 import {
   CODE_DEVELOPMENT_MODE_ID,
-  DEERFLOW_HARNESS_MODE_ID,
+  DEBATE_MODE_ID,
   SINGLE_AGENT_MODE_ID,
 } from "@cemeworm/shared";
 import type { ModeCard } from "../types";
@@ -19,9 +19,9 @@ export const DEBUGGER_MODE_SHORTLIST = [
     reason: "显式计划、实施、审查和调试，适合可验证代码任务。",
   },
   {
-    modeId: DEERFLOW_HARNESS_MODE_ID,
-    label: "Recoverable Long Task",
-    reason: "保留分解、子任务和检查点，适合长任务恢复与对比。",
+    modeId: DEBATE_MODE_ID,
+    label: "Multi-Agent Debate",
+    reason: "多视角辩论与对抗审视，适合需要深度推敲的复杂任务。",
   },
 ] as const;
 

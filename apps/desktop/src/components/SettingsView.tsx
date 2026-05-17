@@ -2034,19 +2034,19 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
                 <>
                   <section className="rounded-[22px] bg-card p-5 shadow-pane ring-1 ring-inset ring-bench-200">
                     <div className="flex flex-wrap items-start justify-between gap-3">
-                      <div>
+                      <div className="min-w-0 flex-1">
                         <div className="mb-2 flex items-center gap-2">
                           <Database size={18} />
                           <h3 className="text-sm font-semibold">Memory</h3>
                         </div>
-                        <p className="text-sm leading-6 text-bench-700">
+                        <p className="max-w-2xl text-sm leading-6 text-bench-700">
                           Long-term memory is persisted across runs, summarized
                           into profile sections, and injected into future
                           prompts when relevant.
                         </p>
                       </div>
-                      <div className="flex flex-wrap gap-2">
-                        <span className="rounded-full bg-white px-2.5 py-1 text-xs font-semibold text-bench-700 ring-1 ring-inset ring-bench-200">
+                      <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+                        <span className="inline-flex h-8 shrink-0 items-center justify-center whitespace-nowrap rounded-xl bg-white px-3 text-xs font-semibold tabular-nums text-bench-700 ring-1 ring-inset ring-bench-200">
                           {longTermFacts.length} facts
                         </span>
                         <Button

@@ -44,6 +44,7 @@ import { toolRendererRegistry } from "../lib/toolRendererRegistry";
 import {
   buildAgentLanes,
   buildActiveMemorySummary,
+  buildCausalDecisionSummary,
   buildCommunicationGraph,
   buildContextWindowSummary,
   buildConversationView,
@@ -67,6 +68,7 @@ import {
   snapshotPendingClarifications,
   toolSourceLabel,
   toolStatusLabel,
+  type CausalDecisionSummary,
   type CommunicationEdge,
   type ContextWindowSummary,
   type ConversationViewEntry,
@@ -203,6 +205,7 @@ export function TrailsTabs({
   const memoryDetail = useMemo(() => buildMemoryDetailSummary(activeSnapshot), [activeSnapshot]);
   const contextWindow = useMemo(() => buildContextWindowSummary(activeSnapshot), [activeSnapshot]);
   const communicationEdges = useMemo(() => buildCommunicationGraph(activeSnapshot), [activeSnapshot]);
+  const causalDecisionSummary = useMemo(() => buildCausalDecisionSummary(activeSnapshot), [activeSnapshot]);
   const visibleFindings = severityFilter === "all" ? findings : findings.filter((finding) => finding.severity === severityFilter);
   const searchLower = searchQuery.toLowerCase().trim();
   const visibleTimeline = timelineItems
@@ -310,6 +313,7 @@ export function TrailsTabs({
             planProgress={planProgress}
             policyDecisions={policyDecisions}
             effectiveStrategy={effectiveStrategy}
+            causalDecisionSummary={causalDecisionSummary}
             selectedCheckpoint={selectedCheckpoint}
             selectedNode={selectedNode}
             runInteractionState={runInteractionState}
@@ -420,6 +424,7 @@ function TrailOverview({
   planProgress,
   policyDecisions,
   effectiveStrategy,
+  causalDecisionSummary,
   runInteractionState,
   selectedCheckpoint,
   selectedNode,
@@ -450,6 +455,7 @@ function TrailOverview({
   planProgress?: PlanProgressSummary;
   policyDecisions?: PolicyDecisionsSummary;
   effectiveStrategy: ReturnType<typeof buildEffectiveStrategySummary>;
+  causalDecisionSummary: CausalDecisionSummary;
   runInteractionState: DesktopRunInteractionState;
   selectedCheckpoint?: CheckpointRecord;
   selectedNode?: TopologyNode;
@@ -531,6 +537,53 @@ function TrailOverview({
             {effectiveStrategy.notes.length > 0 && (
               <p className="mt-2 text-xs leading-5 text-amber-900">{effectiveStrategy.notes.join(" ")}</p>
             )}
+          </div>
+        </DockCard>
+      )}
+
+      {causalDecisionSummary.totalDecisions > 0 && (
+        <DockCard title="Agent 干预决策" icon={<Route size={16} />}>
+          <div className="space-y-3">
+            {causalDecisionSummary.decisions.map((decision, index) => (
+              <div
+                key={index}
+                className="rounded-md bg-bench-50 px-3 py-2.5 ring-1 ring-inset ring-bench-200"
+              >
+                <div className="flex items-center justify-between gap-2 mb-2">
+                  <span className="text-sm font-semibold text-bench-900">
+                    {interventionLabel(decision.intervention)}
+                  </span>
+                  <span className={`text-[11px] font-medium rounded px-1.5 py-0.5 ${
+                    decision.wouldChangeOutcomeIfWrong
+                      ? "bg-amber-100 text-amber-800"
+                      : "bg-emerald-100 text-emerald-800"
+                  }`}>
+                    {decision.wouldChangeOutcomeIfWrong ? "可能改变结果" : "影响有限"}
+                  </span>
+                </div>
+
+                {/* Uncertainty bars */}
+                <div className="space-y-1 mb-2">
+                  <UncertaintyBar label="目标不确定性" value={decision.goalUncertainty} />
+                  <UncertaintyBar label="事实不确定性" value={decision.factUncertainty} />
+                  <UncertaintyBar label="上下文不确定性" value={decision.contextUncertainty} />
+                  <UncertaintyBar label="行动风险" value={decision.actionRisk} warn />
+                </div>
+
+                {/* Cost and reversibility */}
+                <div className="flex items-center gap-3 text-[11px] text-bench-700 mb-2">
+                  <span>用户成本: <span className="font-semibold text-bench-900">{formatPct(decision.userCost)}</span></span>
+                  <span>可逆性: <span className="font-semibold text-bench-900">{reversibilityLabel(decision.reversibility)}</span></span>
+                </div>
+
+                {/* Reason */}
+                {decision.reason && (
+                  <p className="text-[11px] leading-5 text-bench-600 border-t border-bench-200 pt-1.5 mt-1.5">
+                    {decision.reason}
+                  </p>
+                )}
+              </div>
+            ))}
           </div>
         </DockCard>
       )}
@@ -1880,6 +1933,61 @@ export function collectAnomalies(
   actions: ActionRecord[],
 ) {
   return collectTrailFindings(snapshot, trailError, trace, actions).map((finding) => finding.message);
+}
+
+function formatPct(value: number): string {
+  return `${Math.round(value * 100)}%`;
+}
+
+function reversibilityLabel(value: string): string {
+  switch (value) {
+    case "high": return "高";
+    case "medium": return "中";
+    case "low": return "低";
+    default: return value;
+  }
+}
+
+function interventionLabel(action: string): string {
+  switch (action) {
+    case "answer_directly": return "直接回答";
+    case "clarify": return "追问澄清";
+    case "search_web": return "网络搜索";
+    case "read_context": return "读取上下文";
+    case "use_tool": return "使用工具";
+    case "plan": return "制定计划";
+    case "request_approval": return "请求确认";
+    case "stop": return "停止";
+    default: return action;
+  }
+}
+
+function UncertaintyBar({ label, value, warn }: { label: string; value: number; warn?: boolean }) {
+  const pct = Math.round(value * 100);
+  const barColor = pct >= 60
+    ? "bg-rose-400"
+    : pct >= 35
+      ? "bg-amber-400"
+      : "bg-emerald-400";
+  const textColor = pct >= 60
+    ? "text-rose-800"
+    : pct >= 35
+      ? "text-amber-800"
+      : "text-emerald-800";
+  return (
+    <div className="flex items-center gap-2">
+      <span className="text-[11px] text-bench-600 w-24 shrink-0">{label}</span>
+      <div className="flex-1 h-1.5 bg-bench-200 rounded-full overflow-hidden">
+        <div
+          className={`h-full rounded-full transition-all ${barColor}`}
+          style={{ width: `${Math.max(pct, 4)}%` }}
+        />
+      </div>
+      <span className={`text-[11px] font-semibold w-9 text-right ${textColor}`}>
+        {pct}%
+      </span>
+    </div>
+  );
 }
 
 export { canOpenLangfuseTrace };

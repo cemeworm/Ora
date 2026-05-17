@@ -665,6 +665,23 @@ function RunDetail({ detail, busy, onExport }: { detail: OraEvaluationRunDetail;
                 ))}
               </div>
               <p className="mt-2 line-clamp-2 text-xs leading-5 text-bench-700">{result.averageScore.judgeRationale}</p>
+              {result.metricScores.length > 0 && (
+                <div className="mt-2 flex flex-wrap gap-1">
+                  {result.metricScores
+                    .filter((ms) => CAUSAL_METRIC_IDS.includes(ms.metricId as string))
+                    .map((ms) => (
+                      <span
+                        key={ms.metricId}
+                        className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${
+                          ms.passed ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"
+                        }`}
+                        title={ms.rationale}
+                      >
+                        {causalMetricLabel(ms.metricId as string)} {Math.round(ms.score * 100)}%
+                      </span>
+                    ))}
+                </div>
+              )}
             </div>
           ))}
         </div>
@@ -807,6 +824,25 @@ function evaluatorKinds(blueprint: OraEvaluationBlueprint) {
 
 function percent(value: number) {
   return `${Math.round(value * 100)}%`;
+}
+
+const CAUSAL_METRIC_IDS = [
+  "intent_resolution",
+  "clarification_precision",
+  "effective_intervention",
+  "over_action",
+  "counterfactual_lift",
+];
+
+function causalMetricLabel(metricId: string): string {
+  switch (metricId) {
+    case "intent_resolution": return "意图识别";
+    case "clarification_precision": return "追问精准";
+    case "effective_intervention": return "有效干预";
+    case "over_action": return "过度行动";
+    case "counterfactual_lift": return "反事实提升";
+    default: return metricId;
+  }
 }
 
 function inferSourceFormat(fileName: string): "json" | "jsonl" | "csv" | "inline" {

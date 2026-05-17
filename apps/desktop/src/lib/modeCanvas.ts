@@ -495,6 +495,8 @@ export function addModeNode(mode: OraModeSpec, template?: ModeNodeTemplate): Ora
     title: nextTemplate.replace(/_/g, " "),
     ownerAgentId: mode.nodes.find((node) => node.template === nextTemplate)?.ownerAgentId,
     enabled: true,
+    consumes: [],
+    produces: [],
     config: {},
   } satisfies OraModeSpec["nodes"][number];
 
