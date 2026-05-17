@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { OraWidget } from "../lib/runtimeClient";
-import { getWidgetCardSize, layoutWidgetsForCanvas } from "./SpaceDashboardView";
+import {
+  buildSelectedWidgetContext,
+  getWidgetCardSize,
+  layoutWidgetsForCanvas,
+  selectedWidgetForSpaceContext,
+  widgetContextLabel,
+} from "./SpaceDashboardView";
 
 function widget(overrides: Partial<OraWidget>): OraWidget {
   const now = 1_700_000_000_000;
@@ -52,5 +58,69 @@ describe("SpaceDashboardView canvas layout", () => {
       [1, 1],
       [2, 1],
     ]);
+  });
+});
+
+describe("SpaceDashboardView widget context", () => {
+  it("prefers the detail widget over the selected canvas widget", () => {
+    const selected = widget({ id: "selected", title: "Selected" });
+    const detail = widget({ id: "detail", title: "Detail" });
+
+    expect(selectedWidgetForSpaceContext([selected, detail], "selected", "detail")?.id).toBe("detail");
+  });
+
+  it("builds bounded todo context for prompt injection", () => {
+    const now = 1_700_000_000_000;
+    const todo = widget({
+      id: "tasks",
+      title: "任务清单",
+      kind: "todo",
+      state: {
+        kind: "todo",
+        consecutiveFailures: 0,
+        items: Array.from({ length: 16 }, (_, index) => ({
+          id: `todo-${index}`,
+          title: `任务 ${index}`,
+          notes: index === 0 ? "优先" : "",
+          createdAt: now,
+          updatedAt: now,
+          completedAt: index > 12 ? now : undefined,
+        })),
+      },
+    });
+
+    expect(widgetContextLabel(todo)).toBe("任务清单 · 13 待办");
+    expect(buildSelectedWidgetContext(todo)).toMatchObject({
+      id: "tasks",
+      title: "任务清单",
+      kind: "todo",
+      todo: {
+        openItems: expect.arrayContaining([
+          expect.objectContaining({ title: "任务 0", notes: "优先" }),
+        ]),
+      },
+    });
+    expect(((buildSelectedWidgetContext(todo).todo as any).openItems)).toHaveLength(12);
+    expect(((buildSelectedWidgetContext(todo).todo as any).completedItems)).toHaveLength(3);
+  });
+
+  it("truncates artifact content in selected widget context", () => {
+    const artifact = widget({
+      id: "artifact",
+      title: "长文档",
+      kind: "artifact",
+      state: {
+        kind: "artifact",
+        title: "长文档",
+        format: "markdown",
+        content: "a".repeat(4100),
+        versions: [],
+        consecutiveFailures: 0,
+      },
+    });
+
+    const context = buildSelectedWidgetContext(artifact).artifact as { content: string; truncated?: boolean };
+    expect(context.content).toHaveLength(4000);
+    expect(context.truncated).toBe(true);
   });
 });

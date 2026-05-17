@@ -6,6 +6,7 @@ import {
   ClipboardList,
   FileText,
   LoaderCircle,
+  PanelTop,
   MessagesSquare,
   Paperclip,
   Play,
@@ -48,6 +49,13 @@ import type { DesktopRunInteractionState } from "../lib/runInteractionState";
 
 type SkillDescriptor = OraSkillRegistry["skills"][number];
 
+export interface ChatInputContextChip {
+  id: string;
+  label: string;
+  tone?: "widget";
+  onRemove?: () => void;
+}
+
 interface ChatInputProps {
   sessionId: string;
   composerPrompt: string;
@@ -61,6 +69,7 @@ interface ChatInputProps {
   providerOptions: OraProviderConfig[];
   skillOptions: SkillDescriptor[];
   selectedSkillIds: string[];
+  contextChips?: ChatInputContextChip[];
   selectedCustomAgentId?: string;
   projectFileAttachments: ComposerProjectFileAttachment[];
   localFileAttachments: ComposerLocalFileAttachment[];
@@ -195,6 +204,7 @@ export function ChatInput({
   providerOptions,
   skillOptions,
   selectedSkillIds,
+  contextChips = [],
   selectedCustomAgentId,
   projectFileAttachments,
   localFileAttachments,
@@ -313,6 +323,8 @@ export function ChatInput({
     projectFileAttachments.length > 0 ||
     localFileAttachments.length > 0 ||
     imageAttachments.length > 0;
+  const hasInlineContextChips =
+    selectedSkills.length > 0 || contextChips.length > 0;
   const showApprovalTray =
     approvalActions.length > 0 && Boolean(onApprove && onCancelApproval);
   const { showClarificationTray, showPlanDecisionTray, hideComposer } =
@@ -678,8 +690,28 @@ export function ChatInput({
                 </div>
               )}
               <div className="flex items-start">
-                {selectedSkills.length > 0 && (
+                {hasInlineContextChips && (
                   <div className="flex flex-shrink-0 flex-wrap items-center gap-1.5 pl-3 pt-4">
+                    {contextChips.map((chip) => (
+                      <button
+                        key={chip.id}
+                        type="button"
+                        onClick={chip.onRemove}
+                        disabled={!chip.onRemove}
+                        className={cn(
+                          "inline-flex h-6 max-w-[220px] items-center gap-1 rounded-full border px-2.5 text-xs font-medium transition",
+                          chip.tone === "widget"
+                            ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                            : "border-border bg-background/80 text-muted-foreground",
+                          chip.onRemove && "hover:bg-accent hover:text-accent-foreground active:scale-95",
+                        )}
+                        title={chip.label}
+                      >
+                        <PanelTop size={11} />
+                        <span className="truncate">{chip.label}</span>
+                        {chip.onRemove && <X size={11} />}
+                      </button>
+                    ))}
                     {selectedSkills.map((skill) => (
                       <span
                         key={skill.id}
@@ -713,7 +745,11 @@ export function ChatInput({
                   rows={2}
                   className={cn(
                     "max-h-[220px] min-w-0 flex-1 resize-none bg-transparent px-4 pb-14 text-sm leading-5 outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-60",
-                    hasFileChips ? "min-h-[148px] pt-20" : "min-h-[96px] pt-4",
+                    hasFileChips
+                      ? "min-h-[148px] pt-20"
+                      : hasInlineContextChips
+                        ? "min-h-[112px] pt-12"
+                        : "min-h-[96px] pt-4",
                   )}
                   style={{ height: "auto", overflowY: "auto" }}
                   onInput={(e) => {

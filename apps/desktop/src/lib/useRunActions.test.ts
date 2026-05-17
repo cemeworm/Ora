@@ -120,6 +120,39 @@ describe("desktop run actions", () => {
     expect(buildDesktopRunContext()).toEqual({ source: "desktop-workbench" });
   });
 
+  it("merges extra run context with existing desktop attachments", () => {
+    expect(buildDesktopRunContext(
+      [],
+      [{
+        path: "/tmp/note.txt",
+        name: "note.txt",
+        mimeType: "text/plain",
+        sizeBytes: 12,
+        content: "hello",
+      }],
+      [],
+      {
+        selectedWidgetContext: {
+          id: "widget-1",
+          title: "任务清单",
+        },
+      },
+    )).toEqual({
+      source: "desktop-workbench",
+      selectedWidgetContext: {
+        id: "widget-1",
+        title: "任务清单",
+      },
+      attachedLocalFiles: [{
+        path: "/tmp/note.txt",
+        name: "note.txt",
+        mimeType: "text/plain",
+        sizeBytes: 12,
+        content: "hello",
+      }],
+    });
+  });
+
   it("summarizes multiple clarification answers for the pending user message", () => {
     expect(buildClarificationSubmissionPrompt(
       {

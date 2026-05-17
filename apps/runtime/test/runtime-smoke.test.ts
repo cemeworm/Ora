@@ -53,6 +53,55 @@ describe("Ora runtime smoke path", () => {
     expect(RunConfigSchema.parse({ pattern: "orchestrator_subagent" }).modeSelection).toBe("manual");
   });
 
+  it("injects selected widget context without changing the visible run prompt", async () => {
+    const handle = createRuntimeMethodHandler(createTempStore());
+    const run = await handle({
+      jsonrpc: "2.0",
+      id: "start-widget-context",
+      method: "runs.start",
+      params: {
+        input: {
+          prompt: "请更新这个组件。",
+          context: {
+            selectedWidgetContext: {
+              id: "widget-1",
+              title: "任务清单",
+              kind: "todo",
+              status: "active",
+              summary: "3 项待办未完成。",
+            },
+          },
+        },
+        config: {
+          modeId: SINGLE_AGENT_MODE_ID,
+          providerId: "local-smoke",
+          providerConfig: {
+            id: "local-smoke",
+            type: "local_smoke",
+            label: "Smoke",
+            modelId: "smoke-model",
+            capabilities: ["chat"],
+            headers: {},
+          },
+          metadata: {},
+          skillIds: [],
+          toolIds: [],
+        },
+      },
+    }) as { runId: string };
+
+    const snapshot = StateSnapshotSchema.parse(await handle({
+      jsonrpc: "2.0",
+      id: "state-widget-context",
+      method: "runs.state",
+      params: { runId: run.runId },
+    }));
+
+    expect(snapshot.input.prompt).toBe("请更新这个组件。");
+    expect(snapshot.output.text).toContain("<ora_selected_widget_context>");
+    expect(snapshot.output.text).not.toContain("prompt=请更新这个组件。");
+  });
+
   it("exposes task flow aliases without changing session run behavior", async () => {
     const handle = createRuntimeMethodHandler(createTempStore());
     const session = await handle({
