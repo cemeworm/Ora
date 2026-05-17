@@ -1,3 +1,4 @@
+import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
@@ -104,6 +105,7 @@ import {
   attachedProjectFilesSystemPrompt,
   channelProjectGuidancePrompt,
   checkpointLabelForStatus,
+  projectInstructionsSystemPrompt,
   userFacingLanguagePrompt,
   workspaceSystemPrompt,
 } from "./runtime-prompts.js";
@@ -1286,6 +1288,22 @@ export async function executeRuntimeKernel(
     attachedLocalFilesSystemPrompt(input.context?.attachedLocalFiles),
     attachedImagesSystemPrompt(input.context?.attachedImages),
   ].filter(Boolean).join("\n\n") || undefined;
+
+  const projectInstructionsContext = ((): string | undefined => {
+    const workspace = input.context?.projectWorkspace;
+    if (!workspace || typeof workspace !== "object") return undefined;
+    const rootPath = (workspace as Record<string, unknown>).rootPath;
+    if (!rootPath || typeof rootPath !== "string") return undefined;
+    const agentsPath = path.join(rootPath, "AGENTS.md");
+    try {
+      const stat = fs.statSync(agentsPath);
+      if (!stat.isFile() || stat.size === 0) return undefined;
+      return projectInstructionsSystemPrompt(fs.readFileSync(agentsPath, "utf8"));
+    } catch {
+      return undefined;
+    }
+  })();
+
   const clarificationContext = userClarificationContextPrompt(input.context);
   const temporalContext = temporalContextPrompt({
     createdAt: input.createdAt,
@@ -1370,6 +1388,7 @@ export async function executeRuntimeKernel(
       systemAgentOverride: systemOverlay,
       stageSystem: [userLanguageContext, system].join("\n\n"),
       workspaceContext,
+      projectInstructionsContext,
       temporalContext,
       clarificationContext,
       memoryContext,

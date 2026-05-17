@@ -105,6 +105,25 @@ export function workspaceSystemPrompt(workspace: unknown): string | undefined {
   ].filter(Boolean).join("\n");
 }
 
+const PROJECT_INSTRUCTIONS_MAX_CHARS = 8000;
+
+export function projectInstructionsSystemPrompt(content: string): string {
+  const trimmed = content.trim();
+  if (!trimmed) return trimmed;
+  const truncated = trimmed.length > PROJECT_INSTRUCTIONS_MAX_CHARS
+    ? trimmed.slice(0, PROJECT_INSTRUCTIONS_MAX_CHARS).replace(/\s+\S*$/, "")
+      + "\n\n[AGENTS.md was truncated to fit the system prompt budget.]"
+    : trimmed;
+  return [
+    "<project_instructions>",
+    "The following instructions are from the project's AGENTS.md file.",
+    "Follow these guidelines when working in this project.",
+    "",
+    truncated,
+    "</project_instructions>",
+  ].join("\n");
+}
+
 export function channelProjectGuidancePrompt(context: Record<string, unknown> | undefined, workspace: unknown): string | undefined {
   if (!context || context.source !== "channel") {
     return undefined;

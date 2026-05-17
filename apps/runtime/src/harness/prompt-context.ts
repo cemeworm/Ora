@@ -5,6 +5,7 @@ export type AgentPromptSectionId =
   | "custom_persona"
   | "system_agent_override"
   | "agent_system_prompt"
+  | "project_instructions"
   | "agent_profile"
   | "operating_protocol"
   | "stage_instructions"
@@ -34,6 +35,7 @@ export interface AgentPromptContextInput {
   systemAgentOverride?: string;
   stageSystem: string;
   workspaceContext?: string;
+  projectInstructionsContext?: string;
   temporalContext?: string;
   clarificationContext?: string;
   memoryContext?: string;
@@ -59,6 +61,7 @@ export function buildAgentPromptContext(input: AgentPromptContextInput): BuiltAg
     cachedSection(cache, "custom_persona", "Custom Agent Persona", cache?.hashInput(input.customPersona), () => input.customPersona),
     cachedSection(cache, "system_agent_override", "System Agent Override", cache?.hashInput(input.systemAgentOverride), () => input.systemAgentOverride),
     cachedSection(cache, "agent_system_prompt", "Agent System Prompt", cache?.hashInput(input.profile?.systemPrompt), () => input.profile?.systemPrompt),
+    cachedSection(cache, "project_instructions", "Project Instructions", cache?.hashInput(input.projectInstructionsContext), () => input.projectInstructionsContext),
     cachedSection(cache, "agent_profile", "Agent Profile", cache?.hashInput({ agentId: input.agentId, profile: input.profile, customAgentId: input.customAgentId }), () => profileSection(input.agentId, input.profile, input.customAgentId)),
     cachedSection(cache, "operating_protocol", "Operating Protocol", "static:v1", () => operatingProtocolSection()),
     cachedSection(cache, "tool_protocol", "Tool Protocol", cache?.hashInput(input.toolProtocol), () => input.toolProtocol),
@@ -362,6 +365,7 @@ const STABLE_PROMPT_PREFIX_SECTION_IDS = new Set<AgentPromptSectionId>([
   "custom_persona",
   "system_agent_override",
   "agent_system_prompt",
+  "project_instructions",
   "agent_profile",
   "operating_protocol",
   "tool_protocol",

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { attachedLocalFilesSystemPrompt, attachedProjectFilesSystemPrompt } from "../src/harness/runtime-prompts.js";
+import { attachedLocalFilesSystemPrompt, attachedProjectFilesSystemPrompt, projectInstructionsSystemPrompt } from "../src/harness/runtime-prompts.js";
 
 describe("runtime prompts", () => {
   it("formats attached project files for agent file tools", () => {
@@ -45,5 +45,26 @@ describe("runtime prompts", () => {
         truncated: true,
       },
     ])).toContain("# Notes");
+  });
+});
+
+describe("project instructions prompt", () => {
+  it("formats AGENTS.md content with project_instructions wrapper", () => {
+    const result = projectInstructionsSystemPrompt("Use tabs for indentation.");
+    expect(result).toContain("<project_instructions>");
+    expect(result).toContain("Use tabs for indentation.");
+    expect(result).toContain("</project_instructions>");
+    expect(result).toContain("AGENTS.md");
+  });
+
+  it("truncates long content and appends truncation notice", () => {
+    const longContent = "x".repeat(9000);
+    const result = projectInstructionsSystemPrompt(longContent);
+    expect(result.length).toBeLessThan(longContent.length);
+    expect(result).toContain("truncated");
+  });
+
+  it("returns empty string for whitespace-only content", () => {
+    expect(projectInstructionsSystemPrompt("  \n  ")).toBe("");
   });
 });
