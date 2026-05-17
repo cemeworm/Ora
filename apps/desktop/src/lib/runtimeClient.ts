@@ -334,7 +334,13 @@ export function createRuntimeClient() {
       const tauriResponse = tauriAvailable
         ? await tryTauriJsonRpc(request)
         : { ok: false as const, tauriAvailable };
-      if (tauriResponse.ok) {
+      // When the Tauri bridge returns a JSON-RPC error or is unavailable,
+      // fall through to the local handler — same behavior as browser mode.
+      const tauriBridgeOk =
+        tauriResponse.ok &&
+        !("error" in tauriResponse.response);
+
+      if (tauriBridgeOk) {
         lastHealth = {
           ok: true,
           mode: "tauri",
@@ -353,16 +359,7 @@ export function createRuntimeClient() {
       }
 
       if (tauriAvailable) {
-        lastHealth = {
-          ok: false,
-          mode: "unavailable",
-          service: "ora-runtime",
-          detail: tauriUnavailableReason,
-        };
-        if (method.startsWith("channels.wechat")) {
-          console.warn("[ora:debug] channels.wechat tauri failed:", tauriUnavailableReason, tauriResponse);
-        }
-        throw new Error(tauriUnavailableReason);
+        console.warn("[ora:debug] Tauri bridge unavailable, falling back to local handler for:", method);
       }
 
       const response = await local.handle(request);

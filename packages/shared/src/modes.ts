@@ -89,6 +89,8 @@ export const ModeNodeSpecSchema = z.object({
   instructions: z.string().min(1).optional(),
   prompt: z.string().min(1).optional(),
   riskLevel: ActionRiskLevelSchema.optional(),
+  consumes: z.array(z.string()).optional(),
+  produces: z.array(z.string()).optional(),
   config: z.object({
     atoms: z.array(z.string()).optional(),
     customAgentId: z.string().optional(),
@@ -301,6 +303,7 @@ export const ModeSpecSchema = z.object({
   failureMode: z.string().min(1).optional(),
   systemPreset: z.boolean().default(false),
   visibility: z.enum(["user", "internal"]).default("user"),
+  modeKind: z.string().optional(),
   nodes: z.array(ModeNodeSpecSchema).min(1),
   edges: z.array(ModeEdgeSpecSchema).default([]),
   stopPolicy: ModeStopPolicySchema,
