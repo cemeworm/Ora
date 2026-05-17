@@ -84,6 +84,7 @@ function recommendAction(input: PolicyRouterInput): InterventionAction {
   if (contextUncertainty >= 0.5 && input.proposedToolId) return "read_context";
   if (goalUncertainty >= 0.7) return "clarify";
   if (input.proposedToolId) return "use_tool";
+  if (input.toolCallCount >= 3) return "stop";
   return "answer_directly";
 }
 
@@ -145,7 +146,10 @@ function buildReason(
   if (uncertainties.factUncertainty >= 0.5) parts.push("elevated fact uncertainty");
   if (uncertainties.contextUncertainty >= 0.5) parts.push("missing context");
   if (uncertainties.actionRisk >= 0.7) parts.push("high action risk");
-  if (parts.length === 0) parts.push("low uncertainty, safe to proceed");
+  if (parts.length === 0) {
+    if (action === "stop") parts.push("diminishing returns, sufficient work done");
+    else parts.push("low uncertainty, safe to proceed");
+  }
   return `${action}: ${parts.join("; ")}`;
 }
 
