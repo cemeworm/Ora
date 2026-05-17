@@ -56,17 +56,41 @@ export interface ProjectSessionOperationDeps {
 
 export function createProject(params: unknown, deps: ProjectSessionOperationDeps): ProjectSummary {
   const parsed = ProjectCreateParamsSchema.parse(params ?? {});
-  const normalizedRootPath = normalizeProjectRootPath(parsed.rootPath);
-  const existing = [...deps.projects.values()].find((project) => project.rootPath === normalizedRootPath);
+  const now = deps.now();
+
+  if (parsed.sourceKind === "local_folder") {
+    const normalizedRootPath = normalizeProjectRootPath(parsed.rootPath);
+    const existing = [...deps.projects.values()].find(
+      (project) => project.sourceKind === "local_folder" && project.rootPath === normalizedRootPath,
+    );
+    if (existing) {
+      return ProjectSummarySchema.parse(existing);
+    }
+    const project = ProjectSummarySchema.parse({
+      projectId: deps.nextProjectId(),
+      sourceKind: "local_folder" as const,
+      label: parsed.label?.trim() || path.basename(normalizedRootPath) || normalizedRootPath,
+      rootPath: normalizedRootPath,
+      sessionCount: 0,
+      createdAt: now,
+      updatedAt: now,
+    });
+    deps.persistProject(project);
+    return project;
+  }
+
+  // ora_project
+  const existing = [...deps.projects.values()].find(
+    (project) => project.sourceKind === "ora_project" && project.label === parsed.label.trim(),
+  );
   if (existing) {
     return ProjectSummarySchema.parse(existing);
   }
-
-  const now = deps.now();
   const project = ProjectSummarySchema.parse({
     projectId: deps.nextProjectId(),
-    label: parsed.label?.trim() || path.basename(normalizedRootPath) || normalizedRootPath,
-    rootPath: normalizedRootPath,
+    sourceKind: "ora_project" as const,
+    label: parsed.label.trim(),
+    description: parsed.description,
     sessionCount: 0,
     createdAt: now,
     updatedAt: now,

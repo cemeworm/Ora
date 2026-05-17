@@ -242,6 +242,36 @@ export function createRuntimeMethodHandler(
         return store.runAutomationNow(request.params);
       case "automations.previewSchedule":
         return store.previewAutomationSchedule(request.params);
+      case "widgets.list":
+        return store.listWidgets(request.params);
+      case "widgets.get":
+        return store.getWidget(request.params);
+      case "widgets.create":
+        return store.createWidget(request.params);
+      case "widgets.update":
+        return store.updateWidget(request.params);
+      case "widgets.delete":
+        return store.deleteWidget(request.params);
+      case "widgets.archive":
+        return store.archiveWidget(request.params);
+      case "widgets.restore":
+        return store.restoreWidget(request.params);
+      case "widgets.versions.list":
+        return store.listWidgetVersions(request.params);
+      case "widgets.versions.get":
+        return store.getWidgetVersion(request.params);
+      case "widgets.versions.compare":
+        return store.compareWidgetVersions(request.params);
+      case "widgets.versions.restore":
+        return store.restoreWidgetVersion(request.params);
+      case "widgets.togglePin":
+        return store.toggleWidgetPin(request.params);
+      case "widgets.listStale":
+        return store.listStaleWidgets();
+      case "widgets.listEvents":
+        return store.listWidgetEvents(request.params);
+      case "widgets.findDuplicate":
+        return store.findDuplicateWidget(request.params);
       case "flows.create":
         return store.createFlow(request.params);
       case "flows.createStreaming":

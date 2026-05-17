@@ -76,6 +76,17 @@ export function resolveNonKernelResumeClarifications(params: {
   let working = params.snapshot;
   const pendingClarifications = currentPendingClarifications(working);
   if (pendingClarifications.length === 0) {
+    // 诊断守卫：当 currentPendingClarifications 返回空但快照原始数据中有待处理澄清时，
+    // 说明 attention 推导与快照数据不一致。这种情况应在上游加固后不再出现，但保留告警。
+    if (working.pendingClarifications.length > 0) {
+      console.warn(
+        "[non-kernel resume] currentPendingClarifications returned empty but snapshot has",
+        working.pendingClarifications.length,
+        "pending clarifications — attention kind:",
+        working.attention?.kind ?? "(derived)",
+        ". The attention/pendingClarifications mismatch has been repaired upstream; this warning indicates a stale snapshot.",
+      );
+    }
     return working;
   }
 

@@ -35,9 +35,7 @@ export function listProjectFilesForProject(project: ProjectSummary): ProjectFile
   let truncated = false;
 
   const visit = (directory: string) => {
-    if (truncated) {
-      return;
-    }
+    if (truncated) return;
 
     let entries: fs.Dirent[];
     try {
@@ -125,6 +123,9 @@ export function readProjectFileForProject(project: ProjectSummary, requestedPath
 }
 
 export function projectWorkspaceContext(project: ProjectSummary): Record<string, unknown> {
+  if (!project.rootPath) return {};
+  const rootPath = project.rootPath;
+
   const extensionCounts: Record<string, number> = {};
   const samplePaths: string[] = [];
   let totalFiles = 0;
@@ -165,7 +166,7 @@ export function projectWorkspaceContext(project: ProjectSummary): Record<string,
         markdownFiles += 1;
       }
       if (samplePaths.length < PROJECT_WORKSPACE_SAMPLE_LIMIT) {
-        samplePaths.push(path.relative(project.rootPath, absolutePath));
+        samplePaths.push(path.relative(rootPath, absolutePath));
       }
       if (totalFiles >= PROJECT_WORKSPACE_MAX_FILES) {
         truncated = true;
@@ -173,12 +174,12 @@ export function projectWorkspaceContext(project: ProjectSummary): Record<string,
     }
   };
 
-  visit(project.rootPath);
+  visit(rootPath);
 
   return {
     projectId: project.projectId,
     label: project.label,
-    rootPath: project.rootPath,
+    rootPath,
     totalFiles,
     markdownFiles,
     extensionCounts,
@@ -188,6 +189,9 @@ export function projectWorkspaceContext(project: ProjectSummary): Record<string,
 }
 
 function requireProjectRootDirectory(project: ProjectSummary): string {
+  if (!project.rootPath) {
+    throw new OraRuntimeError("Project has no filesystem root path. File operations are only available for local_folder projects.", -32004, { projectId: project.projectId });
+  }
   const rootPath = path.resolve(project.rootPath);
   const stat = fs.statSync(rootPath);
   if (!stat.isDirectory()) {

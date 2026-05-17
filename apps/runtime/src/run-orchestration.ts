@@ -110,27 +110,73 @@ export function snapshotCurrentAttention(snapshot: StateSnapshot): RunAttention 
 
 export function currentPendingClarifications(snapshot: StateSnapshot): StateSnapshot["pendingClarifications"] {
   const attention = snapshotCurrentAttention(snapshot);
-  if (attention.kind !== "needs_clarification") {
-    return [];
+  if (attention.kind === "needs_clarification") {
+    const currentIds = new Set(attention.pendingClarificationIds);
+    const filtered = snapshot.pendingClarifications.filter((clarification) => currentIds.has(clarification.id));
+    if (filtered.length > 0) {
+      return filtered;
+    }
   }
-  const currentIds = new Set(attention.pendingClarificationIds);
-  return snapshot.pendingClarifications.filter((clarification) => currentIds.has(clarification.id));
+  // 兜底 1：从 continuation frame 获取 pendingClarificationIds
+  // 当 attention 推导不一致（如 "paused" 而非 "needs_clarification"）时，continuation
+  // frame 是更可靠的真相来源，因为它由内核在中断时显式写入。
+  const frame = snapshot.status === "interrupted"
+    ? (snapshot.continuation?.frames ?? []).find((f) =>
+        f.id === snapshot.continuation?.activeFrameId &&
+        f.status === "paused" &&
+        f.pendingClarificationIds.length > 0
+      )
+    : undefined;
+  if (frame) {
+    const frameIds = new Set(frame.pendingClarificationIds);
+    return snapshot.pendingClarifications.filter((clarification) => frameIds.has(clarification.id));
+  }
+  // 兜底 2：返回 snapshot 中的所有待处理澄清
+  // 最后的安全网 — 当 attention 和 continuation frame 都无法提供可靠 ID 列表时，
+  // 以实际数据为准，防止 non-kernel 路径静默消费澄清但不重启内核。
+  return snapshot.pendingClarifications;
 }
 
 export function currentPendingApprovalActionIds(snapshot: StateSnapshot): string[] {
   const attention = snapshotCurrentAttention(snapshot);
-  if (attention.kind !== "needs_approval") {
-    return [];
-  }
-  const currentIds = new Set(attention.pendingActionIds);
-  for (const toolCallId of attention.pendingToolCallIds) {
-    const toolCall = snapshot.toolCalls.find((call) => call.id === toolCallId);
-    if (toolCall?.actionId) {
-      currentIds.add(toolCall.actionId);
+  if (attention.kind === "needs_approval") {
+    const currentIds = new Set(attention.pendingActionIds);
+    for (const toolCallId of attention.pendingToolCallIds) {
+      const toolCall = snapshot.toolCalls.find((call) => call.id === toolCallId);
+      if (toolCall?.actionId) {
+        currentIds.add(toolCall.actionId);
+      }
+    }
+    const filtered = snapshot.actions
+      .filter((action) => action.status === "approval_required" && currentIds.has(action.id))
+      .map((action) => action.id);
+    if (filtered.length > 0) {
+      return filtered;
     }
   }
+  // 兜底 1：从 continuation frame 获取 pendingActionIds / pendingToolCallIds
+  const frame = snapshot.status === "interrupted"
+    ? (snapshot.continuation?.frames ?? []).find((f) =>
+        f.id === snapshot.continuation?.activeFrameId &&
+        f.status === "paused" &&
+        (f.pendingActionIds.length > 0 || f.pendingToolCallIds.length > 0)
+      )
+    : undefined;
+  if (frame) {
+    const currentIds = new Set(frame.pendingActionIds);
+    for (const toolCallId of frame.pendingToolCallIds) {
+      const toolCall = snapshot.toolCalls.find((call) => call.id === toolCallId);
+      if (toolCall?.actionId) {
+        currentIds.add(toolCall.actionId);
+      }
+    }
+    return snapshot.actions
+      .filter((action) => action.status === "approval_required" && currentIds.has(action.id))
+      .map((action) => action.id);
+  }
+  // 兜底 2：返回所有 approval_required 的 actions
   return snapshot.actions
-    .filter((action) => action.status === "approval_required" && currentIds.has(action.id))
+    .filter((action) => action.status === "approval_required")
     .map((action) => action.id);
 }
 
