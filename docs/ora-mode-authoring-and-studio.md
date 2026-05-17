@@ -1,6 +1,8 @@
 # Ora Mode Authoring 与 Mode Studio
 
-这份文档解释如何在 Ora 中创建、编辑、校验、保存和运行一个 mode。它是 `ora-graph-framework.md` 的延伸——那篇文档解释了模式图的数据模型和运行时消费，这篇聚焦在“如何从零产出一个可用的 mode”。
+这份文档解释如何在 Ora 中创建、编辑、校验、保存和运行一个 mode。它是 `ora-graph-framework.md` 的延伸——那篇文档解释了模式图的数据模型和运行时消费，这篇聚焦在”如何从零产出一个可用的 mode”。
+
+> **最近更新 (2026-05-18)**：TranscriptLayoutStyle 清理（移除 6 种未实现风格）、Evidence Board 移除、自定义 family 崩溃修复（可选链）、Stance Lock 污染修复（adversarialStance 显式标记）、dynamic_stage_skipping 死代码移除、code_development profile 元数据修正、decide/publish 模板补全。
 
 ## 阅读地图
 
@@ -418,7 +420,7 @@ PatternDefinition
 
 - **`editorConstraints` 在 preset 上为只读**。但 clone 后的 custom mode 会重置 `readOnly: false`、`allowDelete: true`、`allowDisable: true`。
 
-- **`transcriptLayout.style` 有 15 种 schema 预留值**，但并非所有都有对应的 renderer 实现。当前桌面端 `StageTranscript.tsx` 实际支持 8 种：`stage_list`、`two_sided_duel`、`rubric_matrix`、`judge_panel`、`evidence_board`、`comparison_table`、`artifact_gallery`、`kanban_pipeline`。`graph_topology` 等 schema 预留值没有接入 renderer。
+- **`transcriptLayout.style` schema 当前保留 3 种值**（`stage_list`、`two_sided_duel`、`role_lanes`），经过 TASK-1528 清理移除了 6 种未实现的风格。当前桌面端 `StageTranscript.tsx` 实际支持 `stage_list` 和 `two_sided_duel`。`role_lanes` 有 schema 定义但渲染器未实现，会降级为 `stage_list`。其他旧风格（`rubric_matrix`、`judge_panel`、`evidence_board`、`comparison_table`、`artifact_gallery`、`kanban_pipeline`）已从 schema 中移除。
 
 - **Builder 的 family 推导是启发式的**。`inferModeStudioFamily` 基于关键词匹配，可能不准确。用户可以在画布上通过 `resetModeDraftFamily` 切换 family，但切换会重置 nodes/edges/profiles 为 family 默认值。
 
@@ -431,3 +433,9 @@ PatternDefinition
 - **Execution Preview 可在保存前查看**。`generateModeExecutionPreview`（共享包）和 `getExecutionPreview`（桌面端）提供 mode 的执行预览，包括：执行顺序、并行层、被忽略的条件边、synthetic node 映射和投影拓扑摘要。不启动真实 model/tool loop。
 
 - **Builder 的修复建议**。当 Builder 生成的 draft 与 driver manifest 不匹配时，`generateRepairSuggestions` 会生成可操作的修复选项（切 family、删除条件、移除 atom 等）。这些建议通过 `ModeValidationResult.repairSuggestions` 返回。
+
+- **自定义 family 需可选链保护**。`getModeNodeRuntimeTemplateDefinition` 访问 `MODE_NODE_RUNTIME_TEMPLATE_LIBRARY[family]` 时已使用可选链（`?.[template]`），防止自定义 family 字符串导致 `TypeError` 崩溃。同文件的 `defaultNodeInstructions` 也使用相同保护。
+
+- **Stance Lock 仅对 adversarialStance 阶段生效**。`ModeStageSpecSchema` 包含 `adversarialStance` 布尔字段。`shouldApplyStanceLock()` 检查 `stage.adversarialStance === true`，而非按 coordination pattern 判断。当前仅 `debate` mode 的 8 个 speech stages 标记了 `adversarialStance: true`。
+
+- **`code_development` profile 的 toolPolicyId 已修正**。4 个 profile（lead/builder/verifier/repair）的 pattern 参数从 `agent_teams` 改为 `orchestrator_subagent`，与 mode family 一致。`editorConstraints` 改为显式定义数组。`dynamic_stage_skipping` atom 和 `complexitySkipRules` 已从 code_development 移除。

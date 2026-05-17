@@ -2,6 +2,8 @@
 
 本文描述 Ora 的 Self-Iteration 闭环：从运行信号、评测反馈、环境观察到候选方案生成、评测门控、自动应用的完整链路。读完本文，应能理解 Self-Iteration 的五类候选来源、三种自治级别、curator 扫描节律，以及它如何与 Evaluation Studio 和 Mode Studio 协作。
 
+> **最近更新 (2026-05-18)**：状态机进入验证（evaluate/reject）、崩溃恢复（孤立的 evaluating 状态）、apply 工具 confirmed 传递、state.runs 上限 500、scan/evaluate 风险标记、human_review 自治级别、runtimePromptCandidates 运算符优先级修正、.tmp 完整性验证、enrich 错误日志。
+
 ## 阅读地图
 
 | 关注点 | 对应章节 |
@@ -135,6 +137,8 @@ flowchart TD
 ```
 
 关键规则：
+- **状态进入验证**：`evaluateCandidate` 只允许 `draft` 或 `failed` 状态进入评估，其他状态（如已在 `evaluating`）会被拒绝。`rejectCandidate` 不允许拒绝已 `applied` 的候选，需先回滚。
+- **崩溃恢复**：启动时 `recoverOrphanedEvaluations()` 扫描状态为 `evaluating` 的候选，将其重置为 `failed`（附带 "recovered after restart" 信息），防止进程崩溃后候选永久卡在 evaluating。
 - **Draft 可被覆盖**：重新 scan 时如果候选仍为 `draft` 或 `evaluating`，会更新内容。已进入 `ready`/`rejected`/`applied`/`failed` 的候选不会被覆盖。
 - **Evaluation 候选直接 apply**：不经过 evaluating 和 ready 阶段，由 `evaluationAutoApply` 策略控制。
 - **非 evaluation 候选需评测**：prompt/mode/skill 候选需要通过 evaluation gate 才能进入 ready。
@@ -252,7 +256,7 @@ candidate = {
 
 ### 3.6 候选生成的 enrich 钩子
 
-`scan` 方法接受可选的 `enrichCandidate` 回调，在生成候选后、落库前对每个候选做增强处理（如通过 LLM 补充候选内容）。如果 enrich 失败，候选仍以原始内容保留。
+`scan` 方法接受可选的 `enrichCandidate` 回调，在生成候选后、落库前对每个候选做增强处理（如通过 LLM 补充候选内容）。如果 enrich 失败，候选仍以原始内容保留，错误信息通过 `console.warn` 记录日志。
 
 ```typescript
 const enriched = input.enrichCandidate
@@ -273,7 +277,7 @@ type SelfIterationAutonomy = "low_risk_auto" | "human_review" | "experimental_au
 | 级别 | 自动应用 evaluation？ | curator 自动扫描？ | 适用场景 |
 | --- | --- | --- | --- |
 | `low_risk_auto` | 是（仅 evaluation 候选） | 是 | 生产环境默认：仅低风险自动，高风险需确认 |
-| `human_review` | 否 | 是 | 保守模式：所有候选需人工审查 |
+| `human_review` | 否 | 否（禁用 curator 自动扫描） | 保守模式：所有候选需人工审查，curator 不自动触发扫描 |
 | `experimental_auto` | 是 | 是 | 实验模式：允许更宽松的自动应用（预留扩展） |
 
 ### 4.2 确认策略
@@ -425,7 +429,7 @@ interface SelfIterationEvaluationOutcome {
 }
 ```
 
-### 6.3 评测的防重入
+### 6.3 评测的防重入与崩溃恢复
 
 `inflightEvaluations` 集合防止同一个候选被并发评测：
 
@@ -434,6 +438,8 @@ if (this.inflightEvaluations.has(candidate.id)) {
   throw new Error(`Candidate ${candidate.id} is already being evaluated.`);
 }
 ```
+
+启动时 `recoverOrphanedEvaluations()` 清理孤立的 evaluating 状态：进程崩溃后，任何卡在 `evaluating` 的候选会被自动重置为 `failed`，附 "recovered after restart" 信息，确保状态机不会永久卡死。
 
 ### 6.4 Apply 时的评测检查
 
@@ -533,7 +539,7 @@ flowchart TD
 1. `requiresApprovalCopy: true` — 触发 approval gate
 2. `actionRiskLevel: () => "high"` — 高风险
 3. `approvalRequest` — 生成中英双语的审批请求，包含变更说明和风险提示
-4. `execute` 检查 `context.allowRisky === true` — 审批通过后才真正执行
+4. `execute` 接收 `context.allowRisky` 标记（审批通过后为 `true`），但 apply 工具本身传递用户确认意图（`confirmed: approved`），而非硬编码 `confirmed: true`。最终执行由 store 的 `applyCandidate` 根据 confirmed 和评测结果裁决。
 
 ```typescript
 case "selfIteration.apply":
@@ -711,13 +717,14 @@ flowchart TD
 | 方面 | 当前状态 | 保守边界 |
 | --- | --- | --- |
 | 候选存储 | `state.json` 文件（`LocalSelfIterationStore`） | 单节点内存+文件，无分布式一致性。多进程会各自维护独立状态 |
-| 候选生成 | 五条规则化生成器，基于信号/insight/feedback 过滤 | 不涉及 LLM 生成（`candidateGenerationLLM` 默认为 false）。候选内容为模板化文案 |
-| Enrich 钩子 | `enrichCandidate` 回调可选注入 | 需要外部提供 LLM 调用；失败时候选以原始内容保留 |
-| 评测门控 | 通过 `SelfIterationEvaluateDeps` 注入 | 实际评测由外部 Evaluation Studio 执行；self-iteration store 只做状态管理 |
-| 环境观察器 | Policy 已定义，默认关闭 | `enabled: false`，且仅扫描文件元数据 |
-| 自治级别 | 三种级别定义完成 | `experimental_auto` 的行为与 `low_risk_auto` 相同，尚未实现差异化的自动应用策略 |
+| 候选生成 | 五条规则化生成器，基于信号/insight/feedback 过滤 | 不涉及 LLM 生成（`candidateGenerationLLM` 默认为 false）。候选内容为模板化文案。`runtimePromptCandidates` 正则已加括号明确 runStatus 限制 |
+| Enrich 钩子 | `enrichCandidate` 回调可选注入 | 需要外部提供 LLM 调用；失败时 `console.warn` 记录日志，候选以原始内容保留 |
+| 评测门控 | 通过 `SelfIterationEvaluateDeps` 注入，含崩溃恢复 | 启动时自动清理孤立的 evaluating 状态；实际评测由外部 Evaluation Studio 执行 |
+| 状态机完整性 | evaluate/reject 入口增加状态进入验证 | evaluate 仅接受 draft/failed；reject 拒绝 applied（需先回滚） |
+| 自治级别 | 三种级别定义完成 | `human_review` 禁用 curator 自动扫描；`experimental_auto` 行为与 `low_risk_auto` 相同 |
+| 运行历史 | `state.runs` 数组，上限 500 | 超过上限时自动清理最旧记录 |
 | 回滚 | 依赖 `beforeSnapshot` 或 `deps.rollbackSnapshot` | 回滚后的验证状态未自动清除 |
-| 跨 project 能力 | Candidate/Policy 以 projectId 分区 | 候选不跨 project 共享；同一 signal 在不同 project 中独立生成候选 |
+| 数据完整性 | `.tmp` 文件回退时验证 `fs.statSync` size > 0 | 防止加载损坏的临时文件 |
 
 ### 12.2 可演进方向
 
