@@ -80,6 +80,16 @@ const ModesView = lazy(() =>
     default: module.ModesView,
   })),
 );
+const SpaceDashboardView = lazy(() =>
+  import("./components/SpaceDashboardView").then((module) => ({
+    default: module.SpaceDashboardView,
+  })),
+);
+const SpaceLibraryView = lazy(() =>
+  import("./components/SpaceLibraryView").then((module) => ({
+    default: module.SpaceLibraryView,
+  })),
+);
 const SkillsView = lazy(() =>
   import("./components/SkillsView").then((module) => ({
     default: module.SkillsView,
@@ -137,6 +147,10 @@ function windowTitleForView(
       return `${base} · ${translateCopy(language, "Modes")}`;
     case "evaluation":
       return `${base} · ${translateCopy(language, "Evaluation")}`;
+    case "space-dashboard":
+      return `${base} · ${translateCopy(language, "工作台")}`;
+    case "space-library":
+      return `${base} · ${translateCopy(language, "组件库")}`;
     case "chat":
     default:
       return `${base} · ${translateCopy(language, "Chat")}`;
@@ -984,6 +998,32 @@ function WorkbenchInner() {
         <WorkspacePane className="w-full">
           <Suspense fallback={<LoadingPane />}>
             <SkillsView runtimeClient={runtimeClient} />
+          </Suspense>
+        </WorkspacePane>
+      </AppShell>
+    );
+  }
+
+  if (state.activeView === "space-dashboard") {
+    return (
+      <AppShell>
+        {settingsDialog}
+        <WorkspacePane className="w-full">
+          <Suspense fallback={<LoadingPane />}>
+            <SpaceDashboardView />
+          </Suspense>
+        </WorkspacePane>
+      </AppShell>
+    );
+  }
+
+  if (state.activeView === "space-library") {
+    return (
+      <AppShell>
+        {settingsDialog}
+        <WorkspacePane className="w-full">
+          <Suspense fallback={<LoadingPane />}>
+            <SpaceLibraryView />
           </Suspense>
         </WorkspacePane>
       </AppShell>

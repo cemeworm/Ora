@@ -538,9 +538,9 @@ export function ChatInput({
   return (
     <div
       ref={overlayRef}
-      className="pointer-events-none absolute bottom-0 left-0 right-0 z-30 flex justify-center px-4 md:px-6 xl:px-8"
+      className="pointer-events-none absolute bottom-0 left-0 right-0 z-30 flex justify-center"
     >
-      <div className="pointer-events-none relative w-full max-w-[88rem]">
+      <div className="pointer-events-none relative w-full max-w-[88rem] px-4 md:px-6 xl:px-8">
         {showSkillPicker && (
           <div className="pointer-events-auto absolute bottom-full left-3 z-50 mb-2 max-h-[min(32rem,calc(100vh-12rem))] w-[min(26rem,calc(100%-1.5rem))] overflow-y-auto rounded-xl border border-border bg-popover p-1.5 text-popover-foreground shadow-lift">
             {visibleSkillOptions.map((skill) => (

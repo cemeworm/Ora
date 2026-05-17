@@ -21,6 +21,7 @@ function sessionSummary(
 const projects: OraProjectSummary[] = [{
   projectId: "project-ora",
   label: "ora",
+  sourceKind: "local_folder",
   rootPath: "/tmp/ora",
   sessionCount: 1,
   createdAt: 1,

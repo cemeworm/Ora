@@ -3093,23 +3093,9 @@ function shouldShowProcessEvent(event: OraEventEnvelope): boolean {
       return hasToolId(event) && !isChatProgressEvent(event);
     case "tool.repaired":
       return hasToolId(event);
-    case "artifact.exported":
-    case "recovery.detected":
-    case "recovery.retry_scheduled":
-    case "recovery.applied":
-    case "recovery.exhausted":
-    case "node.skipped":
     case "run.done":
     case "run.failed":
       return true;
-    case "completion.updated":
-      return isUserVisibleCompletionEvent(event);
-    case "checkpoint.created":
-      return false;
-    case "node.updated":
-      return isSignificantNodeUpdate(event);
-    case "action.updated":
-      return actionStatusFromEvent(event) === "failed";
     default:
       return false;
   }
@@ -3120,15 +3106,6 @@ function isCachedWebFetchEvent(event: OraEventEnvelope): boolean {
     isRecord(event.payload) &&
     event.payload.toolId === "web.fetch" &&
     event.payload.cacheHit === true
-  );
-}
-
-function isUserVisibleCompletionEvent(event: OraEventEnvelope): boolean {
-  if (!isRecord(event.payload) || typeof event.payload.state !== "string") {
-    return false;
-  }
-  return ["force_final", "tool_call_text_rejected", "tool_calls_ignored"].includes(
-    event.payload.state,
   );
 }
 

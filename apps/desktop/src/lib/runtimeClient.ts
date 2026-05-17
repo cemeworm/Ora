@@ -10,6 +10,10 @@ import type {
   AutomationRunRecord as OraAutomationRunRecord,
   AutomationSchedule as OraAutomationSchedule,
   AutomationUpdateParams as OraAutomationUpdateParams,
+  Widget as OraWidget,
+  WidgetCreateParams as OraWidgetCreateParams,
+  WidgetUpdateParams as OraWidgetUpdateParams,
+  WidgetVersion as OraWidgetVersion,
   ArtifactRef as OraArtifactRef,
   CheckpointMeta as OraCheckpointMeta,
   ChannelConfig as OraChannelConfig,
@@ -147,6 +151,10 @@ export type {
   OraAutomationRunRecord,
   OraAutomationSchedule,
   OraAutomationUpdateParams,
+  OraWidget,
+  OraWidgetCreateParams,
+  OraWidgetUpdateParams,
+  OraWidgetVersion,
   OraArtifactRef,
   OraCheckpointMeta,
   OraChannelConfig,
@@ -520,6 +528,51 @@ export function createRuntimeClient() {
     },
     async previewAutomationSchedule(params: OraAutomationPreviewScheduleParams): Promise<OraAutomationPreviewScheduleResult> {
       return call<OraAutomationPreviewScheduleResult>("automations.previewSchedule", params);
+    },
+    async listWidgets(params: { workspaceId?: string; kind?: string; includeArchived?: boolean } = {}): Promise<OraWidget[]> {
+      return call<OraWidget[]>("widgets.list", params);
+    },
+    async getWidget(id: string): Promise<OraWidget> {
+      return call<OraWidget>("widgets.get", { id });
+    },
+    async createWidget(params: OraWidgetCreateParams): Promise<OraWidget> {
+      return call<OraWidget>("widgets.create", params);
+    },
+    async updateWidget(params: OraWidgetUpdateParams): Promise<OraWidget> {
+      return call<OraWidget>("widgets.update", params);
+    },
+    async deleteWidget(id: string): Promise<void> {
+      return call<void>("widgets.delete", { id });
+    },
+    async archiveWidget(id: string): Promise<OraWidget> {
+      return call<OraWidget>("widgets.archive", { id });
+    },
+    async restoreWidget(id: string): Promise<OraWidget> {
+      return call<OraWidget>("widgets.restore", { id });
+    },
+    async listWidgetVersions(widgetId: string): Promise<OraWidgetVersion[]> {
+      return call<OraWidgetVersion[]>("widgets.versions.list", { widgetId });
+    },
+    async getWidgetVersion(id: string): Promise<OraWidgetVersion> {
+      return call<OraWidgetVersion>("widgets.versions.get", { id });
+    },
+    async compareWidgetVersions(versionIdA: string, versionIdB: string): Promise<{ a: OraWidgetVersion; b: OraWidgetVersion }> {
+      return call<{ a: OraWidgetVersion; b: OraWidgetVersion }>("widgets.versions.compare", { versionIdA, versionIdB });
+    },
+    async restoreWidgetVersion(params: { widgetId: string; versionId: string; restoreSummary?: string }): Promise<OraWidget> {
+      return call<OraWidget>("widgets.versions.restore", params);
+    },
+    async toggleWidgetPin(id: string): Promise<OraWidget> {
+      return call<OraWidget>("widgets.togglePin", { id });
+    },
+    async listStaleWidgets(): Promise<OraWidget[]> {
+      return call<OraWidget[]>("widgets.listStale");
+    },
+    async listWidgetEvents(widgetId?: string, limit?: number): Promise<Array<{ widgetId: string; event: string; at: number; detail: string }>> {
+      return call<Array<{ widgetId: string; event: string; at: number; detail: string }>>("widgets.listEvents", { widgetId, limit });
+    },
+    async findDuplicateWidget(title: string, kind?: string): Promise<OraWidget | null> {
+      return call<OraWidget | null>("widgets.findDuplicate", { title, kind });
     },
     async wechatRequestQrCode(channelId: string): Promise<{ base64: string; qrcode: string; mimeType?: string; imageSrc?: string; pageSrc?: string }> {
       return call<{ base64: string; qrcode: string; mimeType?: string; imageSrc?: string; pageSrc?: string }>("channels.wechat.requestQrCode", { channelId });
@@ -1275,6 +1328,8 @@ class LocalJsonRpcRuntime {
   private sessions = new Map<string, OraSessionSummary>();
   private channels = new Map<string, OraChannelConfig>();
   private automations = new Map<string, OraAutomation>();
+  private widgets = new Map<string, OraWidget>();
+  private widgetVersions = new Map<string, OraWidgetVersion[]>();
   private runs = new Map<string, OraStateSnapshot>();
   private modeStudioBuilderResults = new Map<string, OraModeStudioBuilderResult>();
   private customAgents = new Map<string, OraCustomAgentDetail>();
@@ -1306,6 +1361,7 @@ class LocalJsonRpcRuntime {
   private nextProjectNumber = 1;
   private nextSessionNumber = 1;
   private nextAutomationNumber = 1;
+  private nextWidgetNumber = 1;
   private nextRunNumber = 1;
   private nextEvaluationDatasetNumber = 1;
   private nextEvaluationRunNumber = 1;
@@ -1660,6 +1716,58 @@ class LocalJsonRpcRuntime {
         return this.runAutomationNow(params);
       case "automations.previewSchedule":
         return this.previewAutomationSchedule(params);
+      case "widgets.list":
+        return [...this.widgets.values()]
+          .filter((w) => w.status !== "archived")
+          .sort((a, b) => b.updatedAt - a.updatedAt);
+      case "widgets.get": {
+        const widgetId = isRecord(params) ? String(params.id ?? "") : "";
+        const w = this.widgets.get(widgetId);
+        if (!w) throw new Error(`Widget not found: ${widgetId}`);
+        return w;
+      }
+      case "widgets.create":
+        return this.createWidget(params);
+      case "widgets.update":
+        return this.updateWidget(params);
+      case "widgets.delete": {
+        const delId = isRecord(params) ? String(params.id ?? "") : "";
+        if (!this.widgets.delete(delId)) throw new Error(`Widget not found: ${delId}`);
+        return;
+      }
+      case "widgets.archive":
+        return this.archiveWidget(params);
+      case "widgets.restore":
+        return this.restoreWidget(params);
+      case "widgets.versions.list": {
+        const vWidgetId = isRecord(params) ? String(params.widgetId ?? "") : "";
+        return this.widgetVersions.get(vWidgetId) ?? [];
+      }
+      case "widgets.versions.get": {
+        const verId = isRecord(params) ? String(params.id ?? "") : "";
+        for (const versions of this.widgetVersions.values()) {
+          const found = versions.find((v) => v.id === verId);
+          if (found) return found;
+        }
+        throw new Error(`Version not found: ${verId}`);
+      }
+      case "widgets.versions.compare": {
+        const aId = isRecord(params) ? String(params.versionIdA ?? "") : "";
+        const bId = isRecord(params) ? String(params.versionIdB ?? "") : "";
+        let a: OraWidgetVersion | undefined;
+        let b: OraWidgetVersion | undefined;
+        for (const versions of this.widgetVersions.values()) {
+          for (const v of versions) {
+            if (v.id === aId) a = v;
+            if (v.id === bId) b = v;
+          }
+        }
+        if (!a) throw new Error(`Version not found: ${aId}`);
+        if (!b) throw new Error(`Version not found: ${bId}`);
+        return { a, b };
+      }
+      case "widgets.versions.restore":
+        return this.restoreWidgetVersion(params);
       case "evaluation.datasets.import":
         return this.importEvaluationDataset(params);
       case "evaluation.datasets.list":
@@ -2629,6 +2737,150 @@ class LocalJsonRpcRuntime {
     return automation;
   }
 
+  private createWidget(params: unknown): OraWidget {
+    const parsed = params as Record<string, unknown>;
+    const now = Date.now();
+    const id = `widget-${String(this.nextWidgetNumber++).padStart(4, "0")}`;
+    const kind = (parsed.kind as string) || "todo";
+    const versionId = `wver-${String(this.nextWidgetNumber).padStart(4, "0")}-1`;
+    const widget: OraWidget = {
+      id,
+      workspaceId: (parsed.workspaceId as string) ?? "default",
+      title: (parsed.title as string) || "Untitled",
+      kind: kind as "artifact" | "todo" | "feed",
+      status: "active",
+      layout: (parsed.layout as OraWidget["layout"]) ?? { x: 0, y: 0, w: 2, h: 2, pinned: false },
+      manifestVersion: 1,
+      dataSource: parsed.dataSource as OraWidget["dataSource"],
+      actions: (parsed.actions as OraWidget["actions"]) ?? [],
+      schedule: parsed.schedule as OraWidget["schedule"],
+      permissions: (parsed.permissions as OraWidget["permissions"]) ?? [],
+      artifactIds: [],
+      automationIds: [],
+      builderSessionId: parsed.builderSessionId as string | undefined,
+      builderSkillId: parsed.builderSkillId as string | undefined,
+      componentSkillId: parsed.componentSkillId as string | undefined,
+      currentVersionId: versionId,
+      createdAt: now,
+      updatedAt: now,
+      state: (parsed.state as OraWidget["state"]) ?? { kind: "todo", items: [] },
+    };
+    this.widgets.set(id, widget);
+    this.widgetVersions.set(id, [{
+      id: versionId,
+      widgetId: id,
+      version: 1,
+      createdAt: now,
+      summary: `Created widget "${widget.title}"`,
+      changeReason: "initial creation",
+      manifestSnapshot: {
+        id: widget.id, workspaceId: widget.workspaceId, title: widget.title, kind: widget.kind,
+        status: widget.status, layout: widget.layout, manifestVersion: 1,
+        dataSource: widget.dataSource, actions: widget.actions, schedule: widget.schedule,
+        permissions: widget.permissions, artifactIds: [], automationIds: [],
+        builderSessionId: widget.builderSessionId, builderSkillId: widget.builderSkillId,
+        componentSkillId: widget.componentSkillId, currentVersionId: versionId,
+        createdAt: now, updatedAt: now,
+      },
+      layoutSnapshot: widget.layout,
+      stateSchemaSnapshot: {},
+      automationBindingSnapshot: {},
+      componentSkillId: widget.componentSkillId,
+      migrationNote: "",
+    }]);
+    return widget;
+  }
+
+  private updateWidget(params: unknown): OraWidget {
+    const p = params as Record<string, unknown>;
+    const id = p.id as string;
+    const existing = this.widgets.get(id);
+    if (!existing) throw new Error(`Widget not found: ${id}`);
+    const now = Date.now();
+    const updated: OraWidget = {
+      ...existing,
+      title: (p.title as string) ?? existing.title,
+      status: (p.status as OraWidget["status"]) ?? existing.status,
+      layout: (p.layout as OraWidget["layout"]) ?? existing.layout,
+      dataSource: p.dataSource !== undefined ? (p.dataSource as OraWidget["dataSource"]) : existing.dataSource,
+      actions: (p.actions as OraWidget["actions"]) ?? existing.actions,
+      schedule: p.schedule !== undefined ? (p.schedule as OraWidget["schedule"]) : existing.schedule,
+      permissions: (p.permissions as OraWidget["permissions"]) ?? existing.permissions,
+      state: (p.state as OraWidget["state"]) ?? existing.state,
+      componentSkillId: p.componentSkillId !== undefined ? (p.componentSkillId as string) : existing.componentSkillId,
+      updatedAt: now,
+    };
+    this.widgets.set(id, updated);
+    return updated;
+  }
+
+  private archiveWidget(params: unknown): OraWidget {
+    const id = (params as Record<string, unknown>).id as string;
+    const existing = this.widgets.get(id);
+    if (!existing) throw new Error(`Widget not found: ${id}`);
+    const updated = { ...existing, status: "archived" as const, updatedAt: Date.now() };
+    this.widgets.set(id, updated);
+    return updated;
+  }
+
+  private restoreWidget(params: unknown): OraWidget {
+    const id = (params as Record<string, unknown>).id as string;
+    const existing = this.widgets.get(id);
+    if (!existing) throw new Error(`Widget not found: ${id}`);
+    if (existing.status !== "archived") throw new Error("Widget is not archived");
+    const updated = { ...existing, status: "active" as const, updatedAt: Date.now() };
+    this.widgets.set(id, updated);
+    return updated;
+  }
+
+  private restoreWidgetVersion(params: unknown): OraWidget {
+    const p = params as Record<string, unknown>;
+    const widgetId = p.widgetId as string;
+    const versionId = p.versionId as string;
+    const existing = this.widgets.get(widgetId);
+    if (!existing) throw new Error(`Widget not found: ${widgetId}`);
+    const versions = this.widgetVersions.get(widgetId) ?? [];
+    const version = versions.find((v) => v.id === versionId);
+    if (!version) throw new Error(`Version not found: ${versionId}`);
+    const now = Date.now();
+    const newVersionId = `wver-${widgetId}-${versions.length + 1}`;
+    const restored: OraWidget = {
+      ...existing,
+      title: version.manifestSnapshot.title,
+      layout: version.layoutSnapshot,
+      dataSource: version.manifestSnapshot.dataSource,
+      actions: version.manifestSnapshot.actions,
+      schedule: version.manifestSnapshot.schedule,
+      permissions: version.manifestSnapshot.permissions,
+      componentSkillId: version.manifestSnapshot.componentSkillId,
+      manifestVersion: existing.manifestVersion + 1,
+      currentVersionId: newVersionId,
+      lastRestoredVersionId: version.id,
+      updatedAt: now,
+    };
+    this.widgets.set(widgetId, restored);
+    versions.push({
+      id: newVersionId, widgetId, version: versions.length + 1, createdAt: now,
+      summary: `Restored to version ${version.version}`,
+      changeReason: `Restored from version ${version.id}`,
+      manifestSnapshot: {
+        id: restored.id, workspaceId: restored.workspaceId, title: restored.title, kind: restored.kind,
+        status: restored.status, layout: restored.layout, manifestVersion: restored.manifestVersion,
+        dataSource: restored.dataSource, actions: restored.actions, schedule: restored.schedule,
+        permissions: restored.permissions, artifactIds: restored.artifactIds, automationIds: restored.automationIds,
+        builderSessionId: restored.builderSessionId, builderSkillId: restored.builderSkillId,
+        componentSkillId: restored.componentSkillId, currentVersionId: newVersionId,
+        createdAt: restored.createdAt, updatedAt: now,
+      },
+      layoutSnapshot: restored.layout,
+      stateSchemaSnapshot: {},
+      automationBindingSnapshot: {},
+      componentSkillId: restored.componentSkillId,
+      migrationNote: "",
+    });
+    return restored;
+  }
+
   private runAutomationNow(params: unknown): OraAutomationRunRecord {
     const id = isRecord(params) ? String(params.id ?? "") : "";
     const existing = this.automations.get(id);
@@ -2750,28 +3002,51 @@ class LocalJsonRpcRuntime {
   }
 
   private createProject(params: unknown): OraProjectSummary {
+    const p = params as Record<string, unknown>;
+    const sourceKind = (p.sourceKind as string) || "local_folder";
+    const now = Date.now();
+    const projectId = `project-${String(this.nextProjectNumber++).padStart(4, "0")}`;
+
+    if (sourceKind === "ora_project") {
+      const label = typeof p.label === "string" && p.label.trim() ? p.label.trim() : "Untitled Project";
+      const existing = [...this.projects.values()].find(
+        (proj) => proj.sourceKind === "ora_project" && proj.label === label,
+      );
+      if (existing) return existing;
+      const project: OraProjectSummary = {
+        projectId,
+        label,
+        sourceKind: "ora_project",
+        description: typeof p.description === "string" ? p.description : undefined,
+        sessionCount: 0,
+        createdAt: now,
+        updatedAt: now,
+      };
+      this.projects.set(projectId, project);
+      return project;
+    }
+
     const rootPath =
-      typeof params === "object" && params !== null && "rootPath" in params && typeof params.rootPath === "string"
-        ? normalizeMockProjectPath(params.rootPath)
+      typeof p.rootPath === "string" && p.rootPath
+        ? normalizeMockProjectPath(p.rootPath)
         : "";
     if (!rootPath) {
-      throw new Error("Project rootPath is required.");
+      throw new Error("Project rootPath is required for local_folder projects.");
     }
 
-    const existing = [...this.projects.values()].find((project) => project.rootPath === rootPath);
-    if (existing) {
-      return existing;
-    }
+    const existing = [...this.projects.values()].find(
+      (proj) => proj.sourceKind === "local_folder" && proj.rootPath === rootPath,
+    );
+    if (existing) return existing;
 
     const label =
-      typeof params === "object" && params !== null && "label" in params && typeof params.label === "string" && params.label.trim()
-        ? params.label.trim()
+      typeof p.label === "string" && p.label.trim()
+        ? p.label.trim()
         : defaultMockProjectLabel(rootPath);
-    const projectId = `project-${String(this.nextProjectNumber++).padStart(4, "0")}`;
-    const now = Date.now();
     const project: OraProjectSummary = {
       projectId,
       label,
+      sourceKind: "local_folder",
       rootPath,
       sessionCount: 0,
       createdAt: now,

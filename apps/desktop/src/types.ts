@@ -381,7 +381,7 @@ export interface RuntimeBridgeStatus {
   detail: string;
 }
 
-export type AppView = "chat" | "agents" | "skills" | "modes" | "evaluation" | "automations";
+export type AppView = "chat" | "agents" | "skills" | "modes" | "evaluation" | "automations" | "space-dashboard" | "space-library";
 
 export interface ClarificationOption {
   id: string;
