@@ -36,4 +36,34 @@ describe("prompt temporal context", () => {
     expect(prompt.system).toContain("Current temporal context:");
     expect(prompt.system).toContain("Current date: 2026-05-09");
   });
+
+  it("includes project instructions when provided", () => {
+    const prompt = buildAgentPromptContext({
+      agentId: "ora",
+      stageSystem: "Answer the user.",
+      projectInstructionsContext: [
+        "<project_instructions>",
+        "The following instructions are from the project's AGENTS.md file.",
+        "Follow these guidelines when working in this project.",
+        "",
+        "Always use TypeScript strict mode.",
+        "</project_instructions>",
+      ].join("\n"),
+    });
+
+    const ids = prompt.sections.map((s) => s.id);
+    expect(ids).toContain("project_instructions");
+    expect(prompt.system).toContain("Always use TypeScript strict mode.");
+    expect(prompt.stablePrefix).toContain("Always use TypeScript strict mode.");
+  });
+
+  it("omits project instructions section when content is empty", () => {
+    const prompt = buildAgentPromptContext({
+      agentId: "ora",
+      stageSystem: "Answer the user.",
+      projectInstructionsContext: "   ",
+    });
+
+    expect(prompt.sections.some((s) => s.id === "project_instructions")).toBe(false);
+  });
 });

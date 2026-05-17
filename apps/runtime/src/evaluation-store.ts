@@ -102,6 +102,7 @@ import {
 } from "@cemeworm/shared";
 import { z } from "zod";
 import { buildAgenticEfficiencyLedger } from "./agentic-efficiency.js";
+import { adaptCausalDecisionsFromTrace } from "./harness/causal-decision-adapter.js";
 import { parseJsonObject } from "./provider-json.js";
 import { invokeRunProvider } from "./providers/index.js";
 import {
@@ -2857,7 +2858,8 @@ function scoreEvaluationAttempt(
   observations: EvaluationObservation;
   output?: unknown;
 } {
-  const observations = extractEvaluationObservations(snapshot, runtimeMs);
+  const retrofitCausalDecisions = Boolean(spec.metadata?.retrofitCausalDecisions);
+  const observations = extractEvaluationObservations(snapshot, runtimeMs, retrofitCausalDecisions);
   const objective = spec.objective ?? objectiveForProfile(spec.profileId, evaluationCase);
   if (!spec.objective) {
     return {
@@ -2887,15 +2889,20 @@ function objectiveForProfile(profileId: EvaluationProfileKind, evaluationCase: E
   });
 }
 
-function extractEvaluationObservations(snapshot: StateSnapshot, runtimeMs: number): EvaluationObservation {
+function extractEvaluationObservations(snapshot: StateSnapshot, runtimeMs: number, retrofitCausalDecisions = false): EvaluationObservation {
   const autoModeRouter = snapshot.config.metadata.autoModeRouter && typeof snapshot.config.metadata.autoModeRouter === "object"
     ? snapshot.config.metadata.autoModeRouter as Record<string, unknown>
     : {};
   const effectiveStrategy = snapshot.config.effectiveStrategy;
   const efficiencyLedger = buildAgenticEfficiencyLedger(snapshot, runtimeMs);
-  const causalDecisions = snapshot.events
+  const realCausalDecisions = snapshot.events
     .filter((event) => event.type === "causal.decision.recorded")
     .map((event) => event.payload as Record<string, unknown>);
+  const causalDecisions = realCausalDecisions.length > 0
+    ? realCausalDecisions
+    : retrofitCausalDecisions
+      ? adaptCausalDecisionsFromTrace(snapshot) as unknown as Record<string, unknown>[]
+      : [];
   return {
     run: {
       status: snapshot.status,

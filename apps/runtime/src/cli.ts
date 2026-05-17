@@ -2,6 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { createRuntimeMethodHandler } from "./json-rpc.js";
 import { shutdownLangfuseTelemetry } from "./telemetry/langfuse.js";
+import type { EvaluationRun } from "@cemeworm/shared";
+import { compareEvaluationRuns, formatComparisonReport } from "./evaluation-compare.js";
 
 async function main() {
   const args = process.argv.slice(2);
@@ -29,6 +31,7 @@ async function main() {
     "  ora-runtime eval report --run <evaluation-run-id> [--format json|markdown|html] [--output <path>]",
     "  ora-runtime eval cancel --run <evaluation-run-id>",
     "  ora-runtime eval promote-baseline --run <evaluation-run-id> --config <config-id> [--name <baseline-name>]",
+    "  ora-runtime eval compare --run-a <evaluation-run-id> --run-b <evaluation-run-id> [--config-a <config-id>] [--config-b <config-id>] [--format json|markdown] [--output <path>]",
   ].join("\n") + "\n");
   process.exitCode = 2;
 }
@@ -244,6 +247,29 @@ async function runEvalCommand(args: string[]) {
         params: { evaluationRunId },
       });
       process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+      return;
+    }
+    case "compare": {
+      const runAId = requiredFlag(flags, "--run-a");
+      const runBId = requiredFlag(flags, "--run-b");
+      const [runA, runB] = await Promise.all([
+        handle({ jsonrpc: "2.0", id: 1, method: "evaluation.runs.get", params: { evaluationRunId: runAId } }),
+        handle({ jsonrpc: "2.0", id: 2, method: "evaluation.runs.get", params: { evaluationRunId: runBId } }),
+      ]);
+      const report = compareEvaluationRuns(
+        runA as EvaluationRun,
+        runB as EvaluationRun,
+        { configAId: flags["--config-a"], configBId: flags["--config-b"] }
+      );
+      const format = flags["--format"] ?? "markdown";
+      const output = formatComparisonReport(report, format as "markdown" | "json");
+      const outputPath = flags["--output"];
+      if (outputPath) {
+        fs.writeFileSync(outputPath, output, "utf8");
+        process.stdout.write(`${outputPath}\n`);
+      } else {
+        process.stdout.write(output);
+      }
       return;
     }
     default:
