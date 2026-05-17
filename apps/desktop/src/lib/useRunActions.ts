@@ -593,6 +593,20 @@ export function useRunActions() {
   }
 
   async function addProjectFromDialog() {
+    const sourceKind = window.confirm(
+      "选择项目来源：\n\n点击「确定」载入本地文件夹\n点击「取消」在 Ora 中创建新项目",
+    )
+      ? "local_folder"
+      : "ora_project";
+
+    if (sourceKind === "local_folder") {
+      await addLocalFolderProjectFromDialog();
+    } else {
+      await createOraProjectFromDialog();
+    }
+  }
+
+  async function addLocalFolderProjectFromDialog() {
     dispatch({ type: "SET_BUSY_COMMAND", command: "Add project" });
     try {
       const rootPath = await pickProjectDirectory();
@@ -600,13 +614,34 @@ export function useRunActions() {
         dispatch({ type: "SET_BUSY_COMMAND", command: undefined });
         return;
       }
-      const project = await runtimeClient.createProject({ rootPath });
+      const project = await runtimeClient.createProject({ sourceKind: "local_folder", rootPath });
       await loadProjects();
       dispatch({ type: "SELECT_PROJECT", projectId: project.projectId });
       dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: `Added project ${project.label}.` });
       dispatch({ type: "SET_BUSY_COMMAND", command: undefined });
     } catch (error) {
       dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: error instanceof Error ? error.message : "Project import failed." });
+      dispatch({ type: "SET_BUSY_COMMAND", command: undefined });
+    }
+  }
+
+  async function createOraProjectFromDialog() {
+    const label = window.prompt("Ora 项目名称：", "我的项目");
+    if (!label || !label.trim()) return;
+
+    dispatch({ type: "SET_BUSY_COMMAND", command: "Create Ora project" });
+    try {
+      const project = await runtimeClient.createProject({
+        sourceKind: "ora_project",
+        label: label.trim(),
+      });
+      await loadProjects();
+      dispatch({ type: "SELECT_PROJECT", projectId: project.projectId });
+      dispatch({ type: "SET_VIEW", view: "space-dashboard" });
+      dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: `Created Ora project ${project.label}.` });
+      dispatch({ type: "SET_BUSY_COMMAND", command: undefined });
+    } catch (error) {
+      dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: error instanceof Error ? error.message : "Ora project creation failed." });
       dispatch({ type: "SET_BUSY_COMMAND", command: undefined });
     }
   }

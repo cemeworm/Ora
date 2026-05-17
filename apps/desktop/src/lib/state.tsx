@@ -2351,7 +2351,12 @@ function markSnapshotCancelRequested(
   reason: string,
   updatedAt: number,
 ): OraStateSnapshot | undefined {
-  if (!snapshot || snapshot.runId !== runId || isSettledRunStatus(snapshot.status)) {
+  if (!snapshot || snapshot.runId !== runId) {
+    return snapshot;
+  }
+  // Allow optimistic cancel for interrupted runs (clarification, approval, etc.) —
+  // the runtime can always transition "interrupted" → "cancelled".
+  if (snapshot.status !== "interrupted" && isSettledRunStatus(snapshot.status)) {
     return snapshot;
   }
 

@@ -1,8 +1,13 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
+import rehypeRaw from "rehype-raw";
+import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
+import { ImageIcon } from "lucide-react";
 import { cn } from "../lib/utils";
+import { useMediaUrl } from "../hooks/useMediaUrl";
+import { Dialog } from "./ui/dialog";
 
 interface MarkdownRendererProps {
   content: string;
@@ -134,6 +139,112 @@ function isMarkdownTableDelimiter(line: string): boolean {
   return /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(line);
 }
 
+/**
+ * Inline media image component.
+ * Resolves local file paths via Tauri convertFileSrc or uses HTTP URLs directly.
+ * Supports loading skeleton, error fallback, and click-to-enlarge.
+ */
+function MediaImg({ src, alt }: { src?: string; alt?: string }) {
+  const { resolvedUrl, loading, error } = useMediaUrl(src);
+  const [enlarged, setEnlarged] = useState(false);
+
+  const handleClick = useCallback(() => {
+    if (resolvedUrl && !loading && !error) {
+      setEnlarged(true);
+    }
+  }, [resolvedUrl, loading, error]);
+
+  // Loading skeleton
+  if (loading) {
+    return (
+      <span
+        className={cn(
+          "my-3 block h-48 w-full max-w-full animate-pulse rounded-lg border border-border bg-muted/45",
+        )}
+        role="status"
+        aria-label="Loading image"
+      />
+    );
+  }
+
+  // Error / unresolvable fallback
+  if (error || !resolvedUrl) {
+    return (
+      <span
+        className={cn(
+          "my-3 flex items-center gap-2 rounded-lg border border-border bg-card/70 px-4 py-3 text-sm text-muted-foreground",
+        )}
+      >
+        <ImageIcon size={16} className="shrink-0" />
+        <span className="truncate">{alt || src || "Image unavailable"}</span>
+      </span>
+    );
+  }
+
+  return (
+    <>
+      <img
+        src={resolvedUrl}
+        alt={alt ?? ""}
+        className="my-3 max-h-96 max-w-full cursor-pointer rounded-lg object-contain"
+        loading="lazy"
+        onClick={handleClick}
+        onError={(e) => {
+          // Fallback to broken image placeholder on load failure
+          const target = e.currentTarget;
+          target.style.display = "none";
+          const placeholder = target.nextElementSibling;
+          if (placeholder instanceof HTMLElement) {
+            placeholder.style.display = "flex";
+          }
+        }}
+      />
+      {/* Hidden fallback shown via onError */}
+      <span
+        className="my-3 hidden items-center gap-2 rounded-lg border border-border bg-card/70 px-4 py-3 text-sm text-muted-foreground"
+        aria-hidden="true"
+      >
+        <ImageIcon size={16} className="shrink-0" />
+        <span className="truncate">Failed to load image</span>
+      </span>
+      {/* Click-to-enlarge dialog */}
+      <Dialog open={enlarged} onOpenChange={setEnlarged}>
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+          onClick={() => setEnlarged(false)}
+        >
+          <img
+            src={resolvedUrl}
+            alt={alt ?? ""}
+            className="max-h-[90vh] max-w-[90vw] rounded-lg object-contain"
+            onClick={(e) => e.stopPropagation()}
+          />
+        </div>
+      </Dialog>
+    </>
+  );
+}
+
+/**
+ * Sanitize schema: allow only img, video, source HTML tags in addition to default schema.
+ */
+const mediaSanitizeSchema = {
+  ...defaultSchema,
+  tagNames: [...(defaultSchema.tagNames ?? []), "img", "video", "source"],
+  attributes: {
+    ...defaultSchema.attributes,
+    img: ["src", "alt", "width", "height", "loading"],
+    video: ["src", "controls", "width", "height", "autoplay", "loop", "muted", "playsinline", "poster"],
+    source: ["src", "type"],
+  },
+};
+
+/**
+ * Styles for inline <video> elements rendered via rehype-raw.
+ * We inject a small CSS snippet via a wrapper class.
+ */
+const VIDEO_WRAPPER_CLASS = "ora-media-video-wrapper";
+
 const markdownComponents: Components = {
   p: ({ className, ...props }) => (
     <p className={cn("my-2 whitespace-pre-wrap break-words first:mt-0 last:mb-0", className)} {...props} />
@@ -199,13 +310,36 @@ const markdownComponents: Components = {
     <th className={cn("border border-border bg-muted/45 px-2 py-1.5 font-semibold", className)} {...props} />
   ),
   td: ({ className, ...props }) => <td className={cn("border border-border px-2 py-1.5 align-top", className)} {...props} />,
+  img: ({ src, alt, ...props }) => <MediaImg src={src} alt={alt} {...props} />,
 };
 
 export default function MarkdownRenderer({ content, className, streaming = false }: MarkdownRendererProps) {
   const deferredContent = useDeferredStreamingContent(content, streaming);
   return (
-    <div className={cn("max-w-full break-words", className)}>
-      <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={markdownComponents}>
+    <div className={cn("max-w-full break-words", VIDEO_WRAPPER_CLASS, className)}>
+      <style>{`
+        .${VIDEO_WRAPPER_CLASS} video {
+          max-width: 100%;
+          max-height: 24rem;
+          border-radius: 0.5rem;
+          margin-top: 0.75rem;
+          margin-bottom: 0.75rem;
+        }
+        .${VIDEO_WRAPPER_CLASS} video:first-child {
+          margin-top: 0;
+        }
+        .${VIDEO_WRAPPER_CLASS} video:last-child {
+          margin-bottom: 0;
+        }
+      `}</style>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm, remarkBreaks]}
+        rehypePlugins={[
+          rehypeRaw,
+          [rehypeSanitize, mediaSanitizeSchema],
+        ]}
+        components={markdownComponents}
+      >
         {normalizeMarkdownContent(deferredContent)}
       </ReactMarkdown>
     </div>

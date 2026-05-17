@@ -642,6 +642,24 @@ export const Sidebar = memo(function Sidebar({ sidebarState }: { sidebarState: S
       onClick: openSessionSearch,
     },
     {
+      key: "space-dashboard",
+      label: "工作台",
+      title: "工作台",
+      icon: <Folder size={16} />,
+      active: sidebarState.activeView === "space-dashboard",
+      onClick: () => dispatch({ type: "SET_VIEW", view: "space-dashboard" }),
+      gapClass: "mt-2",
+    },
+    {
+      key: "space-library",
+      label: "组件库",
+      title: "组件库",
+      icon: <FolderOpen size={16} />,
+      active: sidebarState.activeView === "space-library",
+      onClick: () => dispatch({ type: "SET_VIEW", view: "space-library" }),
+      gapClass: "mt-1",
+    },
+    {
       key: "agents",
       label: "Agents",
       title: "Agents",
@@ -717,25 +735,6 @@ export const Sidebar = memo(function Sidebar({ sidebarState }: { sidebarState: S
             <SidebarTrigger className="hidden group-hover/workspace-header:inline-flex" />
           </div>
         )}
-      </div>
-
-      <div className="px-2 pb-2">
-        <button
-          onClick={() => {
-            dispatch({ type: "SET_VIEW", view: "chat" });
-            void actions.createSession();
-          }}
-          className={cn(
-            "flex h-9 w-full appearance-none items-center gap-2 rounded-md border-0 bg-transparent px-2 text-sm text-muted-foreground shadow-none transition hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
-            !open && "justify-center px-0",
-          )}
-          title="New chat"
-        >
-          <SidebarIconSlot>
-            <MessageSquarePlus size={16} />
-          </SidebarIconSlot>
-          {open && <span>New Chat</span>}
-        </button>
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -825,10 +824,14 @@ export const Sidebar = memo(function Sidebar({ sidebarState }: { sidebarState: S
                               dispatch({ type: "TOGGLE_PROJECT_SECTION", projectId: project.projectId });
                             }}
                             className="group/project-button flex min-w-0 flex-1 items-center gap-2 rounded-lg px-2.5 py-2 text-left text-[13px] text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
-                            title={project.rootPath}
+                            title={project.sourceKind === "ora_project" ? (project.description ?? project.label) : (project.rootPath ?? project.label)}
                           >
                             <span className="text-muted-foreground/85 group-hover/project-button:text-sidebar-accent-foreground/80">
-                              {project.expanded ? <FolderOpen size={14} /> : <Folder size={14} />}
+                              {project.sourceKind === "ora_project" ? (
+                                project.expanded ? <FolderOpen size={14} /> : <Folder size={14} />
+                              ) : (
+                                project.expanded ? <FolderOpen size={14} /> : <Folder size={14} />
+                              )}
                             </span>
                             <div className="min-w-0 flex-1 truncate font-medium">{project.label}</div>
                           </button>

@@ -85,6 +85,20 @@ function ArtifactPreview({ artifact }: { artifact: ArtifactRecord }) {
     );
   }
 
+  if (artifact.mimeType.startsWith("video/") && artifact.uri) {
+    return (
+      <section className="flex min-h-0 flex-1 overflow-hidden">
+        <video
+          src={artifact.uri}
+          controls
+          className="h-full max-h-[70vh] w-full object-contain"
+        >
+          Your browser does not support the video tag.
+        </video>
+      </section>
+    );
+  }
+
   if (isJsonArtifact(artifact) && artifact.payload !== undefined) {
     return (
       <section className="flex min-h-0 flex-1">
