@@ -17,7 +17,8 @@ export type AgentPromptSectionId =
   | "available_skills"
   | "tool_protocol"
   | "skills"
-  | "mcp_deferred_tools";
+  | "mcp_deferred_tools"
+  | "computer_use_context";
 
 export interface AgentPromptSection {
   id: AgentPromptSectionId;
@@ -65,6 +66,7 @@ export function buildAgentPromptContext(input: AgentPromptContextInput): BuiltAg
     cachedSection(cache, "available_skills", "Available Skills", cache?.hashInput(input.availableSkills), () => availableSkillsSection(input.availableSkills)),
     ...skillSections(input.skillSnippets),
     cachedSection(cache, "mcp_deferred_tools", "MCP / Deferred Tools", cache?.hashInput(input.toolIds), () => mcpDeferredToolsSection(input.toolIds)),
+    cachedSection(cache, "computer_use_context", "Computer Use Context", cache?.hashInput(input.toolIds), () => computerUseContextSection(input.toolIds)),
     promptSection("task_intent_context", "Task Intent", input.taskIntentContext),
     promptSection("workspace_context", "Workspace Context", input.workspaceContext),
     promptSection("stage_instructions", "Stage Instructions", input.stageSystem),
@@ -366,6 +368,7 @@ const STABLE_PROMPT_PREFIX_SECTION_IDS = new Set<AgentPromptSectionId>([
   "available_skills",
   "skills",
   "mcp_deferred_tools",
+  "computer_use_context",
   "task_intent_context",
 ]);
 
@@ -392,6 +395,41 @@ function mcpDeferredToolsSection(toolIds: readonly string[] | undefined): string
     "MCP discovery is available through the Ora runtime tools.",
     "Use mcp.listTools or mcp.readResource to inspect server capabilities before calling unknown MCP tools.",
     "Use mcp.call only when the server, tool name, and arguments are known from the user's request or discovery results.",
+  ].join("\n");
+}
+
+function computerUseContextSection(toolIds: readonly string[] | undefined): string | undefined {
+  if (!toolIds?.some((toolId) => toolId.startsWith("computer."))) {
+    return undefined;
+  }
+
+  return [
+    "<computer_use_guidance>",
+    "Computer use tools let you observe and interact with GUI applications and Ora's own views.",
+    "",
+    "Required workflow — observe → act → verify:",
+    "1. OBSERVE: Always call computer.observe first to see the current screen and get element IDs.",
+    "2. ACT: Use the returned element IDs (not raw coordinates) for computer.click, computer.type, or computer.scroll.",
+    "3. VERIFY: After every action, verify the result by observing again or checking the action's output.",
+    "Never skip the observe step — guessing element positions or window state will cause failures.",
+    "",
+    "Target kinds:",
+    "- native_app: macOS desktop apps. Uses the Peekaboo accessibility backend.",
+    "- browser_page: Local dev server or web pages. Prefers structured page/DOM backend.",
+    "- ora_view: Ora's own Dashboard, Widget Detail, or Builder Session. Prefers page backend for structured state verification; falls back to Peekaboo.",
+    "",
+    "Safety rules:",
+    "- Check computer.permissionStatus before attempting any GUI actions.",
+    "- Clicking, typing, pressing keys, scrolling, and window management require user approval.",
+    "- Never type passwords, tokens, or secrets through computer.type — ask the user to type them manually.",
+    "- Avoid destructive shortcuts (cmd+q, cmd+option+esc) unless explicitly requested.",
+    "- Screenshots from computer.observe may contain sensitive information — use includeScreenshot: false when only element structure is needed.",
+    "",
+    "Ora view verification:",
+    "- When operating on Ora Dashboard or Widget views, verify durable state changes, not just visual feedback.",
+    "- After a Widget action (refresh, archive, complete item), confirm the Widget store/projection updated — not just that a button appeared to work.",
+    "- In Builder Session, modifying an existing Widget must update the SAME Widget, not create a duplicate.",
+    "</computer_use_guidance>",
   ].join("\n");
 }
 

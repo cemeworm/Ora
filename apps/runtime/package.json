@@ -28,5 +28,8 @@
     "@types/better-sqlite3": "^7.6.13",
     "tsx": "^4.16.2",
     "vitest": "^2.0.5"
+  },
+  "optionalDependencies": {
+    "peekaboo": "^1.0.0"
   }
 }

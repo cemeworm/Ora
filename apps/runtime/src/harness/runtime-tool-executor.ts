@@ -19,7 +19,9 @@ import { skillToolRuntimeFields } from "./runtime-skill-tools.js";
 import { genericApprovalRequest } from "./runtime-tool-approval.js";
 import { isRecord, workspaceRootPath } from "./runtime-tool-utils.js";
 import { webDocumentToolRuntimeFields } from "./runtime-web-document-tools.js";
+import { computerToolRuntimeFields } from "./runtime-computer-tools.js";
 import { type WorkspaceOperations, localWorkspaceOperations } from "./workspace-operations.js";
+import type { ComputerBackendManager } from "./computer-use/backend-manager.js";
 
 export const IMPLEMENTED_RUNTIME_TOOL_IDS = [
   "file.read",
@@ -72,6 +74,13 @@ export const IMPLEMENTED_RUNTIME_TOOL_IDS = [
   "plan.update",
   "agent.spawn",
   "message.send",
+  "computer.permissionStatus",
+  "computer.observe",
+  "computer.click",
+  "computer.type",
+  "computer.press",
+  "computer.scroll",
+  "computer.window",
 ] as const;
 
 export type RuntimeToolId = typeof IMPLEMENTED_RUNTIME_TOOL_IDS[number];
@@ -134,6 +143,8 @@ export interface RuntimeToolExecutionContext {
   }) => Promise<unknown>;
   /** Enqueue a message to be delivered to an agent on its next invocation. */
   enqueueMessage?: (params: { to: string; message: string }) => void;
+  /** Computer use backend manager for GUI automation tools. */
+  computerBackendManager?: ComputerBackendManager;
 }
 
 export interface RuntimePreToolPolicyRequest {
@@ -194,6 +205,7 @@ export interface RuntimeToolExecutorOptions {
   postToolPolicyHooks?: RuntimePostToolPolicyHook[];
   signal?: AbortSignal;
   workspaceOperations?: WorkspaceOperations;
+  computerBackendManager?: ComputerBackendManager;
 }
 
 export interface SkillRegistryTools {
@@ -408,6 +420,7 @@ export class RuntimeToolExecutor {
   private readonly postToolPolicyHooks: RuntimePostToolPolicyHook[];
   private readonly signal?: AbortSignal;
   private readonly workspaceOperations: WorkspaceOperations;
+  private readonly computerBackendManager?: ComputerBackendManager;
   private spawnAgentCallback?: RuntimeToolExecutionContext["spawnAgent"];
   private enqueueMessageCallback?: RuntimeToolExecutionContext["enqueueMessage"];
 
@@ -425,6 +438,7 @@ export class RuntimeToolExecutor {
     this.taskIntent = options.taskIntent;
     this.permissionProfile = options.permissionProfile;
     this.signal = options.signal;
+    this.computerBackendManager = options.computerBackendManager;
     this.workspaceOperations = options.workspaceOperations ?? localWorkspaceOperations;
     this.searchProvider = options.searchProvider ?? createSearchProvider({
       fetchImpl: this.fetchImpl,
@@ -681,6 +695,7 @@ export class RuntimeToolExecutor {
       operations: this.workspaceOperations,
       spawnAgent: this.spawnAgentCallback,
       enqueueMessage: this.enqueueMessageCallback,
+      computerBackendManager: this.computerBackendManager,
     };
   }
 }
@@ -752,6 +767,7 @@ function builtInToolRuntimeFields(toolId: string): Partial<RuntimeToolDefinition
     ...planToolRuntimeFields(toolId),
     ...agentSpawnToolRuntimeFields(toolId),
     ...messageSendToolRuntimeFields(toolId),
+    ...computerToolRuntimeFields(toolId),
   };
 }
 
