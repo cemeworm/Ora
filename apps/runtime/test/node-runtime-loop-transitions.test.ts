@@ -641,7 +641,6 @@ describe("node runtime loop transition contract", () => {
     expect(toolRecoverySource).toContain('nodeLoopController.emitRecoveryState("degraded"');
     expect(toolRecoverySource).toContain('nodeLoopController.emitRecoveryState("repairing"');
     expect(toolRecoverySource).toContain('nodeLoopController.emitRecoveryState("tool_requested"');
-    expect(source).toContain('nodeLoopController.emitTransitionResult("recovery_decision", "repairing"');
     expect(source).not.toContain('emitNodeRuntimeState("finalizing"');
     expect(toolCallSource).toContain('nodeLoopController.emitTransitionResult("tool_request", "tool_running"');
     expect(toolCallSource).toContain('nodeLoopController.emitTransitionResult("tool_result", "tool_result_observed"');

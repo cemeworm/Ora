@@ -3,6 +3,7 @@ import { stableJson } from "./runtime-tool-loop.js";
 
 const APPROVAL_INTERRUPT_SYMBOL = Symbol.for("ora.ApprovalInterrupt");
 const CLARIFICATION_INTERRUPT_SYMBOL = Symbol.for("ora.ClarificationInterrupt");
+const AGENT_DEGRADED_SYMBOL = Symbol.for("ora.AgentDegraded");
 
 export class ClarificationInterruptError extends Error {
   public readonly [CLARIFICATION_INTERRUPT_SYMBOL] = true;
@@ -27,6 +28,21 @@ export class ApprovalInterruptError extends Error {
   }
 }
 
+export class AgentDegradedError extends Error {
+  public readonly [AGENT_DEGRADED_SYMBOL] = true;
+  public readonly recoveryArtifactId: string;
+  public readonly errorType: string;
+  constructor(
+    public readonly degradedOutput: string,
+    params: { recoveryArtifactId: string; errorType: string; detail: string },
+  ) {
+    super(`Agent degraded after ${params.errorType}: ${params.detail}`);
+    this.name = "AgentDegradedError";
+    this.recoveryArtifactId = params.recoveryArtifactId;
+    this.errorType = params.errorType;
+  }
+}
+
 export function isApprovalInterruptError(error: unknown): error is ApprovalInterruptError {
   return error instanceof ApprovalInterruptError ||
     (typeof error === "object" && error !== null &&
@@ -41,6 +57,12 @@ export function isClarificationInterruptError(error: unknown): error is Clarific
 
 export function isAnyInterruptError(error: unknown): error is ApprovalInterruptError | ClarificationInterruptError {
   return isApprovalInterruptError(error) || isClarificationInterruptError(error);
+}
+
+export function isAgentDegradedError(error: unknown): error is AgentDegradedError {
+  return error instanceof AgentDegradedError ||
+    (typeof error === "object" && error !== null &&
+      (error as Record<symbol, unknown>)[AGENT_DEGRADED_SYMBOL] === true);
 }
 
 export type ApprovedResumeAction = Pick<ActionRecord, "type" | "riskLevel" | "input" | "agentId">;

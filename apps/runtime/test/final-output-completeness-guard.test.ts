@@ -457,14 +457,13 @@ describe("final output completeness guard (integration)", () => {
       // Should be failed with an error containing "final_output_empty" or similar
       const error = snapshot.error;
       expect(error).toBeTruthy();
-      // Known pre-existing issue: node loop transition "running_model -> repairing"
-      // is rejected as unknown_transition, preventing the repair flow from completing.
-      // The error message reflects the transition failure rather than the guard reason.
+      // The repair flow (running_model -> running_model via model_request)
+      // re-invokes the model with a follow-up, but the mock returns empty again,
+      // so the guard rejects with "empty after repair".
       expect(
         error?.includes("final_output_empty") ||
         error?.includes("final output is empty") ||
-        error?.includes("empty after repair") ||
-        error?.includes("unknown_transition"),
+        error?.includes("empty after repair"),
       ).toBe(true);
     } finally {
       globalThis.fetch = previousFetch;

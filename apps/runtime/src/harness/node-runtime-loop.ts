@@ -682,7 +682,7 @@ export async function runNodeRuntimeLoop(
         // Only allow one repair turn for empty post-tool responses.
         if (!emptyFinalOutputRepairUsed) {
           emptyFinalOutputRepairUsed = true;
-          nodeLoopController.emitTransitionResult("recovery_decision", "repairing", {
+          nodeLoopController.emitTransitionResult("model_request", "running_model", {
             agentId: params.agentId,
             title: params.title,
             reason: outputGuardResult.reason,

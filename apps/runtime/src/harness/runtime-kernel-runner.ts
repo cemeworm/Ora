@@ -175,14 +175,26 @@ export class KernelRunner {
   private status: StateSnapshot["status"] = "succeeded";
   private output: unknown;
   private error: string | undefined;
+  private terminalEmitted = false;
 
   constructor(private readonly deps: KernelRunnerDeps) {}
 
   async run(): Promise<StateSnapshot> {
-    this.emitStartEvents();
-    await this.executeMode();
-    this.flushMemory();
-    return this.checkpoint();
+    try {
+      this.emitStartEvents();
+      await this.executeMode();
+      this.flushMemory();
+      return this.checkpoint();
+    } finally {
+      if (!this.terminalEmitted) {
+        this.status = "failed";
+        this.error = "Run terminated without a terminal event (structural guarantee).";
+        this.deps.runtime.emit("run.failed", {
+          status: this.status,
+          error: this.error,
+        });
+      }
+    }
   }
 
   private emitStartEvents(): void {
@@ -358,6 +370,7 @@ export class KernelRunner {
         text: modeProgressError,
         modeOutput,
       }, completionMetadata());
+      this.terminalEmitted = true;
       emit("run.failed", {
         status: this.status,
         error: this.error,
@@ -373,6 +386,7 @@ export class KernelRunner {
     if (incompleteError) {
       this.status = "failed";
       this.error = incompleteError;
+      this.terminalEmitted = true;
       emit("run.failed", {
         status: this.status,
         error: this.error,
@@ -400,6 +414,7 @@ export class KernelRunner {
             modeOutput: this.output,
             violations: caught.violations,
           }, meta);
+          this.terminalEmitted = true;
           emit("run.failed", {
             status: this.status,
             error: this.error,
@@ -413,6 +428,7 @@ export class KernelRunner {
       }
     }
 
+    this.terminalEmitted = true;
     emit("run.done", {
       status: "succeeded",
       output: this.output,
@@ -460,6 +476,7 @@ export class KernelRunner {
       emitTodoUpdated();
       emit("queue.updated", { summary: queueSummary, busStats: kernelRuntimeContext.busStats });
     }
+    this.terminalEmitted = true;
     emit(this.status === "interrupted" ? "run.interrupted" : "run.failed", {
       error: this.error,
       status: this.status,
