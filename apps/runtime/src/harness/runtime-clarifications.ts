@@ -17,21 +17,34 @@ export const INTENT_CLARIFICATION_NODE_LABEL = ORA_ROOT_AGENT_LABEL;
 
 const INTENT_CLARIFICATION_MAX_TOKENS = 220;
 
+export interface IntentClarificationResult {
+  question: string;
+  missingVariables: string[];
+  counterfactualRiskIfSkipped: string;
+}
+
 export async function requestIntentClarificationQuestion(
   prompt: string,
   config: RunConfig,
-): Promise<string | undefined> {
+): Promise<IntentClarificationResult | undefined> {
   try {
     const response = await invokeRunProvider(config, {
       system: [
         "You are Ora, the root conversation agent for Ora.",
         "Decide whether the user's request is materially ambiguous before the agent uses tools or answers.",
+        "",
+        "Three-condition gate — only recommend clarification when ALL three hold:",
+        "1. The missing information would materially change the outcome or action.",
+        "2. You cannot proceed with a reasonable default assumption.",
+        "3. The user's cost to answer is lower than the cost of being wrong.",
+        "",
         "Ask for clarification only when the referent, requested action, or critical constraints are unclear enough that proceeding would likely answer the wrong target, take the wrong action, or create a costly mistake.",
         "Do not ask for clarification for ordinary ambiguity about style, wording, optimization preference, or low-cost defaults. In those cases the agent can proceed with a brief assumption.",
         "Material ambiguity is about variables that would change the outcome or action. Common examples are the user's role, target entity, requested action, jurisdiction, scale, eligibility, timing, or other critical constraints.",
         "When the user says things like we, our, this kind, or this scale without defining the operative context, ask only if that context would materially change the answer.",
         "If clarification is required, write one compact question in the user's language that names the missing variables. Do not invent missing facts.",
-        "Return only JSON with this shape: {\"needsClarification\": boolean, \"missingVariables\": string[], \"question\": string}.",
+        "Also provide a counterfactualRiskIfSkipped: what would likely go wrong if we answer directly without clarifying.",
+        "Return only JSON with this shape: {\"needsClarification\": boolean, \"missingVariables\": string[], \"question\": string, \"counterfactualRiskIfSkipped\": string}.",
       ].join("\n"),
       messages: [{
         role: "user",
@@ -41,6 +54,7 @@ export async function requestIntentClarificationQuestion(
             needsClarification: "boolean",
             missingVariables: "string[]; facts that would materially change the answer or action",
             question: "string; empty when needsClarification is false",
+            counterfactualRiskIfSkipped: "string; what would likely go wrong if we skip clarification",
           },
         }),
       }],
@@ -48,7 +62,7 @@ export async function requestIntentClarificationQuestion(
       toolChoice: "none",
       temperature: 0,
     });
-    return parseIntentClarificationQuestion(response.text);
+    return parseIntentClarificationResult(response.text);
   } catch {
     return undefined;
   }
@@ -100,6 +114,8 @@ export async function ensureRuntimeClarification(
     nodeLabel: string;
     question: string;
     options?: PendingClarificationOption[];
+    missingVariables?: string[];
+    counterfactualRiskIfSkipped?: string;
     narrate?: boolean;
   },
   deps: {
@@ -137,6 +153,8 @@ export async function ensureRuntimeClarification(
     key: params.key,
     question: params.question,
     options: params.options ?? [],
+    missingVariables: params.missingVariables ?? [],
+    counterfactualRiskIfSkipped: params.counterfactualRiskIfSkipped ?? "",
     requestedAt: deps.now(),
   });
   deps.pendingClarifications.push(clarification);
@@ -159,6 +177,8 @@ export async function ensureRuntimeClarifications(
     nodeLabel: string;
     question: string;
     options?: PendingClarificationOption[];
+    missingVariables?: string[];
+    counterfactualRiskIfSkipped?: string;
     narrate?: boolean;
   }>,
   deps: {
@@ -211,6 +231,8 @@ export async function ensureRuntimeClarifications(
       key: req.key,
       question: req.question,
       options: req.options ?? [],
+      missingVariables: req.missingVariables ?? [],
+      counterfactualRiskIfSkipped: req.counterfactualRiskIfSkipped ?? "",
       requestedAt: deps.now(),
     }),
   );
@@ -231,36 +253,34 @@ export async function ensureRuntimeClarifications(
   throw new ClarificationInterruptError(newClarifications);
 }
 
-function parseIntentClarificationQuestion(text: string): string | undefined {
+function parseIntentClarificationResult(text: string): IntentClarificationResult | undefined {
   const trimmed = text.trim();
   const jsonText = trimmed.startsWith("{")
     ? trimmed
     : trimmed.match(/\{[\s\S]*\}/)?.[0];
   if (!jsonText) {
-    return parseTaggedIntentClarificationQuestion(trimmed);
+    return undefined;
   }
   try {
     const parsed = JSON.parse(jsonText) as Record<string, unknown>;
     const missingVariables = Array.isArray(parsed.missingVariables)
-      ? parsed.missingVariables.filter((item) => typeof item === "string" && item.trim().length > 0)
+      ? parsed.missingVariables.filter((item) => typeof item === "string" && item.trim().length > 0) as string[]
       : [];
     const needsClarification = parsed.needsClarification === true || missingVariables.length > 0;
     if (!needsClarification || typeof parsed.question !== "string") {
       return undefined;
     }
     const question = parsed.question.trim();
-    return question.length > 0 ? question.slice(0, 800) : undefined;
+    if (question.length === 0) return undefined;
+    const counterfactualRiskIfSkipped = typeof parsed.counterfactualRiskIfSkipped === "string"
+      ? parsed.counterfactualRiskIfSkipped.trim()
+      : "";
+    return {
+      question: question.slice(0, 800),
+      missingVariables: missingVariables.slice(0, 6),
+      counterfactualRiskIfSkipped: counterfactualRiskIfSkipped.slice(0, 400),
+    };
   } catch {
-    return parseTaggedIntentClarificationQuestion(trimmed);
-  }
-}
-
-function parseTaggedIntentClarificationQuestion(text: string): string | undefined {
-  const block = text.match(/<clarification_decision>([\s\S]*?)<\/clarification_decision>/i)?.[1] ?? text;
-  const needsClarification = /needs[_\s-]*clarification\s*:\s*(true|yes)/i.test(block);
-  if (!needsClarification) {
     return undefined;
   }
-  const question = block.match(/question\s*:\s*(.+?)(?:\n\w[\w\s-]*\s*:|$)/is)?.[1]?.trim();
-  return question ? question.slice(0, 800) : undefined;
 }

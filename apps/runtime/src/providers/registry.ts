@@ -131,11 +131,15 @@ export function createProviderRegistry(
   };
 }
 
+function resolveDefaultProviderId(providers: ProviderConfig[]): string {
+  return providers.find((p) => p.enabled !== false)?.id ?? providers[0]?.id ?? "";
+}
+
 export function createDefaultProviderRegistry(options: ProviderRegistryOptions = {}) {
   return createProviderRegistry(
     {
       providers: DEFAULT_PROVIDERS,
-      defaultProviderId: "",
+      defaultProviderId: resolveDefaultProviderId(DEFAULT_PROVIDERS),
     },
     options
   );
@@ -155,7 +159,7 @@ export function createProviderRegistryForRun(
   return createProviderRegistry(
     {
       providers,
-      defaultProviderId: runConfig.providerConfig?.id ?? "",
+      defaultProviderId: runConfig.providerConfig?.id ?? resolveDefaultProviderId(providers),
     },
     options
   );

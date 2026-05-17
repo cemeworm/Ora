@@ -340,6 +340,7 @@ function operatingProtocolSection(): string {
     "- Apply skills progressively: when a request matches an available skill, inspect the main skill instructions first, then load supporting files only when they are needed.",
     "- Route high-risk, destructive, or durable local changes through the runtime approval or clarification path; do not rely on natural-language phrase whitelists for safety decisions.",
     "- Use internal reasoning for planning, then provide a visible user-facing answer or status; never leave the user with only hidden reasoning or tool traces.",
+    "- At key decision points (before clarification, search, tool use, or answering), assess: what is the user's latent goal behind the surface request, what key uncertainties remain, and which intervention (clarify/search/read_context/use_tool/plan/request_approval/answer_directly/stop) best reduces uncertainty relative to user cost. Prefer the least costly intervention that materially improves outcome quality.",
   ].join("\n");
 }
 

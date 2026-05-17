@@ -31,7 +31,9 @@ import {
   INTENT_CLARIFICATION_KEY,
   INTENT_CLARIFICATION_NODE_ID,
   INTENT_CLARIFICATION_NODE_LABEL,
+  type IntentClarificationResult,
 } from "./runtime-clarifications.js";
+import { routeIntervention, classifyToolRisk } from "./causal-policy-router.js";
 import type { KernelPatternExecutionContextAdapter } from "./runtime-pattern-context.js";
 import {
   assertRunCanBecomeTerminal,
@@ -121,13 +123,15 @@ export interface KernelRunnerDeps {
   };
   preflight: {
     clarificationAnswer: (key: string, fallbackId: string) => unknown;
-    requestIntentClarificationQuestion: (prompt: string, config: RunConfig) => Promise<string | undefined>;
+    requestIntentClarificationQuestion: (prompt: string, config: RunConfig) => Promise<IntentClarificationResult | undefined>;
     ensureClarification: (params: {
       id: string;
       key: string;
       nodeId: string;
       nodeLabel: string;
       question: string;
+      missingVariables?: string[];
+      counterfactualRiskIfSkipped?: string;
       narrate?: boolean;
     }) => Promise<unknown>;
     rootTopology: { handoffTargetId?: string };
@@ -235,6 +239,21 @@ export class KernelRunner {
     emit("profile.updated", { profiles });
     emitPlanUpdated();
     emitTodoUpdated();
+
+    // Record initial causal decision at run start
+    const initialDecision = routeIntervention({
+      surfaceRequest: input.prompt,
+      taskState: undefined,
+      proposedToolId: undefined,
+      proposedToolRisk: "low",
+      toolCallCount: 0,
+      clarificationCount: 0,
+      hasPendingApprovals: false,
+      hasPendingPlanDecisions: false,
+      hasUnresolvedPlanItems: false,
+      modelResponseText: "",
+    });
+    emit("causal.decision.recorded", initialDecision.decisionRecord);
   }
 
   private async executeMode(): Promise<void> {
@@ -323,17 +342,38 @@ export class KernelRunner {
         },
         { nodeId: INTENT_CLARIFICATION_NODE_ID },
       );
+      // Record causal decision after clarification resume
+      const resumeDecision = routeIntervention({
+        surfaceRequest: input.prompt,
+        taskState: {
+          surfaceRequest: input.prompt,
+          selectedLatentGoal: "",
+          keyUncertainties: [],
+          confidence: 0.6,
+        },
+        proposedToolId: undefined,
+        proposedToolRisk: "low",
+        toolCallCount: 0,
+        clarificationCount: 1,
+        hasPendingApprovals: false,
+        hasPendingPlanDecisions: false,
+        hasUnresolvedPlanItems: false,
+        modelResponseText: "",
+      });
+      emit("causal.decision.recorded", resumeDecision.decisionRecord);
     }
-    const intentClarificationQuestion = shouldRunClarificationPreflight
+    const intentClarificationResult = shouldRunClarificationPreflight
       ? await requestIntentClarificationQuestion(input.prompt, config)
       : undefined;
-    if (intentClarificationQuestion) {
+    if (intentClarificationResult) {
       await ensureClarification({
         id: INTENT_CLARIFICATION_ID,
         key: INTENT_CLARIFICATION_KEY,
         nodeId: INTENT_CLARIFICATION_NODE_ID,
         nodeLabel: INTENT_CLARIFICATION_NODE_LABEL,
-        question: intentClarificationQuestion,
+        question: intentClarificationResult.question,
+        missingVariables: intentClarificationResult.missingVariables,
+        counterfactualRiskIfSkipped: intentClarificationResult.counterfactualRiskIfSkipped,
         narrate: false,
       });
     }
