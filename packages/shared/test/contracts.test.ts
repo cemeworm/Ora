@@ -31,8 +31,10 @@ import {
   DEFAULT_WEB_TOOL_IDS,
   CODE_DEVELOPMENT_MODE_ID,
   DEBATE_MODE_ID,
+  DEEP_RESEARCH_MODE_ID,
   DEERFLOW_HARNESS_MODE_ID,
   DYNAMIC_ORCHESTRATOR_MODE_ID,
+  REVIEW_CRITIQUE_MODE_ID,
   EvaluationAttemptSchema,
   EvaluationAnnotationListParamsSchema,
   EvaluationAnnotationSubmitParamsSchema,
@@ -197,7 +199,7 @@ import {
 describe("Ora shared contracts", () => {
   it("validates all MVP pattern fixtures", () => {
     expect(MVP_PATTERNS).toHaveLength(5);
-    expect(MVP_MODES).toHaveLength(12);
+    expect(MVP_MODES).toHaveLength(6);
     expect(MVP_PATTERNS.map((pattern) => pattern.id)).toEqual([
       "generator_verifier",
       "orchestrator_subagent",
@@ -206,18 +208,12 @@ describe("Ora shared contracts", () => {
       "shared_state"
     ]);
     expect(MVP_MODES.map((mode) => mode.id)).toEqual([
-      "generator_verifier",
-      "orchestrator_subagent",
-      DEERFLOW_HARNESS_MODE_ID,
-      DYNAMIC_ORCHESTRATOR_MODE_ID,
       "single_agent",
-      DEBATE_MODE_ID,
       CODE_DEVELOPMENT_MODE_ID,
-      ORA_SELF_BUILDER_MODE_ID,
+      DEEP_RESEARCH_MODE_ID,
+      REVIEW_CRITIQUE_MODE_ID,
+      DEBATE_MODE_ID,
       MODE_STUDIO_BUILDER_MODE_ID,
-      "agent_teams",
-      "message_bus",
-      "shared_state"
     ]);
 
     for (const pattern of MVP_PATTERNS) {
@@ -252,21 +248,15 @@ describe("Ora shared contracts", () => {
       expect(ModeValidationResultSchema.parse({ valid: true, errors: [], warnings: [] }).valid).toBe(true);
     }
 
-    const deerflowHarness = MVP_MODES.find((mode) => mode.id === DEERFLOW_HARNESS_MODE_ID)!;
-    expect(deerflowHarness.systemPreset).toBe(true);
-    expect(deerflowHarness.family).toBe("orchestrator_subagent");
-    expect(deerflowHarness.completionPolicy.preset).toBe("persistent");
-    expect(deerflowHarness.runtimePolicy).toMatchObject({
-      thinking: "deep",
-      planning: "explicit",
-      delegation: "allowed",
-      providerThinking: "required",
-    });
-    expect(deerflowHarness.capabilityFlags.toolIds).toContain("model.handoff");
-    expect(deerflowHarness.nodes.filter((node) => Array.isArray(node.config.atoms) && node.config.atoms.includes("subagent_delegate")).map((node) => node.id)).toEqual([
-      "research",
-      "review",
-    ]);
+    const singleAgent = MVP_MODES.find((mode) => mode.id === "single_agent")!;
+    expect(singleAgent.systemPreset).toBe(true);
+    expect(singleAgent.visibility).toBe("user");
+    expect(singleAgent.family).toBe("orchestrator_subagent");
+    expect(singleAgent.completionPolicy.preset).toBe("balanced");
+    expect(singleAgent.nodes.map((node) => node.id)).toEqual(["respond"]);
+    expect(singleAgent.nodes[0]!.template).toBe("synthesize");
+    expect(singleAgent.profiles.map((profile) => profile.id)).toEqual(["ora"]);
+
     const debate = MVP_MODES.find((mode) => mode.id === DEBATE_MODE_ID)!;
     expect(debate.systemPreset).toBe(true);
     expect(debate.family).toBe("orchestrator_subagent");
@@ -321,7 +311,7 @@ describe("Ora shared contracts", () => {
       ["handoff", "handoff", "ora"],
     ]);
     expect(codeDevelopment.nodes.find((node) => node.id === "triage")?.instructions).toContain("long-task-protocol");
-    expect(codeDevelopment.nodes.find((node) => node.id === "handoff")?.prompt).toContain("DONE gates");
+    expect(codeDevelopment.nodes.find((node) => node.id === "handoff")?.prompt).toContain("DONE 关卡");
     expect(codeDevelopment.stages?.every((stage) => codeDevelopment.nodes.some((node) => node.id === stage.nodeId))).toBe(true);
     expect(codeDevelopment.stages?.every((stage) => !stage.speakerId || codeDevelopment.profiles.some((profile) => profile.id === stage.speakerId))).toBe(true);
     expect(codeDevelopment.transcriptLayout).toMatchObject({
@@ -336,6 +326,24 @@ describe("Ora shared contracts", () => {
       },
     });
     expect(codeDevelopment.runtimeAtoms.every((atomId) => MVP_MODE_RUNTIME_ATOMS.find((atom) => atom.id === atomId)?.scope === "mode")).toBe(true);
+
+    const deepResearch = MVP_MODES.find((mode) => mode.id === DEEP_RESEARCH_MODE_ID)!;
+    expect(deepResearch.systemPreset).toBe(true);
+    expect(deepResearch.visibility).toBe("user");
+    expect(deepResearch.family).toBe("orchestrator_subagent");
+    expect(deepResearch.completionPolicy.preset).toBe("persistent");
+    expect(deepResearch.nodes.map((node) => node.id)).toEqual(["scope", "gather", "analyze", "synthesize"]);
+    expect(deepResearch.profiles.map((profile) => profile.id)).toEqual(["ora", "researcher"]);
+    expect(deepResearch.stages?.map((stage) => stage.nodeId)).toEqual(["scope", "gather", "analyze", "synthesize"]);
+
+    const reviewCritique = MVP_MODES.find((mode) => mode.id === REVIEW_CRITIQUE_MODE_ID)!;
+    expect(reviewCritique.systemPreset).toBe(true);
+    expect(reviewCritique.visibility).toBe("user");
+    expect(reviewCritique.family).toBe("orchestrator_subagent");
+    expect(reviewCritique.completionPolicy.preset).toBe("persistent");
+    expect(reviewCritique.nodes.map((node) => node.id)).toEqual(["scope", "review", "critique", "handoff"]);
+    expect(reviewCritique.profiles.map((profile) => profile.id)).toEqual(["ora", "reviewer"]);
+    expect(reviewCritique.stages?.map((stage) => stage.nodeId)).toEqual(["scope", "review", "critique", "handoff"]);
 
     const builderMode = MVP_MODES.find((mode) => mode.id === MODE_STUDIO_BUILDER_MODE_ID)!;
     expect(builderMode.visibility).toBe("internal");
@@ -448,13 +456,9 @@ describe("Ora shared contracts", () => {
       "builder",
       "debate_agent",
       "debugger",
-      "generator",
       "ora",
-      "release_reviewer",
       "researcher",
-      "responder",
       "reviewer",
-      "verifier",
     ]);
 
     for (const [agentId, systemPrompt] of systemProfiles) {
@@ -521,13 +525,13 @@ describe("Ora shared contracts", () => {
 
   it("validates recovery policy tool and skip constraints", () => {
     const alternateToolValidation = validateModeSpec({
-      ...MVP_MODES[1]!,
+      ...MVP_MODES[0]!,
       capabilityFlags: {
-        ...MVP_MODES[1]!.capabilityFlags,
+        ...MVP_MODES[0]!.capabilityFlags,
         toolIds: [],
       },
       recoveryPolicy: {
-        ...MVP_MODES[1]!.recoveryPolicy,
+        ...MVP_MODES[0]!.recoveryPolicy,
         rules: [
           {
             id: "bad-alternate",
@@ -548,16 +552,16 @@ describe("Ora shared contracts", () => {
     expect(alternateToolValidation.errors.join(" ")).toContain("alternate tool 'file.read' is not enabled");
 
     const skipValidation = validateModeSpec({
-      ...MVP_MODES[1]!,
+      ...MVP_MODES[0]!,
       recoveryPolicy: {
-        ...MVP_MODES[1]!.recoveryPolicy,
+        ...MVP_MODES[0]!.recoveryPolicy,
         rules: [
           {
             id: "bad-skip",
             enabled: true,
             errorTypes: ["node_exception"],
             nodeIds: [],
-            nodeTemplates: ["decompose"],
+            nodeTemplates: ["synthesize"],
             toolIds: [],
             action: "skip_node",
             alternateToolIds: [],
@@ -568,7 +572,7 @@ describe("Ora shared contracts", () => {
     });
 
     expect(skipValidation.valid).toBe(false);
-    expect(skipValidation.errors.join(" ")).toContain("cannot skip required node template 'decompose'");
+    expect(skipValidation.errors.join(" ")).toContain("cannot skip required node template 'synthesize'");
   });
 
   it("keeps validation and layout semantics independent", () => {
@@ -677,7 +681,7 @@ describe("Ora shared contracts", () => {
       ...MVP_MODES[0]!,
       runtimeAtoms: [...MVP_MODES[0]!.runtimeAtoms, "shared_blackboard"],
       nodes: MVP_MODES[0]!.nodes.map((node) =>
-        node.id === "draft"
+        node.id === "respond"
           ? { ...node, config: { ...node.config, atoms: ["persistent_worker_memory"] } }
           : node,
       ),
@@ -690,10 +694,10 @@ describe("Ora shared contracts", () => {
 
   it("projects active runtime atoms into capability topology without duplicating family built-ins", () => {
     const projected = projectModeRuntimeTopology({
-      ...MVP_MODES[1]!,
-      runtimeAtoms: [...MVP_MODES[1]!.runtimeAtoms, "token_usage_trace"],
-      nodes: MVP_MODES[1]!.nodes.map((node) =>
-        node.id === "research"
+      ...MVP_MODES[0]!,
+      runtimeAtoms: [...MVP_MODES[0]!.runtimeAtoms, "token_usage_trace"],
+      nodes: MVP_MODES[0]!.nodes.map((node) =>
+        node.id === "respond"
           ? { ...node, config: { ...node.config, atoms: ["subagent_delegate"] } }
           : node,
       ),
@@ -701,23 +705,8 @@ describe("Ora shared contracts", () => {
 
     expect(projected.nodes.some((node) => node.id === "capability:memory_capture")).toBe(true);
     expect(projected.nodes.some((node) => node.id === "capability:token_usage_trace")).toBe(true);
-    expect(projected.nodes.some((node) => node.id === "capability:research:subagent_delegate")).toBe(true);
-    expect(projected.edges.some((edge) => edge.target === "capability:research:subagent_delegate")).toBe(true);
-
-    const deerflowHarnessProjected = projectModeRuntimeTopology(MVP_MODES.find((mode) => mode.id === DEERFLOW_HARNESS_MODE_ID)!);
-    expect(deerflowHarnessProjected.nodes.some((node) => node.id === "capability:research:subagent_delegate")).toBe(true);
-    expect(deerflowHarnessProjected.nodes.some((node) => node.id === "capability:review:subagent_delegate")).toBe(true);
-    expect(deerflowHarnessProjected.edges.some((edge) => edge.target === "capability:research:subagent_delegate")).toBe(true);
-    expect(deerflowHarnessProjected.edges.some((edge) => edge.target === "capability:review:subagent_delegate")).toBe(true);
-
-    const messageBusProjected = projectModeRuntimeTopology(MVP_MODES.find((mode) => mode.id === "message_bus")!);
-    expect(messageBusProjected.nodes.filter((node) => node.id === "triage_topic")).toHaveLength(1);
-    expect(messageBusProjected.nodes.find((node) => node.id === "triage_topic")?.metadata).toMatchObject({
-      atomId: "event_routing",
-      atomPresentation: "family_capability",
-      atomActive: true,
-    });
-    expect(messageBusProjected.nodes.some((node) => node.id === "capability:event_routing")).toBe(false);
+    expect(projected.nodes.some((node) => node.id === "capability:respond:subagent_delegate")).toBe(true);
+    expect(projected.edges.some((edge) => edge.target === "capability:respond:subagent_delegate")).toBe(true);
   });
 
   it("keeps modeSpecToPatternDefinition and projectModeRuntimeTopology node/edge sets consistent for all MVP modes", () => {
@@ -2635,7 +2624,7 @@ describe("RuntimeBootstrapSchema", () => {
 
     expect(parsed.health.mode).toBe("runtime");
     expect(parsed.patterns).toHaveLength(5);
-    expect(parsed.modes.filter((mode) => mode.visibility !== "internal")).toHaveLength(11);
+    expect(parsed.modes.filter((mode) => mode.visibility !== "internal")).toHaveLength(5);
     expect(parsed.atoms.length).toBeGreaterThan(0);
     expect(parsed.tools.tools.length).toBeGreaterThan(0);
     expect(parsed.skills.skills[0]?.id).toBe("runtime.default.review");

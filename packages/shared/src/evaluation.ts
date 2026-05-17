@@ -41,6 +41,11 @@ export const EvaluationMetricIdSchema = z.enum([
   "coordination_overhead",
   "recovery_overhead",
   "trace_coverage",
+  "intent_resolution",
+  "clarification_precision",
+  "effective_intervention",
+  "over_action",
+  "counterfactual_lift",
 ]);
 export type EvaluationMetricId = z.infer<typeof EvaluationMetricIdSchema>;
 
