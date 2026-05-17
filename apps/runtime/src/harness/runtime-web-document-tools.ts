@@ -60,6 +60,9 @@ async function fetchUrl(fetchImpl: typeof fetch, args: Record<string, unknown>, 
   const response = await fetchImpl(url, { signal });
   const contentType = response.headers.get("content-type") ?? undefined;
   if (isPdfContentType(contentType) || isPdfUrl(url)) {
+    if (!response.ok) {
+      throw new Error(`web.fetch returned HTTP ${response.status} for ${url}.`);
+    }
     return {
       url,
       status: response.status,
@@ -70,6 +73,9 @@ async function fetchUrl(fetchImpl: typeof fetch, args: Record<string, unknown>, 
     };
   }
   const text = truncateText(await response.text(), readPositiveInt(args.maxBytes, limits.webMaxBytes, limits.webMaxBytes));
+  if (!response.ok) {
+    throw new Error(`web.fetch returned HTTP ${response.status} for ${url}.`);
+  }
   return {
     url,
     status: response.status,

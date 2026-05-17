@@ -169,6 +169,33 @@ export function createAnthropicStyleProvider(
   const fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
   const env = options.env ?? process.env;
 
+  function buildAnthropicContentBlocks(message: ModelMessage): Array<Record<string, unknown>> {
+    const blocks: Array<Record<string, unknown>> = [];
+    if (message.content.trim()) {
+      blocks.push({ type: "text", text: message.content });
+    }
+    if (message.imageBlocks?.length) {
+      for (const img of message.imageBlocks) {
+        blocks.push({
+          type: "image",
+          source: {
+            type: "base64",
+            media_type: img.mediaType,
+            data: img.data,
+          },
+        });
+      }
+    }
+    return blocks;
+  }
+
+  function buildAnthropicContentValue(message: ModelMessage): string | Array<Record<string, unknown>> {
+    if (message.imageBlocks?.length) {
+      return buildAnthropicContentBlocks(message);
+    }
+    return message.content;
+  }
+
   const buildPayload = (request: Parameters<ModelProvider>[0]) => {
     const messages = normalizeMessages(request);
     const { instructions, dialog } = splitInstructionMessages(messages);
@@ -218,14 +245,15 @@ export function createAnthropicStyleProvider(
             };
           }
           if (markMessageCacheBoundary && cacheControl) {
+            const contentBlocks = buildAnthropicContentBlocks(message);
             return {
               role: message.role === "developer" ? "assistant" : message.role,
-              content: withAnthropicCacheControl([{ type: "text", text: message.content }], cacheControl),
+              content: withAnthropicCacheControl(contentBlocks, cacheControl),
             };
           }
           return {
             role: message.role === "developer" ? "assistant" : message.role,
-            content: message.content,
+            content: buildAnthropicContentValue(message),
           };
         }),
       },

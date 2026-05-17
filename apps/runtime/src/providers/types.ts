@@ -31,6 +31,7 @@ export interface ModelMessage {
   toolCalls?: readonly ModelToolCall[];
   toolCallId?: string;
   toolName?: string;
+  imageBlocks?: readonly ModelImageBlock[];
 }
 
 export interface ModelRequest {

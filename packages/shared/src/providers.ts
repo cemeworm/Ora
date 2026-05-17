@@ -50,7 +50,7 @@ export type ProviderConfig = z.infer<typeof ProviderConfigSchema>;
 
 export const ProviderRegistrySchema = z.object({
   providers: z.array(ProviderConfigSchema),
-  defaultProviderId: z.string().min(1),
+  defaultProviderId: z.string(),
 });
 export type ProviderRegistry = z.infer<typeof ProviderRegistrySchema>;
 
