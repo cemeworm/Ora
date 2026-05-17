@@ -35,6 +35,7 @@ type WidgetStoreFile = {
 };
 
 const MAX_EVENTS = 1000;
+const MAX_VERSIONS_PER_WIDGET = 50;
 const STALE_THRESHOLD_MS = 14 * 24 * 60 * 60 * 1000; // 14 days
 
 export interface WidgetStoreDeps {
@@ -44,6 +45,7 @@ export interface WidgetStoreDeps {
 
 export class WidgetStore {
   private readonly storePath: string;
+  private readonly eventsPath: string;
   private readonly clock: () => number;
   private widgets: Widget[] = [];
   private versions: WidgetVersion[] = [];
@@ -51,11 +53,12 @@ export class WidgetStore {
 
   constructor(private readonly deps: WidgetStoreDeps) {
     this.storePath = path.join(deps.rootDir, "widgets.json");
+    this.eventsPath = path.join(deps.rootDir, "widgets-events.jsonl");
     this.clock = deps.clock ?? Date.now;
     const data = this.load();
     this.widgets = data.widgets;
     this.versions = data.versions;
-    this.events = data.events;
+    this.events = this.loadEvents(data.events);
   }
 
   // === Persistence ===
@@ -78,7 +81,48 @@ export class WidgetStore {
     return { version: 2, widgets: [], versions: [], events: [] };
   }
 
+  private loadEvents(oldEvents: WidgetLifecycleEvent[]): WidgetLifecycleEvent[] {
+    try {
+      const raw = fs.readFileSync(this.eventsPath, "utf-8");
+      return raw
+        .trim()
+        .split("\n")
+        .filter((line) => line.trim())
+        .map((line) => JSON.parse(line) as WidgetLifecycleEvent)
+        .slice(-MAX_EVENTS);
+    } catch {
+      // Migrate events from legacy widgets.json
+      if (oldEvents.length > 0) {
+        const toKeep = oldEvents.slice(-MAX_EVENTS);
+        const dir = path.dirname(this.eventsPath);
+        if (!fs.existsSync(dir)) {
+          fs.mkdirSync(dir, { recursive: true });
+        }
+        fs.writeFileSync(
+          this.eventsPath,
+          toKeep.map((e) => JSON.stringify(e)).join("\n") + "\n",
+          "utf-8",
+        );
+        return toKeep;
+      }
+      return [];
+    }
+  }
+
   private save(): void {
+    // Cap versions per widget (keep most recent)
+    const versionCounts = new Map<string, number>();
+    const keptVersions: WidgetVersion[] = [];
+    for (let i = this.versions.length - 1; i >= 0; i--) {
+      const v = this.versions[i];
+      const count = versionCounts.get(v.widgetId) || 0;
+      if (count < MAX_VERSIONS_PER_WIDGET) {
+        keptVersions.unshift(v);
+        versionCounts.set(v.widgetId, count + 1);
+      }
+    }
+    this.versions = keptVersions;
+
     const dir = path.dirname(this.storePath);
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
@@ -87,16 +131,24 @@ export class WidgetStore {
       version: 2,
       widgets: this.widgets,
       versions: this.versions,
-      events: this.events.slice(-MAX_EVENTS),
+      events: [],
     };
-    fs.writeFileSync(this.storePath, JSON.stringify(file, null, 2), "utf-8");
+    const tmpPath = this.storePath + ".tmp";
+    fs.writeFileSync(tmpPath, JSON.stringify(file, null, 2), "utf-8");
+    fs.renameSync(tmpPath, this.storePath);
   }
 
   private recordEvent(widgetId: string, event: WidgetLifecycleEvent["event"], detail: string): void {
-    this.events.push({ widgetId, event, at: this.clock(), detail });
+    const entry: WidgetLifecycleEvent = { widgetId, event, at: this.clock(), detail };
+    this.events.push(entry);
     if (this.events.length > MAX_EVENTS * 2) {
       this.events = this.events.slice(-MAX_EVENTS);
     }
+    const dir = path.dirname(this.eventsPath);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    fs.appendFileSync(this.eventsPath, JSON.stringify(entry) + "\n", "utf-8");
   }
 
   // === Widget CRUD ===
