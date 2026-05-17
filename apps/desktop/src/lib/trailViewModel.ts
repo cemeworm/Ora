@@ -2127,3 +2127,53 @@ export function buildCommunicationGraph(snapshot: OraStateSnapshot): Communicati
   }
   return [...edgeMap.values()].sort((a, b) => b.count - a.count);
 }
+
+// ---- Causal Decision Summary ----
+
+export interface CausalDecisionSummaryItem {
+  intervention: string;
+  reason: string;
+  goalUncertainty: number;
+  factUncertainty: number;
+  contextUncertainty: number;
+  actionRisk: number;
+  userCost: number;
+  reversibility: string;
+  wouldChangeOutcomeIfWrong: boolean;
+  surfaceRequest: string;
+  selectedLatentGoal: string;
+  keyUncertainties: string[];
+}
+
+export interface CausalDecisionSummary {
+  decisions: CausalDecisionSummaryItem[];
+  totalDecisions: number;
+}
+
+export function buildCausalDecisionSummary(snapshot: OraStateSnapshot): CausalDecisionSummary {
+  const decisions: CausalDecisionSummaryItem[] = [];
+  for (const event of snapshot.events) {
+    if (event.type !== "causal.decision.recorded") continue;
+    const payload = event.payload as Record<string, unknown> | undefined;
+    if (!payload) continue;
+    const pd = (payload.policyDecision ?? {}) as Record<string, unknown>;
+    const ts = (payload.taskState ?? {}) as Record<string, unknown>;
+    decisions.push({
+      intervention: String(payload.chosenIntervention ?? "unknown"),
+      reason: String(pd.reason ?? ""),
+      goalUncertainty: Number(pd.goalUncertainty ?? 0),
+      factUncertainty: Number(pd.factUncertainty ?? 0),
+      contextUncertainty: Number(pd.contextUncertainty ?? 0),
+      actionRisk: Number(pd.actionRisk ?? 0),
+      userCost: Number(pd.userCost ?? 0),
+      reversibility: String(pd.reversibility ?? "medium"),
+      wouldChangeOutcomeIfWrong: Boolean(pd.wouldChangeOutcomeIfWrong ?? false),
+      surfaceRequest: String(ts.surfaceRequest ?? ""),
+      selectedLatentGoal: String(ts.selectedLatentGoal ?? ""),
+      keyUncertainties: Array.isArray(ts.keyUncertainties)
+        ? ts.keyUncertainties.filter((u): u is string => typeof u === "string")
+        : [],
+    });
+  }
+  return { decisions, totalDecisions: decisions.length };
+}

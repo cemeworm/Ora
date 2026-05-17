@@ -1768,6 +1768,14 @@ class LocalJsonRpcRuntime {
       }
       case "widgets.versions.restore":
         return this.restoreWidgetVersion(params);
+      case "widgets.togglePin":
+        return this.toggleWidgetPin(params);
+      case "widgets.listStale":
+        return [];
+      case "widgets.listEvents":
+        return [];
+      case "widgets.findDuplicate":
+        return this.findDuplicateWidget(params);
       case "evaluation.datasets.import":
         return this.importEvaluationDataset(params);
       case "evaluation.datasets.list":
@@ -2879,6 +2887,31 @@ class LocalJsonRpcRuntime {
       migrationNote: "",
     });
     return restored;
+  }
+
+  private toggleWidgetPin(params: unknown): OraWidget {
+    const id = isRecord(params) ? String(params.id ?? "") : "";
+    const existing = this.widgets.get(id);
+    if (!existing) throw new Error(`Widget not found: ${id}`);
+    const updated: OraWidget = {
+      ...existing,
+      layout: { ...existing.layout, pinned: !existing.layout.pinned },
+      updatedAt: Date.now(),
+    };
+    this.widgets.set(id, updated);
+    return updated;
+  }
+
+  private findDuplicateWidget(params: unknown): OraWidget | null {
+    const title = isRecord(params) ? String(params.title ?? "") : "";
+    const kind = isRecord(params) && typeof params.kind === "string" ? params.kind : undefined;
+    const normalizedTitle = title.trim().toLowerCase();
+    return [...this.widgets.values()].find(
+      (widget) =>
+        widget.status !== "archived" &&
+        widget.title.trim().toLowerCase() === normalizedTitle &&
+        (!kind || widget.kind === kind),
+    ) ?? null;
   }
 
   private runAutomationNow(params: unknown): OraAutomationRunRecord {

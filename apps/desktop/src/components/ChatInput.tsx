@@ -45,12 +45,6 @@ import { PlanDecisionPanel } from "./PlanDecisionPanel";
 import { PlanStepsTray } from "./PlanStepsTray";
 import type { OraStateSnapshot } from "../lib/runtimeClient";
 import type { DesktopRunInteractionState } from "../lib/runInteractionState";
-import {
-  debuggerModeLabel,
-  debuggerModeReason,
-  isShortlistedDebuggerMode,
-  modeShortlistCards,
-} from "../lib/debuggerSurface";
 
 type SkillDescriptor = OraSkillRegistry["skills"][number];
 
@@ -478,20 +472,10 @@ export function ChatInput({
     window.requestAnimationFrame(() => textareaRef.current?.focus());
   }
 
-  const primaryModeOptions = useMemo(
-    () => modeShortlistCards(modeOptions),
-    [modeOptions],
-  );
-  const advancedModeOptions = useMemo(
-    () => modeOptions.filter((mode) => !isShortlistedDebuggerMode(mode.id)),
-    [modeOptions],
-  );
   const modeTriggerLabel =
     selectedModeSelection === "auto"
-      ? "Auto"
-      : activeMode
-        ? debuggerModeLabel(activeMode)
-        : "Default";
+      ? "自动"
+      : activeMode?.label ?? "默认";
 
   const taskIntentOptions = [
     {
@@ -912,49 +896,17 @@ export function ChatInput({
                       )}
                     >
                       <div className="flex items-center justify-between gap-2 text-xs font-medium">
-                        <span>Auto</span>
+                        <span>自动</span>
                         <span className="rounded-full border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                          router
+                          路由
                         </span>
                       </div>
                       <div className="mt-1 line-clamp-1 text-[11px] text-muted-foreground">
-                        Let Ora choose the best mode from the current mode list
-                        for this turn.
+                        由 Ora 从当前模式列表中自动选择最适合本轮的
+                        模式。
                       </div>
                     </button>
-                    {primaryModeOptions.map((mode) => (
-                      <button
-                        key={mode.id}
-                        type="button"
-                        onClick={() => {
-                          onModeChange(mode.id);
-                          onModeSelectionChange("manual");
-                          setOpenPicker(undefined);
-                        }}
-                        className={cn(
-                          "w-full rounded-md px-3 py-2 text-left transition hover:bg-accent",
-                          selectedModeSelection === "manual" &&
-                            activeMode?.id === mode.id &&
-                            "bg-accent text-accent-foreground",
-                        )}
-                      >
-                        <div className="flex items-center justify-between gap-2 text-xs font-medium">
-                          <span>{debuggerModeLabel(mode)}</span>
-                          <span className="rounded-full border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                            debugger
-                          </span>
-                        </div>
-                        <div className="mt-1 line-clamp-1 text-[11px] text-muted-foreground">
-                          {debuggerModeReason(mode)}
-                        </div>
-                      </button>
-                    ))}
-                    {advancedModeOptions.length > 0 && (
-                      <div className="px-3 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-                        Advanced
-                      </div>
-                    )}
-                    {advancedModeOptions.map((mode) => (
+                    {modeOptions.map((mode) => (
                       <button
                         key={mode.id}
                         type="button"
@@ -972,9 +924,6 @@ export function ChatInput({
                       >
                         <div className="flex items-center justify-between gap-2 text-xs font-medium">
                           <span>{mode.label}</span>
-                          <span className="rounded-full border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                            {mode.isPreset ? "preset" : mode.family}
-                          </span>
                         </div>
                         <div className="mt-1 line-clamp-1 text-[11px] text-muted-foreground">
                           {mode.summary}

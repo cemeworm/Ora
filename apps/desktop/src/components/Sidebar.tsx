@@ -1,13 +1,20 @@
-import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  memo,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import {
   Archive,
   Bot,
-  ChartNoAxesColumn,
   ChevronDown,
   Clock,
   Folder,
   FolderOpen,
   GitBranchPlus,
+  Layers3,
   MessageSquare,
   MessageSquarePlus,
   Plus,
@@ -26,8 +33,14 @@ import {
   deriveRunInteractionState,
   type DesktopRunInteractionState,
 } from "../lib/runInteractionState";
-import { checkOraReleaseUpdate, type ReleaseUpdateStatus } from "../lib/releaseUpdate";
-import { buildSessionSearchResults, type SessionSearchResult } from "../lib/sessionSearch";
+import {
+  checkOraReleaseUpdate,
+  type ReleaseUpdateStatus,
+} from "../lib/releaseUpdate";
+import {
+  buildSidebarSearchResults,
+  type SidebarSearchResult,
+} from "../lib/sessionSearch";
 import { useRunActions } from "../lib/useRunActions";
 import { translateCopy } from "../lib/i18n";
 import { cn } from "../lib/utils";
@@ -39,13 +52,16 @@ const MAX_VISIBLE_PROJECT_SESSIONS = 4;
 const MAX_VISIBLE_PREFETCH_SESSIONS = 12;
 const MAX_SESSION_SEARCH_RESULTS = 9;
 const SESSION_COLUMN_INDENT = "pl-[1.375rem]";
-const SIDEBAR_ACTION_SLOT_CLASS = "flex h-7 w-7 shrink-0 items-center justify-center";
+const SIDEBAR_ACTION_SLOT_CLASS =
+  "flex h-7 w-7 shrink-0 items-center justify-center";
 const SIDEBAR_ACTION_BUTTON_CLASS = cn(
   SIDEBAR_ACTION_SLOT_CLASS,
   "rounded-md text-muted-foreground transition hover:bg-sidebar-accent/65 hover:text-sidebar-accent-foreground active:scale-95",
 );
 
-function statusFromGateProjection(gate?: GateProjection): RunStatus | undefined {
+function statusFromGateProjection(
+  gate?: GateProjection,
+): RunStatus | undefined {
   if (!gate) return undefined;
   switch (gate.kind) {
     case "approval":
@@ -127,7 +143,11 @@ export function sidebarStatusForSession(
   >,
 ): RunStatus {
   if (session.sessionId !== state.selectedSessionId) {
-    return statusFromSession(session.status, session.attention, session.interactionGate);
+    return statusFromSession(
+      session.status,
+      session.attention,
+      session.interactionGate,
+    );
   }
 
   return statusFromRunInteractionState(
@@ -150,7 +170,9 @@ function SidebarSectionHeader({
 }) {
   return (
     <div className="flex items-center justify-between pb-2 pl-2 pt-1">
-      <span className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground/80">{title}</span>
+      <span className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground/80">
+        {title}
+      </span>
       <div className={SIDEBAR_ACTION_SLOT_CLASS}>{action}</div>
     </div>
   );
@@ -165,8 +187,17 @@ function SidebarIconSlot({ children }: { children: ReactNode }) {
 }
 
 function ReleaseUpdatePill() {
-  const [status, setStatus] = useState<ReleaseUpdateStatus>({ available: false });
-  const [installState, setInstallState] = useState<"idle" | "checking" | "downloading" | "installing" | "relaunching" | "failed">("idle");
+  const [status, setStatus] = useState<ReleaseUpdateStatus>({
+    available: false,
+  });
+  const [installState, setInstallState] = useState<
+    | "idle"
+    | "checking"
+    | "downloading"
+    | "installing"
+    | "relaunching"
+    | "failed"
+  >("idle");
   const [installError, setInstallError] = useState<string | undefined>();
 
   useEffect(() => {
@@ -195,7 +226,11 @@ function ReleaseUpdatePill() {
       ]);
       const update = await check();
       if (!update) {
-        setStatus({ available: false, latestVersion: status.latestVersion, releaseUrl: status.releaseUrl });
+        setStatus({
+          available: false,
+          latestVersion: status.latestVersion,
+          releaseUrl: status.releaseUrl,
+        });
         setInstallState("idle");
         return;
       }
@@ -210,7 +245,9 @@ function ReleaseUpdatePill() {
       await relaunch();
     } catch (error) {
       setInstallState("failed");
-      setInstallError(error instanceof Error ? error.message : "Ora update failed.");
+      setInstallError(
+        error instanceof Error ? error.message : "Ora update failed.",
+      );
       await getSharedRuntimeClient().openExternalUrl(status.releaseUrl!);
     }
   };
@@ -235,7 +272,15 @@ function ReleaseUpdatePill() {
   );
 }
 
-function updatePillLabel(state: "idle" | "checking" | "downloading" | "installing" | "relaunching" | "failed") {
+function updatePillLabel(
+  state:
+    | "idle"
+    | "checking"
+    | "downloading"
+    | "installing"
+    | "relaunching"
+    | "failed",
+) {
   switch (state) {
     case "checking":
       return "检查中";
@@ -298,7 +343,9 @@ export function SessionStatusBadge({ status }: { status: RunStatus }) {
 
 function SessionLeadingIndicator({ status }: { status: RunStatus }) {
   if (status === "running") {
-    return <span className="h-3 w-3 shrink-0 rounded-full border border-bench-200 border-t-bench-700 animate-spin" />;
+    return (
+      <span className="h-3 w-3 shrink-0 rounded-full border border-bench-200 border-t-bench-700 animate-spin" />
+    );
   }
 
   if (status === "approval_required") {
@@ -384,7 +431,9 @@ const SessionRow = memo(function SessionRow({
           className="absolute right-0 top-[calc(100%+4px)] z-30 w-48 rounded-lg border border-border bg-popover p-2 text-popover-foreground shadow-lift"
           onClick={(event) => event.stopPropagation()}
         >
-          <div className="px-2 pb-2 pt-1 text-[12px] font-medium text-foreground">Archive this chat?</div>
+          <div className="px-2 pb-2 pt-1 text-[12px] font-medium text-foreground">
+            Archive this chat?
+          </div>
           <div className="flex justify-end gap-1">
             <button
               type="button"
@@ -414,14 +463,16 @@ function SessionSearchDialog({
   onQueryChange,
   onOpenChange,
   onSelect,
+  onSelectProject,
   onPrefetch,
 }: {
   open: boolean;
   query: string;
-  results: SessionSearchResult[];
+  results: SidebarSearchResult[];
   onQueryChange: (query: string) => void;
   onOpenChange: (open: boolean) => void;
   onSelect: (sessionId: string) => void;
+  onSelectProject: (projectId: string) => void;
   onPrefetch: (sessionId: string) => void;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
@@ -437,26 +488,40 @@ function SessionSearchDialog({
       <DialogContent className="flex h-[min(76vh,430px)] w-[min(520px,calc(100vw-2rem))] flex-col overflow-hidden rounded-[22px] border border-black/[0.04] bg-background p-0 shadow-lift">
         <div className="border-b border-border/55 px-4 py-3">
           <div className="relative">
-            <Search size={15} className="pointer-events-none absolute left-0 top-1/2 -translate-y-1/2 text-muted-foreground" />
+            <Search
+              size={15}
+              className="pointer-events-none absolute left-0 top-1/2 -translate-y-1/2 text-muted-foreground"
+            />
             <input
               ref={inputRef}
               value={query}
               onChange={(event) => onQueryChange(event.target.value)}
               onKeyDown={(event) => {
-                if ((event.metaKey || event.ctrlKey) && /^[1-9]$/.test(event.key)) {
-                  const shortcutSession = results[Number(event.key) - 1];
-                  if (shortcutSession) {
+                if (
+                  (event.metaKey || event.ctrlKey) &&
+                  /^[1-9]$/.test(event.key)
+                ) {
+                  const shortcutResult = results[Number(event.key) - 1];
+                  if (shortcutResult) {
                     event.preventDefault();
-                    onSelect(shortcutSession.id);
+                    if (shortcutResult.kind === "project") {
+                      onSelectProject(shortcutResult.id);
+                    } else {
+                      onSelect(shortcutResult.id);
+                    }
                   }
                   return;
                 }
                 if (event.key === "Enter" && results[0]) {
-                  onSelect(results[0].id);
+                  if (results[0].kind === "project") {
+                    onSelectProject(results[0].id);
+                  } else {
+                    onSelect(results[0].id);
+                  }
                 }
               }}
-              placeholder="搜索对话"
-              aria-label="搜索对话"
+              placeholder="搜索项目与会话"
+              aria-label="搜索项目与会话"
               className="h-8 w-full bg-transparent pl-6 pr-2 text-[15px] text-foreground outline-none placeholder:text-muted-foreground"
             />
           </div>
@@ -466,20 +531,47 @@ function SessionSearchDialog({
             {hasQuery ? "匹配结果" : "近期对话"}
           </div>
           <div className="flex flex-col gap-0.5">
-            {results.map((session, index) => (
+            {results.map((result, index) => (
               <button
-                key={session.id}
+                key={`${result.kind}:${result.id}`}
                 type="button"
-                onClick={() => onSelect(session.id)}
-                onMouseEnter={() => onPrefetch(session.id)}
-                onFocus={() => onPrefetch(session.id)}
+                onClick={() => {
+                  if (result.kind === "project") {
+                    onSelectProject(result.id);
+                  } else {
+                    onSelect(result.id);
+                  }
+                }}
+                onMouseEnter={() => {
+                  if (result.kind === "session") onPrefetch(result.id);
+                }}
+                onFocus={() => {
+                  if (result.kind === "session") onPrefetch(result.id);
+                }}
                 className="group flex min-h-[32px] w-full items-center gap-2 rounded-md px-2 text-left text-[13px] text-foreground transition hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:bg-sidebar-accent focus-visible:text-sidebar-accent-foreground focus-visible:outline-none active:scale-[0.99]"
               >
-                <MessageSquare size={14} className="shrink-0 text-muted-foreground group-hover:text-sidebar-accent-foreground/75" />
-                <span className="min-w-0 flex-1 truncate font-medium">{session.title}</span>
-                {session.projectLabel && (
+                {result.kind === "project" ? (
+                  <Folder
+                    size={14}
+                    className="shrink-0 text-muted-foreground group-hover:text-sidebar-accent-foreground/75"
+                  />
+                ) : (
+                  <MessageSquare
+                    size={14}
+                    className="shrink-0 text-muted-foreground group-hover:text-sidebar-accent-foreground/75"
+                  />
+                )}
+                <span className="min-w-0 flex-1 truncate font-medium">
+                  {result.title}
+                </span>
+                {result.kind === "project" && (
                   <span className="shrink-0 text-[12px] text-muted-foreground group-hover:text-sidebar-accent-foreground/70">
-                    {session.projectLabel}
+                    {result.sessionCount} 个会话
+                  </span>
+                )}
+                {result.kind === "session" && result.projectLabel && (
+                  <span className="shrink-0 text-[12px] text-muted-foreground group-hover:text-sidebar-accent-foreground/70">
+                    {result.projectLabel}
                   </span>
                 )}
                 <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground group-hover:bg-background/80">
@@ -489,7 +581,7 @@ function SessionSearchDialog({
             ))}
             {results.length === 0 && (
               <div className="px-2 py-8 text-center text-sm text-muted-foreground">
-                没有找到匹配的对话
+                没有找到匹配的项目或会话
               </div>
             )}
           </div>
@@ -522,11 +614,9 @@ function shouldPinVisibleSession(status: RunStatus): boolean {
   );
 }
 
-export function visibleSidebarSessions<T extends { id: string; status: RunStatus }>(
-  sessions: readonly T[],
-  limit: number,
-  selectedSessionId?: string,
-): T[] {
+export function visibleSidebarSessions<
+  T extends { id: string; status: RunStatus },
+>(sessions: readonly T[], limit: number, selectedSessionId?: string): T[] {
   if (sessions.length <= limit) {
     return [...sessions];
   }
@@ -542,53 +632,88 @@ export function visibleSidebarSessions<T extends { id: string; status: RunStatus
   return visible;
 }
 
-export const Sidebar = memo(function Sidebar({ sidebarState }: { sidebarState: SidebarState }) {
+export function isSpaceNavigationActive(
+  view: WorkbenchState["activeView"],
+): boolean {
+  return view === "space-dashboard" || view === "space-library";
+}
+
+export const Sidebar = memo(function Sidebar({
+  sidebarState,
+}: {
+  sidebarState: SidebarState;
+}) {
   const dispatch = useWorkbenchDispatch();
   const { actions } = useRunActions();
   const { open } = useSidebar();
-  const [expandedSessionLists, setExpandedSessionLists] = useState<Record<string, boolean>>({});
+  const [expandedSessionLists, setExpandedSessionLists] = useState<
+    Record<string, boolean>
+  >({});
   const [navigationExpanded, setNavigationExpanded] = useState(false);
-  const [confirmArchiveSessionId, setConfirmArchiveSessionId] = useState<string | undefined>();
+  const [confirmArchiveSessionId, setConfirmArchiveSessionId] = useState<
+    string | undefined
+  >();
   const [sessionSearchOpen, setSessionSearchOpen] = useState(false);
   const [sessionSearchQuery, setSessionSearchQuery] = useState("");
-  const projects = useMemo(() => sidebarState.projects.map((project) => ({
-    ...project,
-    expanded: sidebarState.expandedProjectIds[project.projectId] ?? true,
-    sessions: sidebarState.sessions
-      .filter((session) => session.projectId === project.projectId)
-      .sort((a, b) => b.updatedAt - a.updatedAt || a.sessionId.localeCompare(b.sessionId))
-      .map((session) => ({
-        id: session.sessionId,
-        title: session.title,
-        status: sidebarStatusForSession(session, sidebarState),
+  const projects = useMemo(
+    () =>
+      sidebarState.projects.map((project) => ({
+        ...project,
+        expanded: sidebarState.expandedProjectIds[project.projectId] ?? true,
+        sessions: sidebarState.sessions
+          .filter((session) => session.projectId === project.projectId)
+          .sort(
+            (a, b) =>
+              b.updatedAt - a.updatedAt ||
+              a.sessionId.localeCompare(b.sessionId),
+          )
+          .map((session) => ({
+            id: session.sessionId,
+            title: session.title,
+            status: sidebarStatusForSession(session, sidebarState),
+          })),
       })),
-  })), [
-    sidebarState.expandedProjectIds,
-    sidebarState.projects,
-    sidebarState.sessions,
-    sidebarState.selectedSessionId,
-    sidebarState.selectedTurnRunId,
-    sidebarState.activeSessionDetail,
-    sidebarState.runLifecycle,
-  ]);
-  const sessionSearchResults = useMemo(
-    () => buildSessionSearchResults(sidebarState.sessions, sidebarState.projects, sessionSearchQuery, MAX_SESSION_SEARCH_RESULTS),
-    [sessionSearchQuery, sidebarState.projects, sidebarState.sessions],
-  );
-  const recentChats = useMemo(() => sidebarState.sessions
-    .filter((session) => !session.projectId)
-    .sort((a, b) => b.updatedAt - a.updatedAt || a.sessionId.localeCompare(b.sessionId))
-    .map((session) => ({
-      id: session.sessionId,
-      title: session.title,
-      status: sidebarStatusForSession(session, sidebarState),
-    })), [
+    [
+      sidebarState.expandedProjectIds,
+      sidebarState.projects,
       sidebarState.sessions,
       sidebarState.selectedSessionId,
       sidebarState.selectedTurnRunId,
       sidebarState.activeSessionDetail,
       sidebarState.runLifecycle,
-    ]);
+    ],
+  );
+  const sessionSearchResults = useMemo(
+    () =>
+      buildSidebarSearchResults(
+        sidebarState.sessions,
+        sidebarState.projects,
+        sessionSearchQuery,
+        MAX_SESSION_SEARCH_RESULTS,
+      ),
+    [sessionSearchQuery, sidebarState.projects, sidebarState.sessions],
+  );
+  const recentChats = useMemo(
+    () =>
+      sidebarState.sessions
+        .filter((session) => !session.projectId)
+        .sort(
+          (a, b) =>
+            b.updatedAt - a.updatedAt || a.sessionId.localeCompare(b.sessionId),
+        )
+        .map((session) => ({
+          id: session.sessionId,
+          title: session.title,
+          status: sidebarStatusForSession(session, sidebarState),
+        })),
+    [
+      sidebarState.sessions,
+      sidebarState.selectedSessionId,
+      sidebarState.selectedTurnRunId,
+      sidebarState.activeSessionDetail,
+      sidebarState.runLifecycle,
+    ],
+  );
   const showSectionDivider = projects.length > 0;
   const chatSessionSelected = sidebarState.activeView === "chat";
   const visiblePrefetchSessionIds = useMemo(() => {
@@ -632,32 +757,26 @@ export const Sidebar = memo(function Sidebar({ sidebarState }: { sidebarState: S
     void actions.selectSession(sessionId);
   }
 
+  function selectSearchProject(projectId: string) {
+    setSessionSearchOpen(false);
+    setSessionSearchQuery("");
+    dispatch({ type: "SELECT_PROJECT", projectId });
+    dispatch({
+      type: "SET_PROJECT_SECTION_EXPANDED",
+      projectId,
+      expanded: true,
+    });
+  }
+
   const navigationItems = [
     {
-      key: "search",
-      label: "Search",
-      title: "Search",
-      icon: <Search size={14} />,
-      active: false,
-      onClick: openSessionSearch,
-    },
-    {
-      key: "space-dashboard",
-      label: "工作台",
-      title: "工作台",
-      icon: <Folder size={16} />,
-      active: sidebarState.activeView === "space-dashboard",
+      key: "space",
+      label: "空间",
+      title: "空间",
+      icon: <Layers3 size={16} />,
+      active: isSpaceNavigationActive(sidebarState.activeView),
       onClick: () => dispatch({ type: "SET_VIEW", view: "space-dashboard" }),
       gapClass: "mt-2",
-    },
-    {
-      key: "space-library",
-      label: "组件库",
-      title: "组件库",
-      icon: <FolderOpen size={16} />,
-      active: sidebarState.activeView === "space-library",
-      onClick: () => dispatch({ type: "SET_VIEW", view: "space-library" }),
-      gapClass: "mt-1",
     },
     {
       key: "agents",
@@ -687,28 +806,25 @@ export const Sidebar = memo(function Sidebar({ sidebarState }: { sidebarState: S
       gapClass: "mt-1",
     },
     {
-      key: "evaluation",
-      label: "Evaluation",
-      title: "Evaluation",
-      icon: <ChartNoAxesColumn size={16} />,
-      active: sidebarState.activeView === "evaluation",
-      onClick: () => dispatch({ type: "SET_VIEW", view: "evaluation" }),
-      gapClass: "mt-1",
-    },
-    {
       key: "automations",
-      label: "定时任务",
-      title: "定时任务",
+      label: "自动化",
+      title: "自动化",
       icon: <Clock size={16} />,
       active: sidebarState.activeView === "automations",
       onClick: () => dispatch({ type: "SET_VIEW", view: "automations" }),
       gapClass: "mt-1",
     },
   ];
-  const navigationToggleLabel = sidebarState.language === "zh"
-    ? navigationExpanded ? "折叠" : "展开"
-    : navigationExpanded ? "Less" : "More";
-  const collapsedNavigationMask = "linear-gradient(to bottom, #000 0%, #000 58%, rgba(0,0,0,0.72) 72%, rgba(0,0,0,0.28) 88%, transparent 100%)";
+  const navigationToggleLabel =
+    sidebarState.language === "zh"
+      ? navigationExpanded
+        ? "折叠"
+        : "展开"
+      : navigationExpanded
+        ? "Less"
+        : "More";
+  const collapsedNavigationMask =
+    "linear-gradient(to bottom, #000 0%, #000 58%, rgba(0,0,0,0.72) 72%, rgba(0,0,0,0.28) 88%, transparent 100%)";
 
   return (
     <aside
@@ -722,7 +838,9 @@ export const Sidebar = memo(function Sidebar({ sidebarState }: { sidebarState: S
         {open ? (
           <div className="flex items-center justify-between gap-2 pr-1">
             <div className="ml-1 flex min-w-0 items-center gap-2">
-              <div className="cursor-default font-serif text-[15px] text-primary">Ora</div>
+              <div className="cursor-default font-serif text-[15px] text-primary">
+                Ora
+              </div>
               <ReleaseUpdatePill />
             </div>
             <div className={SIDEBAR_ACTION_SLOT_CLASS}>
@@ -731,7 +849,9 @@ export const Sidebar = memo(function Sidebar({ sidebarState }: { sidebarState: S
           </div>
         ) : (
           <div className="group/workspace-header flex w-full items-center justify-center">
-            <div className="block pt-1 font-serif text-primary group-hover/workspace-header:hidden">O</div>
+            <div className="block pt-1 font-serif text-primary group-hover/workspace-header:hidden">
+              O
+            </div>
             <SidebarTrigger className="hidden group-hover/workspace-header:inline-flex" />
           </div>
         )}
@@ -745,9 +865,14 @@ export const Sidebar = memo(function Sidebar({ sidebarState }: { sidebarState: S
                 "overflow-hidden transition-[max-height] duration-200 ease-out",
                 navigationExpanded ? "max-h-80" : "max-h-[150px]",
               )}
-              style={navigationExpanded
-                ? undefined
-                : { maskImage: collapsedNavigationMask, WebkitMaskImage: collapsedNavigationMask }}
+              style={
+                navigationExpanded
+                  ? undefined
+                  : {
+                      maskImage: collapsedNavigationMask,
+                      WebkitMaskImage: collapsedNavigationMask,
+                    }
+              }
             >
               {navigationItems.map((item) => (
                 <button
@@ -756,14 +881,19 @@ export const Sidebar = memo(function Sidebar({ sidebarState }: { sidebarState: S
                   onClick={item.onClick}
                   className={cn(
                     "flex h-9 w-full appearance-none items-center gap-2 rounded-md border-0 bg-transparent px-2 text-sm text-muted-foreground shadow-none transition hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
-                    item.active && "bg-sidebar-accent text-sidebar-accent-foreground",
+                    item.active &&
+                      "bg-sidebar-accent text-sidebar-accent-foreground",
                     item.gapClass,
                     !open && "justify-center px-0",
                   )}
                   title={translateCopy(sidebarState.language, item.title)}
                 >
                   <SidebarIconSlot>{item.icon}</SidebarIconSlot>
-                  {open && <span>{translateCopy(sidebarState.language, item.label)}</span>}
+                  {open && (
+                    <span>
+                      {translateCopy(sidebarState.language, item.label)}
+                    </span>
+                  )}
                 </button>
               ))}
             </div>
@@ -775,12 +905,21 @@ export const Sidebar = memo(function Sidebar({ sidebarState }: { sidebarState: S
               "mt-1 flex h-7 w-full items-center justify-center gap-1 rounded-md text-[12px] font-medium text-muted-foreground transition hover:bg-sidebar-accent hover:text-sidebar-accent-foreground active:scale-95",
               !open && "px-0",
             )}
-            title={sidebarState.language === "zh" ? navigationToggleLabel : navigationExpanded ? "Collapse navigation" : "Expand navigation"}
+            title={
+              sidebarState.language === "zh"
+                ? navigationToggleLabel
+                : navigationExpanded
+                  ? "Collapse navigation"
+                  : "Expand navigation"
+            }
             aria-expanded={navigationExpanded}
           >
             <ChevronDown
               size={14}
-              className={cn("transition-transform duration-200", navigationExpanded && "rotate-180")}
+              className={cn(
+                "transition-transform duration-200",
+                navigationExpanded && "rotate-180",
+              )}
             />
             {open && <span>{navigationToggleLabel}</span>}
           </button>
@@ -789,10 +928,19 @@ export const Sidebar = memo(function Sidebar({ sidebarState }: { sidebarState: S
         {open && (
           <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-2 pb-2">
             <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+              <button
+                type="button"
+                onClick={openSessionSearch}
+                className="mb-2 flex h-8 w-full items-center gap-3 rounded-lg  bg-sidebar-accent/25 px-2.5 text-left text-[13px] text-muted-foreground transition hover:border-gray-300 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-foreground/15 active:scale-[0.99]"
+                title="搜索"
+              >
+                <Search size={13} className="shrink-0" />
+                <span className="min-w-0 flex-1 truncate">搜索对话</span>
+              </button>
               <section>
                 <SidebarSectionHeader
                   title="Projects"
-                  action={(
+                  action={
                     <button
                       type="button"
                       onClick={() => void actions.addProjectFromDialog()}
@@ -801,11 +949,12 @@ export const Sidebar = memo(function Sidebar({ sidebarState }: { sidebarState: S
                     >
                       <Plus size={14} />
                     </button>
-                  )}
+                  }
                 />
                 <div className="flex flex-col gap-0.5">
                   {projects.map((project) => {
-                    const showAllSessions = expandedSessionLists[project.projectId] ?? false;
+                    const showAllSessions =
+                      expandedSessionLists[project.projectId] ?? false;
                     const visibleSessions = showAllSessions
                       ? project.sessions
                       : visibleSidebarSessions(
@@ -813,31 +962,59 @@ export const Sidebar = memo(function Sidebar({ sidebarState }: { sidebarState: S
                           MAX_VISIBLE_PROJECT_SESSIONS,
                           sidebarState.selectedSessionId,
                         );
-                    const hiddenSessionCount = Math.max(0, project.sessions.length - visibleSessions.length);
+                    const hiddenSessionCount = Math.max(
+                      0,
+                      project.sessions.length - visibleSessions.length,
+                    );
                     return (
-                      <div key={project.projectId} className="group/project rounded-lg">
+                      <div
+                        key={project.projectId}
+                        className="group/project rounded-lg"
+                      >
                         <div className="flex items-center">
                           <button
                             type="button"
                             onClick={() => {
-                              dispatch({ type: "SELECT_PROJECT", projectId: project.projectId });
-                              dispatch({ type: "TOGGLE_PROJECT_SECTION", projectId: project.projectId });
+                              dispatch({
+                                type: "SELECT_PROJECT",
+                                projectId: project.projectId,
+                              });
+                              dispatch({
+                                type: "TOGGLE_PROJECT_SECTION",
+                                projectId: project.projectId,
+                              });
                             }}
                             className="group/project-button flex min-w-0 flex-1 items-center gap-2 rounded-lg px-2.5 py-2 text-left text-[13px] text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
-                            title={project.sourceKind === "ora_project" ? (project.description ?? project.label) : (project.rootPath ?? project.label)}
+                            title={
+                              project.sourceKind === "ora_project"
+                                ? (project.description ?? project.label)
+                                : (project.rootPath ?? project.label)
+                            }
                           >
                             <span className="text-muted-foreground/85 group-hover/project-button:text-sidebar-accent-foreground/80">
                               {project.sourceKind === "ora_project" ? (
-                                project.expanded ? <FolderOpen size={14} /> : <Folder size={14} />
+                                project.expanded ? (
+                                  <FolderOpen size={14} />
+                                ) : (
+                                  <Folder size={14} />
+                                )
+                              ) : project.expanded ? (
+                                <FolderOpen size={14} />
                               ) : (
-                                project.expanded ? <FolderOpen size={14} /> : <Folder size={14} />
+                                <Folder size={14} />
                               )}
                             </span>
-                            <div className="min-w-0 flex-1 truncate font-medium">{project.label}</div>
+                            <div className="min-w-0 flex-1 truncate font-medium">
+                              {project.label}
+                            </div>
                           </button>
                           <button
                             type="button"
-                            onClick={() => void actions.createProjectSession(project.projectId)}
+                            onClick={() =>
+                              void actions.createProjectSession(
+                                project.projectId,
+                              )
+                            }
                             className={cn(
                               SIDEBAR_ACTION_BUTTON_CLASS,
                               "opacity-0 group-hover/project:opacity-100 focus-visible:opacity-100",
@@ -850,22 +1027,37 @@ export const Sidebar = memo(function Sidebar({ sidebarState }: { sidebarState: S
                         {project.expanded && (
                           <div className={cn(SESSION_COLUMN_INDENT, "pt-0")}>
                             {project.sessions.length === 0 ? (
-                              <div className="px-2.5 py-1.5 text-[12px] text-muted-foreground/75">No chats yet</div>
+                              <div className="px-2.5 py-1.5 text-[12px] text-muted-foreground/75">
+                                No chats yet
+                              </div>
                             ) : (
                               <div className="flex flex-col gap-0">
                                 {visibleSessions.map((session) => {
-                                  const selected = chatSessionSelected && session.id === sidebarState.selectedSessionId;
+                                  const selected =
+                                    chatSessionSelected &&
+                                    session.id ===
+                                      sidebarState.selectedSessionId;
                                   return (
                                     <SessionRow
                                       key={session.id}
                                       title={session.title}
                                       status={session.status}
                                       selected={selected}
-                                      confirmOpen={confirmArchiveSessionId === session.id}
-                                      onClick={() => void actions.selectSession(session.id)}
-                                      onPrefetch={() => void actions.prefetchSession(session.id)}
-                                      onArchiveRequest={() => setConfirmArchiveSessionId(session.id)}
-                                      onArchiveCancel={() => setConfirmArchiveSessionId(undefined)}
+                                      confirmOpen={
+                                        confirmArchiveSessionId === session.id
+                                      }
+                                      onClick={() =>
+                                        void actions.selectSession(session.id)
+                                      }
+                                      onPrefetch={() =>
+                                        void actions.prefetchSession(session.id)
+                                      }
+                                      onArchiveRequest={() =>
+                                        setConfirmArchiveSessionId(session.id)
+                                      }
+                                      onArchiveCancel={() =>
+                                        setConfirmArchiveSessionId(undefined)
+                                      }
                                       onArchiveConfirm={() => {
                                         setConfirmArchiveSessionId(undefined);
                                         void actions.archiveSession(session.id);
@@ -887,20 +1079,22 @@ export const Sidebar = memo(function Sidebar({ sidebarState }: { sidebarState: S
                                     Show {hiddenSessionCount} more
                                   </button>
                                 )}
-                                {showAllSessions && project.sessions.length > MAX_VISIBLE_PROJECT_SESSIONS && (
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      setExpandedSessionLists((current) => ({
-                                        ...current,
-                                        [project.projectId]: false,
-                                      }));
-                                    }}
-                                    className="flex min-h-[32px] items-center px-2.5 text-left text-[12px] text-muted-foreground transition hover:text-foreground"
-                                  >
-                                    Show less
-                                  </button>
-                                )}
+                                {showAllSessions &&
+                                  project.sessions.length >
+                                    MAX_VISIBLE_PROJECT_SESSIONS && (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setExpandedSessionLists((current) => ({
+                                          ...current,
+                                          [project.projectId]: false,
+                                        }));
+                                      }}
+                                      className="flex min-h-[32px] items-center px-2.5 text-left text-[12px] text-muted-foreground transition hover:text-foreground"
+                                    >
+                                      Show less
+                                    </button>
+                                  )}
                               </div>
                             )}
                           </div>
@@ -911,10 +1105,16 @@ export const Sidebar = memo(function Sidebar({ sidebarState }: { sidebarState: S
                 </div>
               </section>
 
-              <section className={cn("mt-4", showSectionDivider && "border-t border-sidebar-border/70 pt-4")}>
+              <section
+                className={cn(
+                  "mt-4",
+                  showSectionDivider &&
+                    "border-t border-sidebar-border/70 pt-4",
+                )}
+              >
                 <SidebarSectionHeader
                   title="Chats"
-                  action={(
+                  action={
                     <button
                       type="button"
                       onClick={() => {
@@ -926,14 +1126,20 @@ export const Sidebar = memo(function Sidebar({ sidebarState }: { sidebarState: S
                     >
                       <Plus size={14} />
                     </button>
-                  )}
+                  }
                 />
-                <div className={cn("flex flex-col gap-0", SESSION_COLUMN_INDENT)}>
+                <div
+                  className={cn("flex flex-col gap-0", SESSION_COLUMN_INDENT)}
+                >
                   {recentChats.length === 0 ? (
-                    <div className="px-2.5 py-1.5 text-[12px] text-muted-foreground/75">No chats yet</div>
+                    <div className="px-2.5 py-1.5 text-[12px] text-muted-foreground/75">
+                      No chats yet
+                    </div>
                   ) : (
                     recentChats.map((session) => {
-                      const selected = chatSessionSelected && session.id === sidebarState.selectedSessionId;
+                      const selected =
+                        chatSessionSelected &&
+                        session.id === sidebarState.selectedSessionId;
                       return (
                         <SessionRow
                           key={session.id}
@@ -942,9 +1148,15 @@ export const Sidebar = memo(function Sidebar({ sidebarState }: { sidebarState: S
                           selected={selected}
                           confirmOpen={confirmArchiveSessionId === session.id}
                           onClick={() => void actions.selectSession(session.id)}
-                          onPrefetch={() => void actions.prefetchSession(session.id)}
-                          onArchiveRequest={() => setConfirmArchiveSessionId(session.id)}
-                          onArchiveCancel={() => setConfirmArchiveSessionId(undefined)}
+                          onPrefetch={() =>
+                            void actions.prefetchSession(session.id)
+                          }
+                          onArchiveRequest={() =>
+                            setConfirmArchiveSessionId(session.id)
+                          }
+                          onArchiveCancel={() =>
+                            setConfirmArchiveSessionId(undefined)
+                          }
                           onArchiveConfirm={() => {
                             setConfirmArchiveSessionId(undefined);
                             void actions.archiveSession(session.id);
@@ -967,7 +1179,8 @@ export const Sidebar = memo(function Sidebar({ sidebarState }: { sidebarState: S
             className={cn(
               "flex h-9 items-center gap-2 rounded-md px-2 text-sm text-muted-foreground transition hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
               !open && "justify-center px-0",
-              sidebarState.settingsOpen && "bg-sidebar-accent text-sidebar-accent-foreground",
+              sidebarState.settingsOpen &&
+                "bg-sidebar-accent text-sidebar-accent-foreground",
             )}
             title="Settings"
           >
@@ -985,6 +1198,7 @@ export const Sidebar = memo(function Sidebar({ sidebarState }: { sidebarState: S
         onQueryChange={setSessionSearchQuery}
         onOpenChange={setSessionSearchOpen}
         onSelect={selectSearchSession}
+        onSelectProject={selectSearchProject}
         onPrefetch={(sessionId) => void actions.prefetchSession(sessionId)}
       />
     </aside>

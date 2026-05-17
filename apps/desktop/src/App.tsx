@@ -19,6 +19,7 @@ import { ChatView } from "./components/ChatView";
 import { DocumentsDrawer } from "./components/DocumentsDrawer";
 import { OnboardingView } from "./components/onboarding/OnboardingView";
 import { SettingsView } from "./components/SettingsView";
+import { SpaceFrame } from "./components/SpaceFrame";
 import { TrailsDrawer } from "./components/TrailsDrawer";
 import { useRunActions } from "./lib/useRunActions";
 import {
@@ -140,7 +141,7 @@ function windowTitleForView(
     case "agents":
       return `${base} · ${translateCopy(language, "Agents")}`;
     case "automations":
-      return `${base} · ${translateCopy(language, "定时任务")}`;
+      return `${base} · ${translateCopy(language, "Automations")}`;
     case "skills":
       return `${base} · ${translateCopy(language, "Skills")}`;
     case "modes":
@@ -1009,9 +1010,14 @@ function WorkbenchInner() {
       <AppShell>
         {settingsDialog}
         <WorkspacePane className="w-full">
-          <Suspense fallback={<LoadingPane />}>
-            <SpaceDashboardView />
-          </Suspense>
+          <SpaceFrame
+            activeView="space-dashboard"
+            onSelectView={(view) => dispatch({ type: "SET_VIEW", view })}
+          >
+            <Suspense fallback={<LoadingPane />}>
+              <SpaceDashboardView />
+            </Suspense>
+          </SpaceFrame>
         </WorkspacePane>
       </AppShell>
     );
@@ -1022,9 +1028,14 @@ function WorkbenchInner() {
       <AppShell>
         {settingsDialog}
         <WorkspacePane className="w-full">
-          <Suspense fallback={<LoadingPane />}>
-            <SpaceLibraryView />
-          </Suspense>
+          <SpaceFrame
+            activeView="space-library"
+            onSelectView={(view) => dispatch({ type: "SET_VIEW", view })}
+          >
+            <Suspense fallback={<LoadingPane />}>
+              <SpaceLibraryView />
+            </Suspense>
+          </SpaceFrame>
         </WorkspacePane>
       </AppShell>
     );

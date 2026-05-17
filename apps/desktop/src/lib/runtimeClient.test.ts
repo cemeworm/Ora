@@ -98,6 +98,29 @@ describe("desktop runtime client agent catalog", () => {
     expect(updated.state.runHistory[0]?.runId).toBe(run.runId);
   });
 
+  it("mirrors widget duplicate lookup and pinning in browser fallback", async () => {
+    const client = createRuntimeClient();
+
+    const created = await client.createWidget({
+      title: "任务清单",
+      kind: "todo",
+      layout: { x: 0, y: 0, w: 1, h: 1, pinned: false },
+    });
+
+    await expect(client.findDuplicateWidget("任务清单", "todo")).resolves.toMatchObject({
+      id: created.id,
+      kind: "todo",
+      status: "active",
+    });
+
+    const pinned = await client.toggleWidgetPin(created.id);
+    expect(pinned.layout.pinned).toBe(true);
+    expect((await client.listWidgets()).find((widget) => widget.id === created.id)?.layout.pinned).toBe(true);
+
+    await client.archiveWidget(created.id);
+    await expect(client.findDuplicateWidget("任务清单", "todo")).resolves.toBeNull();
+  });
+
   it("lists provider models in browser fallback", async () => {
     const client = createRuntimeClient();
 

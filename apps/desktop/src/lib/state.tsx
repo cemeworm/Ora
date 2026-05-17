@@ -2,7 +2,7 @@ import {
   BuiltInCoordinationPatternSchema,
   CoordinationPatternSchema,
   ModeTranscriptLayoutSchema,
-  SINGLE_AGENT_MODE_ID,
+  DEBATE_MODE_ID,
   deriveSessionBranchGroupStatus,
   deriveSnapshotGateProjection,
   PlanListStepSchema,
@@ -328,6 +328,7 @@ export type WorkbenchAction =
   | { type: "SET_MODES"; modes: OraModeSpec[] }
   | { type: "SELECT_PROJECT"; projectId: string | undefined }
   | { type: "TOGGLE_PROJECT_SECTION"; projectId: string }
+  | { type: "SET_PROJECT_SECTION_EXPANDED"; projectId: string; expanded: boolean }
   | { type: "SET_PROVIDER"; providerId: string }
   | { type: "SET_SELECTED_CUSTOM_AGENT"; agentId: string | undefined }
   | { type: "SET_PROVIDER_REGISTRY"; providerRegistry: OraProviderRegistry }
@@ -940,7 +941,7 @@ function resolveSelectedMode(
       return selectedMode;
     }
   }
-  return modes.find((mode) => mode.id === SINGLE_AGENT_MODE_ID) ?? modes[0];
+  return modes.find((mode) => mode.id === DEBATE_MODE_ID) ?? modes[0];
 }
 
 function mergeByKey<T>(
@@ -2790,6 +2791,15 @@ export function workbenchReducer(
           [action.projectId]: !(
             state.expandedProjectIds[action.projectId] ?? true
           ),
+        },
+      };
+
+    case "SET_PROJECT_SECTION_EXPANDED":
+      return {
+        ...state,
+        expandedProjectIds: {
+          ...state.expandedProjectIds,
+          [action.projectId]: action.expanded,
         },
       };
 

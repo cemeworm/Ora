@@ -645,48 +645,64 @@ export function ModesView({ runtimeClient }: { runtimeClient: RuntimeClient }) {
       <div className="flex min-h-0 min-w-0 flex-1 bg-transparent">
         <aside className="flex w-[21rem] shrink-0 flex-col border-r border-border bg-sidebar/92">
           <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
-          <div className="space-y-2">
-            {modes.map((mode) => (
-              <div
-                key={mode.id}
-                className={cn(
-                  "w-full rounded-xl border px-3 py-3 text-left transition",
-                  state.selectedModeId === mode.id
-                    ? "border-bench-400 bg-white shadow-pane"
-                    : "border-transparent bg-white/70 hover:border-bench-200 hover:bg-white",
-                )}
-              >
-                <div className="flex items-start justify-between gap-2">
-                  <button
-                    onClick={() => dispatch({ type: "SET_MODE", modeId: mode.id })}
-                    className="min-w-0 flex-1 text-left"
-                  >
-                    <div className="font-semibold">{displayText(state.language, mode.label)}</div>
-                    <p className="mt-1 text-xs leading-5 text-bench-700">{displayText(state.language, mode.summary)}</p>
-                  </button>
-                  <div className="flex shrink-0 items-center gap-1">
-                    <span className="rounded-full border border-bench-200 px-2 py-0.5 text-[10px] uppercase tracking-[0.08em] text-bench-700">
-                      {mode.systemPreset
-                        ? translateCopy(state.language, "preset")
-                        : state.language === "zh"
-                          ? formatEnumLabel(state.language, mode.family)
-                          : mode.family}
-                    </span>
-                    {!mode.systemPreset && (
-                      <button
-                        type="button"
-                        onClick={() => void deleteMode(mode.id)}
-                        className="inline-flex h-7 w-7 items-center justify-center rounded-md text-rose-600 opacity-70 transition hover:bg-rose-50 hover:opacity-100"
-                        aria-label={`Delete ${displayText(state.language, mode.label)}`}
-                        title="Delete mode"
+          <div className="space-y-4">
+            {(["task", "specialized", "topology"] as const).map((kind) => {
+              const groupModes = modes.filter((m) => (m.modeKind ?? "task") === kind);
+              if (groupModes.length === 0) return null;
+              const kindLabel = kind === "task"
+                ? "Task Modes" : kind === "topology"
+                ? "Topology Templates" : "Specialized";
+              return (
+                <div key={kind} className="space-y-1.5">
+                  <div className="px-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-bench-500">
+                    {kindLabel}
+                  </div>
+                  <div className="space-y-2">
+                    {groupModes.map((mode) => (
+                      <div
+                        key={mode.id}
+                        className={cn(
+                          "w-full rounded-xl border px-3 py-3 text-left transition",
+                          state.selectedModeId === mode.id
+                            ? "border-bench-400 bg-white shadow-pane"
+                            : "border-transparent bg-white/70 hover:border-bench-200 hover:bg-white",
+                        )}
                       >
-                        <Trash2 size={14} />
-                      </button>
-                    )}
+                        <div className="flex items-start justify-between gap-2">
+                          <button
+                            onClick={() => dispatch({ type: "SET_MODE", modeId: mode.id })}
+                            className="min-w-0 flex-1 text-left"
+                          >
+                            <div className="font-semibold">{displayText(state.language, mode.label)}</div>
+                            <p className="mt-1 text-xs leading-5 text-bench-700">{displayText(state.language, mode.summary)}</p>
+                          </button>
+                          <div className="flex shrink-0 items-center gap-1">
+                            <span className="rounded-full border border-bench-200 px-2 py-0.5 text-[10px] uppercase tracking-[0.08em] text-bench-700">
+                              {mode.systemPreset
+                                ? translateCopy(state.language, "preset")
+                                : state.language === "zh"
+                                  ? formatEnumLabel(state.language, mode.family)
+                                  : mode.family}
+                            </span>
+                            {!mode.systemPreset && (
+                              <button
+                                type="button"
+                                onClick={() => void deleteMode(mode.id)}
+                                className="inline-flex h-7 w-7 items-center justify-center rounded-md text-rose-600 opacity-70 transition hover:bg-rose-50 hover:opacity-100"
+                                aria-label={`Delete ${displayText(state.language, mode.label)}`}
+                                title="Delete mode"
+                              >
+                                <Trash2 size={14} />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       </aside>
@@ -3404,7 +3420,7 @@ function canvasSelectionExists(
 }
 
 function toCreateParams(spec: OraModeSpec): OraModeCreateParams {
-  const { id, family, label, summary, description, recommendedUse, failureMode, visibility, nodes, edges, stopPolicy, capabilityFlags, editorConstraints, defaultBudget, profiles, runtimeAtoms, stages, transcriptLayout, completionPolicy, runtimePolicy, recoveryPolicy, memoryPolicy, toolLimits } = spec;
+  const { id, family, label, summary, description, recommendedUse, failureMode, visibility, modeKind, nodes, edges, stopPolicy, capabilityFlags, editorConstraints, defaultBudget, profiles, runtimeAtoms, stages, transcriptLayout, completionPolicy, runtimePolicy, recoveryPolicy, memoryPolicy, toolLimits } = spec;
   return {
     id,
     family,
@@ -3414,6 +3430,7 @@ function toCreateParams(spec: OraModeSpec): OraModeCreateParams {
     recommendedUse,
     failureMode,
     visibility,
+    modeKind,
     nodes,
     edges,
     stopPolicy,

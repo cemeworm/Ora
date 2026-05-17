@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   CODE_DEVELOPMENT_MODE_ID,
-  DEERFLOW_HARNESS_MODE_ID,
+  DEBATE_MODE_ID,
   SINGLE_AGENT_MODE_ID,
 } from "@cemeworm/shared";
 import {
@@ -14,24 +14,6 @@ import type { ModeCard } from "../types";
 
 const modes: ModeCard[] = [
   {
-    id: "message_bus",
-    family: "message_bus",
-    label: "Message Bus",
-    summary: "Routed events.",
-    recommendedUse: "Routing.",
-    failureMode: "Overhead.",
-    isPreset: true,
-  },
-  {
-    id: CODE_DEVELOPMENT_MODE_ID,
-    family: "agent_teams",
-    label: "Code Development",
-    summary: "Plan, build, review.",
-    recommendedUse: "Code.",
-    failureMode: "Coordination overhead.",
-    isPreset: true,
-  },
-  {
     id: SINGLE_AGENT_MODE_ID,
     family: "orchestrator_subagent",
     label: "Single Agent",
@@ -41,22 +23,31 @@ const modes: ModeCard[] = [
     isPreset: true,
   },
   {
-    id: DEERFLOW_HARNESS_MODE_ID,
+    id: CODE_DEVELOPMENT_MODE_ID,
     family: "orchestrator_subagent",
-    label: "DeerFlow-like Harness",
-    summary: "Delegated long task.",
-    recommendedUse: "Long work.",
-    failureMode: "Delegation overhead.",
+    label: "Code Development",
+    summary: "Plan, build, review.",
+    recommendedUse: "Code.",
+    failureMode: "Coordination overhead.",
+    isPreset: true,
+  },
+  {
+    id: DEBATE_MODE_ID,
+    family: "orchestrator_subagent",
+    label: "Debate",
+    summary: "Multi-agent debate.",
+    recommendedUse: "Complex tasks.",
+    failureMode: "Adversarial overhead.",
     isPreset: true,
   },
 ];
 
 describe("debugger surface", () => {
-  it("keeps the default 0.3 mode surface to three debugger presets", () => {
+  it("keeps the default mode surface to three debugger presets", () => {
     expect(modeShortlistCards(modes).map((mode) => mode.id)).toEqual([
       SINGLE_AGENT_MODE_ID,
       CODE_DEVELOPMENT_MODE_ID,
-      DEERFLOW_HARNESS_MODE_ID,
+      DEBATE_MODE_ID,
     ]);
   });
 
@@ -64,7 +55,7 @@ describe("debugger surface", () => {
     expect(modeShortlistCards(modes).map(debuggerModeLabel)).toEqual([
       "Fast Solo",
       "Plan -> Build -> Review",
-      "Recoverable Long Task",
+      "Multi-Agent Debate",
     ]);
   });
 

@@ -1,22 +1,65 @@
-import { useState, useEffect, useCallback } from "react";
-import { getSharedRuntimeClient, type OraWidget } from "../lib/runtimeClient";
+import { useState, useEffect, useCallback, useMemo, type CSSProperties } from "react";
+import { getSharedRuntimeClient, type OraWidget, type OraModeSpec } from "../lib/runtimeClient";
 import { WidgetCard } from "./WidgetCard";
-import { SpaceComposer } from "./SpaceComposer";
+import { ChatInput } from "./ChatInput";
+import { getActiveChatProvider } from "./ChatView";
+import { runnableProviderOptions } from "../lib/providerOptions";
+import { useWorkbench } from "../lib/state";
+import { deriveRunInteractionState } from "../lib/runInteractionState";
+import type { ModeCard } from "../types";
+import type { DesktopRunInteractionState } from "../lib/runInteractionState";
+import { ensureTasklistPreset } from "../lib/widgetPresets";
 import { TodoWidgetDetail } from "./TodoWidgetDetail";
 import { FeedWidgetDetail } from "./FeedWidgetDetail";
 import { ArtifactWidgetDetail } from "./ArtifactWidgetDetail";
+
+const CANVAS_COLUMNS = 6;
+const MAX_WIDGET_ROW_SPAN = 3;
+
+interface CanvasWidgetPlacement {
+  widget: OraWidget;
+  colStart: number;
+  rowStart: number;
+  colSpan: number;
+  rowSpan: number;
+  cardSize: "compact" | "expanded";
+}
+
+function toModeCard(mode: OraModeSpec): ModeCard {
+  return {
+    id: mode.id,
+    family: mode.family,
+    label: mode.label,
+    summary: mode.summary,
+    recommendedUse:
+      mode.recommendedUse ??
+      `Use when ${mode.family.replace(/_/g, " ")} fits the task.`,
+    failureMode:
+      mode.failureMode ??
+      "Misconfigured stages can reduce observability or waste budget.",
+    isPreset: (mode as any).systemPreset ?? false,
+  };
+}
 
 export function SpaceDashboardView() {
   const [widgets, setWidgets] = useState<OraWidget[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedWidgetId, setSelectedWidgetId] = useState<string | undefined>();
   const [detailWidgetId, setDetailWidgetId] = useState<string | undefined>();
+  const [composerPrompt, setComposerPrompt] = useState("");
+  const [composerOverlayHeight, setComposerOverlayHeight] = useState(0);
   const client = getSharedRuntimeClient();
+  const { state: workbench, dispatch } = useWorkbench();
 
   const refresh = useCallback(async () => {
     try {
-      const list = await client.listWidgets();
+      let list = await client.listWidgets();
+      const createdPreset = await ensureTasklistPreset(client, list);
+      if (createdPreset) {
+        list = await client.listWidgets();
+      }
       setWidgets(list);
+      return list;
     } catch (err) {
       console.error("Failed to load widgets", err);
     } finally {
@@ -28,7 +71,118 @@ export function SpaceDashboardView() {
     void refresh();
   }, [refresh]);
 
-  const detailWidget = detailWidgetId ? widgets.find((w) => w.id === detailWidgetId) : undefined;
+  const modeCards = useMemo<ModeCard[]>(
+    () => workbench.modes.map(toModeCard),
+    [workbench.modes],
+  );
+  const activeMode =
+    modeCards.find((m) => m.id === workbench.selectedModeId) ?? modeCards[0];
+
+  const allProviders = workbench.providerRegistry?.providers ?? [];
+  const providerOptions = useMemo(
+    () => runnableProviderOptions(allProviders, workbench.providerSecretStatuses),
+    [allProviders, workbench.providerSecretStatuses],
+  );
+  const activeProvider = getActiveChatProvider(
+    providerOptions,
+    workbench.selectedProviderId,
+  );
+
+  const runInteractionState: DesktopRunInteractionState = useMemo(() => {
+    const sessionSummary = workbench.sessions.find(
+      (s) => s.sessionId === workbench.selectedSessionId,
+    );
+    return deriveRunInteractionState({
+      selectedSessionId: workbench.selectedSessionId,
+      sessionSummary,
+      activeSessionDetail: workbench.activeSessionDetail,
+      turnSnapshots: {},
+      selectedTurnRunId: workbench.selectedTurnRunId,
+      runLifecycle: workbench.runLifecycle,
+    });
+  }, [
+    workbench.selectedSessionId,
+    workbench.sessions,
+    workbench.activeSessionDetail,
+    workbench.runLifecycle,
+    workbench.selectedTurnRunId,
+  ]);
+
+  const detailWidget = detailWidgetId
+    ? widgets.find((w) => w.id === detailWidgetId)
+    : undefined;
+
+  function renderChatInput() {
+    return (
+      <ChatInput
+        sessionId={workbench.selectedSessionId ?? ""}
+        composerPrompt={composerPrompt}
+        isLoading={workbench.isLoading}
+        runInteractionState={runInteractionState}
+        activeMode={activeMode}
+        modeOptions={modeCards}
+        selectedModeSelection={workbench.selectedModeSelection}
+        activeProvider={activeProvider}
+        providerOptions={providerOptions}
+        skillOptions={workbench.skillRegistry?.skills ?? []}
+        selectedSkillIds={workbench.selectedSkillIds}
+        projectFileAttachments={[]}
+        localFileAttachments={[]}
+        imageAttachments={[]}
+        onRemoveImageAttachment={() => {}}
+        onAddImageAttachment={() => {}}
+        onModeChange={(modeId) => dispatch({ type: "SET_MODE", modeId })}
+        onModeSelectionChange={(selection) =>
+          dispatch({ type: "SET_MODE_SELECTION", selection })
+        }
+        onProviderChange={(providerId) =>
+          dispatch({ type: "SET_PROVIDER", providerId })
+        }
+        onPromptChange={setComposerPrompt}
+        onSelectedSkillIdsChange={(skillIds) =>
+          dispatch({ type: "SET_SELECTED_SKILL_IDS", skillIds })
+        }
+        onRemoveProjectFileAttachment={() => {}}
+        onRemoveLocalFileAttachment={() => {}}
+        onOpenLocalFiles={() => {}}
+        permissionMode={workbench.permissionMode}
+        onPermissionModeChange={(mode) =>
+          dispatch({ type: "SET_PERMISSION_MODE", permissionMode: mode })
+        }
+        taskIntent={workbench.taskIntent}
+        onTaskIntentChange={(ti) =>
+          dispatch({ type: "SET_TASK_INTENT", taskIntent: ti })
+        }
+        onOverlayHeightChange={setComposerOverlayHeight}
+        onStartRun={() => {
+          if (!workbench.selectedSessionId || !composerPrompt.trim()) return;
+          dispatch({
+            type: "BEGIN_RUN_REQUEST",
+            sessionId: workbench.selectedSessionId,
+            prompt: composerPrompt,
+            createdAt: Date.now(),
+          });
+          dispatch({ type: "CLEAR_PROMPT_IF_MATCH", text: composerPrompt });
+          setComposerPrompt("");
+        }}
+        onStopRun={() => {
+          const runId =
+            workbench.runLifecycle.stage === "streaming" ||
+            workbench.runLifecycle.stage === "pending"
+              ? workbench.runLifecycle.runId
+              : undefined;
+          if (runId) {
+            dispatch({
+              type: "REQUEST_RUN_CANCEL",
+              runId,
+              reason: "user cancelled",
+              updatedAt: Date.now(),
+            });
+          }
+        }}
+      />
+    );
+  }
 
   // Widget detail view
   if (detailWidget) {
@@ -68,11 +222,12 @@ export function SpaceDashboardView() {
         />
       );
     }
-    // Fallback for unknown widget kind
     return (
       <div className="flex h-full flex-col bg-background">
         <header className="flex shrink-0 items-center justify-between border-b px-6 py-4">
-          <h1 className="text-lg font-serif text-primary">{detailWidget.title}</h1>
+          <h1 className="text-lg font-serif text-primary">
+            {detailWidget.title}
+          </h1>
           <button
             onClick={() => setDetailWidgetId(undefined)}
             className="rounded-md px-3 py-1.5 text-sm text-muted-foreground hover:bg-muted hover:text-foreground transition"
@@ -89,74 +244,182 @@ export function SpaceDashboardView() {
 
   if (loading) {
     return (
-      <div className="flex h-full items-center justify-center text-muted-foreground">
-        加载中...
-      </div>
-    );
-  }
-
-  if (widgets.length === 0) {
-    return (
-      <div className="flex h-full flex-col">
-        <div className="flex flex-1 items-center justify-center">
-          <div className="max-w-md text-center">
-            <h1 className="text-2xl font-serif text-primary mb-2">工作台</h1>
-            <p className="text-sm text-muted-foreground mb-6">
-              你的个人工作台。通过下方输入框用自然语言创建组件，或从组件库添加。
-            </p>
-            <p className="text-xs text-muted-foreground/70">
-              试试说："帮我创建一个待办事项组件"
-            </p>
-          </div>
-        </div>
-        <SpaceComposer
-          scope="space"
-          selectedWidgetId={selectedWidgetId}
-          onWidgetCreated={refresh}
-        />
+      <div className="flex h-full items-center justify-center text-[13px] text-muted-foreground">
+        正在整理空间...
       </div>
     );
   }
 
   const sortedWidgets = [...widgets].sort((a, b) => {
-    // Pinned widgets first, then by updatedAt descending
+    if (a.layout.y !== b.layout.y) return a.layout.y - b.layout.y;
+    if (a.layout.x !== b.layout.x) return a.layout.x - b.layout.x;
+    if (isTasklistWidget(a) !== isTasklistWidget(b)) {
+      return isTasklistWidget(a) ? -1 : 1;
+    }
     if (a.layout.pinned !== b.layout.pinned) return a.layout.pinned ? -1 : 1;
     return b.updatedAt - a.updatedAt;
   });
+  const canvasPlacements = layoutWidgetsForCanvas(sortedWidgets);
+
+  const bottomPad = composerOverlayHeight > 0 ? composerOverlayHeight + 32 : 160;
+
+  if (widgets.length === 0) {
+    return (
+      <div className="relative h-full min-h-0 overflow-hidden">
+        <div
+          className="flex h-full items-center justify-center px-4 pt-2 sm:px-6 lg:px-7"
+          style={{ paddingBottom: bottomPad }}
+        >
+          <div className="text-center">
+            <h2 className="text-[22px] font-semibold tracking-[-0.01em] text-foreground">
+              还没有组件，先做一个吧
+            </h2>
+          </div>
+        </div>
+        {renderChatInput()}
+      </div>
+    );
+  }
 
   return (
-    <div className="flex h-full flex-col">
-      <div className="flex-1 overflow-y-auto p-6">
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-          {sortedWidgets.map((widget) => (
-            <WidgetCard
-              key={widget.id}
-              widget={widget}
-              selected={widget.id === selectedWidgetId}
-              onSelect={() =>
-                setSelectedWidgetId((prev) =>
-                  prev === widget.id ? undefined : widget.id,
-                )
-              }
-              onOpenDetail={() => setDetailWidgetId(widget.id)}
-              onTogglePin={async () => {
-                await client.toggleWidgetPin(widget.id);
-                void refresh();
-              }}
-              onArchive={async () => {
-                await client.archiveWidget(widget.id);
-                void refresh();
-              }}
-              onRefresh={refresh}
-            />
-          ))}
+    <div className="relative h-full min-h-0 overflow-hidden">
+      <div
+        className="h-full overflow-y-auto px-4 pt-4 sm:px-6 lg:px-7"
+        style={{ paddingBottom: bottomPad }}
+      >
+        <div className="flex flex-col gap-4 md:grid md:auto-rows-[180px] md:grid-cols-6 md:gap-4">
+          {canvasPlacements.map((placement) => {
+            const widget = placement.widget;
+            const placementStyle = {
+              gridColumn: `${placement.colStart} / span ${placement.colSpan}`,
+              gridRow: `${placement.rowStart} / span ${placement.rowSpan}`,
+            } satisfies CSSProperties;
+
+            return (
+              <div
+                key={widget.id}
+                className="min-h-[180px] md:min-h-0"
+                style={placementStyle}
+              >
+                <WidgetCard
+                  widget={widget}
+                  size={placement.cardSize}
+                  selected={widget.id === selectedWidgetId}
+                  onSelect={() =>
+                    setSelectedWidgetId((prev) =>
+                      prev === widget.id ? undefined : widget.id,
+                    )
+                  }
+                  onOpenDetail={() => setDetailWidgetId(widget.id)}
+                  onTogglePin={async () => {
+                    await client.toggleWidgetPin(widget.id);
+                    void refresh();
+                  }}
+                  onArchive={async () => {
+                    await client.archiveWidget(widget.id);
+                    void refresh();
+                  }}
+                  onRefresh={refresh}
+                  onUpdate={async (updated) => {
+                    await client.updateWidget({ id: updated.id, state: updated.state });
+                    void refresh();
+                  }}
+                />
+              </div>
+            );
+          })}
         </div>
       </div>
-      <SpaceComposer
-        scope={selectedWidgetId ? "widget" : "space"}
-        selectedWidgetId={selectedWidgetId}
-        onWidgetCreated={refresh}
-      />
+      {renderChatInput()}
     </div>
   );
+}
+
+export function getWidgetCardSize(layout: OraWidget["layout"]): "compact" | "expanded" {
+  return layout.w > 1 || layout.h > 1 ? "expanded" : "compact";
+}
+
+export function layoutWidgetsForCanvas(widgets: OraWidget[]): CanvasWidgetPlacement[] {
+  const occupied = new Set<string>();
+
+  return widgets.map((widget) => {
+    const colSpan = clampInt(widget.layout.w, 1, CANVAS_COLUMNS);
+    const rowSpan = clampInt(widget.layout.h, 1, MAX_WIDGET_ROW_SPAN);
+    const desiredCol = clampInt(widget.layout.x + 1, 1, CANVAS_COLUMNS - colSpan + 1);
+    const desiredRow = Math.max(1, widget.layout.y + 1);
+    const position = findOpenCanvasPosition(
+      occupied,
+      desiredCol,
+      desiredRow,
+      colSpan,
+      rowSpan,
+    );
+
+    markCanvasPosition(occupied, position.colStart, position.rowStart, colSpan, rowSpan);
+
+    return {
+      widget,
+      colStart: position.colStart,
+      rowStart: position.rowStart,
+      colSpan,
+      rowSpan,
+      cardSize: getWidgetCardSize(widget.layout),
+    };
+  });
+}
+
+function findOpenCanvasPosition(
+  occupied: Set<string>,
+  preferredCol: number,
+  preferredRow: number,
+  colSpan: number,
+  rowSpan: number,
+): { colStart: number; rowStart: number } {
+  let rowStart = preferredRow;
+  for (;;) {
+    const startCol = rowStart === preferredRow ? preferredCol : 1;
+    for (let colStart = startCol; colStart <= CANVAS_COLUMNS - colSpan + 1; colStart += 1) {
+      if (isCanvasPositionOpen(occupied, colStart, rowStart, colSpan, rowSpan)) {
+        return { colStart, rowStart };
+      }
+    }
+    rowStart += 1;
+  }
+}
+
+function isCanvasPositionOpen(
+  occupied: Set<string>,
+  colStart: number,
+  rowStart: number,
+  colSpan: number,
+  rowSpan: number,
+): boolean {
+  for (let row = rowStart; row < rowStart + rowSpan; row += 1) {
+    for (let col = colStart; col < colStart + colSpan; col += 1) {
+      if (occupied.has(`${col}:${row}`)) return false;
+    }
+  }
+  return true;
+}
+
+function markCanvasPosition(
+  occupied: Set<string>,
+  colStart: number,
+  rowStart: number,
+  colSpan: number,
+  rowSpan: number,
+): void {
+  for (let row = rowStart; row < rowStart + rowSpan; row += 1) {
+    for (let col = colStart; col < colStart + colSpan; col += 1) {
+      occupied.add(`${col}:${row}`);
+    }
+  }
+}
+
+function clampInt(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, Math.trunc(value)));
+}
+
+function isTasklistWidget(widget: OraWidget): boolean {
+  return widget.kind === "todo" && widget.title === "任务清单";
 }
