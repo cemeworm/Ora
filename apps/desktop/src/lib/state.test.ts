@@ -47,6 +47,7 @@ function testSnapshot(params: {
   events?: OraStateSnapshot["events"];
   latency?: OraStateSnapshot["latency"];
   attention?: OraStateSnapshot["attention"];
+  planList?: OraStateSnapshot["planList"];
   planDecisions?: OraStateSnapshot["planDecisions"];
   pendingApprovals?: OraStateSnapshot["pendingApprovals"];
   pendingClarifications?: OraStateSnapshot["pendingClarifications"];
@@ -80,7 +81,7 @@ function testSnapshot(params: {
     profiles: [],
     memory: [],
     plan: [],
-    planList: [],
+    planList: params.planList ?? [],
     todos: [],
     actions: [],
     toolCalls: [],
@@ -2727,6 +2728,48 @@ describe("desktop workbench state", () => {
       const cachedA = next.sessionDetailsById[sessionIdA];
       expect(cachedA).toBeDefined();
       expect(cachedA?.latestSnapshot?.planList).toEqual(planListA);
+    });
+
+    it("preserves existing planList when incoming snapshot has empty planList", () => {
+      const existing = testSnapshot({
+        planList: [
+          { step: "Research", status: "completed", id: "step-1" },
+          { step: "Implement", status: "in_progress", id: "step-2" },
+        ],
+        updatedAt: 1_714_000_000_001,
+      });
+      const incoming = testSnapshot({
+        planList: [],
+        updatedAt: 1_714_000_000_002,
+      });
+
+      const merged = mergeStateSnapshot(existing, incoming);
+
+      expect(merged?.planList).toEqual([
+        { step: "Research", status: "completed", id: "step-1" },
+        { step: "Implement", status: "in_progress", id: "step-2" },
+      ]);
+    });
+
+    it("uses incoming planList when both snapshots have plan data", () => {
+      const existing = testSnapshot({
+        planList: [
+          { step: "Old step", status: "completed", id: "old-1" },
+        ],
+        updatedAt: 1_714_000_000_001,
+      });
+      const incoming = testSnapshot({
+        planList: [
+          { step: "New step", status: "in_progress", id: "new-1" },
+        ],
+        updatedAt: 1_714_000_000_002,
+      });
+
+      const merged = mergeStateSnapshot(existing, incoming);
+
+      expect(merged?.planList).toEqual([
+        { step: "New step", status: "in_progress", id: "new-1" },
+      ]);
     });
   });
 

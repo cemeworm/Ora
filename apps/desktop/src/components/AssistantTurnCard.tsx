@@ -71,7 +71,6 @@ export const AssistantTurnCard = memo(function AssistantTurnCard({
   projectRootPath,
 }: AssistantTurnCardProps) {
   const processSteps = turn?.processSteps ?? [];
-  const planList = turn?.planList ?? [];
   const clarificationExchanges = turn?.clarificationExchanges ?? [];
   const agentMessages = turn?.agentMessages ?? [];
   const stageTranscriptMessages = agentMessages.filter(
@@ -208,15 +207,7 @@ export const AssistantTurnCard = memo(function AssistantTurnCard({
             <ClarificationExchangeList exchanges={clarificationExchanges} />
           ) : null}
 
-          {turn?.hasProposedPlan ? (
-            <PlanCard
-              planSteps={planList}
-              planContent={turn.planContent}
-              isStreaming={turn.proposedPlanStatus === "streaming"}
-            />
-          ) : null}
-
-          {(hasTimeline && timelineContainsAssistantBody && !turn?.hasProposedPlan) || !bodyContent.trim() ? null : (
+          {turn?.proposedPlanStatus || (hasTimeline && timelineContainsAssistantBody) || !bodyContent.trim() ? null : (
             <MessageContent className="w-full">
               <MarkdownContent
                 content={bodyContent}
@@ -225,6 +216,10 @@ export const AssistantTurnCard = memo(function AssistantTurnCard({
               />
             </MessageContent>
           )}
+
+          {turn?.hasProposedPlan && turn?.planContent ? (
+            <PlanCard planSteps={turn.planList ?? []} planContent={turn.planContent} />
+          ) : null}
 
           {showThinkingIndicator ? <ThinkingIndicator /> : null}
 
@@ -945,7 +940,9 @@ function FileChangeDiffPanel({
 }
 
 function DiffLines({ change }: { change: TurnFileChangeAttachment }) {
-  const lines = buildLineDiff(change.beforeContent, change.afterContent);
+  const lines = buildLineDiff(change.beforeContent, change.afterContent).filter(
+    (line) => line.kind !== "context",
+  );
   return (
     <div className="max-h-[28rem] overflow-auto bg-background font-mono text-xs leading-5">
       {lines.map((line, index) => (

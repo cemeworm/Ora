@@ -70,6 +70,13 @@ export interface ComposerLocalFileAttachment {
   truncated?: boolean;
 }
 
+export interface ComposerImageAttachment {
+  dataUrl: string;
+  mimeType: string;
+  name: string;
+  sizeBytes: number;
+}
+
 export interface PendingRunState {
   sessionId: string;
   runId?: string;
@@ -261,6 +268,7 @@ export interface WorkbenchState {
     ComposerProjectFileAttachment[]
   >;
   sessionLocalFileAttachments: Record<string, ComposerLocalFileAttachment[]>;
+  sessionImageAttachments: Record<string, ComposerImageAttachment[]>;
   runLifecycle: RunLifecycle;
   preservedSettledSnapshot: OraStateSnapshot | undefined;
   preservedSettledSessionId: string | undefined;
@@ -363,6 +371,13 @@ export type WorkbenchAction =
     }
   | { type: "REMOVE_LOCAL_FILE_ATTACHMENT"; sessionId: string; path: string }
   | { type: "CLEAR_LOCAL_FILE_ATTACHMENTS"; sessionId: string }
+  | {
+      type: "ADD_IMAGE_ATTACHMENT";
+      sessionId: string;
+      image: ComposerImageAttachment;
+    }
+  | { type: "REMOVE_IMAGE_ATTACHMENT"; sessionId: string; name: string }
+  | { type: "CLEAR_IMAGE_ATTACHMENTS"; sessionId: string }
   | { type: "CLEAR_PROMPT_IF_MATCH"; text: string }
   | {
       type: "BEGIN_RUN_REQUEST";
@@ -454,6 +469,7 @@ export const initialWorkbenchState: WorkbenchState = {
   sessionTaskIntents: {},
   sessionProjectFileAttachments: {},
   sessionLocalFileAttachments: {},
+  sessionImageAttachments: {},
   runLifecycle: { stage: "idle" },
   preservedSettledSnapshot: undefined,
   preservedSettledSessionId: undefined,
@@ -873,6 +889,47 @@ function clearLocalFileAttachments(
   return rest;
 }
 
+function addImageAttachment(
+  state: WorkbenchState,
+  sessionId: string,
+  image: ComposerImageAttachment,
+): Record<string, ComposerImageAttachment[]> {
+  const current = state.sessionImageAttachments[sessionId] ?? [];
+  if (current.some((item) => item.name === image.name)) {
+    return state.sessionImageAttachments;
+  }
+  return {
+    ...state.sessionImageAttachments,
+    [sessionId]: [...current, image],
+  };
+}
+
+function removeImageAttachment(
+  state: WorkbenchState,
+  sessionId: string,
+  name: string,
+): Record<string, ComposerImageAttachment[]> {
+  const nextImages = (state.sessionImageAttachments[sessionId] ?? []).filter(
+    (img) => img.name !== name,
+  );
+  if (nextImages.length === 0) {
+    const { [sessionId]: _cleared, ...rest } = state.sessionImageAttachments;
+    return rest;
+  }
+  return {
+    ...state.sessionImageAttachments,
+    [sessionId]: nextImages,
+  };
+}
+
+function clearImageAttachments(
+  state: WorkbenchState,
+  sessionId: string,
+): Record<string, ComposerImageAttachment[]> {
+  const { [sessionId]: _cleared, ...rest } = state.sessionImageAttachments;
+  return rest;
+}
+
 function resolveSelectedMode(
   modes: OraModeSpec[],
   selectedModeId: string,
@@ -1057,6 +1114,10 @@ export function mergeStateSnapshot(
     ),
     memory: mergeById(normalizedExisting.memory, normalizedIncoming.memory),
     plan: mergeById(normalizedExisting.plan, normalizedIncoming.plan),
+    planList:
+      normalizedIncoming.planList.length > 0
+        ? normalizedIncoming.planList
+        : normalizedExisting.planList,
     todos: mergeById(normalizedExisting.todos, normalizedIncoming.todos),
     actions: mergeById(normalizedExisting.actions, normalizedIncoming.actions),
     toolCalls: mergeById(
@@ -2651,6 +2712,10 @@ export function workbenchReducer(
           state,
           action.sessionId,
         ),
+        sessionImageAttachments: clearImageAttachments(
+          state,
+          action.sessionId,
+        ),
         sessionPermissionModes: clearSessionPermissionMode(
           state,
           action.sessionId,
@@ -3390,6 +3455,36 @@ export function workbenchReducer(
       return {
         ...state,
         sessionLocalFileAttachments: clearLocalFileAttachments(
+          state,
+          action.sessionId,
+        ),
+      };
+
+    case "ADD_IMAGE_ATTACHMENT":
+      return {
+        ...state,
+        sessionImageAttachments: addImageAttachment(
+          state,
+          action.sessionId,
+          action.image,
+        ),
+        commandFeedback: `Added ${action.image.name} to chat.`,
+      };
+
+    case "REMOVE_IMAGE_ATTACHMENT":
+      return {
+        ...state,
+        sessionImageAttachments: removeImageAttachment(
+          state,
+          action.sessionId,
+          action.name,
+        ),
+      };
+
+    case "CLEAR_IMAGE_ATTACHMENTS":
+      return {
+        ...state,
+        sessionImageAttachments: clearImageAttachments(
           state,
           action.sessionId,
         ),

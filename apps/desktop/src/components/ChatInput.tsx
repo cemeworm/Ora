@@ -30,6 +30,7 @@ import type { ActionRecord, ModeCard, TurnPlanListStep } from "../types";
 import type { OraProviderConfig, OraSkillRegistry } from "../lib/runtimeClient";
 import { inferProviderContextWindow } from "../lib/providerPresets";
 import type {
+  ComposerImageAttachment,
   ComposerLocalFileAttachment,
   ComposerProjectFileAttachment,
 } from "../lib/state";
@@ -69,6 +70,9 @@ interface ChatInputProps {
   selectedCustomAgentId?: string;
   projectFileAttachments: ComposerProjectFileAttachment[];
   localFileAttachments: ComposerLocalFileAttachment[];
+  imageAttachments: ComposerImageAttachment[];
+  onRemoveImageAttachment: (name: string) => void;
+  onAddImageAttachment: (image: ComposerImageAttachment) => void;
   approvalActions?: ActionRecord[];
   approvalDisabled?: boolean;
   onApprove?: () => void;
@@ -200,6 +204,9 @@ export function ChatInput({
   selectedCustomAgentId,
   projectFileAttachments,
   localFileAttachments,
+  imageAttachments,
+  onRemoveImageAttachment,
+  onAddImageAttachment,
   approvalActions = [],
   approvalDisabled,
   onApprove,
@@ -309,7 +316,9 @@ export function ChatInput({
     currentLineInfo.lineStart === cursorPos - currentLineInfo.lineText.length &&
     filteredSkillOptions.length > 0;
   const hasFileChips =
-    projectFileAttachments.length > 0 || localFileAttachments.length > 0;
+    projectFileAttachments.length > 0 ||
+    localFileAttachments.length > 0 ||
+    imageAttachments.length > 0;
   const showApprovalTray =
     approvalActions.length > 0 && Boolean(onApprove && onCancelApproval);
   const { showClarificationTray, showPlanDecisionTray, hideComposer } =
@@ -663,6 +672,25 @@ export function ChatInput({
                       <X size={11} />
                     </button>
                   ))}
+                  {imageAttachments.map((img) => (
+                    <button
+                      key={`image:${img.name}`}
+                      type="button"
+                      onClick={() => onRemoveImageAttachment(img.name)}
+                      className="inline-flex h-7 max-w-[240px] items-center gap-1.5 rounded-full border border-border bg-background/80 pl-1 pr-2.5 text-xs font-medium text-muted-foreground shadow-[0_1px_2px_rgba(23,23,23,0.04)] transition hover:bg-accent hover:text-accent-foreground active:scale-95"
+                      title={`Remove ${img.name}`}
+                    >
+                      <img
+                        src={img.dataUrl}
+                        alt={img.name}
+                        className="h-5 w-5 rounded-full object-cover"
+                      />
+                      <span className="truncate text-foreground">
+                        {img.name}
+                      </span>
+                      <X size={11} />
+                    </button>
+                  ))}
                 </div>
               )}
               <div className="flex items-start">
@@ -707,7 +735,35 @@ export function ChatInput({
                   onInput={(e) => {
                     resizeComposerTextarea(e.target as HTMLTextAreaElement);
                   }}
-                  onPaste={() => {
+                  onPaste={(e) => {
+                    const items = e.clipboardData?.items;
+                    if (items) {
+                      const imageItems: File[] = [];
+                      for (const item of items) {
+                        if (item.kind === "file" && item.type.startsWith("image/")) {
+                          const file = item.getAsFile();
+                          if (file) imageItems.push(file);
+                        }
+                      }
+                      if (imageItems.length > 0) {
+                        e.preventDefault();
+                        let pasteSeq = 0;
+                        for (const file of imageItems) {
+                          const reader = new FileReader();
+                          const seq = pasteSeq++;
+                          reader.onload = () => {
+                            onAddImageAttachment({
+                              dataUrl: reader.result as string,
+                              mimeType: file.type,
+                              name: file.name || `screenshot-${Date.now()}-${seq}.png`,
+                              sizeBytes: file.size,
+                            });
+                          };
+                          reader.readAsDataURL(file);
+                        }
+                        return;
+                      }
+                    }
                     shouldScrollPastedTextRef.current = true;
                   }}
                 />
