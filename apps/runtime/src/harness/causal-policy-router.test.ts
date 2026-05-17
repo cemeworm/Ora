@@ -296,6 +296,47 @@ describe("causal policy router", () => {
       expect(result.decisionRecord.policyDecision.recommendedAction).toBe(result.action);
       expect(result.decisionRecord.taskState.surfaceRequest).toBe("帮我优化一下那个东西的性能");
     });
+
+    it("recommends stop when sufficient work done and no further action needed", () => {
+      const result = routeIntervention({
+        surfaceRequest: "帮我重构auth模块",
+        taskState: {
+          surfaceRequest: "帮我重构auth模块",
+          selectedLatentGoal: "重构认证模块",
+          confidence: 0.8,
+        },
+        proposedToolId: undefined,
+        proposedToolRisk: "low",
+        toolCallCount: 5,
+        clarificationCount: 0,
+        hasPendingApprovals: false,
+        hasPendingPlanDecisions: false,
+        hasUnresolvedPlanItems: false,
+        modelResponseText: "重构已完成，所有测试通过。",
+      });
+      expect(result.action).toBe("stop");
+      expect(result.policyDecision.reason).toContain("diminishing returns");
+    });
+
+    it("recommends answer_directly (not stop) when little work has been done", () => {
+      const result = routeIntervention({
+        surfaceRequest: "解释什么是闭包",
+        taskState: {
+          surfaceRequest: "解释什么是闭包",
+          selectedLatentGoal: "学习JavaScript闭包概念",
+          confidence: 0.85,
+        },
+        proposedToolId: undefined,
+        proposedToolRisk: "low",
+        toolCallCount: 0,
+        clarificationCount: 0,
+        hasPendingApprovals: false,
+        hasPendingPlanDecisions: false,
+        hasUnresolvedPlanItems: false,
+        modelResponseText: "闭包是JavaScript中的一个重要概念...",
+      });
+      expect(result.action).toBe("answer_directly");
+    });
   });
 });
 
