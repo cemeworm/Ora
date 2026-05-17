@@ -300,7 +300,7 @@ export interface TurnAgentConversationMessage {
   threadId: string;
   nodeId?: string;
   planItemId?: string;
-  kind: "mention" | "reply" | "handoff" | "route" | "publish" | "status";
+  kind: "mention" | "reply" | "handoff" | "route" | "publish" | "status" | "info";
   status: "sent" | "running" | "done" | "failed";
   content: string;
   topic?: string;
