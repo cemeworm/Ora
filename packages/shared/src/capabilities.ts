@@ -1045,6 +1045,247 @@ const selfIterationApplyParameters = {
   additionalProperties: false,
 };
 
+// ---------------------------------------------------------------------------
+// Computer Use Tool IDs
+// ---------------------------------------------------------------------------
+
+export const COMPUTER_TOOL_IDS = [
+  "computer.permissionStatus",
+  "computer.observe",
+  "computer.click",
+  "computer.type",
+  "computer.press",
+  "computer.scroll",
+  "computer.window",
+] as const;
+export type ComputerToolId = typeof COMPUTER_TOOL_IDS[number];
+
+export const COMPUTER_TARGET_KINDS = ["native_app", "browser_page", "ora_view"] as const;
+export type ComputerTargetKind = typeof COMPUTER_TARGET_KINDS[number];
+
+// ---------------------------------------------------------------------------
+// Computer Use Parameter Schemas
+// ---------------------------------------------------------------------------
+
+const computerTargetKindParameter = {
+  type: "string",
+  enum: COMPUTER_TARGET_KINDS as unknown as string[],
+  description: "Target kind: native_app (macOS desktop app), browser_page (local dev server or web page), ora_view (Ora Dashboard, Widget Detail, Builder Session).",
+};
+
+const computerSnapshotIdParameter = {
+  type: "string",
+  description: "Snapshot handle from a previous computer.observe call. Required when targeting a specific element from the most recent observation.",
+};
+
+const computerTimeoutParameter = {
+  type: "number",
+  minimum: 500,
+  maximum: 30_000,
+  description: "Optional timeout in milliseconds.",
+};
+
+const computerPermissionStatusParameters = {
+  type: "object",
+  properties: {
+    targetKind: { ...computerTargetKindParameter, description: "Optional target kind to check backend availability for. Checks all backends when omitted." },
+  },
+  additionalProperties: false,
+};
+
+const computerObserveParameters = {
+  type: "object",
+  properties: {
+    target: {
+      type: "string",
+      description: "Natural language description of what to observe, e.g. 'frontmost window', 'Safari', 'Dashboard page'.",
+    },
+    targetKind: computerTargetKindParameter,
+    app: {
+      type: "string",
+      description: "Optional macOS app name, e.g. 'Safari', 'Finder'. Only valid for native_app targets.",
+    },
+    windowTitle: {
+      type: "string",
+      description: "Optional window title substring to match.",
+    },
+    mode: {
+      type: "string",
+      enum: ["full", "overview", "detail"],
+      description: "Observation mode. full: screenshot + element tree. overview: element summary only. detail: full tree for a specific element. Defaults to full.",
+    },
+    annotate: {
+      type: "boolean",
+      description: "Whether to render element annotations on the screenshot. Defaults to true.",
+    },
+    maxElements: {
+      type: "number",
+      minimum: 1,
+      maximum: 200,
+      description: "Maximum number of UI elements to return. Defaults to 50.",
+    },
+    includeScreenshot: {
+      type: "boolean",
+      description: "Whether to include a screenshot artifact. Defaults to true. Set false to only get element summaries.",
+    },
+    timeoutMs: computerTimeoutParameter,
+  },
+  required: ["target"],
+  additionalProperties: false,
+};
+
+const computerClickParameters = {
+  type: "object",
+  properties: {
+    target: {
+      type: "string",
+      description: "Element id from a previous observe snapshot, a natural language element description, or x,y coordinates as 'x,y'.",
+    },
+    snapshotId: computerSnapshotIdParameter,
+    targetKind: computerTargetKindParameter,
+    button: {
+      type: "string",
+      enum: ["left", "right", "middle"],
+      description: "Mouse button. Defaults to left.",
+    },
+    clickCount: {
+      type: "number",
+      minimum: 1,
+      maximum: 3,
+      description: "Number of clicks. 2 for double-click. Defaults to 1.",
+    },
+    waitFor: {
+      type: "string",
+      description: "Optional element description to wait for after clicking, used for verification.",
+    },
+    timeoutMs: computerTimeoutParameter,
+  },
+  required: ["target"],
+  additionalProperties: false,
+};
+
+const computerTypeParameters = {
+  type: "object",
+  properties: {
+    text: {
+      type: "string",
+      description: "Text to type into the target element.",
+    },
+    target: {
+      type: "string",
+      description: "Element id, natural language description, or coordinates for the input field. If omitted, types into the currently focused element.",
+    },
+    snapshotId: computerSnapshotIdParameter,
+    targetKind: computerTargetKindParameter,
+    clear: {
+      type: "boolean",
+      description: "Whether to clear existing content before typing. Defaults to false.",
+    },
+    delayMs: {
+      type: "number",
+      minimum: 0,
+      maximum: 500,
+      description: "Delay between keystrokes in milliseconds. Defaults to 0 for instant typing.",
+    },
+    submit: {
+      type: "boolean",
+      description: "Whether to press Enter after typing. Defaults to false.",
+    },
+    timeoutMs: computerTimeoutParameter,
+  },
+  required: ["text"],
+  additionalProperties: false,
+};
+
+const computerPressParameters = {
+  type: "object",
+  properties: {
+    keys: {
+      type: "string",
+      description: "Key or key combination, e.g. 'enter', 'escape', 'cmd,l', 'cmd,shift,t', 'tab', 'space', 'backspace', 'delete', arrow keys.",
+    },
+    count: {
+      type: "number",
+      minimum: 1,
+      maximum: 20,
+      description: "Number of times to press. Defaults to 1.",
+    },
+    holdMs: {
+      type: "number",
+      minimum: 0,
+      maximum: 5_000,
+      description: "Hold duration in milliseconds for the final key in a combination.",
+    },
+    targetKind: computerTargetKindParameter,
+    timeoutMs: computerTimeoutParameter,
+  },
+  required: ["keys"],
+  additionalProperties: false,
+};
+
+const computerScrollParameters = {
+  type: "object",
+  properties: {
+    target: {
+      type: "string",
+      description: "Element id, natural language description, or 'window' to scroll the active window.",
+    },
+    snapshotId: computerSnapshotIdParameter,
+    targetKind: computerTargetKindParameter,
+    direction: {
+      type: "string",
+      enum: ["up", "down", "left", "right"],
+      description: "Scroll direction. Defaults to down.",
+    },
+    amount: {
+      type: "number",
+      minimum: 1,
+      description: "Scroll amount in the specified unit. Defaults to 3 for lines, 1 for pages.",
+    },
+    unit: {
+      type: "string",
+      enum: ["lines", "pages"],
+      description: "Scroll unit. Defaults to lines.",
+    },
+    timeoutMs: computerTimeoutParameter,
+  },
+  required: ["direction"],
+  additionalProperties: false,
+};
+
+const computerWindowParameters = {
+  type: "object",
+  properties: {
+    action: {
+      type: "string",
+      enum: ["list", "focus", "move", "resize", "minimize", "maximize", "close"],
+      description: "Window action. list/focus are read-only; move/resize/minimize/maximize/close are mutating.",
+    },
+    app: {
+      type: "string",
+      description: "App name for list/focus actions, e.g. 'Safari', 'Finder'.",
+    },
+    windowTitle: {
+      type: "string",
+      description: "Window title substring for focusing or identifying a specific window.",
+    },
+    targetKind: computerTargetKindParameter,
+    bounds: {
+      type: "object",
+      properties: {
+        x: { type: "number" },
+        y: { type: "number" },
+        width: { type: "number", minimum: 100 },
+        height: { type: "number", minimum: 100 },
+      },
+      description: "Window bounds for move/resize actions.",
+    },
+    timeoutMs: computerTimeoutParameter,
+  },
+  required: ["action"],
+  additionalProperties: false,
+};
+
 export const MVP_TOOLS: ToolDescriptor[] = [
   { id: "file.read", label: "Read File", description: "Read file contents inside the selected project folder.", category: "file", riskLevel: "safe", parameters: fileReadParameters, requiresApproval: false, implemented: true, allowedForProfiles: [] },
   { id: "file.list", label: "List Files", description: "List files and directories inside the selected project folder.", category: "file", riskLevel: "safe", parameters: fileListParameters, requiresApproval: false, implemented: true, allowedForProfiles: [] },
@@ -1259,6 +1500,132 @@ export const MVP_TOOLS: ToolDescriptor[] = [
   { id: "message.publish", label: "Publish Message", description: "Publish an event to the runtime message bus.", category: "internal", riskLevel: "low_risk", parameters: {}, requiresApproval: false, implemented: false, allowedForProfiles: [] },
   { id: "shared_state.write", label: "Write Shared State", description: "Write a versioned update to the shared blackboard.", category: "internal", riskLevel: "requires_approval", parameters: {}, requiresApproval: true, implemented: false, allowedForProfiles: [] },
   { id: "export.report", label: "Export Report", description: "Export a run report.", category: "export", riskLevel: "safe", parameters: {}, requiresApproval: false, implemented: false, allowedForProfiles: [] },
+  {
+    id: "computer.permissionStatus",
+    label: "Computer Permission Status",
+    description: "Check GUI automation backend availability, macOS permissions (Screen Recording, Accessibility), and Peekaboo installation status.",
+    category: "internal",
+    riskLevel: "safe",
+    parameters: computerPermissionStatusParameters,
+    promptSnippet: "Use computer.permissionStatus first to check whether GUI automation is available before attempting any computer.* actions.",
+    promptGuidelines: [
+      "Always check permission status before attempting computer use actions.",
+      "If the backend is unavailable or permissions are missing, report the specific missing items to the user — do not proceed with other computer.* tools.",
+    ],
+    requiresApproval: false,
+    implemented: true,
+    allowedForProfiles: [],
+  },
+  {
+    id: "computer.observe",
+    label: "Observe Screen",
+    description: "Observe the current screen, frontmost window, or a specific app/window. Returns a screenshot artifact path, UI element summary with ids/labels/roles, and a backend snapshot handle for subsequent actions.",
+    category: "internal",
+    riskLevel: "low_risk",
+    parameters: computerObserveParameters,
+    promptSnippet: "Use computer.observe to see what is on screen before clicking, typing, or scrolling. Always observe first — never guess element positions or window state.",
+    promptGuidelines: [
+      "Always observe before acting: call computer.observe to get current screen state and element IDs.",
+      "Use the returned element IDs (not raw coordinates) for subsequent click/type/scroll calls.",
+      "After any GUI action, verify the result by observing again or checking the action's output.",
+      "Screenshots may contain sensitive information — prefer element summaries when visual detail is not needed.",
+      "Set includeScreenshot: false when you only need element structure.",
+      "The observe → act → verify loop is mandatory for reliable GUI automation.",
+    ],
+    requiresApproval: false,
+    implemented: true,
+    allowedForProfiles: [],
+  },
+  {
+    id: "computer.click",
+    label: "Click Element",
+    description: "Click a UI element by element ID from a previous observe, natural language query, or coordinates. Prefers accessibility action when available, falls back to synthetic input.",
+    category: "internal",
+    riskLevel: "requires_approval",
+    parameters: computerClickParameters,
+    promptSnippet: "Use computer.click with an element ID from a computer.observe result. Always verify the click effect by observing again.",
+    promptGuidelines: [
+      "Always provide a snapshotId from the most recent computer.observe call when clicking by element ID.",
+      "Prefer element IDs over raw coordinates — element IDs are stable within a snapshot.",
+      "Use waitFor to verify the click had the expected effect before proceeding.",
+      "Clicking system dialogs, permission prompts, or destructive buttons requires explicit user approval.",
+    ],
+    requiresApproval: true,
+    implemented: true,
+    allowedForProfiles: [],
+  },
+  {
+    id: "computer.type",
+    label: "Type Text",
+    description: "Type text into a focused element or a specified input field. Optionally clears existing content first. The text content is shown in the approval summary.",
+    category: "internal",
+    riskLevel: "requires_approval",
+    parameters: computerTypeParameters,
+    promptSnippet: "Use computer.type to enter text into input fields. The text will be shown to the user in the approval dialog.",
+    promptGuidelines: [
+      "Always provide a snapshotId and target element when typing into a specific field.",
+      "Use clear: true when replacing existing content.",
+      "Set submit: true to press Enter after typing (e.g., for search fields or form submission).",
+      "Typing passwords, tokens, or secrets should be avoided — ask the user to type them manually.",
+      "Keep typed text short and focused. For long text, consider file.write or other methods.",
+    ],
+    requiresApproval: true,
+    implemented: true,
+    allowedForProfiles: [],
+  },
+  {
+    id: "computer.press",
+    label: "Press Keys",
+    description: "Press special keys or keyboard shortcuts, e.g. Enter, Escape, Cmd+L, Cmd+Shift+T, arrow keys.",
+    category: "internal",
+    riskLevel: "requires_approval",
+    parameters: computerPressParameters,
+    promptSnippet: "Use computer.press for keyboard shortcuts and special keys. Combine keys with commas, e.g. 'cmd,l' for Cmd+L.",
+    promptGuidelines: [
+      "Combine modifier keys with commas: 'cmd,c', 'cmd,shift,t', 'ctrl,alt,delete'.",
+      "Use standard key names: enter, escape, tab, space, backspace, delete, up, down, left, right, home, end, pageup, pagedown.",
+      "Avoid pressing potentially destructive shortcuts like 'cmd,q' (quit) or 'cmd,option,esc' (force quit) unless explicitly requested.",
+      "Verify the effect of shortcuts by observing afterward.",
+    ],
+    requiresApproval: true,
+    implemented: true,
+    allowedForProfiles: [],
+  },
+  {
+    id: "computer.scroll",
+    label: "Scroll",
+    description: "Scroll within a window or a specific UI element by lines or pages.",
+    category: "internal",
+    riskLevel: "requires_approval",
+    parameters: computerScrollParameters,
+    promptSnippet: "Use computer.scroll to scroll a window or element up/down/left/right. Always observe first to confirm the scrollable area.",
+    promptGuidelines: [
+      "Scroll is a lower-risk action but still requires approval when modifying view state.",
+      "Use small scroll amounts and verify content visibility with a follow-up observe.",
+      "Prefer scrolling by element ID from an observe snapshot when the scrollable area is a specific pane.",
+    ],
+    requiresApproval: true,
+    implemented: true,
+    allowedForProfiles: [],
+  },
+  {
+    id: "computer.window",
+    label: "Manage Windows",
+    description: "List, focus, move, resize, minimize, maximize, or close application windows.",
+    category: "internal",
+    riskLevel: "requires_approval",
+    parameters: computerWindowParameters,
+    promptSnippet: "Use computer.window to manage application windows. List and focus are read-only; move/resize/minimize/maximize/close require approval.",
+    promptGuidelines: [
+      "Use action: 'list' to discover available windows and their titles.",
+      "Use action: 'focus' to bring a specific window to the front by app name or window title.",
+      "Closing windows or changing window geometry requires explicit user approval.",
+      "Be especially careful with action: 'close' — ensure the user wants the window closed.",
+    ],
+    requiresApproval: true,
+    implemented: true,
+    allowedForProfiles: [],
+  },
 ];
 
 export const DEFAULT_AGENT_MODE_TOOL_IDS = MVP_TOOLS
