@@ -373,7 +373,8 @@ function shouldAttachLiveSnapshot(events: readonly OraEventEnvelope[]): boolean 
 function shouldAttachRunningLiveSnapshot(events: readonly OraEventEnvelope[], liveSnapshot: StateSnapshot): boolean {
   if (events.some((event) =>
     event.type === "approval.required" ||
-    event.type === "clarification.required"
+    event.type === "clarification.required" ||
+    event.type === "plan_list.updated"
   )) {
     return true;
   }
