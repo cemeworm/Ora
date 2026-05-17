@@ -2,6 +2,8 @@
 
 本文档解释 Ora 如何通过 Channel/Connector 体系接入外部消息平台，将多渠道消息统一转换为内部 Runtime 的 session/run，并将执行结果递送回去。
 
+> **最近更新 (2026-05-18)**：delivery 重试消费者（指数退避 + 最大重试）、WeChat contextToken 持久化、delivery 状态机补全（sending/failed）、adapter onIngest 溢出感知、WeChat 流式出站。
+
 ## 阅读地图
 
 | 层级 | 核心文件 | 职责 |
@@ -406,7 +408,7 @@ webhook 路径的认证分派逻辑：
 
 4. **Adapter 状态 ≠ Channel 状态**。`ChannelService.status()` 返回 adapter 的瞬时状态（running/stopped），但 ChannelConfig 的 `enabled` 是耐久状态。adapter 可能因 token 无效而停止，但 `enabled` 仍然为 true。
 
-5. **WeChat 的 contextToken 是临时的**。`contextTokenMap` 存内存中，重启后丢失。新的 contextToken 会在下次 poll 到的消息中重新填充。如果发消息时 contextToken 缺失，`send()` 会返回 error。
+5. **WeChat 的 contextToken 已持久化**。`contextTokenMap` 在构造函数中从 `config.config.contextTokens` 恢复，poll 循环中批次结束后通过 `onConfigUpdate` 持久化。重启后 contextToken 不丢失。
 
 6. **DingTalk 目前没有 onIngest**。`DingtalkChannelAdapter` 不主动拉取消息，仅通过 HTTP webhook 被动接收。它的 `send()` 依赖 `getAccessToken()` 自动刷新 token。
 
@@ -421,15 +423,19 @@ webhook 路径的认证分派逻辑：
 - 命令系统（/help /status /new /project）
 - 项目发现（本地文件系统扫描）
 - Run continuation（approval/clarification 回复）
-- 出站投递 + 状态追踪
+- 出站投递 + 状态追踪（含 sending/sent/retry_scheduled/failed 完整状态机）
+- 投递重试消费者（指数退避 + 最大 5 次重试）
 - 敏感字段 redact
 - WeChat QR 码绑定流程
+- WeChat contextToken 持久化（重启不丢失）
+- WeChat 流式出站（delta incremental messages）
+- Adapter onIngest 溢出感知（accepted 字段检查）
 
 ### 未实现 / 可演进
-- **流式出站**：当前所有 omessage 都是 `isFinal: true` 的完整文本。`ChannelOutboundKindSchema` 中预留了 `"delta"` 类型，但 Manager 的 `createOutboundFromSnapshot` 只在 run 终态后构造消息，不做增量推送。
+- **流式出站**：WeChat 渠道已支持 delta streaming（`isFinal: false` 增量消息 + `message_state: 1`）。`ChannelManager.startAndWaitForRun()` 通过 `onDelta` 回调提取 delta text，以 300ms 节流间隔 + 10 字符最小累积推送增量。其他平台 adapter 可通过 `supportsStreamingUpdates` capability 接入。最终消息仍以 `isFinal: true` 发送。
 - **文件出站**：`ChannelCapabilities.supportsFileOutbound` 和能力声明已定义，但各 adapter 的 `send()` 都只发送 text。
 - **消息编辑/删除**：`supportsMessageUpdate` 能力已声明，无实现。
 - **Channel 级 mode/pattern 绑定**：当前所有 channel run 都使用 `channelRunConfig()` 生成的默认配置（`modeSelection: "auto"`, `permissionMode: "default"`）。
 - **DingTalk 主动拉取**：当前仅被动 webhook，未接入钉钉的 WebSocket 推送。
-- **重试策略**：delivery 失败后仅标记 `retry_scheduled` + 1 秒后重试，无指数退避、最大重试次数限制。
+- **重试策略**：已实现完整重试消费者。`ChannelService` 启动后台 `setInterval` 扫描 `retry_scheduled` 的 delivery，最多 5 次重试，指数退避公式 `min(1000 × 2^attempt, 60000)`，耗尽后标记 `failed`。首次发送前先写 `sending` 状态，成功写 `sent`，失败进入重试链路。`applyDeliveryResult` 统一首次发送和重试的状态转换逻辑。
 - **附件超限处理**：超限附件仅标记 status，不通知用户或提供裁剪策略。
