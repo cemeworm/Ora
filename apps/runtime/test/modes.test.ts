@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { CODE_DEVELOPMENT_MODE_ID, ORA_ROOT_AGENT_ID } from "@cemeworm/shared";
+import { CODE_DEVELOPMENT_MODE_ID, DEBATE_MODE_ID, ORA_ROOT_AGENT_ID } from "@cemeworm/shared";
 import { describe, expect, it } from "vitest";
 import { LocalRunStore } from "../src/index.js";
 
@@ -20,7 +20,7 @@ describe("runtime built-in modes", () => {
     expect(fetched.id).toBe(CODE_DEVELOPMENT_MODE_ID);
     expect(fetched.systemPreset).toBe(true);
     expect(fetched.visibility).toBe("user");
-    expect(fetched.family).toBe("agent_teams");
+    expect(fetched.family).toBe("orchestrator_subagent");
     expect(fetched.profiles.map((profile) => profile.id)).toEqual([
       ORA_ROOT_AGENT_ID,
       "builder",
@@ -48,5 +48,24 @@ describe("runtime built-in modes", () => {
       },
     })).toThrow(/read-only/i);
     expect(() => store.deleteMode({ modeId: CODE_DEVELOPMENT_MODE_ID })).toThrow(/cannot be deleted/i);
+  });
+
+  it("lists and returns the Debate system preset", () => {
+    const store = new LocalRunStore({ dataDir: freshStoreDir() });
+
+    const fetched = store.getMode({ modeId: DEBATE_MODE_ID });
+
+    expect(fetched.id).toBe(DEBATE_MODE_ID);
+    expect(fetched.systemPreset).toBe(true);
+    expect(fetched.family).toBe("orchestrator_subagent");
+    expect(fetched.profiles.map((profile) => profile.id)).toEqual([
+      ORA_ROOT_AGENT_ID,
+      "debate_agent",
+    ]);
+    expect(fetched.nodes.map((node) => node.id)).toEqual([
+      "frame",
+      "debate",
+      "synthesis",
+    ]);
   });
 });

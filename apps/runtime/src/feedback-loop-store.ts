@@ -204,6 +204,7 @@ export class LocalFeedbackLoopStore {
       insights.push(...this.approvalBottleneckInsights(projectId, projectSignals));
       insights.push(...this.runFailureInsights(projectId, projectSignals));
       insights.push(...this.environmentObserverInsights(projectId, projectSignals));
+      insights.push(...this.causalInterventionInsights(projectId, projectSignals));
     }
 
     return insights.map((insight) => this.applyInsightState(ProjectInsightSchema.parse(insight)));
@@ -314,6 +315,29 @@ export class LocalFeedbackLoopStore {
       confidence: 0.72,
       updatedAt: latestTimestamp(observations),
       actions: filterActionsByRule([draftSelfIterationAction(projectId, "Draft environment-aware Self-Iteration candidate")], rule),
+    })];
+  }
+
+  private causalInterventionInsights(projectId: string, signals: ProjectSignal[]): ProjectInsight[] {
+    const causalSignals = signals.filter((signal) =>
+      signal.source === "evaluation_result" &&
+      ["over_clarification", "wrong_intervention", "low_counterfactual_lift", "over_action"].includes(String(signal.metadata.failureTag ?? ""))
+    );
+    if (causalSignals.length === 0) return [];
+    const tags = [...new Set(causalSignals.map((s) => String(s.metadata.failureTag ?? "unknown")))];
+    return [buildInsight({
+      projectId,
+      id: `${projectId}:insight:causal_intervention_gap`,
+      title: "Causal intervention patterns detected",
+      summary: `${causalSignals.length} evaluation signal(s) show gaps: ${tags.join(", ")}. Consider reviewing intervention policy or adding dataset cases.`,
+      signalIds: causalSignals.map((signal) => signal.id),
+      confidence: Math.min(0.88, 0.65 + causalSignals.length * 0.08),
+      updatedAt: latestTimestamp(causalSignals),
+      actions: filterActionsByRule([
+        openEvaluationFeedbackAction(),
+        createEvaluationCaseAction(projectId, "Create causal evaluation case from failure pattern"),
+        draftSelfIterationAction(projectId, "Draft prompt contract adjustment"),
+      ], this.ruleForProject(projectId, "eval_regression")),
     })];
   }
 

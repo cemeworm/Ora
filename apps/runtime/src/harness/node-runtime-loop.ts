@@ -46,6 +46,7 @@ import {
 import {
   NodeLoopController,
 } from "./node-loop-transitions.js";
+import { routeIntervention, classifyToolRisk } from "./causal-policy-router.js";
 import { registerRuntimeToolAttempt } from "./runtime-tool-attempt.js";
 import { codeDevelopmentToolBoundaryError } from "./runtime-tool-boundary.js";
 import { RuntimeToolCallService } from "./runtime-tool-call-service.js";
@@ -717,6 +718,19 @@ export async function runNodeRuntimeLoop(
         title: params.title,
         iteration,
       });
+      const completionDecision = routeIntervention({
+        surfaceRequest: input.prompt,
+        taskState: undefined,
+        proposedToolId: undefined,
+        proposedToolRisk: "low",
+        toolCallCount: completion.toolAttempts,
+        clarificationCount: 0,
+        hasPendingApprovals: false,
+        hasPendingPlanDecisions: false,
+        hasUnresolvedPlanItems: false,
+        modelResponseText: currentResponse.text,
+      });
+      emit("causal.decision.recorded", completionDecision.decisionRecord);
       return { kind: "complete", response: currentResponse };
     }
 
@@ -948,6 +962,21 @@ export async function runNodeRuntimeLoop(
       iteration,
     };
     nodeLoopController.emitToolRequested(toolRequestedParams);
+
+    const toolRisk = classifyToolRisk(toolCall.tool);
+    const policyResult = routeIntervention({
+      surfaceRequest: input.prompt,
+      taskState: undefined,
+      proposedToolId: toolCall.tool,
+      proposedToolRisk: toolRisk,
+      toolCallCount: completion.toolAttempts + 1,
+      clarificationCount: 0,
+      hasPendingApprovals: false,
+      hasPendingPlanDecisions: false,
+      hasUnresolvedPlanItems: false,
+      modelResponseText: response.text,
+    });
+    emit("causal.decision.recorded", policyResult.decisionRecord);
 
     const attemptDecision = registerRuntimeToolAttempt({
       completion,

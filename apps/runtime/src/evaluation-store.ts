@@ -2893,6 +2893,9 @@ function extractEvaluationObservations(snapshot: StateSnapshot, runtimeMs: numbe
     : {};
   const effectiveStrategy = snapshot.config.effectiveStrategy;
   const efficiencyLedger = buildAgenticEfficiencyLedger(snapshot, runtimeMs);
+  const causalDecisions = snapshot.events
+    .filter((event) => event.type === "causal.decision.recorded")
+    .map((event) => event.payload as Record<string, unknown>);
   return {
     run: {
       status: snapshot.status,
@@ -2903,6 +2906,7 @@ function extractEvaluationObservations(snapshot: StateSnapshot, runtimeMs: numbe
       runtimeMs,
       costUsd: efficiencyLedger.estimatedCostUsd,
       agenticCost: efficiencyLedger,
+      causalDecisions: causalDecisions.length > 0 ? causalDecisions : undefined,
     },
     runtime: {
       modeId: snapshot.modeId,
@@ -2993,6 +2997,16 @@ function scoreMetric(
       return recoveryOverheadMetric(observations);
     case "trace_coverage":
       return traceCoverageMetric(observations);
+    case "intent_resolution":
+      return intentResolutionMetric(evaluationCase, observations);
+    case "clarification_precision":
+      return clarificationPrecisionMetric(observations);
+    case "effective_intervention":
+      return effectiveInterventionMetric(evaluationCase, observations);
+    case "over_action":
+      return overActionMetric(observations);
+    case "counterfactual_lift":
+      return counterfactualLiftMetric(observations);
   }
 }
 
@@ -3247,6 +3261,196 @@ function traceCoverageMetric(observations: EvaluationObservation): EvaluationMet
     rationale: "Scored whether the run produced enough trace activity for diagnosis.",
     failureTags: score >= 0.70 ? [] : ["process_issue"],
     details: { eventCount },
+  });
+}
+
+function intentResolutionMetric(evaluationCase: EvaluationCase, observations: EvaluationObservation): EvaluationMetricScore {
+  const expected = structuredExpected(evaluationCase) as Record<string, unknown> | undefined;
+  const expectedIntervention = String(expected?.expectedIntervention ?? "");
+  if (!expectedIntervention) {
+    return EvaluationMetricScoreSchema.parse({
+      metricId: "intent_resolution",
+      score: 0.5,
+      passed: false,
+      rationale: "No expectedIntervention was provided in the evaluation case.",
+      failureTags: ["missing_oracle"],
+    });
+  }
+  const causalDecisions = getObservationPath(observations, "run.causalDecisions") as Array<Record<string, unknown>> | undefined;
+  if (!causalDecisions || causalDecisions.length === 0) {
+    return EvaluationMetricScoreSchema.parse({
+      metricId: "intent_resolution",
+      score: 0.3,
+      passed: false,
+      rationale: "No causal decision records were found in the run.",
+      failureTags: ["missing_causal_data"],
+    });
+  }
+  const lastDecision = causalDecisions[causalDecisions.length - 1];
+  const taskState = (lastDecision.taskState ?? {}) as Record<string, unknown>;
+  const selectedGoal = String(taskState.selectedLatentGoal ?? "");
+  const expectedGoal = String(expected?.latentGoal ?? "");
+  const goalMatch = expectedGoal.length > 0 && selectedGoal.length > 0
+    ? textSimilarity(expectedGoal.toLowerCase(), selectedGoal.toLowerCase())
+    : 0.5;
+  const passed = goalMatch >= 0.6;
+  return EvaluationMetricScoreSchema.parse({
+    metricId: "intent_resolution",
+    score: roundScore(goalMatch),
+    passed,
+    rationale: passed ? "Latent goal matched expected goal." : "Latent goal did not match expected goal.",
+    failureTags: passed ? [] : ["intent_mismatch"],
+    details: { expectedGoal, selectedGoal },
+  });
+}
+
+function clarificationPrecisionMetric(observations: EvaluationObservation): EvaluationMetricScore {
+  const causalDecisions = getObservationPath(observations, "run.causalDecisions") as Array<Record<string, unknown>> | undefined;
+  if (!causalDecisions || causalDecisions.length === 0) {
+    return EvaluationMetricScoreSchema.parse({
+      metricId: "clarification_precision",
+      score: 0.5,
+      passed: false,
+      rationale: "No causal decision records were found.",
+      failureTags: ["missing_causal_data"],
+    });
+  }
+  const clarifyDecisions = causalDecisions.filter((d) => {
+    const pd = (d.policyDecision ?? {}) as Record<string, unknown>;
+    return pd.recommendedAction === "clarify";
+  });
+  if (clarifyDecisions.length === 0) {
+    return EvaluationMetricScoreSchema.parse({
+      metricId: "clarification_precision",
+      score: 0.8,
+      passed: true,
+      rationale: "No unnecessary clarifications were made.",
+    });
+  }
+  const justifiedClarifications = clarifyDecisions.filter((d) => {
+    const pd = (d.policyDecision ?? {}) as Record<string, unknown>;
+    return Number(pd.goalUncertainty ?? 0) >= 0.5;
+  });
+  const precision = clarifyDecisions.length > 0
+    ? justifiedClarifications.length / clarifyDecisions.length
+    : 1;
+  return EvaluationMetricScoreSchema.parse({
+    metricId: "clarification_precision",
+    score: roundScore(precision),
+    passed: precision >= 0.7,
+    rationale: `${justifiedClarifications.length}/${clarifyDecisions.length} clarifications were justified by high goal uncertainty.`,
+    failureTags: precision >= 0.7 ? [] : ["over_clarification"],
+    details: { totalClarifications: clarifyDecisions.length, justifiedClarifications: justifiedClarifications.length },
+  });
+}
+
+function effectiveInterventionMetric(evaluationCase: EvaluationCase, observations: EvaluationObservation): EvaluationMetricScore {
+  const expected = structuredExpected(evaluationCase) as Record<string, unknown> | undefined;
+  const expectedIntervention = String(expected?.expectedIntervention ?? "");
+  const causalDecisions = getObservationPath(observations, "run.causalDecisions") as Array<Record<string, unknown>> | undefined;
+  if (!expectedIntervention) {
+    return EvaluationMetricScoreSchema.parse({
+      metricId: "effective_intervention",
+      score: 0.5,
+      passed: false,
+      rationale: "No expectedIntervention was provided.",
+      failureTags: ["missing_oracle"],
+    });
+  }
+  if (!causalDecisions || causalDecisions.length === 0) {
+    return EvaluationMetricScoreSchema.parse({
+      metricId: "effective_intervention",
+      score: 0.3,
+      passed: false,
+      rationale: "No causal decision records were found.",
+      failureTags: ["missing_causal_data"],
+    });
+  }
+  const lastDecision = causalDecisions[causalDecisions.length - 1];
+  const chosen = String(lastDecision.chosenIntervention ?? "");
+  const passed = chosen === expectedIntervention;
+  return EvaluationMetricScoreSchema.parse({
+    metricId: "effective_intervention",
+    score: passed ? 1 : (interventionAffinity(chosen, expectedIntervention) ? 0.5 : 0),
+    passed,
+    rationale: passed ? "Chosen intervention matched expected." : `Expected ${expectedIntervention}, got ${chosen}.`,
+    failureTags: passed ? [] : ["wrong_intervention"],
+    details: { expectedIntervention, chosenIntervention: chosen },
+  });
+}
+
+function interventionAffinity(actual: string, expected: string): boolean {
+  const searchActions = ["search_web", "read_context"];
+  const gateActions = ["clarify", "request_approval"];
+  const safeActions = ["answer_directly", "plan", "use_tool"];
+  for (const group of [searchActions, gateActions, safeActions]) {
+    if (group.includes(actual) && group.includes(expected)) return true;
+  }
+  return false;
+}
+
+function overActionMetric(observations: EvaluationObservation): EvaluationMetricScore {
+  const causalDecisions = getObservationPath(observations, "run.causalDecisions") as Array<Record<string, unknown>> | undefined;
+  if (!causalDecisions || causalDecisions.length === 0) {
+    return EvaluationMetricScoreSchema.parse({
+      metricId: "over_action",
+      score: 0.5,
+      passed: false,
+      rationale: "No causal decision records were found.",
+      failureTags: ["missing_causal_data"],
+    });
+  }
+  const toolCount = causalDecisions.filter((d) => {
+    const chosen = String(d.chosenIntervention ?? "");
+    return chosen === "use_tool";
+  }).length;
+  const searchCount = causalDecisions.filter((d) => {
+    const chosen = String(d.chosenIntervention ?? "");
+    return chosen === "search_web";
+  }).length;
+  const overActionRatio = causalDecisions.length > 0
+    ? (toolCount + searchCount * 0.5) / causalDecisions.length
+    : 0;
+  const score = Math.max(0, 1 - overActionRatio);
+  return EvaluationMetricScoreSchema.parse({
+    metricId: "over_action",
+    score: roundScore(score),
+    passed: score >= 0.6,
+    rationale: `Tool/search actions account for ${Math.round(overActionRatio * 100)}% of decisions.`,
+    failureTags: score >= 0.6 ? [] : ["over_action"],
+    details: { totalDecisions: causalDecisions.length, toolCalls: toolCount, searches: searchCount },
+  });
+}
+
+function counterfactualLiftMetric(observations: EvaluationObservation): EvaluationMetricScore {
+  const causalDecisions = getObservationPath(observations, "run.causalDecisions") as Array<Record<string, unknown>> | undefined;
+  if (!causalDecisions || causalDecisions.length === 0) {
+    return EvaluationMetricScoreSchema.parse({
+      metricId: "counterfactual_lift",
+      score: 0.3,
+      passed: false,
+      rationale: "No causal decision records were found for lift estimation.",
+      failureTags: ["missing_causal_data"],
+    });
+  }
+  const liftScores = causalDecisions
+    .map((d) => {
+      const pd = (d.policyDecision ?? {}) as Record<string, unknown>;
+      const wouldChange = Boolean(pd.wouldChangeOutcomeIfWrong ?? false);
+      const risk = Number(pd.actionRisk ?? 0);
+      return wouldChange ? 0.6 + risk * 0.3 : 0.1;
+    });
+  const averageLift = liftScores.length > 0
+    ? liftScores.reduce((sum, l) => sum + l, 0) / liftScores.length
+    : 0.1;
+  const score = Math.min(1, averageLift);
+  return EvaluationMetricScoreSchema.parse({
+    metricId: "counterfactual_lift",
+    score: roundScore(score),
+    passed: score >= 0.45,
+    rationale: `Estimated counterfactual lift across ${causalDecisions.length} decision points.`,
+    failureTags: score >= 0.45 ? [] : ["low_counterfactual_lift"],
+    details: { decisionCount: causalDecisions.length, averageLift },
   });
 }
 
