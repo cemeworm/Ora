@@ -274,16 +274,31 @@ export class ChannelStore {
 }
 
 function normalizeChannelConfig(config: ChannelConfig): ChannelConfig {
+  // Default capabilities per channel kind
+  let capabilities = config.capabilities;
+  if (config.kind === "wechat" && capabilities?.supportsStreamingUpdates !== true) {
+    capabilities = { ...capabilities, supportsStreamingUpdates: true };
+  }
+
   const runConfig = config.config.runConfig;
   if (!runConfig || typeof runConfig !== "object" || Array.isArray(runConfig)) {
+    if (capabilities !== config.capabilities) {
+      return ChannelConfigSchema.parse({ ...config, capabilities });
+    }
     return config;
   }
   const metadata = (runConfig as Record<string, unknown>).metadata;
   if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
+    if (capabilities !== config.capabilities) {
+      return ChannelConfigSchema.parse({ ...config, capabilities });
+    }
     return config;
   }
   const metadataRecord = metadata as Record<string, unknown>;
   if (metadataRecord.taskIntent !== "chat" || metadataRecord.taskIntentMode !== undefined) {
+    if (capabilities !== config.capabilities) {
+      return ChannelConfigSchema.parse({ ...config, capabilities });
+    }
     return config;
   }
 
@@ -291,6 +306,7 @@ function normalizeChannelConfig(config: ChannelConfig): ChannelConfig {
   delete restMetadata.taskIntent;
   return ChannelConfigSchema.parse({
     ...config,
+    capabilities,
     config: {
       ...config.config,
       runConfig: {
