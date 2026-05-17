@@ -156,6 +156,8 @@ export class WechatChannelAdapter implements ChannelAdapter {
       return { ok: false, error: `No context_token for chat ${message.externalChatId}` };
     }
 
+    const messageState = message.isFinal ? 2 : 1;
+
     try {
       const res = await this.fetchImpl(`${baseUrl}/ilink/bot/sendmessage`, {
         method: "POST",
@@ -170,7 +172,7 @@ export class WechatChannelAdapter implements ChannelAdapter {
             to_user_id: message.externalChatId,
             client_id: `ora-wechat-${message.id}`,
             message_type: 2,
-            message_state: 2,
+            message_state: messageState,
             item_list: [{
               type: 1,
               text_item: { text: message.text },

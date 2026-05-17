@@ -52,6 +52,8 @@ export interface ChannelManagerOptions {
   fetchImpl?: typeof fetch;
   maxAttachmentBytes?: number;
   onSessionUpdate?: (event: ChannelSessionUpdateEvent) => void;
+  streamingThrottleMs?: number;
+  streamingMinChars?: number;
 }
 
 const FINAL_STATUSES = new Set(["succeeded", "failed", "cancelled", "interrupted"]);
@@ -82,6 +84,8 @@ export class ChannelManager {
   private readonly fetchImpl: typeof fetch;
   private readonly maxAttachmentBytes: number | undefined;
   private readonly onSessionUpdate: ((event: ChannelSessionUpdateEvent) => void) | undefined;
+  private readonly streamingThrottleMs: number;
+  private readonly streamingMinChars: number;
   private readonly bindingQueues = new Map<string, Promise<ChannelIngestResult>>();
 
   constructor(
@@ -97,6 +101,8 @@ export class ChannelManager {
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.maxAttachmentBytes = options.maxAttachmentBytes;
     this.onSessionUpdate = options.onSessionUpdate;
+    this.streamingThrottleMs = options.streamingThrottleMs ?? 300;
+    this.streamingMinChars = options.streamingMinChars ?? 10;
   }
 
   async ingest(params: unknown): Promise<ChannelIngestResult> {
@@ -189,33 +195,38 @@ export class ChannelManager {
     if (continuation) {
       return continuation;
     }
-    if (!this.sessionProjectId(binding.sessionId) && shouldDiscoverProjectForPrompt(enrichedInbound.text)) {
+    const resolution = this.resolveProjectForRun(enrichedInbound.text, binding.sessionId);
+    if (resolution.kind === "discovery") {
       return this.deliverProjectDiscoveryReply(enrichedInbound, channel, binding, {
-        originalPrompt: enrichedInbound.text,
-        query: enrichedInbound.text,
+        originalPrompt: resolution.originalPrompt,
+        query: resolution.query,
       });
     }
-    const input = {
-      prompt: enrichedInbound.text,
-      context: {
-        source: "channel",
-        channel: {
-          channelId: enrichedInbound.channelId,
-          channelKind: enrichedInbound.channelKind,
-          bindingId: binding.bindingId,
-          externalChatId: enrichedInbound.externalChatId,
-          externalThreadId: enrichedInbound.externalThreadId,
-          externalUserId: enrichedInbound.externalUserId,
-          externalUserDisplayName: enrichedInbound.externalUserDisplayName,
-          externalMessageId: enrichedInbound.externalMessageId,
-        },
-        attachments: enrichedInbound.attachments,
-      },
-      createdAt: enrichedInbound.receivedAt,
-    };
+
+    const effectivePrompt = resolution.kind === "resolved" && resolution.switched
+      ? `[已自动切换工作目录至项目：${this.sessionProjectPath(binding.sessionId)}]\n\n${enrichedInbound.text}`
+      : enrichedInbound.text;
+
+    const input = this.channelRunInput(
+      enrichedInbound,
+      binding,
+      effectivePrompt,
+      resolution.kind === "resolved" ? resolution.projectId : undefined,
+    );
 
     const runConfig = channelRunConfig(channel);
-    const { handle, snapshot } = await this.startAndWaitForRun({ input, config: runConfig, sessionId: binding.sessionId });
+    const supportsStreaming = channel.capabilities?.supportsStreamingUpdates === true;
+    const { handle, snapshot } = await this.startAndWaitForRun(
+      { input, config: runConfig, sessionId: binding.sessionId },
+      supportsStreaming
+        ? {
+            onDelta: (text: string) => {
+              const delta = this.createOutbound(enrichedInbound, channel, binding, text, "delta", false, handle?.runId);
+              void this.bus.publishOutbound(delta);
+            },
+          }
+        : undefined,
+    );
     this.store.updateInboundRoute({
       inboundMessageId: enrichedInbound.id,
       channelId: channel.channelId,
@@ -422,15 +433,38 @@ export class ChannelManager {
     });
   }
 
-  private async startAndWaitForRun(params: unknown): Promise<{ handle: RunHandle; snapshot: StateSnapshot }> {
+  private async startAndWaitForRun(
+    params: unknown,
+    streaming?: { onDelta: (text: string) => void },
+  ): Promise<{ handle: RunHandle; snapshot: StateSnapshot }> {
     let handle: RunHandle | undefined;
+    let accumulated = "";
+    let lastPublish = 0;
+    let finalCheckDone = false;
     const finalSnapshot = await new Promise<StateSnapshot>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error(`Channel run timed out after ${this.runTimeoutMs}ms.`)), this.runTimeoutMs);
       this.runtime.startStreamingRun(params, {
         onStream: (stream) => {
+          if (stream.events && streaming?.onDelta) {
+            for (const event of stream.events) {
+              const delta = extractDeltaText(event);
+              if (delta) accumulated += delta;
+            }
+            const now = this.clock();
+            if (accumulated.length >= this.streamingMinChars && (now - lastPublish) >= this.streamingThrottleMs) {
+              streaming.onDelta(accumulated);
+              lastPublish = now;
+            }
+          }
           if (stream.snapshot && FINAL_STATUSES.has(stream.snapshot.status)) {
-            clearTimeout(timer);
-            resolve(stream.snapshot);
+            if (!finalCheckDone) {
+              finalCheckDone = true;
+              if (streaming?.onDelta && accumulated.length > 0) {
+                streaming.onDelta(accumulated);
+              }
+              clearTimeout(timer);
+              resolve(stream.snapshot);
+            }
           }
         },
       }).then((created) => {
@@ -837,6 +871,44 @@ export class ChannelManager {
     }
   }
 
+  private resolveProjectForRun(
+    text: string,
+    sessionId: string,
+  ):
+    | { kind: "resolved"; projectId: string; switched: boolean }
+    | { kind: "discovery"; originalPrompt: string; query: string }
+    | { kind: "none" }
+  {
+    const currentProjectId = this.sessionProjectId(sessionId);
+    const projects = this.runtime.listProjects({ limit: 500 });
+    const mentionedLabel = extractProjectMention(text, projects);
+    const hasFileIntent = shouldDiscoverProjectForPrompt(text);
+
+    if (mentionedLabel) {
+      const match = this.matchExistingProject(mentionedLabel, new Set());
+      if (match) {
+        if (match.projectId !== currentProjectId) {
+          this.runtime.setSessionProject({ sessionId, projectId: match.projectId });
+          return { kind: "resolved", projectId: match.projectId, switched: true };
+        }
+        return { kind: "resolved", projectId: match.projectId, switched: false };
+      }
+      if (hasFileIntent) {
+        return { kind: "discovery", originalPrompt: text, query: mentionedLabel };
+      }
+    }
+
+    if (currentProjectId) {
+      return { kind: "resolved", projectId: currentProjectId, switched: false };
+    }
+
+    if (hasFileIntent) {
+      return { kind: "discovery", originalPrompt: text, query: text };
+    }
+
+    return { kind: "none" };
+  }
+
   private matchExistingProject(query: string | undefined, excludedPaths: Set<string>): ProjectSummary | undefined {
     const projects = this.runtime.listProjects({ limit: 500 })
       .filter((project) => !excludedPaths.has(project.rootPath));
@@ -906,6 +978,18 @@ function shouldDiscoverProjectForPrompt(text: string): boolean {
   return /(obsidian|vault|本地|文件|文档|目录|项目|搜索|查找|grep|readme|\.md|markdown)/i.test(text);
 }
 
+function extractProjectMention(text: string, projects: ProjectSummary[]): string | undefined {
+  if (projects.length === 0) return undefined;
+  const lowerText = text.toLowerCase();
+  const sorted = [...projects].sort((a, b) => b.label.length - a.label.length);
+  for (const project of sorted) {
+    if (project.label.length >= 2 && lowerText.includes(project.label.toLowerCase())) {
+      return project.label;
+    }
+  }
+  return undefined;
+}
+
 function projectDiscoveryRoots(channel: ChannelConfig): string[] | undefined {
   const roots = channel.config.projectDiscoveryRoots;
   if (!Array.isArray(roots)) {
@@ -967,4 +1051,15 @@ function channelRunConfig(channel: ChannelConfig): Record<string, unknown> | und
       ...metadata,
     },
   };
+}
+
+function extractDeltaText(event: { type?: string; payload?: unknown }): string {
+  if (typeof event.type !== "string") return "";
+  if (event.type !== "message.delta" && event.type !== "token.delta") return "";
+  const payload = event.payload;
+  if (!payload || typeof payload !== "object") return "";
+  const record = payload as Record<string, unknown>;
+  if (typeof record.delta === "string" && record.delta.length > 0) return record.delta;
+  if (typeof record.content === "string" && record.content.length > 0) return record.content;
+  return "";
 }

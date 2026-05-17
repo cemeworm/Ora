@@ -632,6 +632,63 @@ describe("WechatChannelAdapter lifecycle", () => {
     expect(result).toEqual({ ok: false, error: "sendmessage ret -2" });
   });
 
+  it("sends isFinal=false delta messages with message_state 1", async () => {
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.includes("getupdates")) {
+        return new Response(
+          JSON.stringify({
+            item_list: [{
+              msg_id: "msg-stream-001",
+              type: 1,
+              content: "Hello from WeChat",
+              from_user: "user-wx-1",
+              to_user: "bot-001",
+              context_token: "ctx-token-stream",
+            }],
+            get_updates_buf: "buf-next",
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response(
+        JSON.stringify({ ret: 0, msg_id: "out-msg-stream-001" }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    });
+    let resolveIngest!: (params: ChannelIngestParams) => void;
+    const ingested = new Promise<ChannelIngestParams>((resolve) => {
+      resolveIngest = resolve;
+    });
+    const adapter = new WechatChannelAdapter(makeConfig(), fetchImpl, {
+      onIngest: async (params) => resolveIngest(params),
+      onConfigUpdate: vi.fn(),
+    });
+
+    adapter.start();
+    await ingested;
+    adapter.stop();
+    const result = await adapter.send({
+      id: "outbound-stream-1",
+      channelId: "wechat-test",
+      bindingId: "binding-1",
+      sessionId: "session-1",
+      runId: "run-1",
+      externalChatId: "user-wx-1",
+      text: "streaming",
+      isFinal: false,
+      kind: "delta",
+      attachments: [],
+      createdAt: clock(),
+      metadata: {},
+    });
+
+    expect(result.ok).toBe(true);
+    const sentBody = JSON.parse((fetchImpl.mock.calls.at(-1)?.[1] as RequestInit | undefined)?.body as string ?? "{}");
+    expect(sentBody.msg.message_state).toBe(1);
+    expect(sentBody.msg.item_list[0].text_item.text).toBe("streaming");
+  });
+
   it("start and stop without errors", () => {
     const adapter = new WechatChannelAdapter(makeConfig({ botToken: "" }));
     adapter.start();
