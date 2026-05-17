@@ -20,7 +20,7 @@ import type {
 } from "../types";
 import type { OraRunConfig, OraSessionBranchGroupCreateParams, OraStateSnapshot } from "../lib/runtimeClient";
 import { runnableProviderOptions } from "../lib/providerOptions";
-import { useWorkbench, type ComposerLocalFileAttachment } from "../lib/state";
+import { useWorkbench, type ComposerImageAttachment, type ComposerLocalFileAttachment } from "../lib/state";
 import { getWelcomeGreeting } from "../lib/welcomeGreeting";
 import { translateCopy, type AppLanguage } from "../lib/i18n";
 import type { DesktopRunInteractionState } from "../lib/runInteractionState";
@@ -229,6 +229,7 @@ export function ChatView({
   });
   const projectFileAttachments = state.sessionProjectFileAttachments[selectedSession.id] ?? [];
   const localFileAttachments = state.sessionLocalFileAttachments[selectedSession.id] ?? [];
+  const imageAttachments = state.sessionImageAttachments[selectedSession.id] ?? [];
   const attention = activeSnapshot?.attention ?? state.activeSessionDetail?.session.attention;
   const {
     approvalActions: pendingApprovalActions,
@@ -304,6 +305,14 @@ export function ChatView({
             : "File drop failed.",
       });
     }
+  }
+
+  function handleImagePasted(image: ComposerImageAttachment) {
+    dispatch({
+      type: "ADD_IMAGE_ATTACHMENT",
+      sessionId: selectedSession.id,
+      image,
+    });
   }
 
   return (
@@ -408,6 +417,15 @@ export function ChatView({
               path,
             })
           }
+          imageAttachments={imageAttachments}
+          onRemoveImageAttachment={(name) =>
+            dispatch({
+              type: "REMOVE_IMAGE_ATTACHMENT",
+              sessionId: selectedSession.id,
+              name,
+            })
+          }
+          onAddImageAttachment={handleImagePasted}
           permissionMode={state.permissionMode}
           onPermissionModeChange={(mode) => dispatch({ type: "SET_PERMISSION_MODE", permissionMode: mode })}
           taskIntent={state.taskIntent}

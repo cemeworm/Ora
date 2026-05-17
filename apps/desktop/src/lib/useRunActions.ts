@@ -4,7 +4,7 @@ import { DEFAULT_WEB_TOOL_IDS } from "@cemeworm/shared";
 import { USER_CANCELLED_MESSAGE, USER_INTERRUPTED_MESSAGE, USER_RESUMED_MESSAGE, getSharedRuntimeClient, type OraProjectSummary, type OraProviderConfig, type OraSessionBranchGroupCreateParams, type OraSessionDetail, type OraSessionSummary, type OraStateSnapshot } from "./runtimeClient";
 import { buildRunSearchConfig } from "./searchSettings";
 import { loadDesktopToolModelSettings } from "./toolModelSettings";
-import { getActiveSnapshot, getPendingRunState, useWorkbench, emptySessionDetail, type ComposerLocalFileAttachment, type ComposerProjectFileAttachment, type WorkbenchState } from "./state";
+import { getActiveSnapshot, getPendingRunState, useWorkbench, emptySessionDetail, type ComposerImageAttachment, type ComposerLocalFileAttachment, type ComposerProjectFileAttachment, type WorkbenchState } from "./state";
 import { buildStableViewModel, buildDynamicViewModel } from "./viewModel";
 
 import { timeStart, timeEnd } from "./debugTiming";
@@ -94,6 +94,7 @@ function appendDesktopLatencyMarks(snapshot: OraStateSnapshot, marks: readonly D
 export function buildDesktopRunContext(
   projectFileAttachments: readonly ComposerProjectFileAttachment[] = [],
   localFileAttachments: readonly ComposerLocalFileAttachment[] = [],
+  imageAttachments: readonly ComposerImageAttachment[] = [],
 ): Record<string, unknown> {
   return {
     source: "desktop-workbench",
@@ -117,6 +118,16 @@ export function buildDesktopRunContext(
             sizeBytes: file.sizeBytes,
             ...(typeof file.content === "string" ? { content: file.content } : {}),
             ...(file.truncated ? { truncated: true } : {}),
+          })),
+        }
+      : {}),
+    ...(imageAttachments.length > 0
+      ? {
+          attachedImages: imageAttachments.map((img) => ({
+            dataUrl: img.dataUrl,
+            mimeType: img.mimeType,
+            name: img.name,
+            sizeBytes: img.sizeBytes,
           })),
         }
       : {}),
@@ -738,6 +749,7 @@ export function useRunActions() {
     const submittedPrompt = prompt;
     const submittedProjectFileAttachments = state.sessionProjectFileAttachments[sessionId] ?? [];
     const submittedLocalFileAttachments = state.sessionLocalFileAttachments[sessionId] ?? [];
+    const submittedImageAttachments = state.sessionImageAttachments[sessionId] ?? [];
     const clarificationPatch = getActiveSnapshot(state.runLifecycle)?.runId === state.selectedTurnRunId
       ? buildPendingClarificationResumePatch(getActiveSnapshot(state.runLifecycle), submittedPrompt)
       : undefined;
@@ -756,6 +768,9 @@ export function useRunActions() {
       }
       if (!clarificationPatch && submittedLocalFileAttachments.length > 0) {
         dispatch({ type: "CLEAR_LOCAL_FILE_ATTACHMENTS", sessionId });
+      }
+      if (!clarificationPatch && submittedImageAttachments.length > 0) {
+        dispatch({ type: "CLEAR_IMAGE_ATTACHMENTS", sessionId });
       }
     });
     await waitForPendingRunPaint();
@@ -803,7 +818,7 @@ export function useRunActions() {
         {
           prompt: submittedPrompt,
           projectId,
-          context: buildDesktopRunContext(submittedProjectFileAttachments, submittedLocalFileAttachments),
+          context: buildDesktopRunContext(submittedProjectFileAttachments, submittedLocalFileAttachments, submittedImageAttachments),
         },
         {
           pattern: selectedRunPattern,

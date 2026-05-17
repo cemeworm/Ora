@@ -1335,9 +1335,30 @@ export function adaptChatMessages(
       const canDisplayLivePlanBody = liveAssistantPlan
         ? liveAssistantPlan.status === "streaming" || liveAssistantPlan.hasCompletePlan
         : false;
+      const storedContent = !turn.snapshot ? turn.assistant?.content : undefined;
+      const storedPlan = storedContent ? parseProposedPlan(storedContent) : undefined;
+      const canDisplayStoredPlan = storedPlan
+        ? storedPlan.status === "streaming" || storedPlan.hasCompletePlan
+        : false;
       const assistantTurn = turn.snapshot
         ? buildAssistantTurnAttachment(turn.snapshot, canDisplayLivePlanBody ? liveAssistantPlan : undefined)
-        : undefined;
+        : canDisplayStoredPlan
+          ? ({
+              runId: turn.runId,
+              turnIndex: turn.turnIndex ?? 1,
+              status: "completed" as RunStatus,
+              processSteps: [],
+              planList: [],
+              agentMessages: [],
+              artifacts: [],
+              sources: [],
+              todos: [],
+              approvalCount: 0,
+              clarificationCount: 0,
+              hasProposedPlan: true,
+              planContent: storedPlan!.planContent,
+            } satisfies AssistantTurnAttachment)
+          : undefined;
       const rawAssistantText = turn.snapshot
         ? liveAssistantText ?? assistantTextFromSnapshot(turn.snapshot)
         : undefined;
@@ -1356,7 +1377,8 @@ export function adaptChatMessages(
         ? snapshotProposedPlan.planContent
         : parsedAssistantPlan && canDisplayPlanBody
           ? parsedAssistantPlan.planContent
-          : parsedAssistantPlan?.displayText;
+          : parsedAssistantPlan?.displayText
+          ?? (canDisplayStoredPlan ? storedPlan?.displayText : undefined);
       const suppressStoredAssistant = turn.snapshot
         ? shouldSuppressStoredAssistantFallback(turn.snapshot)
         : false;
@@ -2143,7 +2165,7 @@ function buildAssistantTurnAttachment(
     todos: [],
     approvalCount: snapshotPendingApprovals(snapshot).length,
     clarificationCount: snapshotPendingClarifications(snapshot).length,
-    hasProposedPlan: Boolean(proposedPlan),
+    hasProposedPlan: Boolean(proposedPlan) || (snapshot.planList ?? []).length > 0,
     proposedPlanStatus: proposedPlan?.status === "streaming" ? "streaming" : proposedPlan ? "complete" : undefined,
     planContent: proposedPlan?.planContent,
     activeLoadingTarget: activeLoadingTargetFromSnapshot(snapshot, status, timelineItems),
