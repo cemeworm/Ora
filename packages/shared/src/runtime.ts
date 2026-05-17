@@ -593,6 +593,7 @@ export const AgentConversationMessageKindSchema = z.enum([
   "route",
   "publish",
   "status",
+  "info",
 ]);
 export type AgentConversationMessageKind = z.infer<typeof AgentConversationMessageKindSchema>;
 
@@ -629,12 +630,12 @@ export const AgentConversationMessageSchema = z.object({
   fromAgentId: z.string().min(1),
   toAgentIds: z.array(z.string().min(1)).default([]),
   replyToId: z.string().min(1).optional(),
-  threadId: z.string().min(1),
+  threadId: z.string().default(""),
   nodeId: z.string().min(1).optional(),
   planItemId: z.string().min(1).optional(),
   kind: AgentConversationMessageKindSchema,
   status: AgentConversationMessageStatusSchema.default("sent"),
-  content: z.string().min(1),
+  content: z.string().default(""),
   topic: z.string().min(1).optional(),
   correlationId: z.string().min(1).optional(),
   artifactIds: z.array(z.string().min(1)).default([]),
