@@ -99,7 +99,7 @@ export function ArtifactWidgetDetail({ widget, onClose, onUpdated }: ArtifactWid
 
   if (showVersions) {
     return (
-      <div className="flex h-full flex-col bg-background">
+      <div className="flex h-full flex-col bg-card">
         <header className="flex shrink-0 items-center justify-between border-b px-6 py-4">
           <div>
             <h1 className="text-lg font-serif text-primary">版本历史</h1>
@@ -152,7 +152,7 @@ export function ArtifactWidgetDetail({ widget, onClose, onUpdated }: ArtifactWid
   }
 
   return (
-    <div className="flex h-full flex-col bg-background">
+    <div className="flex h-full flex-col bg-card">
       <header className="flex shrink-0 items-center justify-between border-b px-6 py-4">
         <div>
           <h1 className="text-lg font-serif text-primary">{state?.title ?? widget.title}</h1>

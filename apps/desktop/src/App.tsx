@@ -17,7 +17,7 @@ import { AppShell } from "./components/AppShell";
 import { ArtifactDrawer } from "./components/ArtifactDrawer";
 import { ChatView } from "./components/ChatView";
 import { DocumentsDrawer } from "./components/DocumentsDrawer";
-import { OnboardingView } from "./components/onboarding/OnboardingView";
+import { ProviderOnboardingStep } from "./components/onboarding/ProviderOnboardingStep";
 import { SettingsView } from "./components/SettingsView";
 import { SpaceFrame } from "./components/SpaceFrame";
 import { TrailsDrawer } from "./components/TrailsDrawer";
@@ -926,7 +926,7 @@ function WorkbenchInner() {
 
   if (shouldShowOnboarding) {
     return (
-      <OnboardingView
+      <ProviderOnboardingStep
         onComplete={() => completeOnboarding("completed")}
         onSkip={() => completeOnboarding("skipped")}
       />

@@ -154,6 +154,7 @@ export function SpaceDashboardView() {
         skillOptions={workbench.skillRegistry?.skills ?? []}
         selectedSkillIds={workbench.selectedSkillIds}
         contextChips={contextChips}
+        placeholder="让 Ora 制作小组件"
         projectFileAttachments={[]}
         localFileAttachments={[]}
         imageAttachments={[]}
@@ -226,7 +227,7 @@ export function SpaceDashboardView() {
           className="h-full overflow-y-auto px-4 pt-4 sm:px-6 lg:px-7"
           style={{ paddingBottom: bottomPad }}
         >
-          <div className="mx-auto min-h-[min(720px,calc(100vh-14rem))] max-w-6xl overflow-hidden rounded-md border border-white/70 bg-card/95 text-card-foreground shadow-[0_18px_56px_rgba(23,23,23,0.08)] backdrop-blur-sm">
+          <div className="mx-auto min-h-[min(720px,calc(100vh-14rem))] max-w-6xl overflow-hidden rounded-2xl border border-white/70 bg-card text-card-foreground shadow-[0_18px_56px_rgba(23,23,23,0.08)] backdrop-blur-sm">
             {renderWidgetDetail({
               widget: detailWidget,
               onClose: () => {

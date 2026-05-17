@@ -117,7 +117,7 @@ export function TodoWidgetDetail({ widget, onClose, onUpdated }: TodoWidgetDetai
   const completedItems = items.filter((i) => i.completedAt);
 
   return (
-    <div className="flex h-full flex-col bg-background">
+    <div className="flex h-full flex-col bg-card">
       <header className="flex shrink-0 items-center justify-between border-b px-6 py-4">
         <div>
           <h1 className="text-lg font-serif text-primary">{widget.title}</h1>

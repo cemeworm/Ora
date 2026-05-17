@@ -91,7 +91,7 @@ export function WidgetCard({
     <article
       onClick={onSelect}
       className={cn(
-        "group relative flex h-full cursor-pointer flex-col overflow-hidden rounded-md border border-white/70 bg-card/88 text-card-foreground shadow-[0_12px_34px_rgba(23,23,23,0.055)] backdrop-blur-sm transition duration-200",
+        "group relative flex h-full cursor-pointer flex-col overflow-hidden rounded-2xl border border-white/70 bg-card/88 text-card-foreground shadow-[0_12px_34px_rgba(23,23,23,0.055)] backdrop-blur-sm transition duration-200",
         "hover:-translate-y-0.5 hover:border-bench-300/80 hover:bg-card hover:shadow-[0_18px_46px_rgba(23,23,23,0.09)]",
         "focus-within:border-foreground/20",
         isCompact ? "min-h-[180px] p-3.5" : "min-h-[180px] p-4",
@@ -109,6 +109,9 @@ export function WidgetCard({
             )}>
               <KindIcon kind={widget.kind} />
             </span>
+            <h3 className="flex-1 min-w-0 truncate text-[15px] font-semibold leading-5 text-foreground">
+              {widget.title}
+            </h3>
             {!isCompact && (
               <span className={cn("rounded-full px-2 py-0.5 text-[11px] font-semibold ring-1", meta.tone)}>
                 {meta.label}
@@ -121,9 +124,6 @@ export function WidgetCard({
               </span>
             )}
           </div>
-          <h3 className="line-clamp-2 text-[15px] font-semibold leading-5 text-foreground">
-            {widget.title}
-          </h3>
         </div>
         {isCompact ? (
           <WidgetIconButton

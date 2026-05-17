@@ -281,7 +281,6 @@ describe("ChatInput context chips", () => {
 
     expect(html).toContain("任务清单 · 3 待办");
     expect(html).toContain("release-helper");
-    expect(html).toContain("pt-12");
-    expect(html).not.toContain("min-h-[96px] pt-4");
+    expect(html).toContain("min-h-[80px] pt-4");
   });
 });

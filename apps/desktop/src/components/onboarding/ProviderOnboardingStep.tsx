@@ -1,5 +1,4 @@
 import {
-  ArrowLeft,
   CheckCircle2,
   ExternalLink,
   KeyRound,
@@ -22,7 +21,6 @@ import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 
 interface ProviderOnboardingStepProps {
-  onBack: () => void;
   onComplete: () => void;
   onSkip: () => void;
 }
@@ -80,7 +78,6 @@ export function canCompleteProviderOnboarding({
 }
 
 export function ProviderOnboardingStep({
-  onBack,
   onComplete,
   onSkip,
 }: ProviderOnboardingStepProps) {
@@ -536,15 +533,6 @@ export function ProviderOnboardingStep({
 
       <footer className="-mx-7 -mb-6 flex shrink-0 items-center justify-between gap-3 px-7 py-5">
         <div className="flex items-center gap-2">
-          <Button
-            type="button"
-            variant="ghost"
-            className="rounded-2xl text-bench-700 active:scale-95"
-            onClick={onBack}
-          >
-            <ArrowLeft size={15} />
-            返回上一页
-          </Button>
           <Button
             type="button"
             variant="ghost"
