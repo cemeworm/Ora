@@ -95,9 +95,11 @@ export function buildDesktopRunContext(
   projectFileAttachments: readonly ComposerProjectFileAttachment[] = [],
   localFileAttachments: readonly ComposerLocalFileAttachment[] = [],
   imageAttachments: readonly ComposerImageAttachment[] = [],
+  extraContext: Record<string, unknown> = {},
 ): Record<string, unknown> {
   return {
     source: "desktop-workbench",
+    ...extraContext,
     ...(projectFileAttachments.length > 0
       ? {
           attachedProjectFiles: projectFileAttachments.map((file) => ({
@@ -775,6 +777,8 @@ export function useRunActions() {
     prompt?: string;
     taskIntent?: WorkbenchState["taskIntent"];
     clearPromptIfMatched?: boolean;
+    extraContext?: Record<string, unknown>;
+    extraMetadata?: Record<string, unknown>;
   } = {}) {
     const prompt = options.prompt ?? state.promptText;
     const taskIntent = options.taskIntent ?? state.taskIntent;
@@ -853,7 +857,12 @@ export function useRunActions() {
         {
           prompt: submittedPrompt,
           projectId,
-          context: buildDesktopRunContext(submittedProjectFileAttachments, submittedLocalFileAttachments, submittedImageAttachments),
+          context: buildDesktopRunContext(
+            submittedProjectFileAttachments,
+            submittedLocalFileAttachments,
+            submittedImageAttachments,
+            options.extraContext,
+          ),
         },
         {
           pattern: selectedRunPattern,
@@ -874,6 +883,7 @@ export function useRunActions() {
             taskIntent,
             toolModelProviderId: toolModelSettings.providerId,
             ...searchConfig.metadata,
+            ...(options.extraMetadata ?? {}),
             ...(state.selectedSkillIds.length > 0 ? { selectedSkillIds: state.selectedSkillIds } : {}),
             ...(state.selectedCustomAgentId ? { customAgentId: state.selectedCustomAgentId } : {}),
           },
@@ -908,6 +918,21 @@ export function useRunActions() {
 
   async function startRun() {
     await startRunWithOptions();
+  }
+
+  async function startRunWithPrompt(options: {
+    prompt: string;
+    taskIntent?: WorkbenchState["taskIntent"];
+    extraContext?: Record<string, unknown>;
+    extraMetadata?: Record<string, unknown>;
+  }) {
+    await startRunWithOptions({
+      prompt: options.prompt,
+      taskIntent: options.taskIntent,
+      clearPromptIfMatched: false,
+      extraContext: options.extraContext,
+      extraMetadata: options.extraMetadata,
+    });
   }
 
   async function interruptRun() {
@@ -1309,6 +1334,7 @@ export function useRunActions() {
       selectSession,
       selectTurn,
       startRun,
+      startRunWithPrompt,
       submitClarificationOption,
       submitAllClarifications,
       interruptRun,

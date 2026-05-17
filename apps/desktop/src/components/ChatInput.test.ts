@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import {
+  ChatInput,
   getComposerTrayVisibility,
   getContextRingState,
   getCurrentLineInfo,
@@ -216,5 +219,69 @@ describe("getCurrentLineInfo", () => {
       lineStart: 0,
       lineText: "",
     });
+  });
+});
+
+describe("ChatInput context chips", () => {
+  it("renders widget context chips alongside selected skill chips without using the compact textarea top padding", () => {
+    const html = renderToStaticMarkup(createElement(ChatInput as any, {
+      sessionId: "session-1",
+      composerPrompt: "",
+      isLoading: false,
+      runInteractionState: {
+        status: "idle",
+        isProcessing: false,
+        canSubmit: true,
+        canStop: false,
+        canResume: false,
+        canRebuild: false,
+        authority: "session_summary",
+      },
+      activeMode: {
+        id: "single_agent",
+        family: "single_agent",
+        label: "单智能体",
+        summary: "默认模式",
+        recommendedUse: "默认",
+        failureMode: "无",
+        isPreset: true,
+      },
+      modeOptions: [],
+      selectedModeSelection: "manual",
+      providerOptions: [],
+      skillOptions: [{
+        id: "release-helper",
+        name: "release-helper",
+        description: "Helps release work",
+        category: "private",
+        enabled: true,
+      }],
+      selectedSkillIds: ["release-helper"],
+      contextChips: [{ id: "widget-1", label: "任务清单 · 3 待办", tone: "widget" }],
+      projectFileAttachments: [],
+      localFileAttachments: [],
+      imageAttachments: [],
+      onRemoveImageAttachment: () => {},
+      onAddImageAttachment: () => {},
+      onModeChange: () => {},
+      onModeSelectionChange: () => {},
+      onProviderChange: () => {},
+      onPromptChange: () => {},
+      onSelectedSkillIdsChange: () => {},
+      onRemoveProjectFileAttachment: () => {},
+      onRemoveLocalFileAttachment: () => {},
+      onOpenLocalFiles: () => {},
+      permissionMode: "default",
+      onPermissionModeChange: () => {},
+      taskIntent: "implement",
+      onTaskIntentChange: () => {},
+      onStartRun: () => {},
+      onStopRun: () => {},
+    }));
+
+    expect(html).toContain("任务清单 · 3 待办");
+    expect(html).toContain("release-helper");
+    expect(html).toContain("pt-12");
+    expect(html).not.toContain("min-h-[96px] pt-4");
   });
 });
