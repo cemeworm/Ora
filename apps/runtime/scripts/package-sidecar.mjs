@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import {
   chmodSync,
   copyFileSync,
@@ -67,7 +67,7 @@ if (!existsSync(bundledRuntimePath)) {
   throw new Error(`Missing packaged sidecar bundle at ${bundledRuntimePath}`);
 }
 
-verifyPackagedSidecar();
+await verifyPackagedSidecar();
 
 function resolveEsbuildBinary() {
   const pnpmDir = path.join(repoRoot, "node_modules", ".pnpm");
@@ -152,18 +152,14 @@ function resolveInstalledPackageDir(packageName) {
   throw new Error(`Unable to locate installed package directory for ${packageName}`);
 }
 
-function verifyPackagedSidecar() {
+async function verifyPackagedSidecar() {
   const smokeDbPath = path.join(os.tmpdir(), `ora-runtime-sidecar-smoke-${process.pid}.db`);
+  const SMOKE_TIMEOUT_MS = 15_000;
   try {
-    const output = execFileSync(stagedNodePath, [bundledRuntimePath], {
+    const output = await runSidecarSmokeWithTimeout(stagedNodePath, [bundledRuntimePath], {
       cwd: stageAppDir,
-      input: `${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "runtime.bootstrap" })}\n`,
-      encoding: "utf8",
-      env: {
-        ...process.env,
-        ORA_RUNTIME_STORE_DIR: smokeDbPath,
-      },
-      stdio: ["pipe", "pipe", "inherit"],
+      env: { ...process.env, ORA_RUNTIME_STORE_DIR: smokeDbPath },
+      timeoutMs: SMOKE_TIMEOUT_MS,
     });
     const response = JSON.parse(output.trim());
     if (response.jsonrpc !== "2.0" || response.id !== 1 || !response.result) {
@@ -174,6 +170,58 @@ function verifyPackagedSidecar() {
     rmSync(`${smokeDbPath}-shm`, { force: true });
     rmSync(`${smokeDbPath}-wal`, { force: true });
   }
+}
+
+function runSidecarSmokeWithTimeout(command, args, options) {
+  const { timeoutMs, ...spawnOptions } = options;
+  const request = `${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "runtime.bootstrap" })}\n`;
+
+  const child = spawn(command, args, {
+    ...spawnOptions,
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+
+  let stdout = "";
+  let stderr = "";
+
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      child.kill("SIGTERM");
+      setTimeout(() => {
+        if (!child.killed) child.kill("SIGKILL");
+      }, 2000);
+      reject(new Error(`Sidecar smoke test timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+
+    // Read only the first line from stdout (the JSON-RPC response), then kill
+    let resolved = false;
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString("utf8");
+      const newlineIdx = stdout.indexOf("\n");
+      if (!resolved && newlineIdx >= 0) {
+        resolved = true;
+        clearTimeout(timer);
+        child.kill("SIGTERM");
+        resolve(stdout.slice(0, newlineIdx));
+      }
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString("utf8");
+    });
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+    child.on("close", (code) => {
+      if (!resolved) {
+        clearTimeout(timer);
+        reject(new Error(`Sidecar smoke test exited with code ${code} before returning a response: ${stderr.trim() || stdout.trim()}`));
+      }
+    });
+
+    child.stdin.write(request);
+    child.stdin.end();
+  });
 }
 
 function run(command, args, cwd) {
