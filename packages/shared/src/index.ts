@@ -1,6 +1,7 @@
 export * from "./primitives.js";
 export * from "./memory.js";
 export * from "./actions.js";
+export { TodoItemSchema, type TodoItem } from "./actions.js";
 export * from "./topology.js";
 export * from "./providers.js";
 export * from "./capabilities.js";
@@ -22,3 +23,4 @@ export * from "./config.js";
 export * from "./bootstrap.js";
 export * from "./driver-manifest.js";
 export * from "./mode-execution-preview.js";
+export * from "./widgets.js";

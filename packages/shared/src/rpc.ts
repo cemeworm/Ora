@@ -157,7 +157,22 @@ export const RuntimeJsonRpcMethodSchema = z.enum([
   "selfIteration.candidates.apply",
   "selfIteration.candidates.rollback",
   "selfIteration.policy.get",
-  "selfIteration.policy.update"
+  "selfIteration.policy.update",
+  "widgets.list",
+  "widgets.get",
+  "widgets.create",
+  "widgets.update",
+  "widgets.delete",
+  "widgets.archive",
+  "widgets.restore",
+  "widgets.versions.list",
+  "widgets.versions.get",
+  "widgets.versions.compare",
+  "widgets.versions.restore",
+  "widgets.togglePin",
+  "widgets.listStale",
+  "widgets.listEvents",
+  "widgets.findDuplicate"
 ]);
 export type RuntimeJsonRpcMethod = z.infer<typeof RuntimeJsonRpcMethodSchema>;
 

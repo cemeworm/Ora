@@ -892,11 +892,22 @@ export const SessionCreateParamsSchema = z.object({
 });
 export type SessionCreateParams = z.infer<typeof SessionCreateParamsSchema>;
 
-export const ProjectCreateParamsSchema = z.object({
-  label: z.string().min(1).optional(),
-  rootPath: z.string().min(1),
-});
-export type ProjectCreateParams = z.infer<typeof ProjectCreateParamsSchema>;
+export const ProjectSourceKindSchema = z.enum(["local_folder", "ora_project"]);
+export type ProjectSourceKind = z.infer<typeof ProjectSourceKindSchema>;
+
+export const ProjectCreateParamsSchema = z.discriminatedUnion("sourceKind", [
+  z.object({
+    sourceKind: z.literal("local_folder"),
+    label: z.string().min(1).optional(),
+    rootPath: z.string().min(1),
+  }),
+  z.object({
+    sourceKind: z.literal("ora_project"),
+    label: z.string().min(1),
+    description: z.string().optional(),
+  }),
+]);
+export type ProjectCreateParams = z.input<typeof ProjectCreateParamsSchema>;
 
 export const ProjectListParamsSchema = z.object({
   limit: z.number().int().positive().max(500).optional(),
@@ -930,7 +941,7 @@ export type ProjectFileEntry = z.infer<typeof ProjectFileEntrySchema>;
 
 export const ProjectFilesResultSchema = z.object({
   projectId: z.string().min(1),
-  rootPath: z.string().min(1),
+  rootPath: z.string().optional(),
   totalFiles: z.number().int().nonnegative(),
   files: z.array(ProjectFileEntrySchema),
   truncated: z.boolean(),
@@ -943,7 +954,7 @@ export type ProjectFilePreviewKind = z.infer<typeof ProjectFilePreviewKindSchema
 
 export const ProjectFileReadResultSchema = z.object({
   projectId: z.string().min(1),
-  rootPath: z.string().min(1),
+  rootPath: z.string().optional(),
   path: z.string().min(1),
   label: z.string().min(1),
   mimeType: z.string().min(1),
@@ -958,7 +969,9 @@ export type ProjectFileReadResult = z.infer<typeof ProjectFileReadResultSchema>;
 export const ProjectSummarySchema = z.object({
   projectId: z.string().min(1),
   label: z.string().min(1),
-  rootPath: z.string().min(1),
+  sourceKind: ProjectSourceKindSchema.default("local_folder"),
+  rootPath: z.string().optional(),
+  description: z.string().optional(),
   sessionCount: z.number().int().nonnegative(),
   createdAt: z.number().int().nonnegative(),
   updatedAt: z.number().int().nonnegative(),
