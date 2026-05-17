@@ -81,11 +81,14 @@ import {
 import {
   ApprovalInterruptError,
   ClarificationInterruptError,
+  AgentDegradedError,
   isApprovalInterruptError,
   isClarificationInterruptError,
+  isAgentDegradedError,
   createResumeApprovalMatcher,
   type ApprovedResumeAction,
 } from "./runtime-interrupts.js";
+import { CODE_DEVELOPMENT_ORCHESTRATOR_BLOCKED_TOOLS } from "./runtime-tool-boundary.js";
 import {
   ensureRuntimeClarification,
   ensureRuntimeClarifications,
@@ -604,19 +607,6 @@ function sleep(ms: number): Promise<void> {
   }
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
-
-const CODE_DEVELOPMENT_ORCHESTRATOR_BLOCKED_TOOLS = new Set([
-  "file.write",
-  "file.patch",
-  "file.apply_patch",
-  "file.delete",
-  "modes.applyDraft",
-  "selfIteration.apply",
-  "skills.create",
-  "skills.update",
-  "skills.setEnabled",
-  "skills.patch",
-]);
 
 function modeProgressFinalizationError(
   planItems: readonly PlanItem[],
@@ -1797,7 +1787,11 @@ export async function executeRuntimeKernel(
         if (!drainingAsync) {
           await drainAsyncSpawnQueue();
         }
-        return visibleFallback;
+        throw new AgentDegradedError(visibleFallback, {
+          recoveryArtifactId: recoveryArtifact.id,
+          errorType: incident.errorType,
+          detail,
+        });
       }
     }
   };
@@ -1910,13 +1904,22 @@ export async function executeRuntimeKernel(
         ].join("\n");
       }
 
-      const result = await callAgent({
-        agentId: effectiveAgentId,
-        title: safeTitle,
-        prompt: effectiveSubPrompt,
-        system: customSystemPrompt || runtimeCtx.system,
-        riskLevel: "low",
-      });
+      let result: unknown;
+      try {
+        result = await callAgent({
+          agentId: effectiveAgentId,
+          title: safeTitle,
+          prompt: effectiveSubPrompt,
+          system: customSystemPrompt || runtimeCtx.system,
+          riskLevel: "low",
+        });
+      } catch (caught) {
+        if (isAgentDegradedError(caught)) {
+          result = caught.degradedOutput;
+        } else {
+          throw caught;
+        }
+      }
       if (wasAlreadyActive) {
         kernelRuntimeContext.activateAgent(effectiveAgentId);
       }
@@ -1980,7 +1983,11 @@ export async function executeRuntimeKernel(
           const text = typeof result === "string" ? result : String(result ?? "");
           kernelRuntimeContext.enqueueAsyncAgentResult(effectiveAgentId, text);
         } catch (err) {
-          kernelRuntimeContext.enqueueAsyncAgentResult(effectiveAgentId, `Error: ${err instanceof Error ? err.message : String(err)}`);
+          if (isAgentDegradedError(err)) {
+            kernelRuntimeContext.enqueueAsyncAgentResult(effectiveAgentId, err.degradedOutput);
+          } else {
+            kernelRuntimeContext.enqueueAsyncAgentResult(effectiveAgentId, `Error: ${err instanceof Error ? err.message : String(err)}`);
+          }
         }
       }
     } finally {

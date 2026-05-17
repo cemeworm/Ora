@@ -11,6 +11,7 @@ import {
   ClarificationInterruptError,
   isApprovalInterruptError,
   isClarificationInterruptError,
+  isAgentDegradedError,
 } from "./runtime-interrupts.js";
 
 type RuntimeNodeSupportEmit = (
@@ -56,6 +57,12 @@ export async function runRecoverableRuntimeNode<T>(
       }
       if (isRecoveryExhaustedError(error)) {
         throw error;
+      }
+      if (isAgentDegradedError(error)) {
+        return {
+          status: "completed",
+          output: error.degradedOutput as T,
+        };
       }
       const incident = classifyRecoveryError(error, {
         surface: "node",
