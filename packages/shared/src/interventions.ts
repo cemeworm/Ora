@@ -1,0 +1,52 @@
+import { z } from "zod";
+
+export const InterventionActionSchema = z.enum([
+  "answer_directly",
+  "clarify",
+  "search_web",
+  "read_context",
+  "use_tool",
+  "plan",
+  "request_approval",
+  "stop",
+]);
+export type InterventionAction = z.infer<typeof InterventionActionSchema>;
+
+export const CausalTaskStateSchema = z.object({
+  surfaceRequest: z.string().default(""),
+  latentGoalHypotheses: z.array(z.string()).default([]),
+  selectedLatentGoal: z.string().default(""),
+  keyUncertainties: z.array(z.string()).default([]),
+  constraints: z.array(z.string()).default([]),
+  candidateInterventions: z.array(InterventionActionSchema).default([]),
+  chosenIntervention: InterventionActionSchema.optional(),
+  alternativeInterventions: z.array(InterventionActionSchema).default([]),
+  counterfactualRiskIfSkipped: z.string().default(""),
+  expectedOutcomeLift: z.string().default(""),
+  confidence: z.number().min(0).max(1).default(0),
+  stopCondition: z.string().default(""),
+});
+export type CausalTaskState = z.infer<typeof CausalTaskStateSchema>;
+
+export const InterventionPolicyDecisionSchema = z.object({
+  goalUncertainty: z.number().min(0).max(1).default(0),
+  factUncertainty: z.number().min(0).max(1).default(0),
+  contextUncertainty: z.number().min(0).max(1).default(0),
+  actionRisk: z.number().min(0).max(1).default(0),
+  userCost: z.number().min(0).max(1).default(0),
+  reversibility: z.enum(["low", "medium", "high"]).default("medium"),
+  recommendedAction: InterventionActionSchema,
+  reason: z.string().default(""),
+  wouldChangeOutcomeIfWrong: z.boolean().default(false),
+});
+export type InterventionPolicyDecision = z.infer<typeof InterventionPolicyDecisionSchema>;
+
+export const CausalDecisionRecordSchema = z.object({
+  taskState: CausalTaskStateSchema,
+  policyDecision: InterventionPolicyDecisionSchema,
+  chosenIntervention: InterventionActionSchema,
+  alternativeInterventions: z.array(InterventionActionSchema).default([]),
+  recordedAt: z.number().int().nonnegative(),
+});
+export type CausalDecisionRecord = z.infer<typeof CausalDecisionRecordSchema>;
+

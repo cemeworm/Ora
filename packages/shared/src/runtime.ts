@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { ActionRecordSchema, OraToolCallEnvelopeSchema, PlanItemSchema, PlanListStepSchema, PolicyDecisionSchema, TodoItemSchema } from "./actions.js";
+import { CausalTaskStateSchema } from "./interventions.js";
 import { RuntimeToolResultPreviewSchema } from "./actions.js";
 export { RuntimeToolResultPreviewSchema };
 import { SearchProviderConfigSchema } from "./capabilities.js";
@@ -539,7 +540,8 @@ export const OraEventTypeSchema = z.enum([
   "run.cancelled",
   "run.done",
   "run.failed",
-  "plan_list.updated"
+  "plan_list.updated",
+  "causal.decision.recorded"
 ]);
 export type OraEventType = z.infer<typeof OraEventTypeSchema>;
 
@@ -1422,6 +1424,8 @@ export const PendingClarificationSchema = z.object({
   key: z.string().min(1),
   question: z.string().min(1),
   options: z.array(PendingClarificationOptionSchema).max(6).default([]),
+  missingVariables: z.array(z.string()).optional(),
+  counterfactualRiskIfSkipped: z.string().optional(),
   requestedAt: z.number().int().nonnegative(),
 });
 export type PendingClarification = z.infer<typeof PendingClarificationSchema>;
@@ -1454,6 +1458,7 @@ export const StateSnapshotSchema = z.object({
   contextState: SessionContextStateSchema.optional(),
   toolResults: z.array(RuntimeToolResultLedgerEntrySchema).default([]),
   policyDecisions: z.array(PolicyDecisionSchema).default([]),
+  causalTaskState: z.lazy(() => CausalTaskStateSchema).optional(),
   checkpoints: z.array(CheckpointMetaSchema),
   events: z.array(OraEventEnvelopeSchema),
   agentMessages: z.array(AgentConversationMessageSchema).default([]),
