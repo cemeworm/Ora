@@ -48,6 +48,22 @@ describe("ChatMessages bottom inset", () => {
     expect(html).not.toContain("lucide-user");
   });
 
+  it("renders user messages with a compact right-anchored bubble", () => {
+    const html = renderToStaticMarkup(
+      <ChatMessages
+        chatMessages={[{
+          id: "user-1",
+          role: "user",
+          content: "我叫QC，记住",
+          timestamp: "18:30",
+        }]}
+      />,
+    );
+
+    expect(html).toContain("rounded-2xl rounded-br-md bg-card px-3.5 py-2.5");
+    expect(html).toContain("h-6 w-6");
+  });
+
   it("renders replace-latest branch candidates as a side-by-side assistant turn", () => {
     const branchGroup = {
       branchGroupId: "session-1:branch-1",

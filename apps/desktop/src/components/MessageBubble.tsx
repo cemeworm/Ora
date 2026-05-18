@@ -58,13 +58,13 @@ export function MessageBubble({ role, content, children, className }: MessageBub
   }
 
   return (
-    <div className={cn("group relative flex w-full flex-col gap-2", isUser ? "items-end" : "items-start", className)}>
+    <div className={cn("group relative flex w-full flex-col gap-1.5", isUser ? "items-end" : "items-start", className)}>
       <div className="flex max-w-full">
         <div className={cn("min-w-0 max-w-full text-sm leading-6", isUser ? "w-fit max-w-[min(72ch,calc(100vw-6rem))]" : "w-full")}>
           <div
             className={cn(
               isUser
-                ? "rounded-[22px] bg-secondary px-4 py-3 text-foreground"
+                ? "rounded-2xl rounded-br-md bg-card px-3.5 py-2.5 text-foreground shadow-xs ring-1 ring-inset ring-border"
                 : "rounded-[22px] border border-transparent bg-transparent text-foreground",
             )}
           >
@@ -78,7 +78,7 @@ export function MessageBubble({ role, content, children, className }: MessageBub
                 onClick={() => void handleCopyContent()}
                 title={copied ? "已复制" : "复制"}
                 aria-label={copied ? "已复制" : "复制消息"}
-                className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-foreground/20"
+                className="inline-flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground/70 opacity-80 transition hover:text-foreground hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-foreground/20"
               >
                 {copied ? <Check size={14} /> : <Copy size={14} />}
               </button>
