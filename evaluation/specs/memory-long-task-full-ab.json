@@ -1,0 +1,96 @@
+{
+  "datasetId": "<import-memory-long-task-representative-dataset-first>",
+  "profileId": "task_completion",
+  "repetitions": 1,
+  "concurrency": 1,
+  "timeoutMs": 600000,
+  "objective": {
+    "kind": "outcome",
+    "target": "run.output",
+    "metrics": [
+      "task_success_rate",
+      "llm_judge_score",
+      "token_efficiency",
+      "tool_efficiency",
+      "coordination_overhead",
+      "recovery_overhead",
+      "trace_coverage",
+      "agentic_cost_score"
+    ],
+    "evaluators": [
+      {
+        "id": "memory-long-task-heuristic-v1",
+        "kind": "heuristic",
+        "label": "Memory Long Task Heuristic Contract",
+        "weight": 1,
+        "metrics": [
+          "task_success_rate",
+          "llm_judge_score",
+          "token_efficiency",
+          "tool_efficiency",
+          "coordination_overhead",
+          "recovery_overhead",
+          "trace_coverage",
+          "agentic_cost_score"
+        ],
+        "assertions": [],
+        "metadata": {
+          "contractVersion": "memory-long-task-v1"
+        }
+      },
+      {
+        "id": "memory-long-task-judge-v1",
+        "kind": "llm_judge",
+        "label": "Memory Long Task Outcome Judge",
+        "weight": 1,
+        "providerId": "deepseek",
+        "modelRef": "deepseek-v4-flash",
+        "passThreshold": 0.7,
+        "rubric": "Score 0-1 whether the agent completed the requested long-task work with durable correctness. Judge against five dimensions: (1) task completion: the requested files/specs/tests/run steps were actually finished; (2) constraint retention: explicit constraints from the prompt and task docs were preserved through the whole run, including no unrelated edits and no shortcutting required verification; (3) artifact correctness: referenced files, dataset/spec outputs, and fixture/workspace behavior are concrete and internally consistent; (4) verification quality: the agent ran the requested checks or clearly reported a real blocker with evidence; (5) final report quality: the answer names changed artifacts, validation status, and residual risk without pretending success. Score >= 0.70 only if the result is materially usable as a real long-task completion, not just a plausible-looking summary."
+      }
+    ]
+  },
+  "configs": [
+    {
+      "id": "memory-disabled",
+      "label": "Memory Disabled",
+      "description": "关闭 long-term / active memory 注入，作为 A/B 基线。",
+      "runConfig": {
+        "pattern": "orchestrator_subagent",
+        "modeSelection": "manual",
+        "providerId": "deepseek",
+        "modelRef": "deepseek-v4-flash",
+        "metadata": {
+          "evaluationBatch": "memory-long-task-full-ab",
+          "evaluationMemoryMode": "disabled"
+        }
+      }
+    },
+    {
+      "id": "memory-enabled",
+      "label": "Memory Enabled",
+      "description": "保持当前 memory 主链路开启，观察长任务收益。",
+      "runConfig": {
+        "pattern": "orchestrator_subagent",
+        "modeSelection": "manual",
+        "providerId": "deepseek",
+        "modelRef": "deepseek-v4-flash",
+        "metadata": {
+          "evaluationBatch": "memory-long-task-full-ab",
+          "evaluationMemoryMode": "enabled"
+        }
+      }
+    }
+  ],
+  "metadata": {
+    "description": "A/B 对比：memory disabled vs memory enabled，覆盖 12 条代表性长任务样本。每个 attempt 会基于 fixture manifest 自动 materialize 独立 workspace，避免跨 case/config 污染。",
+    "fixtureManifest": "evaluation/fixtures/memory-long-task-representative/fixture.manifest.json",
+    "fixtureStrategy": "workspace_copy_per_attempt",
+    "evaluationFamily": "memory_long_task",
+    "expectedCaseCount": 12,
+    "judgeProviderId": "deepseek",
+    "judgeModelRef": "deepseek-v4-flash",
+    "scorerContractVersion": "memory-long-task-v1",
+    "scorerContractSummary": "显式双评分类 contract：heuristic 负责 task_success_rate / efficiency / trace 指标，llm_judge 负责长任务完成质量总评；显式 judge 分数会同步回 llm_judge_score metric 供 compare/net-lift 使用。"
+  }
+}

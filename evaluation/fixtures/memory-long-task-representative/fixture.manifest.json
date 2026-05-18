@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "fixtureId": "memory-long-task-representative",
+  "description": "为 memory 长任务 A/B 评估按 attempt materialize 独立 Ora workspace，避免不同 case/config 的文件修改互相污染。",
+  "sourceRoot": "../../..",
+  "materializationRoot": "./workspaces",
+  "isolation": {
+    "strategy": "copy",
+    "resetBetweenAttempts": true,
+    "exclude": [
+      ".git",
+      "node_modules",
+      "dist",
+      "build",
+      "coverage",
+      ".turbo"
+    ]
+  },
+  "projectWorkspace": {
+    "label": "Memory Long Task Eval Workspace",
+    "metadata": {
+      "fixtureBundle": "memory-long-task-representative"
+    }
+  }
+}

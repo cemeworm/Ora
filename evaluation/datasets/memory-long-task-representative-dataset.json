@@ -1,0 +1,458 @@
+{
+  "description": "验证 Ora 在代表性长任务上的 memory 收益。首版覆盖长工具链修复、跨文件实现、多轮纠错/回退、长文档驱动 4 类共 12 条样本，重点观察完成率、token 成本、中途稳定性、执行效率与可解释性。",
+  "cases": [
+    {
+      "id": "mlt-toolchain-001",
+      "prompt": "在 Ora 仓库里修复 active memory trace 到 desktop Trails 的展示链路。请先阅读 `apps/runtime/src/mode-selection.ts`、`apps/runtime/src/memory-observability.ts`、`apps/desktop/src/lib/trailViewModel.ts` 以及对应测试。问题约束：1）UI 只能消费 snapshot-derived / metadata-derived truth，不能引入第二状态权威；2）需要把 scenario 来源摘要与 trace coverage 摘要稳定透传到 Trails；3）不要把重型归纳塞进 streaming 热路径；4）补回归测试。完成后运行 `npx vitest run apps/runtime/test/mode-selection.memory.test.ts apps/desktop/src/lib/trailViewModel.test.ts`，最终输出必须说明修改文件、验证结果和 residual risk。",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "not_equals", "path": "run.status", "value": "failed", "failureTag": "runtime_failed", "rationale": "长工具链修复不应直接失败" },
+            { "type": "exists", "path": "trace.events[?(@.type=='tool.called')]", "rationale": "应出现实际工具调用" },
+            { "type": "min", "path": "trace.toolCallCount", "value": 4, "rationale": "代表性长任务应经过多步工具链" },
+            { "type": "contains", "path": "run.outputText", "value": "trailViewModel", "failureTag": "missing_changed_file_reference", "rationale": "最终输出应说明关键改动文件" },
+            { "type": "contains", "path": "run.outputText", "value": "vitest", "failureTag": "missing_verification_reference", "rationale": "最终输出应说明验证命令" }
+          ],
+          "notes": "重点看 agent 是否能在跨 runtime / desktop 链路里持续记住 authority boundary 与热路径约束。"
+        }
+      },
+      "metadata": {
+        "task_class": "long_toolchain_repair",
+        "difficulty": "hard",
+        "memory_focus": "跨多文件保持 authority boundary、trace coverage 与轻量热路径约束",
+        "key_facts_to_remember": [
+          "UI 只能消费 snapshot-derived / metadata-derived truth",
+          "需要保留 scenario 来源摘要与 trace coverage",
+          "不能把重型归纳塞进 streaming 热路径"
+        ],
+        "expected_artifacts": [
+          "apps/runtime/src/mode-selection.ts",
+          "apps/runtime/src/memory-observability.ts",
+          "apps/desktop/src/lib/trailViewModel.ts",
+          "apps/runtime/test/mode-selection.memory.test.ts",
+          "apps/desktop/src/lib/trailViewModel.test.ts"
+        ],
+        "verification_command": "npx vitest run apps/runtime/test/mode-selection.memory.test.ts apps/desktop/src/lib/trailViewModel.test.ts",
+        "likely_failure_modes": [
+          "直接在 desktop 侧拼事件历史，形成第二状态权威",
+          "只修展示，不补 runtime 侧字段透传",
+          "忘记回补回归测试"
+        ]
+      }
+    },
+    {
+      "id": "mlt-toolchain-002",
+      "prompt": "修复 approval / resume 路径里的上下文保留问题。请阅读 `apps/runtime/src/harness/runtime-tool-executor.ts`、`apps/runtime/src/run-resume-service.ts`、`apps/runtime/src/approved-file-write-resume.ts` 与相关测试。目标：当工具在 approval/resume 路径中失败时，不要立即 `emit('run.failed')`，而是保留上下文并把工具执行结果注入 `followUpContent`；恢复指纹要剥离动态 ID，避免重试时计数重置。约束：跨模块错误识别必须用 `Symbol.for()` + helper，不要依赖裸 `instanceof`。补齐针对 approval/resume 的回归测试，运行 `npx vitest run apps/runtime/test/runtime-tool-executor.test.ts apps/runtime/test/approved-tool-resume-completion.test.ts apps/runtime/test/run-resume-service.test.ts`，最终输出列出修改文件、验证结果和剩余风险。",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "not_equals", "path": "run.status", "value": "failed", "failureTag": "runtime_failed" },
+            { "type": "exists", "path": "trace.events[?(@.type=='tool.called')]" },
+            { "type": "min", "path": "trace.toolCallCount", "value": 4, "rationale": "需要跨恢复路径检查与修复" },
+            { "type": "contains", "path": "run.outputText", "value": "followUpContent", "failureTag": "missing_requirement_reference", "rationale": "最终输出应提到核心恢复策略" },
+            { "type": "contains", "path": "run.outputText", "value": "approved-file-write-resume", "failureTag": "missing_changed_file_reference", "rationale": "最终输出应提到关键修改文件" }
+          ],
+          "notes": "重点看 agent 是否在长链路里同时记住 followUpContent、动态 ID 指纹、跨模块错误识别三条约束。"
+        }
+      },
+      "metadata": {
+        "task_class": "long_toolchain_repair",
+        "difficulty": "hard",
+        "memory_focus": "跨 approval/resume 多模块保留上下文与统一错误识别",
+        "key_facts_to_remember": [
+          "失败时保留上下文，不立即 run.failed",
+          "工具结果要注入 followUpContent",
+          "指纹要去掉动态 ID",
+          "跨模块错误识别必须用 Symbol.for() + helper"
+        ],
+        "expected_artifacts": [
+          "apps/runtime/src/harness/runtime-tool-executor.ts",
+          "apps/runtime/src/run-resume-service.ts",
+          "apps/runtime/src/approved-file-write-resume.ts",
+          "apps/runtime/test/runtime-tool-executor.test.ts",
+          "apps/runtime/test/approved-tool-resume-completion.test.ts",
+          "apps/runtime/test/run-resume-service.test.ts"
+        ],
+        "verification_command": "npx vitest run apps/runtime/test/runtime-tool-executor.test.ts apps/runtime/test/approved-tool-resume-completion.test.ts apps/runtime/test/run-resume-service.test.ts",
+        "likely_failure_modes": [
+          "只修某一个恢复入口，遗漏另一条链路",
+          "使用 instanceof 导致跨模块识别不稳定",
+          "没有处理动态 ID 指纹归一化"
+        ]
+      }
+    },
+    {
+      "id": "mlt-toolchain-003",
+      "prompt": "修复 runtime 工具缓存键与重复守卫的一致性问题。请阅读 `apps/runtime/src/harness/runtime-tool-loop.ts` 和 `apps/runtime/test/runtime-tool-loop.test.ts`，确保 read-only 工具缓存键覆盖所有影响输出的参数，至少包含 `path`、`pattern`、`limit`、`offset`、`caseSensitive`、`maxBytes`；同时 `stableKeyForRuntimeTool()` 对 `file.patch` 要纳入 `oldText` 哈希，对 `file.write` 要纳入 `content` 哈希。约束：重复守卫必须由单一 decide 逻辑决定，比较运算符不能在不同路径上漂移。补齐/更新测试，运行 `npx vitest run apps/runtime/test/runtime-tool-loop.test.ts`，最终输出要明确说明 cache key、stable key 和验证结果。",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "not_equals", "path": "run.status", "value": "failed", "failureTag": "runtime_failed" },
+            { "type": "exists", "path": "trace.events[?(@.type=='tool.called')]" },
+            { "type": "min", "path": "trace.toolCallCount", "value": 3, "rationale": "应至少做搜索、阅读、修改、验证等步骤" },
+            { "type": "contains", "path": "run.outputText", "value": "cacheKeyForRuntimeTool", "failureTag": "missing_changed_file_reference", "rationale": "最终输出应说明核心改动点" },
+            { "type": "contains", "path": "run.outputText", "value": "maxBytes", "failureTag": "missing_requirement_reference", "rationale": "最终输出应体现关键参数约束" }
+          ],
+          "notes": "重点看 agent 是否能在多个键函数与重复守卫规则之间保持参数完整性约束。"
+        }
+      },
+      "metadata": {
+        "task_class": "long_toolchain_repair",
+        "difficulty": "hard",
+        "memory_focus": "在多段键生成与重复守卫逻辑中记住参数完整性与统一阈值规则",
+        "key_facts_to_remember": [
+          "read-only 缓存键必须覆盖所有影响输出的参数",
+          "file.patch 稳定键要包含 oldText 哈希",
+          "file.write 稳定键要包含 content 哈希",
+          "重复守卫必须走单一 decide 逻辑"
+        ],
+        "expected_artifacts": [
+          "apps/runtime/src/harness/runtime-tool-loop.ts",
+          "apps/runtime/test/runtime-tool-loop.test.ts"
+        ],
+        "verification_command": "npx vitest run apps/runtime/test/runtime-tool-loop.test.ts",
+        "likely_failure_modes": [
+          "只更新一个 key 函数，另一个漏改",
+          "只补 maxBytes，忘记 offset / caseSensitive 等已有参数",
+          "测试断言不覆盖重复守卫阈值一致性"
+        ]
+      }
+    },
+    {
+      "id": "mlt-toolchain-004",
+      "prompt": "修复最终输出完整性守卫。请阅读 `apps/runtime/src/harness/runtime-output.ts`、`apps/runtime/src/harness/runtime-completion-guards.ts`、`apps/runtime/test/final-output-completeness-guard.test.ts`、`apps/runtime/test/no-tools-completion-guard.test.ts`。目标：最终输出完整性检查不能只做空串判断，需要加入最小长度阈值（至少 60 chars）；同时从 SSE 中提取 `finish_reason` 作为诊断信息；当输出过短时，应先触发一次不使用工具的 repair attempt，再决定失败。约束：不要把诊断逻辑扩散到无关热路径。更新测试并运行 `npx vitest run apps/runtime/test/final-output-completeness-guard.test.ts apps/runtime/test/no-tools-completion-guard.test.ts`，最终输出列出变更、验证结果和 residual risk。",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "not_equals", "path": "run.status", "value": "failed", "failureTag": "runtime_failed" },
+            { "type": "exists", "path": "trace.events[?(@.type=='tool.called')]" },
+            { "type": "min", "path": "trace.toolCallCount", "value": 3, "rationale": "应经历阅读、修改、验证等步骤" },
+            { "type": "contains", "path": "run.outputText", "value": "finish_reason", "failureTag": "missing_requirement_reference", "rationale": "最终输出应提及关键诊断字段" },
+            { "type": "contains", "path": "run.outputText", "value": "60", "failureTag": "missing_requirement_reference", "rationale": "最终输出应提及最小长度阈值" }
+          ],
+          "notes": "重点看 agent 是否记住“先 repair 一次、再判失败”的顺序要求。"
+        }
+      },
+      "metadata": {
+        "task_class": "long_toolchain_repair",
+        "difficulty": "hard",
+        "memory_focus": "在输出守卫、诊断与恢复顺序之间保持多条件约束",
+        "key_facts_to_remember": [
+          "最小内容长度阈值至少 60 chars",
+          "要提取 SSE finish_reason",
+          "过短输出先做一次 no-tools repair attempt",
+          "不要把诊断逻辑扩散到无关热路径"
+        ],
+        "expected_artifacts": [
+          "apps/runtime/src/harness/runtime-output.ts",
+          "apps/runtime/src/harness/runtime-completion-guards.ts",
+          "apps/runtime/test/final-output-completeness-guard.test.ts",
+          "apps/runtime/test/no-tools-completion-guard.test.ts"
+        ],
+        "verification_command": "npx vitest run apps/runtime/test/final-output-completeness-guard.test.ts apps/runtime/test/no-tools-completion-guard.test.ts",
+        "likely_failure_modes": [
+          "只加长度判断，没有 repair attempt",
+          "只改测试，没有从 SSE 提取 finish_reason",
+          "把短输出直接判失败，跳过修复机会"
+        ]
+      }
+    },
+    {
+      "id": "mlt-impl-001",
+      "prompt": "为 Ora 的 Evaluation 目录增加一个可复用的数据集清单能力。要求：1）新增一个脚本，扫描 `evaluation/datasets/*.json`，输出数据集文件名、description、caseCount；2）README 补一段如何使用该脚本的说明；3）脚本需要校验每个数据集 case id 唯一；4）输出格式保持适合 CI 文本日志。约束：不要引入重依赖，优先使用仓库现有 Node 环境。完成后运行该脚本并在最终输出中贴出摘要统计，说明修改文件和 residual risk。",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "not_equals", "path": "run.status", "value": "failed", "failureTag": "runtime_failed" },
+            { "type": "exists", "path": "trace.events[?(@.type=='tool.called')]" },
+            { "type": "min", "path": "trace.toolCallCount", "value": 4, "rationale": "需要扫描目录、写脚本、更新 README、执行验证" },
+            { "type": "contains", "path": "run.outputText", "value": "evaluation/datasets", "failureTag": "missing_changed_file_reference", "rationale": "最终输出应说明目标目录" },
+            { "type": "contains", "path": "run.outputText", "value": "README", "failureTag": "missing_changed_file_reference", "rationale": "最终输出应说明文档同步" }
+          ],
+          "notes": "这类任务用来测试 agent 是否能在非 bugfix 的多文件实现里保持 artifact 与文档同步意识。"
+        }
+      },
+      "metadata": {
+        "task_class": "cross_file_implementation",
+        "difficulty": "medium",
+        "memory_focus": "在脚本、README、数据校验之间保持统一交付面",
+        "key_facts_to_remember": [
+          "扫描 evaluation/datasets/*.json",
+          "输出 description 与 caseCount",
+          "case id 必须唯一校验",
+          "不要引入重依赖"
+        ],
+        "expected_artifacts": [
+          "evaluation/scripts/",
+          "evaluation/README.md"
+        ],
+        "verification_command": "node <new-script-path>",
+        "likely_failure_modes": [
+          "只输出文件名，没有 description 或 caseCount",
+          "忘记校验 case id 唯一",
+          "脚本可运行但 README 没同步"
+        ]
+      }
+    },
+    {
+      "id": "mlt-impl-002",
+      "prompt": "为 memory trace 增加更明确的 source pointer 摘要链路。请基于 `packages/shared/src/memory.ts`、`apps/runtime/src/memory-trace.ts`、`apps/desktop/src/lib/trailViewModel.ts` 和相关测试，实现一个更适合前台展示的 trace 摘要字段，让用户能看到某个高层 card/scenario 来源于哪些 run / fact / signal。约束：1）不能暴露敏感 tool output 全文；2）展示层只消费 record-derived truth；3）source pointer 需要稳定脱敏；4）补测试并说明为什么没有引入第二状态源。完成后运行相关测试，最终输出必须列出修改文件、验证结果和残余风险。",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "not_equals", "path": "run.status", "value": "failed", "failureTag": "runtime_failed" },
+            { "type": "exists", "path": "trace.events[?(@.type=='tool.called')]" },
+            { "type": "min", "path": "trace.toolCallCount", "value": 4, "rationale": "需要跨 shared/runtime/desktop 多文件实现" },
+            { "type": "contains", "path": "run.outputText", "value": "MemoryTraceChain", "failureTag": "missing_changed_file_reference", "rationale": "最终输出应说明类型侧改动" },
+            { "type": "contains", "path": "run.outputText", "value": "source pointer", "failureTag": "missing_requirement_reference", "rationale": "最终输出应解释关键能力" }
+          ],
+          "notes": "重点看 agent 是否能同时记住脱敏、来源链、非权威展示层这三类约束。"
+        }
+      },
+      "metadata": {
+        "task_class": "cross_file_implementation",
+        "difficulty": "hard",
+        "memory_focus": "跨 shared/runtime/desktop 保持 source pointer 规则与脱敏边界",
+        "key_facts_to_remember": [
+          "不能暴露敏感 tool output 全文",
+          "展示层只消费 record-derived truth",
+          "source pointer 需要稳定脱敏",
+          "不能形成第二状态权威"
+        ],
+        "expected_artifacts": [
+          "packages/shared/src/memory.ts",
+          "apps/runtime/src/memory-trace.ts",
+          "apps/desktop/src/lib/trailViewModel.ts"
+        ],
+        "verification_command": "npx vitest run apps/runtime/test/memory-trace.test.ts apps/desktop/src/lib/trailViewModel.test.ts",
+        "likely_failure_modes": [
+          "把原始 tool output 直接塞进摘要字段",
+          "只改类型，不改 runtime builder 或 desktop 消费",
+          "输出能展示，但无法解释来源层级"
+        ]
+      }
+    },
+    {
+      "id": "mlt-impl-003",
+      "prompt": "为 task memory overlay 增加可观测的 rendered budget 摘要。请阅读 `packages/shared/src/memory.ts`、`apps/runtime/src/task-memory.ts`、`apps/runtime/src/memory-observability.ts`、`docs/ora-memory-system.md` 和相关测试。目标：让 TaskCanvas / render 结果在 observability 中显式暴露 `renderedChars`、节点数、evidence 数，便于后续评估 token 节省。约束：1）统计来自现有渲染过程，不要重复做昂贵计算；2）不要把预算统计塞进 token streaming 热路径；3）文档需要同步说明字段语义。补测试并运行验证，最终输出列出改动、验证结果和 residual risk。",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "not_equals", "path": "run.status", "value": "failed", "failureTag": "runtime_failed" },
+            { "type": "exists", "path": "trace.events[?(@.type=='tool.called')]" },
+            { "type": "min", "path": "trace.toolCallCount", "value": 4, "rationale": "需要代码、测试和文档同步" },
+            { "type": "contains", "path": "run.outputText", "value": "renderedChars", "failureTag": "missing_requirement_reference", "rationale": "最终输出应提及预算字段" },
+            { "type": "contains", "path": "run.outputText", "value": "ora-memory-system.md", "failureTag": "missing_changed_file_reference", "rationale": "最终输出应说明文档同步" }
+          ],
+          "notes": "这类任务测试 agent 是否能把评估可观测性要求落实为可消费字段，而不是只写设计描述。"
+        }
+      },
+      "metadata": {
+        "task_class": "cross_file_implementation",
+        "difficulty": "hard",
+        "memory_focus": "记住 budget 统计来源、热路径限制与文档同步三类约束",
+        "key_facts_to_remember": [
+          "统计来自现有渲染过程",
+          "不要重复做昂贵计算",
+          "不要进入 token streaming 热路径",
+          "文档要同步字段语义"
+        ],
+        "expected_artifacts": [
+          "packages/shared/src/memory.ts",
+          "apps/runtime/src/task-memory.ts",
+          "apps/runtime/src/memory-observability.ts",
+          "docs/ora-memory-system.md"
+        ],
+        "verification_command": "npx vitest run apps/runtime/test/task-memory.test.ts apps/runtime/test/memory-evaluation.test.ts",
+        "likely_failure_modes": [
+          "只在 docs 写预算概念，没有真实字段",
+          "统计通过重新遍历大对象计算，拉重热路径",
+          "runtime 暴露了字段，但测试或文档遗漏"
+        ]
+      }
+    },
+    {
+      "id": "mlt-recovery-001",
+      "prompt": "修复交互态权威问题。请在仓库里搜索仍然直接使用 `snapshot.status` 或 `attention.kind` 来决定用户可见交互状态的地方，优先检查 `apps/desktop/src/components/ChatView.tsx` 以及相关视图/测试。要求：统一改成消费 `deriveSnapshotGateProjection()`，并确保 `planDecisions.status` 是 durable gate truth。约束：1）不要做广义 attention normalization；2）不要把执行事实、交互状态、展示标签混为一谈；3）如果你最初想到的是“在 UI 层补更多 if/else”，请回退并改成共享投影 helper。补回归测试并运行相关验证，最终输出需要说明哪里做了回退、为什么共享 helper 才是正解。",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "not_equals", "path": "run.status", "value": "failed", "failureTag": "runtime_failed" },
+            { "type": "exists", "path": "trace.events[?(@.type=='tool.called')]" },
+            { "type": "min", "path": "trace.toolCallCount", "value": 4, "rationale": "需要先搜索定位，再修改并验证" },
+            { "type": "contains", "path": "run.outputText", "value": "deriveSnapshotGateProjection", "failureTag": "missing_requirement_reference", "rationale": "最终输出应体现共享投影 helper" },
+            { "type": "contains", "path": "run.outputText", "value": "snapshot.status", "failureTag": "missing_problem_reference", "rationale": "最终输出应说明避免直接读取的旧做法" }
+          ],
+          "notes": "这是典型的多轮纠错样本：看 agent 会不会在中途放弃初始 if/else 方向并回到共享投影。"
+        }
+      },
+      "metadata": {
+        "task_class": "recovery_and_rollback",
+        "difficulty": "hard",
+        "memory_focus": "在搜索、试错、回退中持续记住 durable truth 与共享投影约束",
+        "key_facts_to_remember": [
+          "必须使用 deriveSnapshotGateProjection()",
+          "planDecisions.status 是 durable gate truth",
+          "不要做 broad attention normalization",
+          "不要混淆执行事实、交互状态、展示标签"
+        ],
+        "expected_artifacts": [
+          "apps/desktop/src/components/ChatView.tsx"
+        ],
+        "verification_command": "npx vitest run apps/desktop/src/components/ChatView.test.ts",
+        "likely_failure_modes": [
+          "在 UI 层堆更多条件分支，没回到共享 helper",
+          "只修一个 consumer，遗漏其他入口",
+          "回退后没有补测试说明 why"
+        ]
+      }
+    },
+    {
+      "id": "mlt-recovery-002",
+      "prompt": "修复配置默认值里的 Zod optional 空串陷阱。请阅读 `packages/shared/src/config.ts`、`apps/desktop/src/components/SettingsView.tsx` 以及运行时消费这些字段的相关代码和测试。目标：对于 `z.string().min(1).optional()` 一类字段，调用方应传 `undefined` 而不是 `\"\"`，必要时在 schema 层加防御性 transform，但不要无脑放宽语义。约束：需要同时核对 Schema 定义、RunConfig transport、前端初始态三层默认值是否一致，并补跨层回归测试。若你一开始想直接把 schema 改成接受空串，请回退，优先在边界归一化。完成后运行相关测试，最终输出说明三层默认值如何对齐。",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "not_equals", "path": "run.status", "value": "failed", "failureTag": "runtime_failed" },
+            { "type": "exists", "path": "trace.events[?(@.type=='tool.called')]" },
+            { "type": "min", "path": "trace.toolCallCount", "value": 4, "rationale": "需要跨 schema / transport / frontend 多层核对" },
+            { "type": "contains", "path": "run.outputText", "value": "undefined", "failureTag": "missing_requirement_reference", "rationale": "最终输出应体现边界归一化到 undefined" },
+            { "type": "contains", "path": "run.outputText", "value": "SettingsView", "failureTag": "missing_changed_file_reference", "rationale": "最终输出应提及前端层对齐" }
+          ],
+          "notes": "重点测 agent 是否能记住“三层默认值一致”而不是只修一层。"
+        }
+      },
+      "metadata": {
+        "task_class": "recovery_and_rollback",
+        "difficulty": "hard",
+        "memory_focus": "在多层默认值与 schema 语义之间保持一致性，并避免错误放宽",
+        "key_facts_to_remember": [
+          "z.string().min(1).optional() 不接受空串",
+          "调用方要传 undefined 而不是空串",
+          "需要核对 Schema / RunConfig / Frontend 三层默认值",
+          "优先边界归一化，不要无脑放宽 schema"
+        ],
+        "expected_artifacts": [
+          "packages/shared/src/config.ts",
+          "apps/desktop/src/components/SettingsView.tsx"
+        ],
+        "verification_command": "pnpm test --filter config --filter settings",
+        "likely_failure_modes": [
+          "只改 schema，transport 和前端仍传空串",
+          "直接接受空串，掩盖默认值不一致问题",
+          "忘记补跨层回归测试"
+        ]
+      }
+    },
+    {
+      "id": "mlt-recovery-003",
+      "prompt": "修复 turn / run 切换时旧快照保留不及时的问题。请检查处理 `BEGIN_RUN_REQUEST` 或等价状态转换的路径，优先阅读 `apps/runtime/src/run-projections.ts` 及相关测试。目标：在从一个 settled run 进入下一个 run 时，必须同步保留旧 snapshot，再清空 active state，不能依赖 RAF、stream flush 或其它异步回调去补抓旧状态。约束：1）修复要窄，不做大范围 attention 或 projection 重写；2）补 mainline interleaving 覆盖，而不是只测 isolated reducer 分支；3）最终输出要说明为什么异步兜底方案不可靠。完成后运行相关测试，输出修改文件、验证结果和 residual risk。",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "not_equals", "path": "run.status", "value": "failed", "failureTag": "runtime_failed" },
+            { "type": "exists", "path": "trace.events[?(@.type=='tool.called')]" },
+            { "type": "min", "path": "trace.toolCallCount", "value": 4, "rationale": "需要定位状态转换、修改并补 mainline 覆盖" },
+            { "type": "contains", "path": "run.outputText", "value": "BEGIN_RUN_REQUEST", "failureTag": "missing_problem_reference", "rationale": "最终输出应提及关键状态切换点" },
+            { "type": "contains", "path": "run.outputText", "value": "run-projections", "failureTag": "missing_changed_file_reference", "rationale": "最终输出应说明关键改动位置" }
+          ],
+          "notes": "重点看 agent 是否能在长链路中持续记住“同步保留旧状态”这一细约束。"
+        }
+      },
+      "metadata": {
+        "task_class": "recovery_and_rollback",
+        "difficulty": "hard",
+        "memory_focus": "在多步状态切换修复中保留同步旧状态与主线覆盖两条核心约束",
+        "key_facts_to_remember": [
+          "settled snapshot 必须同步保留",
+          "不能依赖异步回调补抓旧状态",
+          "修复要窄，不做大范围 projection 重写",
+          "要补 mainline interleaving 覆盖"
+        ],
+        "expected_artifacts": [
+          "apps/runtime/src/run-projections.ts"
+        ],
+        "verification_command": "npx vitest run apps/runtime/test/runtime-projection-parity.test.ts",
+        "likely_failure_modes": [
+          "用异步兜底暂时看起来能过，但本质不稳",
+          "只改 isolated reducer 路径，主链路没覆盖",
+          "修复范围过大，引入新的状态漂移风险"
+        ]
+      }
+    },
+    {
+      "id": "mlt-doc-001",
+      "prompt": "基于 `docs/ora-memory-system.md`、`tasks/TASK-20260518-2234-ora-memory-tencentdb-reference-design.md` 与 `evaluation/README.md`，整理一份用于长任务 memory A/B 对比的首版数据集与说明。要求：1）新增一个数据集 JSON；2）样本必须覆盖长工具链修复、跨文件实现、多轮纠错/回退、长文档驱动四类；3）每条样本都要写具体 prompt、断言、metadata，不要只写模板；4）文档里要解释为什么先做 12 条而不是盲目扩样；5）最终输出要说明数据集路径、样本分类和后续 smoke/batch 节奏。完成后校验 JSON 结构，最终输出列出修改文件、验证结果和 residual risk。",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "not_equals", "path": "run.status", "value": "failed", "failureTag": "runtime_failed" },
+            { "type": "exists", "path": "trace.events[?(@.type=='tool.called')]" },
+            { "type": "min", "path": "trace.toolCallCount", "value": 3, "rationale": "需要阅读多份文档并产出结构化 artifact" },
+            { "type": "contains", "path": "run.outputText", "value": "memory-long-task-representative-dataset.json", "failureTag": "missing_artifact_reference", "rationale": "最终输出应提及数据集产物" },
+            { "type": "contains", "path": "run.outputText", "value": "12", "failureTag": "missing_requirement_reference", "rationale": "最终输出应解释首版样本数" }
+          ],
+          "notes": "这是典型的长文档驱动任务，测试 agent 是否把读到的设计约束真正落成数据集 artifact。"
+        }
+      },
+      "metadata": {
+        "task_class": "doc_driven_long_task",
+        "difficulty": "hard",
+        "memory_focus": "在多份长文档之间保持问题定义、样本分层和实验节奏的一致性",
+        "key_facts_to_remember": [
+          "必须覆盖四类任务",
+          "每条样本都要有具体 prompt / assertion / metadata",
+          "首版固定 12 条",
+          "要解释 smoke / batch 节奏"
+        ],
+        "expected_artifacts": [
+          "evaluation/datasets/memory-long-task-representative-dataset.json",
+          "tasks/TASK-20260518-2234-ora-memory-tencentdb-reference-design.md"
+        ],
+        "verification_command": "jq empty evaluation/datasets/memory-long-task-representative-dataset.json",
+        "likely_failure_modes": [
+          "只写讨论，不产出真正可跑的数据集文件",
+          "样本是模板化描述，不够具体",
+          "没有把文档里的筛选标准和实验节奏写清楚"
+        ]
+      }
+    },
+    {
+      "id": "mlt-doc-002",
+      "prompt": "根据项目根目录 `AGENTS.md` 中的 Ora 项目规则，以及 `docs/ora-memory-system.md` 现有描述，做一次“memory 相关默认值与边界规则”的长文档驱动核对，并把结果落到一个可执行的回归检查清单中。要求：1）至少覆盖热路径、状态权威、三层默认值一致、source pointer 脱敏 4 类规则；2）每条检查项都要带建议验证方法；3）如果发现文档与现状不一致，要同步修正文档；4）最终输出说明清单文件、改动文件和验证方法。注意不要写成泛泛流程，必须能直接用于后续评估或 code review。",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "not_equals", "path": "run.status", "value": "failed", "failureTag": "runtime_failed" },
+            { "type": "exists", "path": "trace.events[?(@.type=='tool.called')]" },
+            { "type": "min", "path": "trace.toolCallCount", "value": 3, "rationale": "需要读规则、比对文档、产出清单" },
+            { "type": "contains", "path": "run.outputText", "value": "ora-memory-system.md", "failureTag": "missing_changed_file_reference", "rationale": "最终输出应提及规则文档" },
+            { "type": "contains", "path": "run.outputText", "value": "source pointer", "failureTag": "missing_requirement_reference", "rationale": "最终输出应覆盖关键边界规则" }
+          ],
+          "notes": "重点测 agent 是否能把长规则文本转成真正可执行的检查清单，而不是泛化总结。"
+        }
+      },
+      "metadata": {
+        "task_class": "doc_driven_long_task",
+        "difficulty": "hard",
+        "memory_focus": "在长规则文本中持续保留四类边界要求，并转成可执行 checklist",
+        "key_facts_to_remember": [
+          "覆盖热路径规则",
+          "覆盖状态权威规则",
+          "覆盖三层默认值一致规则",
+          "覆盖 source pointer 脱敏规则",
+          "每条都要给验证方法"
+        ],
+        "expected_artifacts": [
+          "docs/ora-memory-system.md"
+        ],
+        "verification_command": "人工评审清单 + 对应命令抽样验证",
+        "likely_failure_modes": [
+          "只做概念总结，没有可执行检查项",
+          "遗漏三层默认值或 source pointer 这类细规则",
+          "文档与现状不一致但没有回写"
+        ]
+      }
+    }
+  ]
+}

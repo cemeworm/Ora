@@ -12,6 +12,7 @@ Ora 质量保障和因果策略验证的核心基础设施。两层职责：
 ```
 evaluation/
 ├── datasets/          # JSON 数据集（测试用例集合）
+├── fixtures/          # 评估隔离工作区与 fixture manifest
 ├── scripts/           # 运行脚本
 │   └── run-ab-comparison.sh   # A/B 对比一键脚本
 └── specs/             # 评估规格文件
@@ -36,12 +37,12 @@ evaluation/
 | 输出质量 | output-quality, gaia | 回答正确性 |
 | 工具使用 | tool-selection | 工具选择合理性 |
 | 安全性 | safety-gate, approval-resume | 审批门控与恢复 |
-| Memory | memory-reliability, memory-boundary | 记忆检索与边界 |
+| Memory | memory-reliability, memory-boundary, memory-long-task-representative | 记忆检索、边界与长任务收益 |
 | 效率 | token-efficiency | 成本控制 |
 | 鲁棒性 | multi-turn, terminal-bench | 多轮、终态处理 |
 | 外部基准 | swe-bench, tau-bench | 第三方标准评测 |
 
-完整数据集列表（20 个）：
+完整数据集列表（23 个）：
 
 | 数据集 | 用例数 | 说明 |
 | --- | --- | --- |
@@ -58,8 +59,10 @@ evaluation/
 | token-efficiency | 13 | Token 效率 |
 | tool-selection | 12 | 最优工具选择（反模式检测） |
 | self-iteration | 12 | 自我迭代改进 |
+| memory-long-task-representative | 12 | 代表性长任务 memory 收益 |
 | memory-boundary | 10 | 记忆边界行为 |
 | memory-reliability | 10 | 记忆读写可靠性 |
+| memory-long-task-smoke | 3 | 长任务 memory A/B 预检子集 |
 | observability-replay | 9 | 可观测性追踪 |
 | mode-studio | 9 | 模式选择与行为 |
 | gaia | 6 | GAIA 风格适配器* |
@@ -156,6 +159,43 @@ node apps/runtime/dist/cli.js eval list
 # 对比两次运行
 node apps/runtime/dist/cli.js eval compare --run-a <id> --run-b <id> --format markdown
 ```
+
+### Long Task Memory A/B
+
+首版长任务 memory A/B 产物：
+
+- 数据集：
+  - `evaluation/datasets/memory-long-task-smoke-dataset.json`
+  - `evaluation/datasets/memory-long-task-representative-dataset.json`
+- 规格：
+  - `evaluation/specs/memory-long-task-smoke-ab.json`
+  - `evaluation/specs/memory-long-task-full-ab.json`
+- fixture：
+  - `evaluation/fixtures/memory-long-task-representative/fixture.manifest.json`
+
+运行步骤：
+
+```bash
+# 1. 导入 smoke / full 数据集，记录返回的 datasetId
+node apps/runtime/dist/cli.js eval import --file evaluation/datasets/memory-long-task-smoke-dataset.json
+node apps/runtime/dist/cli.js eval import --file evaluation/datasets/memory-long-task-representative-dataset.json
+
+# 2. 将 spec 中的 datasetId 占位符替换为实际值
+
+# 3. 先跑 smoke，再跑 full
+node apps/runtime/dist/cli.js eval run --spec evaluation/specs/memory-long-task-smoke-ab.json
+node apps/runtime/dist/cli.js eval run --spec evaluation/specs/memory-long-task-full-ab.json
+```
+
+### Fixture 隔离
+
+- 当 spec `metadata.fixtureManifest` 指向一个 fixture manifest 时，evaluation runner 会在每个 attempt 开始前复制一份隔离 workspace
+- 长任务 memory A/B 当前使用 `workspace_copy_per_attempt` 策略，materialize 到：
+  - `evaluation/fixtures/memory-long-task-representative/workspaces/<evaluationRunId>/<caseId>/<configId>/rep-<n>/`
+- 这样可以避免：
+  - case 之间文件改动串扰
+  - `memory-disabled` 与 `memory-enabled` 共享同一工作区
+  - smoke / full 批次互相污染中间产物
 
 ## 对比引擎：compareEvaluationRuns
 

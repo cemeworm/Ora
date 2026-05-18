@@ -1,0 +1,65 @@
+{
+  "description": "memory-long-task-representative 的 smoke 子集。选取 3 条高价值样本，用于预检长任务 memory A/B 流水线与隔离 fixture。",
+  "cases": [
+    {
+      "id": "mlt-toolchain-003",
+      "prompt": "修复 runtime 工具缓存键与重复守卫的一致性问题。请阅读 `apps/runtime/src/harness/runtime-tool-loop.ts` 和 `apps/runtime/test/runtime-tool-loop.test.ts`，确保 read-only 工具缓存键覆盖所有影响输出的参数，至少包含 `path`、`pattern`、`limit`、`offset`、`caseSensitive`、`maxBytes`；同时 `stableKeyForRuntimeTool()` 对 `file.patch` 要纳入 `oldText` 哈希，对 `file.write` 要纳入 `content` 哈希。约束：重复守卫必须由单一 decide 逻辑决定，比较运算符不能在不同路径上漂移。补齐/更新测试，运行 `npx vitest run apps/runtime/test/runtime-tool-loop.test.ts`，最终输出要明确说明 cache key、stable key 和验证结果。",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "not_equals", "path": "run.status", "value": "failed", "failureTag": "runtime_failed" },
+            { "type": "exists", "path": "trace.events[?(@.type=='tool.called')]" },
+            { "type": "min", "path": "trace.toolCallCount", "value": 3 },
+            { "type": "contains", "path": "run.outputText", "value": "cacheKeyForRuntimeTool", "failureTag": "missing_changed_file_reference" },
+            { "type": "contains", "path": "run.outputText", "value": "maxBytes", "failureTag": "missing_requirement_reference" }
+          ]
+        }
+      },
+      "metadata": {
+        "task_class": "long_toolchain_repair",
+        "difficulty": "hard",
+        "memory_focus": "在多段键生成与重复守卫逻辑中记住参数完整性与统一阈值规则"
+      }
+    },
+    {
+      "id": "mlt-recovery-001",
+      "prompt": "修复交互态权威问题。请在仓库里搜索仍然直接使用 `snapshot.status` 或 `attention.kind` 来决定用户可见交互状态的地方，优先检查 `apps/desktop/src/components/ChatView.tsx` 以及相关视图/测试。要求：统一改成消费 `deriveSnapshotGateProjection()`，并确保 `planDecisions.status` 是 durable gate truth。约束：1）不要做广义 attention normalization；2）不要把执行事实、交互状态、展示标签混为一谈；3）如果你最初想到的是“在 UI 层补更多 if/else”，请回退并改成共享投影 helper。补回归测试并运行相关验证，最终输出需要说明哪里做了回退、为什么共享 helper 才是正解。",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "not_equals", "path": "run.status", "value": "failed", "failureTag": "runtime_failed" },
+            { "type": "exists", "path": "trace.events[?(@.type=='tool.called')]" },
+            { "type": "min", "path": "trace.toolCallCount", "value": 4 },
+            { "type": "contains", "path": "run.outputText", "value": "deriveSnapshotGateProjection", "failureTag": "missing_requirement_reference" },
+            { "type": "contains", "path": "run.outputText", "value": "snapshot.status", "failureTag": "missing_problem_reference" }
+          ]
+        }
+      },
+      "metadata": {
+        "task_class": "recovery_and_rollback",
+        "difficulty": "hard",
+        "memory_focus": "在搜索、试错、回退中持续记住 durable truth 与共享投影约束"
+      }
+    },
+    {
+      "id": "mlt-doc-001",
+      "prompt": "基于 `docs/ora-memory-system.md`、`tasks/TASK-20260518-2234-ora-memory-tencentdb-reference-design.md` 与 `evaluation/README.md`，整理一份用于长任务 memory A/B 对比的首版数据集与说明。要求：1）新增一个数据集 JSON；2）样本必须覆盖长工具链修复、跨文件实现、多轮纠错/回退、长文档驱动四类；3）每条样本都要写具体 prompt、断言、metadata，不要只写模板；4）文档里要解释为什么先做 12 条而不是盲目扩样；5）最终输出要说明数据集路径、样本分类和后续 smoke/batch 节奏。完成后校验 JSON 结构，最终输出列出修改文件、验证结果和 residual risk。",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "not_equals", "path": "run.status", "value": "failed", "failureTag": "runtime_failed" },
+            { "type": "exists", "path": "trace.events[?(@.type=='tool.called')]" },
+            { "type": "min", "path": "trace.toolCallCount", "value": 3 },
+            { "type": "contains", "path": "run.outputText", "value": "memory-long-task-representative-dataset.json", "failureTag": "missing_artifact_reference" },
+            { "type": "contains", "path": "run.outputText", "value": "12", "failureTag": "missing_requirement_reference" }
+          ]
+        }
+      },
+      "metadata": {
+        "task_class": "doc_driven_long_task",
+        "difficulty": "hard",
+        "memory_focus": "在多份长文档之间保持问题定义、样本分层和实验节奏的一致性"
+      }
+    }
+  ]
+}

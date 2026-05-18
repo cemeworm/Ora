@@ -1,0 +1,27 @@
+{
+  "datasetId": "dataset-0004",
+  "profileId": "orchestration",
+  "repetitions": 1,
+  "concurrency": 1,
+  "timeoutMs": 60000,
+  "objective": {
+    "kind": "outcome",
+    "target": "run.output",
+    "metrics": ["task_success_rate", "llm_judge_score", "effective_intervention"],
+    "metadata": { "retrofitCausalDecisions": true }
+  },
+  "configs": [
+    {
+      "id": "probe",
+      "label": "Probe",
+      "runConfig": {
+        "pattern": "solo_agent",
+        "providerId": "deepseek",
+        "modelRef": "deepseek-v4-pro",
+        "causalInterventionLevel": "record_only",
+        "metadata": {}
+      }
+    }
+  ],
+  "metadata": { "retrofitCausalDecisions": true }
+}

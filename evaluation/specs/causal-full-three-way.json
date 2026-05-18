@@ -1,0 +1,68 @@
+{
+  "datasetId": "dataset-0003",
+  "profileId": "orchestration",
+  "repetitions": 1,
+  "concurrency": 1,
+  "timeoutMs": 300000,
+  "objective": {
+    "kind": "outcome",
+    "target": "run.output",
+    "metrics": [
+      "task_success_rate",
+      "llm_judge_score",
+      "intent_resolution",
+      "clarification_precision",
+      "effective_intervention",
+      "over_action",
+      "counterfactual_lift",
+      "token_efficiency",
+      "tool_efficiency",
+      "agentic_cost_score"
+    ],
+    "metadata": {
+      "retrofitCausalDecisions": true
+    }
+  },
+  "configs": [
+    {
+      "id": "causal-record-only",
+      "label": "Record Only",
+      "runConfig": {
+        "pattern": "solo_agent",
+        "modeSelection": "auto",
+        "providerId": "deepseek",
+        "modelRef": "deepseek-v4-flash",
+        "causalInterventionLevel": "record_only",
+        "metadata": { "evaluationBatch": "causal-full-three-way" }
+      }
+    },
+    {
+      "id": "causal-advisory",
+      "label": "Advisory",
+      "runConfig": {
+        "pattern": "solo_agent",
+        "modeSelection": "auto",
+        "providerId": "deepseek",
+        "modelRef": "deepseek-v4-flash",
+        "causalInterventionLevel": "advisory",
+        "metadata": { "evaluationBatch": "causal-full-three-way" }
+      }
+    },
+    {
+      "id": "causal-enforcing",
+      "label": "Enforcing",
+      "runConfig": {
+        "pattern": "solo_agent",
+        "modeSelection": "auto",
+        "providerId": "deepseek",
+        "modelRef": "deepseek-v4-flash",
+        "causalInterventionLevel": "enforcing",
+        "metadata": { "evaluationBatch": "causal-full-three-way" }
+      }
+    }
+  ],
+  "metadata": {
+    "retrofitCausalDecisions": true,
+    "description": "Full three-way comparison: record_only vs advisory vs enforcing on all 101 causal intervention cases."
+  }
+}
