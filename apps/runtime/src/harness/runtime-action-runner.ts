@@ -1,10 +1,11 @@
-import type {
-  ActionRecord,
-  OraEventEnvelope,
-  OraToolCallEnvelope,
-  PolicyDecision,
-  RunConfig,
-  RuntimeToolResultPreview,
+import {
+  CausalDecisionRecordSchema,
+  type ActionRecord,
+  type OraEventEnvelope,
+  type OraToolCallEnvelope,
+  type PolicyDecision,
+  type RunConfig,
+  type RuntimeToolResultPreview,
 } from "@cemeworm/shared";
 import type { ActionLedger, PolicyService } from "../capabilities.js";
 import { ApprovalInterruptError } from "./runtime-interrupts.js";
@@ -140,6 +141,43 @@ export async function resolveRuntimeActionApproval({
     if (toolCallRecord) {
       deps.appendToolCallStatus?.(toolCallRecord, "approval_required");
     }
+    // Record causal decision for approval gate
+    deps.emit("causal.decision.recorded", CausalDecisionRecordSchema.parse({
+      taskState: {
+        surfaceRequest: action.type,
+        latentGoalHypotheses: [],
+        selectedLatentGoal: "",
+        keyUncertainties: ["行动风险较高"],
+        constraints: [],
+        candidateInterventions: [],
+        chosenIntervention: "request_approval",
+        alternativeInterventions: [],
+        counterfactualRiskIfSkipped: "",
+        expectedOutcomeLift: "",
+        confidence: 0.4,
+        stopCondition: "",
+      },
+      policyDecision: {
+        goalUncertainty: 0.4,
+        factUncertainty: 0.2,
+        contextUncertainty: 0.2,
+        actionRisk: action.riskLevel === "high" ? 0.8 : 0.4,
+        userCost: 0.5,
+        reversibility: "low",
+        recommendedAction: "request_approval",
+        reason: "request_approval: approval gate triggered at runtime",
+        wouldChangeOutcomeIfWrong: true,
+      },
+      chosenIntervention: "request_approval",
+      alternativeInterventions: [],
+      recordedAt: Date.now(),
+      decisionContext: {
+        phase: "approval_triggered",
+        nodeId: context.nodeId,
+        agentId: context.agentId,
+        toolId: action.type,
+      },
+    }), { agentId: context.agentId, nodeId: context.nodeId });
     deps.emit(
       "approval.required",
       { actionId: action.id, decision },

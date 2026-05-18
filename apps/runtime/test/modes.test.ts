@@ -1,12 +1,17 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { CODE_DEVELOPMENT_MODE_ID, DEBATE_MODE_ID, ORA_ROOT_AGENT_ID } from "@cemeworm/shared";
+import { CODE_DEVELOPMENT_MODE_ID, DEBATE_MODE_ID, DEEP_RESEARCH_MODE_ID, ORA_ROOT_AGENT_ID } from "@cemeworm/shared";
 import { describe, expect, it } from "vitest";
 import { LocalRunStore } from "../src/index.js";
 
 function freshStoreDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "ora-runtime-modes-"));
+}
+
+function configuredToolIds(node: { config: unknown } | undefined): string[] | undefined {
+  const config = node?.config as { toolIds?: unknown } | undefined;
+  return Array.isArray(config?.toolIds) ? config.toolIds as string[] : undefined;
 }
 
 describe("runtime built-in modes", () => {
@@ -67,5 +72,21 @@ describe("runtime built-in modes", () => {
       "debate",
       "synthesis",
     ]);
+  });
+
+  it("keeps Deep Research planning and report stages tool-free", () => {
+    const store = new LocalRunStore({ dataDir: freshStoreDir() });
+
+    const fetched = store.getMode({ modeId: DEEP_RESEARCH_MODE_ID });
+    const scope = fetched.nodes.find((node) => node.id === "scope");
+    const synthesize = fetched.nodes.find((node) => node.id === "synthesize");
+    const gather = fetched.nodes.find((node) => node.id === "gather");
+    const verify = fetched.nodes.find((node) => node.id === "verify");
+
+    expect(configuredToolIds(scope)).toEqual([]);
+    expect(configuredToolIds(synthesize)).toEqual([]);
+    expect(configuredToolIds(gather)).toBeUndefined();
+    expect(verify?.template).toBe("review");
+    expect((verify?.config as { gateOnReviewVerdict?: unknown } | undefined)?.gateOnReviewVerdict).toBe(true);
   });
 });

@@ -45,6 +45,7 @@ export function getPatternDriver(pattern: CoordinationPattern): PatternDriver {
           permissionMode: "default",
           patternOptions: {},
           metadata: {},
+          causalInterventionLevel: "record_only" as const,
           deterministicSeed: "ora-smoke",
         },
         modeSpec,

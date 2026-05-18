@@ -5,7 +5,8 @@ import {tmpdir } from "node:os";
 import {mkdtempSync, rmSync } from "node:fs";
 import {LocalEvaluationStore } from "../evaluation-store.js";
 import type { StateSnapshot } from "@cemeworm/shared";
-import {classifyToolRisk, routeIntervention } from "./causal-policy-router.js";
+import { classifyToolRisk } from "@cemeworm/shared";
+import { routeIntervention, applyCausalPolicyGate } from "./causal-policy-router.js";
 
 function mockSnapshot(overrides: Partial<StateSnapshot> = {}): StateSnapshot {
   const now = Date.now();
@@ -106,6 +107,24 @@ describe("causal policy router", () => {
     it("classifies reads as low risk", () => {
       expect(classifyToolRisk("file.read")).toBe("low");
       expect(classifyToolRisk("file.grep")).toBe("low");
+    });
+
+    it("classifies file.apply_patch as high risk", () => {
+      expect(classifyToolRisk("file.apply_patch")).toBe("high");
+    });
+
+    it("classifies agent.spawn as medium risk", () => {
+      expect(classifyToolRisk("agent.spawn")).toBe("medium");
+    });
+
+    it("classifies plan.update as medium risk", () => {
+      expect(classifyToolRisk("plan.update")).toBe("medium");
+    });
+
+    it("classifies mcp.call as medium risk, list/read as low risk", () => {
+      expect(classifyToolRisk("mcp.call")).toBe("medium");
+      expect(classifyToolRisk("mcp.listTools")).toBe("low");
+      expect(classifyToolRisk("mcp.readResource")).toBe("low");
     });
   });
 
@@ -451,6 +470,131 @@ describe("causal policy router", () => {
         modelResponseText: "闭包是JavaScript中的一个重要概念...",
       });
       expect(result.action).toBe("answer_directly");
+    });
+  });
+
+  describe("applyCausalPolicyGate", () => {
+    it("never blocks in record_only mode", () => {
+      const result = routeIntervention({
+        surfaceRequest: "删除数据库数据",
+        taskState: undefined,
+        proposedToolId: "shell.rm",
+        proposedToolRisk: "high",
+        toolCallCount: 0,
+        clarificationCount: 0,
+        hasPendingApprovals: false,
+        hasPendingPlanDecisions: false,
+        hasUnresolvedPlanItems: false,
+        modelResponseText: "I'll delete the database now.",
+      });
+      const block = applyCausalPolicyGate(result, "record_only");
+      expect(block.blocked).toBe(false);
+    });
+
+    it("blocks request_approval in advisory mode", () => {
+      const result = routeIntervention({
+        surfaceRequest: "删除数据库数据",
+        taskState: undefined,
+        proposedToolId: "shell.rm",
+        proposedToolRisk: "high",
+        toolCallCount: 0,
+        clarificationCount: 0,
+        hasPendingApprovals: false,
+        hasPendingPlanDecisions: false,
+        hasUnresolvedPlanItems: false,
+        modelResponseText: "I'll delete the database now.",
+      });
+      const block = applyCausalPolicyGate(result, "advisory");
+      expect(block.blocked).toBe(true);
+      expect(block.reason).toContain("approval");
+    });
+
+    it("allows use_tool and answer_directly in advisory mode", () => {
+      const useToolResult = routeIntervention({
+        surfaceRequest: "读取package.json",
+        taskState: {
+          surfaceRequest: "读取package.json",
+          selectedLatentGoal: "查看项目依赖",
+          confidence: 0.85,
+        },
+        proposedToolId: "file.read",
+        proposedToolRisk: "low",
+        toolCallCount: 0,
+        clarificationCount: 0,
+        hasPendingApprovals: false,
+        hasPendingPlanDecisions: false,
+        hasUnresolvedPlanItems: false,
+        modelResponseText: "Let me read the file.",
+      });
+      expect(applyCausalPolicyGate(useToolResult, "advisory").blocked).toBe(false);
+
+      const answerResult = routeIntervention({
+        surfaceRequest: "你好",
+        taskState: {
+          surfaceRequest: "你好",
+          selectedLatentGoal: "打招呼",
+          confidence: 0.9,
+        },
+        proposedToolId: undefined,
+        proposedToolRisk: "low",
+        toolCallCount: 0,
+        clarificationCount: 0,
+        hasPendingApprovals: false,
+        hasPendingPlanDecisions: false,
+        hasUnresolvedPlanItems: false,
+        modelResponseText: "你好！有什么可以帮助你的吗？",
+      });
+      expect(applyCausalPolicyGate(answerResult, "advisory").blocked).toBe(false);
+    });
+
+    it("blocks clarify, search_web, read_context in enforcing mode", () => {
+      // clarify scenario: high goal uncertainty
+      const clarifyResult = routeIntervention({
+        surfaceRequest: "优化那个东西",
+        taskState: undefined,
+        proposedToolId: undefined,
+        proposedToolRisk: "low",
+        toolCallCount: 0,
+        clarificationCount: 0,
+        hasPendingApprovals: false,
+        hasPendingPlanDecisions: false,
+        hasUnresolvedPlanItems: false,
+        modelResponseText: "",
+      });
+      const clarifyBlock = applyCausalPolicyGate(clarifyResult, "enforcing");
+      expect(clarifyBlock.blocked).toBe(true);
+
+      // search_web scenario: fact uncertainty
+      const searchResult = routeIntervention({
+        surfaceRequest: "最新React特性",
+        taskState: undefined,
+        proposedToolId: undefined,
+        proposedToolRisk: "low",
+        toolCallCount: 0,
+        clarificationCount: 0,
+        hasPendingApprovals: false,
+        hasPendingPlanDecisions: false,
+        hasUnresolvedPlanItems: false,
+        modelResponseText: "React probably includes many new features, I think there might be server components...",
+      });
+      const searchBlock = applyCausalPolicyGate(searchResult, "enforcing");
+      expect(searchBlock.blocked).toBe(true);
+
+      // read_context: unresolved plan items + tool
+      const readResult = routeIntervention({
+        surfaceRequest: "重构auth模块",
+        taskState: undefined,
+        proposedToolId: "file.write",
+        proposedToolRisk: "medium",
+        toolCallCount: 0,
+        clarificationCount: 0,
+        hasPendingApprovals: false,
+        hasPendingPlanDecisions: false,
+        hasUnresolvedPlanItems: true,
+        modelResponseText: "",
+      });
+      const readBlock = applyCausalPolicyGate(readResult, "enforcing");
+      expect(readBlock.blocked).toBe(true);
     });
   });
 });

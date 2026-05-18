@@ -126,7 +126,7 @@ describe("causal decision adapter", () => {
     const decisions = adaptCausalDecisionsFromTrace(snapshot);
     expect(decisions).toHaveLength(1);
     expect(decisions[0]!.chosenIntervention).toBe("use_tool");
-    expect(decisions[0]!.policyDecision.actionRisk).toBe(0.5);
+    expect(decisions[0]!.policyDecision.actionRisk).toBe(0.8);
   });
 
   it("produces multiple decisions for mixed signals", () => {

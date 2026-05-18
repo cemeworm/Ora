@@ -46,7 +46,8 @@ import {
 import {
   NodeLoopController,
 } from "./node-loop-transitions.js";
-import { routeIntervention, classifyToolRisk } from "./causal-policy-router.js";
+import { routeIntervention, applyCausalPolicyGate, interventionActionToLabel } from "./causal-policy-router.js";
+import { classifyToolRisk } from "@cemeworm/shared";
 import { registerRuntimeToolAttempt } from "./runtime-tool-attempt.js";
 import { codeDevelopmentToolBoundaryError } from "./runtime-tool-boundary.js";
 import { RuntimeToolCallService } from "./runtime-tool-call-service.js";
@@ -140,6 +141,8 @@ export interface RunNodeRuntimeLoopDeps {
     call: RuntimeToolCall,
     reason: CompletionStopReason,
   ) => void;
+  /** Count of clarification.required events emitted so far in this run. */
+  clarificationCount: () => number;
   clarificationAnswer: (key: string, id: string) => unknown;
   ensureClarification: (params: {
     id: string;
@@ -756,7 +759,7 @@ export async function runNodeRuntimeLoop(
         proposedToolId: undefined,
         proposedToolRisk: "low",
         toolCallCount: completion.toolAttempts,
-        clarificationCount: 0,
+        clarificationCount: deps.clarificationCount(),
         hasPendingApprovals: false,
         hasPendingPlanDecisions: false,
         hasUnresolvedPlanItems,
@@ -1015,7 +1018,7 @@ export async function runNodeRuntimeLoop(
       proposedToolId: toolCall.tool,
       proposedToolRisk: toolRisk,
       toolCallCount: completion.toolAttempts + 1,
-      clarificationCount: 0,
+      clarificationCount: deps.clarificationCount(),
       hasPendingApprovals: false,
       hasPendingPlanDecisions: false,
       hasUnresolvedPlanItems,
@@ -1034,6 +1037,60 @@ export async function runNodeRuntimeLoop(
       agentId: params.agentId,
       nodeId: params.nodeId,
     });
+
+    // Causal policy gate: in advisory/enforcing mode, the causal decision
+    // may override or block the proposed tool call.
+    const interventionLevel = deps.config.causalInterventionLevel ?? "record_only";
+    if (interventionLevel !== "record_only") {
+      const blockResult = applyCausalPolicyGate(policyResult, interventionLevel);
+      if (blockResult.blocked) {
+        emit("causal.decision.rejected", {
+          toolId: toolCall.tool,
+          recommendedAction: policyResult.action,
+          reason: blockResult.reason,
+          level: interventionLevel,
+        }, {
+          agentId: params.agentId,
+          nodeId: params.nodeId,
+        });
+        if (interventionLevel === "enforcing") {
+          nodeLoopController.emitTransitionResult("boundary_failure", "finalizing", {
+            agentId: params.agentId,
+            title: params.title,
+            toolId: toolCall.tool,
+            reason: blockResult.reason,
+            iteration,
+          });
+          // Inject causal policy feedback into the conversation so the model
+          // can produce an informed final answer instead of silently dropping
+          // the tool call.
+          const causalFeedback = [
+            `[Causal Policy] Your attempt to use ${toolCall.tool} was blocked.`,
+            `Reason: ${blockResult.reason}`,
+            `Recommended action: ${interventionActionToLabel(policyResult.action)}.`,
+            `Please provide your final answer based on the conversation so far.`,
+          ].join(" ");
+          return runForcedFinalProviderCall({
+            invokeProvider,
+            config,
+            messages: [
+              ...messages,
+              { role: "user", content: causalFeedback },
+            ],
+            system: params.system,
+            providerCache: params.providerCache,
+            nativeTools,
+            streamCallbacks,
+            reason: "causal_policy_blocked",
+            agentId: params.agentId,
+            nodeId: params.nodeId,
+            title: params.title,
+            emitNodeRuntimeState: emitForcedFinalProviderState,
+            onProviderExhausted: params.onForcedFinalProviderExhausted,
+          });
+        }
+      }
+    }
 
     const attemptDecision = registerRuntimeToolAttempt({
       completion,

@@ -3,7 +3,7 @@ import type { PatternExecutionContext, PatternExecutionResult } from "./executio
 import type { ModeExecutionInput } from "./mode-driver-registry.js";
 import { asText, dispatchNodeTemplate, initializeQueueSummary, interpolate, modeUsesSingleOwner, nodeCustomAgentId, nodeInstructions, nodeSystemPrompt, primaryOwnerAgentId, promptTemplate, publicAgentMessageContent, runtimeFallbackPrompt, titleForNode } from "./driver-utils.js";
 import { runGenericModeNode, runModeLayer } from "./generic-node-executor.js";
-import { type ExecutionBag, type OrchestratorSubagentBag, DELEGATION_PLAN_INSTRUCTION, parseDelegationPlan, type DelegationPlan, writeBag } from "./mode-driver-helpers.js";
+import { type ExecutionBag, type OrchestratorSubagentBag, DELEGATION_PLAN_INSTRUCTION, parseDelegationPlan, parseReviewGateVerdict, type DelegationPlan, writeBag } from "./mode-driver-helpers.js";
 
 function stageTranscriptLine(entry: { speakerLabel: string; content: unknown }): string {
   return `${entry.speakerLabel}: ${asText(entry.content).trim()}`;
@@ -44,10 +44,31 @@ function shouldApplyStanceLock(stage: ModeStageSpec): boolean {
   return stage.adversarialStance === true && Boolean(stage.stance);
 }
 
+function nodeToolIds(node: ModeNodeSpec): string[] | undefined {
+  const config = node.config as { toolIds?: unknown };
+  return Array.isArray(config.toolIds)
+    ? config.toolIds.filter((toolId): toolId is string => typeof toolId === "string")
+    : undefined;
+}
+
 function stageSpeakerLabel(modeSpec: ModeSpec, node: ModeNodeSpec, stage: ModeStageSpec): string {
   const profile = stage.speakerId ? modeSpec.profiles.find((candidate) => candidate.id === stage.speakerId) : undefined;
   return stage.speakerLabel ?? profile?.label ?? node.title ?? node.label;
 }
+
+function nodeStopsOnReviewVerdict(node: ModeNodeSpec): boolean {
+  const config = node.config as { gateOnReviewVerdict?: unknown };
+  return config.gateOnReviewVerdict === true;
+}
+
+function nodeReworkTargets(node: ModeNodeSpec): string[] {
+  const config = node.config as { reworkNodeIds?: unknown };
+  return Array.isArray(config.reworkNodeIds)
+    ? config.reworkNodeIds.filter((nodeId): nodeId is string => typeof nodeId === "string")
+    : [];
+}
+
+const MAX_STAGED_REWORK_ROUNDS = 2;
 
 async function executePlainOrchestratorNode(
   context: PatternExecutionContext,
@@ -68,6 +89,7 @@ async function executePlainOrchestratorNode(
     system: nodeSystemPrompt(context, modeSpec, node, bag),
     customAgentId: nodeCustomAgentId(node),
     riskLevel: node.riskLevel,
+    toolIds: nodeToolIds(node),
   });
 }
 
@@ -86,80 +108,213 @@ async function executeStagedTranscriptMode(input: ModeExecutionInput): Promise<P
   const layout = modeSpec.transcriptLayout;
   const groupId = layout?.groupId ?? modeSpec.id;
   const groupLabel = layout?.groupLabel ?? modeSpec.label;
+  const nodesById = new Map(nodes.map((node) => [node.id, node]));
   const bag: ExecutionBag = { prompt };
   const stageOutputs: Array<{ speakerLabel: string; content: string }> = [];
   let completedNodes = 0;
   let previousStageMessageId: string | undefined;
+  let gatedReviewVerdict:
+    | {
+        nodeId: string;
+        verdict: ReturnType<typeof parseReviewGateVerdict>;
+        output: unknown;
+      }
+    | undefined;
+
+  const executeStagedNode = async (
+    node: ModeNodeSpec,
+    options?: { reworkRound?: number; reviewerOutput?: string },
+  ): Promise<unknown> => {
+    const nodeStages = stagesByNode.get(node.id) ?? [];
+    if (nodeStages.length === 0) {
+      const result = await executePlainOrchestratorNode(context, modeSpec, node, bag);
+      bag[node.id] = result;
+      bag[node.template] = result;
+      return result;
+    }
+
+    let lastStageOutput: unknown;
+    for (const stage of nodeStages) {
+      const priorTranscript = stageOutputs.map(stageTranscriptLine).join("\n\n") || "No prior staged transcript yet.";
+      bag.priorTranscript = priorTranscript;
+      bag.debateTranscript = stageOutputs.map(stageTranscriptLine).join("\n\n");
+      const agentId = stage.speakerId ?? node.ownerAgentId ?? primaryOwnerAgentId(modeSpec, [node]);
+      const speakerLabel = stageSpeakerLabel(modeSpec, node, stage);
+      const values = stageValues(bag, stage, speakerLabel, priorTranscript);
+      const systemParts = [nodeInstructions(modeSpec, node, values)];
+      if (shouldApplyStanceLock(stage)) {
+        systemParts.push(`STANCE LOCK: You are now ${speakerLabel}. Your mandatory stance is "${stage.stance}". Every claim you make must support the ${stage.stance} position or attack the opposing position. Neutral evaluation, both-sides framing, and undermining your own side are protocol violations.`);
+      }
+      let stagePrompt = interpolate(stage.promptTemplate ?? node.prompt ?? fallbackStagePrompt(stage), values);
+      if (options?.reworkRound && gatedReviewVerdict) {
+        const verdict = gatedReviewVerdict.verdict;
+        const feedbackParts = [
+          `Verifier feedback to address:\n${options.reviewerOutput ?? asText(bag.verify ?? bag.review)}`,
+        ];
+        if (verdict.acceptedArtifactIds?.length) {
+          feedbackParts.push(`Already accepted (do not redo): ${verdict.acceptedArtifactIds.join(", ")}`);
+        }
+        if (verdict.findings?.length) {
+          const ownFindings = verdict.findings.filter((f) =>
+            !f.artifactId || String(bag[f.artifactId] ?? "").length > 0
+          );
+          if (ownFindings.length > 0) {
+            feedbackParts.push(`Fix these blocking issues:\n${ownFindings.map((f) => `- [${f.artifactId ?? "general"}] ${f.issue}`).join("\n")}`);
+          }
+        }
+        stagePrompt += `\n\n${feedbackParts.join("\n\n")}\n\nThis is rework round ${options.reworkRound}. Resolve the verifier's blocking issues before handing back the work.`;
+      }
+      const output = await context.callAgent({
+        agentId,
+        planItemId: node.id,
+        title: node.template === "synthesize"
+          ? titleForNode(node, stage.label)
+          : options?.reworkRound
+            ? `${speakerLabel} ${stage.label} (Rework ${options.reworkRound})`
+            : `${speakerLabel} ${stage.label}`,
+        prompt: stagePrompt,
+        system: context.systemPrompt(systemParts.join("\n\n")),
+        customAgentId: nodeCustomAgentId(node),
+        riskLevel: node.riskLevel,
+        toolIds: nodeToolIds(node),
+      });
+      const message = context.emitAgentMessage({
+        fromAgentId: agentId,
+        toAgentIds: modeSpec.profiles.map((profile) => profile.id).filter((profileId) => profileId !== agentId),
+        replyToId: previousStageMessageId,
+        threadId: `${groupId}:${context.projectId}`,
+        nodeId: node.id,
+        planItemId: node.id,
+        kind: "reply",
+        status: "done",
+        content: publicAgentMessageContent("", output, `${speakerLabel} 阶段输出不可用`),
+        transcript: {
+          kind: "stage_transcript",
+          groupId,
+          groupLabel,
+          stageId: stage.id,
+          stageLabel: stage.label,
+          sequence: stageOutputs.length,
+          speakerLabel,
+          speakerId: stage.speakerId,
+          stance: stage.stance ?? "neutral",
+          status: "done",
+          layout,
+        },
+      });
+      previousStageMessageId = message.id;
+      lastStageOutput = output;
+      stageOutputs.push({ speakerLabel, content: asText(output) });
+      bag[stage.id] = output;
+      bag[node.id] = output;
+      bag[node.template] = output;
+      bag.priorTranscript = stageOutputs.map(stageTranscriptLine).join("\n\n");
+      bag.debateTranscript = bag.priorTranscript;
+      if (stage.outputKey) {
+        bag[stage.outputKey] = output;
+      }
+    }
+    if (nodeStopsOnReviewVerdict(node) && lastStageOutput !== undefined) {
+      const verdict = parseReviewGateVerdict(lastStageOutput);
+      bag.reviewVerdict = verdict.verdict;
+      bag.reviewIssues = verdict.issues;
+      if (verdict.acceptedArtifactIds?.length) {
+        bag.acceptedArtifactIds = verdict.acceptedArtifactIds;
+      }
+      if (verdict.findings?.length) {
+        bag.reviewFindings = verdict.findings;
+      }
+      if (verdict.verdict !== "pass") {
+        gatedReviewVerdict = {
+          nodeId: node.id,
+          verdict,
+          output: lastStageOutput,
+        };
+      } else {
+        gatedReviewVerdict = undefined;
+      }
+    }
+    return lastStageOutput;
+  };
 
   for (const node of nodes) {
-    completedNodes = await runGenericModeNode(context, modeSpec, node, totalActiveNodes, completedNodes, async () => {
-      const nodeStages = stagesByNode.get(node.id) ?? [];
-      if (nodeStages.length === 0) {
-        const result = await executePlainOrchestratorNode(context, modeSpec, node, bag);
-        bag[node.id] = result;
-        bag[node.template] = result;
-        return result;
-      }
+    completedNodes = await runGenericModeNode(context, modeSpec, node, totalActiveNodes, completedNodes, () => executeStagedNode(node), bag);
 
-      let lastStageOutput: unknown;
-      for (const stage of nodeStages) {
-        const priorTranscript = stageOutputs.map(stageTranscriptLine).join("\n\n") || "No prior staged transcript yet.";
-        bag.priorTranscript = priorTranscript;
-        bag.debateTranscript = stageOutputs.map(stageTranscriptLine).join("\n\n");
-        const agentId = stage.speakerId ?? node.ownerAgentId ?? primaryOwnerAgentId(modeSpec, [node]);
-        const speakerLabel = stageSpeakerLabel(modeSpec, node, stage);
-        const values = stageValues(bag, stage, speakerLabel, priorTranscript);
-        const systemParts = [nodeInstructions(modeSpec, node, values)];
-        if (shouldApplyStanceLock(stage)) {
-          systemParts.push(`STANCE LOCK: You are now ${speakerLabel}. Your mandatory stance is "${stage.stance}". Every claim you make must support the ${stage.stance} position or attack the opposing position. Neutral evaluation, both-sides framing, and undermining your own side are protocol violations.`);
-        }
-        const output = await context.callAgent({
-          agentId,
-          planItemId: node.id,
-          title: node.template === "synthesize" ? titleForNode(node, stage.label) : `${speakerLabel} ${stage.label}`,
-          prompt: interpolate(stage.promptTemplate ?? node.prompt ?? fallbackStagePrompt(stage), values),
-          system: context.systemPrompt(systemParts.join("\n\n")),
-          customAgentId: nodeCustomAgentId(node),
-          riskLevel: node.riskLevel,
-        });
-        const message = context.emitAgentMessage({
-          fromAgentId: agentId,
-          toAgentIds: modeSpec.profiles.map((profile) => profile.id).filter((profileId) => profileId !== agentId),
-          replyToId: previousStageMessageId,
-          threadId: `${groupId}:${context.projectId}`,
-          nodeId: node.id,
-          planItemId: node.id,
-          kind: "reply",
-          status: "done",
-          content: publicAgentMessageContent("", output, `${speakerLabel} 阶段输出不可用`),
-          transcript: {
-            kind: "stage_transcript",
-            groupId,
-            groupLabel,
-            stageId: stage.id,
-            stageLabel: stage.label,
-            sequence: stageOutputs.length,
-            speakerLabel,
-            speakerId: stage.speakerId,
-            stance: stage.stance ?? "neutral",
-            status: "done",
-            layout,
-          },
-        });
-        previousStageMessageId = message.id;
-        lastStageOutput = output;
-        stageOutputs.push({ speakerLabel, content: asText(output) });
-        bag[stage.id] = output;
-        bag[node.id] = output;
-        bag[node.template] = output;
-        bag.priorTranscript = stageOutputs.map(stageTranscriptLine).join("\n\n");
-        bag.debateTranscript = bag.priorTranscript;
-        if (stage.outputKey) {
-          bag[stage.outputKey] = output;
+    if (gatedReviewVerdict) {
+      if (gatedReviewVerdict.verdict.verdict === "needs_fix") {
+        const verdictReworkIds = gatedReviewVerdict.verdict.reworkNodeIds;
+        const configTargets = nodeReworkTargets(node)
+          .map((nodeId) => nodesById.get(nodeId))
+          .filter((candidate): candidate is ModeNodeSpec => Boolean(candidate));
+        const reworkTargets = verdictReworkIds && verdictReworkIds.length > 0
+          ? verdictReworkIds
+              .map((nodeId) => nodesById.get(nodeId))
+              .filter((candidate): candidate is ModeNodeSpec => Boolean(candidate))
+          : configTargets;
+        for (let reworkRound = 1; reworkRound <= MAX_STAGED_REWORK_ROUNDS && gatedReviewVerdict; reworkRound += 1) {
+          bag.reviewReworkCount = reworkRound;
+          context.emitAgentMessage({
+            fromAgentId: node.ownerAgentId ?? primaryOwnerAgentId(modeSpec, [node]),
+            toAgentIds: reworkTargets.map((target) => target.ownerAgentId ?? primaryOwnerAgentId(modeSpec, [target])),
+            replyToId: previousStageMessageId,
+            threadId: `${groupId}:${context.projectId}`,
+            nodeId: node.id,
+            planItemId: node.id,
+            kind: "status",
+            status: "running",
+            content: `研究核查未通过，正在启动第 ${reworkRound} 轮补充研究与复核。`,
+          });
+          for (const targetNode of reworkTargets) {
+            await executeStagedNode(targetNode, {
+              reworkRound,
+              reviewerOutput: asText(gatedReviewVerdict.output),
+            });
+          }
+          await executeStagedNode(node, {
+            reworkRound,
+            reviewerOutput: asText(gatedReviewVerdict.output),
+          });
+          if (!gatedReviewVerdict) {
+            break;
+          }
         }
       }
-      return lastStageOutput;
-    }, bag);
+    }
+
+    if (!gatedReviewVerdict && !bag.acceptedArtifactIds) {
+      const priorNodeIds = nodes
+        .slice(0, nodes.findIndex((candidate) => candidate.id === node.id))
+        .map((prior) => prior.id);
+      if (priorNodeIds.length > 0) {
+        bag.acceptedArtifactIds = priorNodeIds;
+      }
+    }
+
+    if (gatedReviewVerdict) {
+      const remainingNodes = nodes.slice(nodes.findIndex((candidate) => candidate.id === node.id) + 1);
+      for (const remaining of remainingNodes) {
+        context.setPlanStatus(remaining.id, "skipped");
+      }
+      context.setQueueSummary({
+        pending: 0,
+        inProgress: 0,
+        completed: totalActiveNodes,
+      });
+      return {
+        output: {
+          text: asText(gatedReviewVerdict.output),
+          pattern: modeSpec.family,
+          modeId: modeSpec.id,
+          stages: stageOutputs,
+          reviewVerdict: gatedReviewVerdict.verdict.verdict,
+          verificationBlocked: true,
+          blockedNodeId: gatedReviewVerdict.nodeId,
+          reviewIssues: gatedReviewVerdict.verdict.issues,
+          reviewReworkCount: bag.reviewReworkCount ?? 0,
+          reviewFindings: bag.reviewFindings,
+        },
+      };
+    }
   }
 
   context.remember({
@@ -176,6 +331,10 @@ async function executeStagedTranscriptMode(input: ModeExecutionInput): Promise<P
       pattern: modeSpec.family,
       modeId: modeSpec.id,
       stages: stageOutputs,
+      reviewVerdict: bag.reviewVerdict,
+      reviewIssues: bag.reviewIssues,
+      reviewReworkCount: bag.reviewReworkCount ?? 0,
+      reviewFindings: bag.reviewFindings,
     },
   };
 }
@@ -241,6 +400,7 @@ export async function executeOrchestratorSubagent(input: ModeExecutionInput): Pr
           system: nodeSystemPrompt(context, modeSpec, node, bag),
           customAgentId: nodeCustomAgentId(node),
           riskLevel: node.riskLevel,
+          toolIds: nodeToolIds(node),
           });
           writeBag(bag, "plan", planOutput, node.template);
           if (enableDynamicDelegation) {
@@ -272,6 +432,7 @@ export async function executeOrchestratorSubagent(input: ModeExecutionInput): Pr
           system,
           customAgentId: nodeCustomAgentId(node),
           riskLevel: node.riskLevel,
+          toolIds: nodeToolIds(node),
           });
           return bag.research;
         }
@@ -293,6 +454,7 @@ export async function executeOrchestratorSubagent(input: ModeExecutionInput): Pr
           system,
           customAgentId: nodeCustomAgentId(node),
           riskLevel: node.riskLevel,
+          toolIds: nodeToolIds(node),
           });
           return bag.review;
         }
@@ -322,6 +484,7 @@ export async function executeOrchestratorSubagent(input: ModeExecutionInput): Pr
           system: nodeSystemPrompt(context, modeSpec, node, bag),
           customAgentId: nodeCustomAgentId(node),
           riskLevel: node.riskLevel,
+          toolIds: nodeToolIds(node),
           });
           return bag.synthesis;
         }

@@ -1,6 +1,7 @@
 import {
   ORA_ROOT_AGENT_ID,
   ORA_ROOT_AGENT_LABEL,
+  CausalDecisionRecordSchema,
   type OraEventEnvelope,
   type PendingClarification,
   type PendingClarificationOption,
@@ -158,6 +159,42 @@ export async function ensureRuntimeClarification(
     requestedAt: deps.now(),
   });
   deps.pendingClarifications.push(clarification);
+  // Record causal decision for clarification gate
+  deps.emit("causal.decision.recorded", CausalDecisionRecordSchema.parse({
+    taskState: {
+      surfaceRequest: params.question,
+      latentGoalHypotheses: [],
+      selectedLatentGoal: "",
+      keyUncertainties: ["用户目标不明确"],
+      constraints: [],
+      candidateInterventions: [],
+      chosenIntervention: "clarify",
+      alternativeInterventions: [],
+      counterfactualRiskIfSkipped: params.counterfactualRiskIfSkipped ?? "",
+      expectedOutcomeLift: "",
+      confidence: 0.3,
+      stopCondition: "",
+    },
+    policyDecision: {
+      goalUncertainty: 0.7,
+      factUncertainty: 0.2,
+      contextUncertainty: 0.2,
+      actionRisk: 0.1,
+      userCost: 0.6,
+      reversibility: "high",
+      recommendedAction: "clarify",
+      reason: "clarify: clarification gate triggered at runtime",
+      wouldChangeOutcomeIfWrong: true,
+    },
+    chosenIntervention: "clarify",
+    alternativeInterventions: [],
+    recordedAt: deps.now(),
+    decisionContext: {
+      phase: "clarification_triggered",
+      nodeId: params.nodeId,
+      agentId: params.nodeId,
+    },
+  }), { nodeId: params.nodeId, agentId: params.nodeId });
   deps.emit(
     "clarification.required",
     {
@@ -238,6 +275,44 @@ export async function ensureRuntimeClarifications(
   );
 
   deps.pendingClarifications.push(...newClarifications);
+
+  // Record one causal decision for the batch clarification gate
+  const firstClarification = newClarifications[0]!;
+  deps.emit("causal.decision.recorded", CausalDecisionRecordSchema.parse({
+    taskState: {
+      surfaceRequest: firstClarification.question,
+      latentGoalHypotheses: [],
+      selectedLatentGoal: "",
+      keyUncertainties: ["用户目标不明确"],
+      constraints: [],
+      candidateInterventions: [],
+      chosenIntervention: "clarify",
+      alternativeInterventions: [],
+      counterfactualRiskIfSkipped: firstClarification.counterfactualRiskIfSkipped ?? "",
+      expectedOutcomeLift: "",
+      confidence: 0.3,
+      stopCondition: "",
+    },
+    policyDecision: {
+      goalUncertainty: 0.7,
+      factUncertainty: 0.2,
+      contextUncertainty: 0.2,
+      actionRisk: 0.1,
+      userCost: 0.6,
+      reversibility: "high",
+      recommendedAction: "clarify",
+      reason: "clarify: batch clarification gate triggered at runtime",
+      wouldChangeOutcomeIfWrong: true,
+    },
+    chosenIntervention: "clarify",
+    alternativeInterventions: [],
+    recordedAt: deps.now(),
+    decisionContext: {
+      phase: "clarification_triggered",
+      nodeId: firstClarification.nodeId,
+      agentId: firstClarification.nodeId,
+    },
+  }), { nodeId: firstClarification.nodeId, agentId: firstClarification.nodeId });
 
   for (const clarification of newClarifications) {
     deps.emit(

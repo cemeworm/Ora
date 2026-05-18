@@ -33,7 +33,7 @@ import {
   INTENT_CLARIFICATION_NODE_LABEL,
   type IntentClarificationResult,
 } from "./runtime-clarifications.js";
-import { routeIntervention, classifyToolRisk } from "./causal-policy-router.js";
+import { routeIntervention } from "./causal-policy-router.js";
 import type { KernelPatternExecutionContextAdapter } from "./runtime-pattern-context.js";
 import {
   assertRunCanBecomeTerminal,

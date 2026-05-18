@@ -65,7 +65,19 @@ export interface AgentTeamsBag extends ExecutionBag {
   triage?: string;
   build?: string;
   check?: string;
+  checkVerdict?: AgentTeamReviewVerdict["verdict"];
+  reviewIssues?: string[];
+  reworkCount?: number;
   handoff?: string;
+}
+
+export interface AgentTeamReviewVerdict {
+  verdict: "pass" | "needs_fix" | "blocked";
+  issues: string[];
+  source: "json" | "marker" | "heuristic" | "missing";
+  reworkNodeIds?: string[];
+  acceptedArtifactIds?: string[];
+  findings?: Array<{ artifactId?: string; severity: "blocking" | "concern" | "suggestion"; issue: string }>;
 }
 
 /** Bag keys for message-bus pattern: publish → route → handle → respond. */
@@ -122,6 +134,161 @@ export type ComplexityLevel = "L0" | "L1" | "L2" | "L3";
 export function parseComplexityLevel(triageOutput: unknown): ComplexityLevel | null {
   const match = /<complexity_assessment>\s*Level:\s*(L[0-3])/i.exec(asText(triageOutput));
   return (match?.[1] as ComplexityLevel) ?? null;
+}
+
+function normalizeVerdict(value: unknown): AgentTeamReviewVerdict["verdict"] | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (["pass", "approved", "approve", "通过"].includes(normalized)) return "pass";
+  if ([
+    "needs_fix",
+    "needs-fix",
+    "needs fix",
+    "needs_revision",
+    "needs-revision",
+    "needs revision",
+    "needs_rework",
+    "needs-rework",
+    "needs rework",
+    "changes_requested",
+    "changes-requested",
+    "changes requested",
+    "fail",
+    "failed",
+    "不通过",
+    "需返工",
+    "失败",
+  ].includes(normalized)) {
+    return "needs_fix";
+  }
+  if (["blocked", "block", "阻塞", "卡住"].includes(normalized)) return "blocked";
+  return undefined;
+}
+
+function extractIssuesFromText(text: string): string[] {
+  return text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => /^[-*•]\s+/.test(line) || /^\d+\.\s+/.test(line))
+    .map((line) => line.replace(/^([-*•]|\d+\.)\s+/, "").trim())
+    .filter(Boolean)
+    .slice(0, 8);
+}
+
+function extractReworkNodeIds(value: unknown): string[] | undefined {
+  if (Array.isArray(value)) {
+    const ids = value.filter((item): item is string => typeof item === "string");
+    return ids.length > 0 ? ids : undefined;
+  }
+  return undefined;
+}
+
+function extractAcceptedArtifactIds(value: unknown): string[] | undefined {
+  if (Array.isArray(value)) {
+    const ids = value.filter((item): item is string => typeof item === "string");
+    return ids.length > 0 ? ids : undefined;
+  }
+  return undefined;
+}
+
+function extractFindings(value: unknown): AgentTeamReviewVerdict["findings"] {
+  if (!Array.isArray(value)) return undefined;
+  const findings = value.filter((f): f is { artifactId?: string; severity: string; issue: string } =>
+    typeof f === "object" && f !== null && typeof (f as { issue?: unknown }).issue === "string"
+  ).map((f) => ({
+    artifactId: typeof f.artifactId === "string" ? f.artifactId : undefined,
+    severity: (["blocking", "concern", "suggestion"].includes(f.severity) ? f.severity : "concern") as "blocking" | "concern" | "suggestion",
+    issue: f.issue,
+  }));
+  return findings.length > 0 ? findings : undefined;
+}
+
+function parseReworkLine(text: string): string[] | undefined {
+  const match = /(?:^|\n)\s*(?:rework|返工)\s*[:：]\s*([^\n\r]+)/i.exec(text);
+  if (!match) return undefined;
+  const ids = match[1]
+    .split(/[,，、\s]+/)
+    .map((id) => id.trim())
+    .filter(Boolean);
+  return ids.length > 0 ? ids : undefined;
+}
+
+function parseAcceptedLine(text: string): string[] | undefined {
+  const match = /(?:^|\n)\s*(?:accepted|已验收)\s*[:：]\s*([^\n\r]+)/i.exec(text);
+  if (!match) return undefined;
+  const ids = match[1]
+    .split(/[,，、\s]+/)
+    .map((id) => id.trim())
+    .filter(Boolean);
+  return ids.length > 0 ? ids : undefined;
+}
+
+export function parseAgentTeamReviewVerdict(output: unknown): AgentTeamReviewVerdict {
+  if (output && typeof output === "object" && !Array.isArray(output)) {
+    const obj = output as Record<string, unknown>;
+    const verdict = normalizeVerdict(obj.verdict);
+    if (verdict) {
+      const issues = Array.isArray(obj.issues)
+        ? (obj.issues as unknown[]).filter((issue): issue is string => typeof issue === "string")
+        : [];
+      const reworkNodeIds = extractReworkNodeIds(obj.reworkNodeIds);
+      const acceptedArtifactIds = extractAcceptedArtifactIds(obj.acceptedArtifactIds);
+      const findings = extractFindings(obj.findings);
+      return { verdict, issues, source: "json", reworkNodeIds, acceptedArtifactIds, findings };
+    }
+  }
+
+  const text = asText(output).trim();
+  if (!text) {
+    return { verdict: "blocked", issues: ["Reviewer produced no verdict."], source: "missing" };
+  }
+
+  try {
+    const parsed = JSON.parse(text) as Record<string, unknown>;
+    const verdict = normalizeVerdict(parsed?.verdict);
+    if (verdict) {
+      const issues = Array.isArray(parsed.issues)
+        ? parsed.issues.filter((issue): issue is string => typeof issue === "string")
+        : [];
+      const reworkNodeIds = extractReworkNodeIds(parsed.reworkNodeIds);
+      const acceptedArtifactIds = extractAcceptedArtifactIds(parsed.acceptedArtifactIds);
+      const findings = extractFindings(parsed.findings);
+      return { verdict, issues, source: "json", reworkNodeIds, acceptedArtifactIds, findings };
+    }
+  } catch {
+    // Fall back to textual verdict parsing.
+  }
+
+  const markerMatch = /(?:^|\n)\s*(?:verdict|裁定)\s*[:：]\s*([^\n\r]+)/i.exec(text);
+  if (markerMatch) {
+    const verdict = normalizeVerdict(markerMatch[1]);
+    if (verdict) {
+      const reworkNodeIds = parseReworkLine(text);
+      const acceptedArtifactIds = parseAcceptedLine(text);
+      return { verdict, issues: extractIssuesFromText(text), source: "marker", reworkNodeIds, acceptedArtifactIds };
+    }
+  }
+
+  if (/(needs[_\-\s]?fix|needs[_\-\s]?revision|needs[_\-\s]?rework|changes[_\-\s]?requested|需返工|不通过|阻塞|失败)/i.test(text)) {
+    const verdict = /(阻塞|blocked)/i.test(text) ? "blocked" : "needs_fix";
+    const reworkNodeIds = parseReworkLine(text);
+    const acceptedArtifactIds = parseAcceptedLine(text);
+    return { verdict, issues: extractIssuesFromText(text), source: "heuristic", reworkNodeIds, acceptedArtifactIds };
+  }
+
+  if (/(^|\n)\s*(pass|approved|通过)\b/i.test(text)) {
+    return { verdict: "pass", issues: [], source: "heuristic" };
+  }
+
+  return {
+    verdict: "blocked",
+    issues: ["Reviewer verdict missing. Expected `Verdict: PASS | NEEDS_FIX | BLOCKED`."],
+    source: "missing",
+  };
+}
+
+export function parseReviewGateVerdict(output: unknown): AgentTeamReviewVerdict {
+  return parseAgentTeamReviewVerdict(output);
 }
 
 export const DELEGATION_PLAN_INSTRUCTION = `

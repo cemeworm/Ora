@@ -1,7 +1,30 @@
 import type { CausalDecisionRecord, CausalTaskState, InterventionAction, InterventionPolicyDecision } from "@cemeworm/shared";
 import type { StateSnapshot } from "@cemeworm/shared";
+import { classifyToolRisk, isSearchTool, isReadContextTool } from "@cemeworm/shared";
+import {
+  estimateGoalUncertainty,
+  estimateFactUncertainty,
+  estimateContextUncertainty,
+  estimateActionRisk,
+  type PolicyRouterInput,
+} from "./causal-policy-router.js";
 
 const ADAPTER_PREFIX = "[adapter-inferred]";
+
+function buildRouterInputFromTrace(point: DecisionPoint, snapshot: StateSnapshot): PolicyRouterInput {
+  return {
+    surfaceRequest: snapshot.input?.prompt ?? "",
+    taskState: undefined,
+    proposedToolId: point.toolId,
+    proposedToolRisk: point.toolRisk ?? "low",
+    toolCallCount: snapshot.toolCalls.length,
+    clarificationCount: point.hasClarification ? 1 : 0,
+    hasPendingApprovals: point.hasApproval,
+    hasPendingPlanDecisions: point.hasPlanDecision,
+    hasUnresolvedPlanItems: point.hasPlanDecision,
+    modelResponseText: "",
+  };
+}
 
 /**
  * Infer pseudo CausalDecisionRecords from a StateSnapshot's trace events.
@@ -14,7 +37,7 @@ export function adaptCausalDecisionsFromTrace(snapshot: StateSnapshot): CausalDe
 
   for (const point of decisionPoints) {
     const action = inferAction(point);
-    const uncertainties = inferUncertainties(point, action);
+    const uncertainties = inferUncertainties(point, action, snapshot);
     const decision = buildDecisionRecord(action, uncertainties, point, snapshot);
     decisions.push(decision);
   }
@@ -65,7 +88,7 @@ function findDecisionPoints(snapshot: StateSnapshot): DecisionPoint[] {
     }
     if (event.type === "plan.updated") {
       const payload = event.payload as Record<string, unknown> | undefined;
-      const planItems = (payload?.items ?? payload?.plan ?? []) as Array<{ status?: string }>;
+      const planItems = (payload?.items ?? []) as Array<{ status?: string }>;
       const hasPending = planItems.some((item) => item.status === "pending");
       if (hasPending && !seen.has("plan")) {
         seen.add("plan");
@@ -82,7 +105,7 @@ function findDecisionPoints(snapshot: StateSnapshot): DecisionPoint[] {
 
   // Scan toolCalls for tool-based decision points
   for (const call of snapshot.toolCalls) {
-    const risk = classifySnapshotToolRisk(call.toolId);
+    const risk = classifyToolRisk(call.toolId);
     const key = `tool:${call.toolId}`;
 
     // Group same tool type into one decision point
@@ -121,6 +144,7 @@ function inferAction(point: DecisionPoint): InterventionAction {
 function inferUncertainties(
   point: DecisionPoint,
   action: InterventionAction,
+  snapshot: StateSnapshot,
 ): {
   goalUncertainty: number;
   factUncertainty: number;
@@ -130,57 +154,39 @@ function inferUncertainties(
   wouldChangeOutcomeIfWrong: boolean;
   reversibility: "low" | "medium" | "high";
 } {
-  let goalUncertainty = 0.2;
-  let factUncertainty = 0.2;
-  let contextUncertainty = 0.2;
-  let actionRisk = 0.1;
-  let userCost = 0.1;
-  let reversibility: "low" | "medium" | "high" = "high";
+  const input = buildRouterInputFromTrace(point, snapshot);
 
-  switch (action) {
-    case "clarify":
-      goalUncertainty = 0.7;
-      userCost = 0.6;
-      reversibility = "high";
-      break;
-    case "search_web":
-      factUncertainty = 0.7;
-      contextUncertainty = 0.3;
-      userCost = 0.2;
-      reversibility = "high";
-      break;
-    case "read_context":
-      contextUncertainty = 0.6;
-      factUncertainty = 0.3;
-      userCost = 0.1;
-      reversibility = "high";
-      break;
-    case "request_approval":
-      actionRisk = 0.8;
-      goalUncertainty = 0.4;
-      userCost = 0.5;
-      reversibility = "low";
-      break;
-    case "plan":
-      goalUncertainty = 0.5;
-      contextUncertainty = 0.4;
-      userCost = 0.3;
-      reversibility = "medium";
-      break;
-    case "use_tool":
-      actionRisk = point.toolRisk === "high" ? 0.5 : point.toolRisk === "medium" ? 0.3 : 0.1;
-      contextUncertainty = 0.2;
-      userCost = 0.1;
-      reversibility = point.toolRisk === "high" ? "low" : "medium";
-      break;
-    case "stop":
-      reversibility = "high";
-      break;
-    case "answer_directly":
-    default:
-      // Low everything — the agent is confident enough to answer
-      break;
-  }
+  // Use router's estimation functions as the base, then apply action-semantic
+  // overrides. The adapter has post-hoc knowledge of what action was taken,
+  // which carries semantic information about the uncertainty that existed.
+  let goalUncertainty = estimateGoalUncertainty(input);
+  let factUncertainty = estimateFactUncertainty(input);
+  let contextUncertainty = estimateContextUncertainty(input);
+  let actionRisk = estimateActionRisk(input);
+
+  // Action-semantic overrides: the fact that a certain action was taken signals
+  // uncertainty dimensions that trace events alone may not capture.
+  if (action === "clarify") goalUncertainty = Math.max(goalUncertainty, 0.7);
+  if (action === "request_approval") actionRisk = Math.max(actionRisk, 0.8);
+  if (action === "plan") goalUncertainty = Math.max(goalUncertainty, 0.5);
+  if (action === "search_web") factUncertainty = Math.max(factUncertainty, 0.7);
+  if (action === "read_context") contextUncertainty = Math.max(contextUncertainty, 0.6);
+
+  // userCost and reversibility are action-dependent
+  const clarificationCount = point.hasClarification ? 1 : 0;
+  let userCost = 0.1;
+  if (action === "clarify") userCost = Math.min(0.3 + clarificationCount * 0.15, 0.9);
+  else if (action === "request_approval") userCost = 0.5;
+  else if (action === "stop") userCost = 0.1;
+  else if (action === "plan") userCost = 0.3;
+  else if (action === "search_web") userCost = 0.2;
+  else userCost = 0.05;
+
+  let reversibility: "low" | "medium" | "high" = "high";
+  if (point.toolRisk === "high") reversibility = "low";
+  else if (point.toolRisk === "medium") reversibility = "medium";
+  if (action === "request_approval") reversibility = "low";
+  if (action === "plan") reversibility = "medium";
 
   const wouldChangeOutcomeIfWrong = actionRisk >= 0.5 || goalUncertainty >= 0.6;
 
@@ -307,29 +313,4 @@ function buildKeyUncertainties(
   return items;
 }
 
-function isSearchTool(toolId: string): boolean {
-  const searchTools = ["web.search", "web.fetch", "web_search", "web_fetch", "search", "browser.navigate"];
-  return searchTools.some((t) => toolId === t || toolId.startsWith(`${t}.`));
-}
 
-function isReadContextTool(toolId: string): boolean {
-  const readTools = [
-    "file.read", "file.grep", "file.glob", "file.list",
-    "file_read", "file_grep", "file_glob", "file_list",
-    "read", "grep", "glob",
-  ];
-  return readTools.some((t) => toolId === t || toolId.startsWith(`${t}.`));
-}
-
-function classifySnapshotToolRisk(toolId: string): "low" | "medium" | "high" {
-  const highRisk = ["shell", "file.write", "file.patch", "file.delete", "file.move", "browser"];
-  const mediumRisk = ["file.create", "git", "npm", "pnpm", "yarn"];
-
-  for (const prefix of highRisk) {
-    if (toolId === prefix || toolId.startsWith(`${prefix}.`)) return "high";
-  }
-  for (const prefix of mediumRisk) {
-    if (toolId === prefix || toolId.startsWith(`${prefix}.`)) return "medium";
-  }
-  return "low";
-}

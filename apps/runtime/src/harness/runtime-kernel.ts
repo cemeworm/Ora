@@ -26,6 +26,7 @@ import {
   RecoveryArtifactSchema,
   OraEventEnvelopeSchema,
   StateSnapshotSchema,
+  CausalDecisionRecordSchema,
   type CompletionStopReason,
   type CustomAgentDetail,
   getPermissionProfile,
@@ -979,7 +980,43 @@ export async function executeRuntimeKernel(
   };
 
   const emitPlanUpdated = () => {
-    emit("plan.updated", { items: planService.list() });
+    const items = planService.list();
+    emit("plan.updated", { items });
+    // Record causal decision when plan has pending items
+    const hasPending = items.some((s) => s.status !== "done" && s.status !== "failed" && s.status !== "skipped");
+    if (hasPending) {
+      emit("causal.decision.recorded", CausalDecisionRecordSchema.parse({
+        taskState: {
+          surfaceRequest: "",
+          latentGoalHypotheses: [],
+          selectedLatentGoal: "",
+          keyUncertainties: ["上下文不足"],
+          constraints: [],
+          candidateInterventions: [],
+          chosenIntervention: "plan",
+          alternativeInterventions: [],
+          counterfactualRiskIfSkipped: "",
+          expectedOutcomeLift: "",
+          confidence: 0.5,
+          stopCondition: "",
+        },
+        policyDecision: {
+          goalUncertainty: 0.5,
+          factUncertainty: 0.2,
+          contextUncertainty: 0.4,
+          actionRisk: 0.1,
+          userCost: 0.3,
+          reversibility: "medium",
+          recommendedAction: "plan",
+          reason: "plan: plan.updated with pending items at runtime",
+          wouldChangeOutcomeIfWrong: false,
+        },
+        chosenIntervention: "plan",
+        alternativeInterventions: [],
+        recordedAt: Date.now(),
+        decisionContext: { phase: "plan_updated" },
+      }));
+    }
   };
 
   const emitTodoUpdated = () => {
@@ -1373,10 +1410,16 @@ export async function executeRuntimeKernel(
   const withAgentRuntimeContext = (
     system: string,
     params: { agentId: string; customAgentId?: string },
+    overrideToolIds?: string[],
   ) => {
     const customOverlay = customAgentOverlayFor(params.customAgentId);
     const systemOverlay = params.customAgentId ? undefined : options.systemAgentOverlays?.[params.agentId];
-    const toolIds = effectiveAgentToolIds(params.agentId, params.customAgentId);
+    const toolIds = overrideToolIds
+      ? restrictToolsForAgentBoundary(
+          params.agentId,
+          config.toolIds.filter((toolId) => overrideToolIds.includes(toolId)),
+        )
+      : effectiveAgentToolIds(params.agentId, params.customAgentId);
     const configSkillIds = effectiveAgentSkillIds(params.agentId, params.customAgentId);
     const toolPrompt = runtimeToolExecutor.systemPrompt(toolIds);
     const availableSkills = skillRegistry.list({ enabledOnly: true });
@@ -1417,6 +1460,9 @@ export async function executeRuntimeKernel(
     turnIndex: options.turnIndex,
     now,
     eventsLength: () => kernelRuntimeContext.eventCount(),
+    clarificationCount: () => kernelRuntimeContext.events.filter(
+      (e) => e.type === "clarification.required",
+    ).length,
     planList: () => kernelRuntimeContext.planList,
     activePlanStepId: () => activePlanStepId(kernelRuntimeContext.planList),
     autoAdvancePlanListFromLifecycle: ({ agentId, nodeId, title, evidenceToolCallIds, planStepId }) => {
@@ -1473,6 +1519,7 @@ export async function executeRuntimeKernel(
     system: string;
     customAgentId?: string;
     riskLevel?: ActionRiskLevel;
+    toolIds?: string[];
   }) => {
     lastCallAgentId = params.agentId;
     lastCallAgentPrompt = params.prompt;
@@ -1573,11 +1620,16 @@ export async function executeRuntimeKernel(
     while (true) {
       try {
         const effectiveCustomAgentId = customAgentIdForAgent(params.agentId, params.customAgentId);
-        const effectiveToolIds = effectiveAgentToolIds(params.agentId, effectiveCustomAgentId);
+        const effectiveToolIds = params.toolIds
+          ? restrictToolsForAgentBoundary(
+              params.agentId,
+              config.toolIds.filter((toolId) => params.toolIds?.includes(toolId)),
+            )
+          : effectiveAgentToolIds(params.agentId, effectiveCustomAgentId);
         const runtimePromptContext = withAgentRuntimeContext(params.system, {
           agentId: params.agentId,
           customAgentId: effectiveCustomAgentId,
-        });
+        }, params.toolIds);
         const response = await runNodeRuntimeLoopForAgent({
           runId,
           agentId: params.agentId,

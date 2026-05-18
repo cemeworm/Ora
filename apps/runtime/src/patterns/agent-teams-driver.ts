@@ -3,7 +3,16 @@ import type { PatternExecutionResult } from "./execution-context.js";
 import type { ModeExecutionInput } from "./mode-driver-registry.js";
 import { asText, dispatchNodeTemplate, initializeQueueSummary, isInternalAgentMessageText, nodeCustomAgentId, nodeSystemPrompt, ownerForTemplate, promptTemplate, publicAgentMessageContent, runtimeFallbackPrompt, titleForNode } from "./driver-utils.js";
 import { runModeLayer } from "./generic-node-executor.js";
-import { containsCompleteProposedPlan, finishPlanModeAfterProposedPlan, type ExecutionBag, type AgentTeamsBag, COMPLEXITY_ASSESSMENT_INSTRUCTION, parseComplexityLevel } from "./mode-driver-helpers.js";
+import { containsCompleteProposedPlan, finishPlanModeAfterProposedPlan, type ExecutionBag, type AgentTeamsBag, COMPLEXITY_ASSESSMENT_INSTRUCTION, parseAgentTeamReviewVerdict, parseComplexityLevel } from "./mode-driver-helpers.js";
+
+function nodeToolIds(node: ModeNodeSpec): string[] | undefined {
+  const config = node.config as { toolIds?: unknown };
+  return Array.isArray(config.toolIds)
+    ? config.toolIds.filter((toolId): toolId is string => typeof toolId === "string")
+    : undefined;
+}
+
+const MAX_REWORK_ROUNDS = 2;
 
 export async function executeAgentTeams(input: ModeExecutionInput): Promise<PatternExecutionResult> {
   const { context, prompt, config, modeSpec } = input;
@@ -15,11 +24,147 @@ export async function executeAgentTeams(input: ModeExecutionInput): Promise<Patt
   const leadId = ownerForTemplate(allNodes, "triage", ORA_ROOT_AGENT_ID);
   const builderId = ownerForTemplate(allNodes, "build", "builder");
   const reviewerId = ownerForTemplate(allNodes, "check", "reviewer");
+  const handoffNodeId = allNodes.find((node) => node.template === "handoff")?.id;
+  const buildNode = allNodes.find((node) => node.template === "build");
+  const checkNode = allNodes.find((node) => node.template === "check");
   const planIntent = config.metadata.taskIntent === "plan";
   const enableDynamicSkip = modeSpec.runtimeAtoms.includes("dynamic_stage_skipping");
   const skipNodeIds = new Set<string>();
   let completedNodes = 0;
   let nodeIndex = 0;
+
+  const runBuildPass = async (
+    node: ModeNodeSpec,
+    targetAgentId: string,
+    options?: { reworkRound?: number; reviewerOutput?: string },
+  ): Promise<string> => {
+    const agentId = node.ownerAgentId ?? builderId;
+    context.claimWorker(agentId);
+    try {
+      const basePrompt = promptTemplate(
+        node,
+        runtimeFallbackPrompt(modeSpec.family, node.template),
+        bag,
+      );
+      const promptSuffix = options?.reworkRound
+        ? `\n\nReviewer verdict to address:\n${options.reviewerOutput ?? asText(bag.check)}\n\nThis is rework round ${options.reworkRound}. Resolve every blocking issue before handing back the work.`
+        : "";
+      bag.build = await context.callAgent({
+        agentId,
+        planItemId: node.id,
+        title: options?.reworkRound
+          ? `${titleForNode(node, "Rework assigned work")} (Round ${options.reworkRound})`
+          : titleForNode(node, "Build assigned work"),
+        prompt: `${basePrompt}${promptSuffix}`,
+        system: nodeSystemPrompt(context, modeSpec, node, bag),
+        customAgentId: nodeCustomAgentId(node),
+        riskLevel: node.riskLevel,
+        toolIds: nodeToolIds(node),
+      });
+      bag.buildMessageId = context.emitAgentMessage({
+        fromAgentId: agentId,
+        toAgentIds: [targetAgentId],
+        replyToId: typeof bag.checkMessageId === "string"
+          ? bag.checkMessageId
+          : typeof bag.triageMessageId === "string"
+            ? bag.triageMessageId
+            : undefined,
+        threadId: "agent-teams:build",
+        nodeId: node.id,
+        planItemId: node.id,
+        kind: "reply",
+        status: "done",
+        content: publicAgentMessageContent(
+          options?.reworkRound
+            ? `已完成第 ${options.reworkRound} 轮返工，交回 ${context.agentLabel(targetAgentId)} 复审。\n\n`
+            : `接下来交给 ${context.agentLabel(targetAgentId)}。\n\n`,
+          bag.build,
+          "实现阶段没有产出可公开展示的正文，已继续交接。",
+        ),
+      }).id;
+      context.remember({
+        id: `${agentId}-memory`,
+        namespace: ["worker", context.projectId, agentId],
+        kind: "worker",
+        value: {
+          summary: bag.build,
+          reworkRound: options?.reworkRound ?? 0,
+        },
+      });
+      return bag.build;
+    } finally {
+      context.releaseWorker(agentId);
+    }
+  };
+
+  const runCheckPass = async (
+    node: ModeNodeSpec,
+    targetAgentId: string,
+    options?: { reworkRound?: number },
+  ) => {
+    const agentId = node.ownerAgentId ?? reviewerId;
+    context.claimWorker(agentId);
+    try {
+      const basePrompt = promptTemplate(
+        node,
+        runtimeFallbackPrompt(modeSpec.family, node.template),
+        bag,
+      );
+      const promptSuffix = options?.reworkRound
+        ? `\n\nThis is re-review round ${options.reworkRound}. Decide whether the builder fully resolved the previous blocking issues.`
+        : "";
+      bag.check = await context.callAgent({
+        agentId,
+        planItemId: node.id,
+        title: options?.reworkRound
+          ? `${titleForNode(node, "Re-review assigned work")} (Round ${options.reworkRound})`
+          : titleForNode(node, "Validate assigned work"),
+        prompt: `${basePrompt}${promptSuffix}`,
+        system: nodeSystemPrompt(context, modeSpec, node, bag),
+        customAgentId: nodeCustomAgentId(node),
+        riskLevel: node.riskLevel,
+        toolIds: nodeToolIds(node),
+      });
+      bag.checkMessageId = context.emitAgentMessage({
+        fromAgentId: agentId,
+        toAgentIds: [targetAgentId],
+        replyToId: typeof bag.checkMessageId === "string"
+          ? bag.checkMessageId
+          : typeof bag.buildMessageId === "string"
+            ? bag.buildMessageId
+            : undefined,
+        threadId: "agent-teams:build",
+        nodeId: node.id,
+        planItemId: node.id,
+        kind: "reply",
+        status: "done",
+        content: publicAgentMessageContent(
+          options?.reworkRound
+            ? `第 ${options.reworkRound} 轮复审已完成，结果如下。\n\n`
+            : `接下来交给 ${context.agentLabel(targetAgentId)}。\n\n`,
+          bag.check,
+          "复核阶段没有产出可公开展示的正文，已继续交接。",
+        ),
+      }).id;
+      const verdict = parseAgentTeamReviewVerdict(bag.check);
+      bag.checkVerdict = verdict.verdict;
+      bag.reviewIssues = verdict.issues;
+      context.remember({
+        id: `${agentId}-memory`,
+        namespace: ["worker", context.projectId, agentId],
+        kind: "worker",
+        value: {
+          summary: bag.check,
+          verdict: verdict.verdict,
+          issues: verdict.issues,
+          reworkRound: options?.reworkRound ?? 0,
+        },
+      });
+      return verdict;
+    } finally {
+      context.releaseWorker(agentId);
+    }
+  };
 
   const executeNode = async (node: ModeNodeSpec): Promise<unknown> => {
     const currentIndex = nodeIndex++;
@@ -44,6 +189,7 @@ export async function executeAgentTeams(input: ModeExecutionInput): Promise<Patt
         system: nodeSystemPrompt(context, modeSpec, node, bag),
         customAgentId: nodeCustomAgentId(node),
         riskLevel: node.riskLevel,
+        toolIds: nodeToolIds(node),
       });
       if (enableDynamicSkip) {
         const level = parseComplexityLevel(bag.triage);
@@ -73,95 +219,56 @@ export async function executeAgentTeams(input: ModeExecutionInput): Promise<Patt
     }
 
     if (node.template === "build") {
-      const agentId = node.ownerAgentId ?? "builder";
       const targetAgentId = nextOwnerId ?? reviewerId;
-      context.claimWorker(agentId);
-      try {
-        bag.build = await context.callAgent({
-          agentId,
-          planItemId: node.id,
-          title: titleForNode(node, "Build assigned work"),
-          prompt: promptTemplate(
-            node,
-            runtimeFallbackPrompt(modeSpec.family, node.template),
-            bag,
-          ),
-          system: nodeSystemPrompt(context, modeSpec, node, bag),
-          customAgentId: nodeCustomAgentId(node),
-          riskLevel: node.riskLevel,
-        });
-        bag.buildMessageId = context.emitAgentMessage({
-          fromAgentId: agentId,
-          toAgentIds: [targetAgentId],
-          replyToId: typeof bag.triageMessageId === "string" ? bag.triageMessageId : undefined,
-          threadId: "agent-teams:build",
-          nodeId: node.id,
-          planItemId: node.id,
-          kind: "reply",
-          status: "done",
-          content: publicAgentMessageContent(
-            `接下来交给 ${context.agentLabel(targetAgentId)}。\n\n`,
-            bag.build,
-            "实现阶段没有产出可公开展示的正文，已继续交接。",
-          ),
-        }).id;
-        context.remember({
-          id: `${agentId}-memory`,
-          namespace: ["worker", context.projectId, agentId],
-          kind: "worker",
-          value: { summary: bag.build },
-        });
-      } finally {
-        context.releaseWorker(agentId);
-      }
+      await runBuildPass(node, targetAgentId);
       return bag.build;
     }
 
     if (node.template === "check") {
-      const agentId = node.ownerAgentId ?? reviewerId;
       const targetAgentId = nextOwnerId ?? leadId;
-      context.claimWorker(agentId);
-      try {
-        bag.check = await context.callAgent({
-          agentId,
-          planItemId: node.id,
-          title: titleForNode(node, "Validate assigned work"),
-          prompt: promptTemplate(
-            node,
-            runtimeFallbackPrompt(modeSpec.family, node.template),
-            bag,
-          ),
-          system: nodeSystemPrompt(context, modeSpec, node, bag),
-          customAgentId: nodeCustomAgentId(node),
-          riskLevel: node.riskLevel,
-        });
-        bag.checkMessageId = context.emitAgentMessage({
-          fromAgentId: agentId,
-          toAgentIds: [targetAgentId],
-          replyToId: typeof bag.checkMessageId === "string"
-            ? bag.checkMessageId
-            : typeof bag.buildMessageId === "string"
-              ? bag.buildMessageId
-              : undefined,
+      let verdict = await runCheckPass(node, targetAgentId);
+      if (verdict.verdict === "needs_fix" && buildNode && checkNode) {
+        for (let reworkRound = 1; reworkRound <= MAX_REWORK_ROUNDS && verdict.verdict === "needs_fix"; reworkRound += 1) {
+          bag.reworkCount = reworkRound;
+          context.emitAgentMessage({
+            fromAgentId: node.ownerAgentId ?? reviewerId,
+            toAgentIds: [buildNode.ownerAgentId ?? builderId],
+            replyToId: typeof bag.checkMessageId === "string" ? bag.checkMessageId : undefined,
+            threadId: "agent-teams:build",
+            nodeId: node.id,
+            planItemId: node.id,
+            kind: "status",
+            status: "running",
+            content: `验收要求返工，正在启动第 ${reworkRound} 轮修复。`,
+          });
+          await runBuildPass(buildNode, checkNode.ownerAgentId ?? reviewerId, {
+            reworkRound,
+            reviewerOutput: bag.check,
+          });
+          verdict = await runCheckPass(checkNode, targetAgentId, { reworkRound });
+        }
+      }
+      if (verdict.verdict !== "pass") {
+        if (handoffNodeId) {
+          skipNodeIds.add(handoffNodeId);
+        }
+        context.emitAgentMessage({
+          fromAgentId: node.ownerAgentId ?? reviewerId,
+          toAgentIds: handoffNodeId ? [leadId] : [],
+          replyToId: typeof bag.checkMessageId === "string" ? bag.checkMessageId : undefined,
           threadId: "agent-teams:build",
           nodeId: node.id,
           planItemId: node.id,
-          kind: "reply",
-          status: "done",
+          kind: "status",
+          status: verdict.verdict === "blocked" ? "failed" : "done",
           content: publicAgentMessageContent(
-            `接下来交给 ${context.agentLabel(targetAgentId)}。\n\n`,
+            verdict.verdict === "needs_fix"
+              ? `返工 ${bag.reworkCount ?? 0} 轮后仍未通过，已阻止最终交付。\n\n`
+              : "验收被阻塞，已阻止最终交付。\n\n",
             bag.check,
-            "复核阶段没有产出可公开展示的正文，已继续交接。",
+            "审查阶段未给出可公开展示的 verdict。",
           ),
-        }).id;
-        context.remember({
-          id: `${agentId}-memory`,
-          namespace: ["worker", context.projectId, agentId],
-          kind: "worker",
-          value: { summary: bag.check },
         });
-      } finally {
-        context.releaseWorker(agentId);
       }
       return bag.check;
     }
@@ -180,6 +287,7 @@ export async function executeAgentTeams(input: ModeExecutionInput): Promise<Patt
         system: nodeSystemPrompt(context, modeSpec, node, bag),
         customAgentId: nodeCustomAgentId(node),
         riskLevel: node.riskLevel,
+        toolIds: nodeToolIds(node),
       });
       context.emitAgentMessage({
         fromAgentId: agentId,
@@ -270,6 +378,9 @@ export async function executeAgentTeams(input: ModeExecutionInput): Promise<Patt
       text: asText(bag.handoff || bag.check || bag.build || bag.triage),
       pattern: "agent_teams",
       modeId: modeSpec.id,
+      reviewVerdict: bag.checkVerdict,
+      handoffBlocked: bag.checkVerdict !== undefined && bag.checkVerdict !== "pass",
+      reworkCount: bag.reworkCount ?? 0,
       backlog: allNodes.map((node) => node.template),
       triage: bag.triage,
       workers: {

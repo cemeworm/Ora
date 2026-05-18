@@ -70,6 +70,7 @@ export interface PatternExecutionContext {
     system: string;
     customAgentId?: string;
     riskLevel?: "low" | "medium" | "high";
+    toolIds?: string[];
   }): Promise<string>;
   remember(params: {
     id: string;
