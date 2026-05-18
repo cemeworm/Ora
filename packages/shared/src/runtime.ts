@@ -327,6 +327,7 @@ export const RunConfigSchema = z.object({
   permissionProfileId: z.string().min(1).optional(),
   patternOptions: z.record(z.unknown()).default({}),
   metadata: z.record(z.unknown()).default({}),
+  causalInterventionLevel: z.enum(["record_only", "advisory", "enforcing"]).default("record_only"),
   deterministicSeed: z.string().min(1).default("ora-smoke")
 });
 export type RunConfig = z.infer<typeof RunConfigSchema>;
@@ -541,7 +542,8 @@ export const OraEventTypeSchema = z.enum([
   "run.done",
   "run.failed",
   "plan_list.updated",
-  "causal.decision.recorded"
+  "causal.decision.recorded",
+  "causal.decision.rejected"
 ]);
 export type OraEventType = z.infer<typeof OraEventTypeSchema>;
 

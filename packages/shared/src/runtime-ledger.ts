@@ -39,6 +39,7 @@ import {
   type StateSnapshot,
   type UserTaskInput,
 } from "./runtime.js";
+import { CausalTaskStateSchema, type CausalTaskState } from "./interventions.js";
 
 export const RuntimeSessionEntryTypeSchema = z.enum([
   "session.created",
@@ -1136,6 +1137,7 @@ function runtimeRunProjectionToSnapshot(run: RuntimeRunProjection, contextState?
       toolResults: run.toolResults.length > 0 ? run.toolResults : run.finalSnapshot.toolResults,
       updatedAt: run.updatedAt,
       snapshotSource: "ledger" as const,
+      causalTaskState: run.finalSnapshot.causalTaskState ?? extractCausalTaskState(run.events),
     }), run.gates);
   }
   const events = run.events;
@@ -1178,7 +1180,31 @@ function runtimeRunProjectionToSnapshot(run: RuntimeRunProjection, contextState?
     error: run.error,
     updatedAt: run.updatedAt,
     snapshotSource: "ledger" as const,
+    causalTaskState: extractCausalTaskState(events),
   });
+}
+
+/**
+ * Extract the latest CausalTaskState from the event stream for snapshot projection.
+ *
+ * Only the **last** {@link CausalDecisionRecord} is returned — this represents the
+ * agent's final understanding of the task.  Consumers that need the full causal
+ * decision path (e.g. evaluation frameworks tracing intermediate decisions) should
+ * scan the events array for all `causal.decision.recorded` events instead of relying
+ * on this single-value projection.
+ */
+function extractCausalTaskState(events: readonly OraEventEnvelope[]): CausalTaskState | undefined {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const event = events[i]!;
+    if (event.type === "causal.decision.recorded") {
+      const payload = event.payload as Record<string, unknown> | undefined;
+      const taskState = payload?.taskState as Record<string, unknown> | undefined;
+      if (taskState && typeof taskState.surfaceRequest === "string") {
+        return taskState as unknown as CausalTaskState;
+      }
+    }
+  }
+  return undefined;
 }
 
 function fallbackActiveAgentsForRun(run: RuntimeRunProjection): string[] {

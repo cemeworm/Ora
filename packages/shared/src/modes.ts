@@ -94,6 +94,9 @@ export const ModeNodeSpecSchema = z.object({
   config: z.object({
     atoms: z.array(z.string()).optional(),
     customAgentId: z.string().optional(),
+    toolIds: z.array(z.string().min(1)).optional(),
+    gateOnReviewVerdict: z.boolean().optional(),
+    reworkNodeIds: z.array(z.string().min(1)).optional(),
     clarificationQuestion: z.string().optional(),
     clarificationKey: z.string().optional(),
     story: z.unknown().optional(),
@@ -595,8 +598,8 @@ const MODE_NODE_RUNTIME_TEMPLATE_LIBRARY: Record<
       description: "Validate builder output and report issues or approval.",
       display: { story: "{{owner}} checks the completed work and reports approval or concrete issues." },
       supportsPromptOverride: true,
-      fallbackInstructions: "Validate the assigned work and report approval or concrete issues.",
-      fallbackPrompt: "Task: {{prompt}}\nBacklog:\n{{triage}}\nBuilder output:\n{{build}}\nValidate the work and report issues or approval.",
+      fallbackInstructions: "Validate the assigned work and return a structured verdict. Start with `Verdict: PASS | NEEDS_FIX | BLOCKED`, then list blocking issues, evidence, and any required rework.",
+      fallbackPrompt: "Task: {{prompt}}\nBacklog:\n{{triage}}\nBuilder output:\n{{build}}\nValidate the work. Start with `Verdict: PASS | NEEDS_FIX | BLOCKED`, then report blocking issues, evidence, and any required rework.",
     },
     handoff: {
       description: "Summarize handoff state and the next action.",
@@ -691,6 +694,7 @@ const CANONICAL_AGENT_SOULS: Record<string, string> = {
     "You are Orchestrator, Ora's scope owner and synthesis lead.",
     "Responsibility: frame scope, choose the smallest useful decomposition, assign ownership, and keep stage handoffs inspectable.",
     "Boundary: in multi-agent modes, prefer delegating file operations to specialized builder agents when available. You plan and synthesize; when a builder is available, hand off code changes.",
+    "Never: bypass the builder to write files directly when the mode assigns code changes to a builder. Never skip the review gate when the mode requires it. Never present delegated work as your own private reasoning.",
     "Output: provide the plan, owner mapping, handoff state, final synthesis, and any blocked assumptions that require user input.",
     "Style: answer directly without greeting openings like 好的/好嘞/哈哈. No emoji. Lead with the answer, not a preamble. Be concise — prefer 2-6 sentences for simple answers, more only when the task requires depth.",
   ].join("\n"),
@@ -698,12 +702,14 @@ const CANONICAL_AGENT_SOULS: Record<string, string> = {
     "You are Researcher, Ora's evidence and context specialist.",
     "Responsibility: gather focused context that downstream agents can verify, cite, and use for the current task.",
     "Boundary: do not answer from first impressions, over-collect broad background, or blur observed facts with inference.",
+    "Never: present inference or assumption as observed fact. Never cite a source you have not actually read. Never suppress findings that contradict the expected answer.",
     "Output: separate facts, sources or paths, inferences, uncertainty, constraints, and open questions; prefer small high-signal findings.",
   ].join("\n"),
   reviewer: [
     "You are Reviewer, Ora's risk and completeness critic.",
     "Responsibility: inspect work for gaps, contradictions, regressions, missing tests, weak evidence, and unclear acceptance criteria.",
     "Boundary: do not summarize first when actionable defects exist, and do not approve work that lacks the evidence required by the mode.",
+    "Never: rubber-stamp work with vague approval like \"looks good.\" Never ignore uncertainty in the evidence — flag it explicitly. Never approve because the builder seems competent; judge the work, not the agent.",
     "Output: lead with concrete findings, severity or acceptance impact, required fixes, and the evidence that justifies approval or rejection.",
   ].join("\n"),
   team_lead: [
@@ -716,6 +722,7 @@ const CANONICAL_AGENT_SOULS: Record<string, string> = {
     "You are Builder, Ora's implementation agent.",
     "Responsibility: make the assigned source changes or produce the requested artifact with minimal churn and local conventions.",
     "Boundary: do not broaden scope, refactor unrelated code, or hide tradeoffs that affect correctness or maintainability.",
+    "Never: fabricate error messages, stack traces, or tool output to justify a change. Never claim confidence when the fix is speculative. Never skip verification steps assigned by the mode.",
     "Output: report changed surfaces, concrete outputs, verification commands or evidence, and any residual risk for Reviewer or Team Lead.",
   ].join("\n"),
   router: [
@@ -2519,9 +2526,12 @@ function createCodeDevelopmentModeSpec(): ModeSpec {
         ownerAgentId: "reviewer",
         enabled: true,
         instructions: "对照请求和验收标准审查实施结果。优先关注回归、缺失测试、模式偏移、不安全的宽范围修改和不清楚的验证证据。",
-        prompt: "用户请求：\n{{prompt}}\n\n开发计划：\n{{triage}}\n\n构建者输出：\n{{build}}\n\n审查变更。返回阻塞性问题、非阻塞性发现、验证缺口以及通过/不通过裁定。",
+        prompt: "用户请求：\n{{prompt}}\n\n开发计划：\n{{triage}}\n\n构建者输出：\n{{build}}\n\n审查变更。以 Verdict: PASS | NEEDS_FIX | BLOCKED 开头（必须严格使用此格式）。PASS = 所有验收标准满足，可以移交。NEEDS_FIX = 存在阻塞性问题，必须列出具体问题、受影响文件和修复要求。BLOCKED = 缺少关键信息或外部条件不满足，无法继续。\n\n若裁定 NEEDS_FIX，必须用 `Rework: <节点ID>` 指定需要返工的节点。可选节点ID：build（重新实施修复）。只指定真正有问题的节点：\n- 仅代码缺陷 → Rework: build\n\n若部分实现已合格，用 Accepted: build（已验收的产物）声明。\n\n然后列出阻塞性问题、非阻塞性发现和验证缺口。",
         riskLevel: "high",
-        config: {},
+        config: {
+          gateOnReviewVerdict: true,
+          reworkNodeIds: ["build"],
+        },
       },
       {
         id: "debug",
@@ -2531,7 +2541,7 @@ function createCodeDevelopmentModeSpec(): ModeSpec {
         ownerAgentId: "debugger",
         enabled: true,
         instructions: "根据证据诊断失败的测试、类型错误、运行时错误或审查者阻塞的行为，然后建议最小的修正方案。如果没有故障，明确确认无需调试操作。",
-        prompt: "用户请求：\n{{prompt}}\n\n开发计划：\n{{triage}}\n\n构建者输出：\n{{build}}\n\n审查者发现：\n{{review}}\n\n诊断任何故障或被阻塞的验证。指出根本原因、证据、最小修复路径和重新运行命令。如果一切通过，说明无需调试操作。",
+        prompt: "用户请求：\n{{prompt}}\n\n开发计划：\n{{triage}}\n\n构建者输出：\n{{build}}\n\n审查者裁定：\n{{review}}\n\n审查已通过。执行最终诊断：检查类型错误、测试失败、运行时缺陷和验证缺口。如无问题明确说明无需调试。如有问题，指出根本原因和最小修复路径。",
         riskLevel: "high",
         config: {},
       },
@@ -2543,7 +2553,7 @@ function createCodeDevelopmentModeSpec(): ModeSpec {
         ownerAgentId: ORA_ROOT_AGENT_ID,
         enabled: true,
         instructions: "打包最终开发状态：变更文件、验证证据、long-task-protocol TODO 扫描和 DONE 关卡、未解决的风险以及用户下一步有用的操作。",
-        prompt: "用户请求：\n{{prompt}}\n\n计划：\n{{triage}}\n\n构建者：\n{{build}}\n\n审查者：\n{{review}}\n\n调试者：\n{{debug}}\n\n撰写最终移交报告。包括变更的文件、任务日志路径、TODO 扫描结果、验证证据、剩余风险，以及 long-task-protocol DONE 关卡是否通过或任务是否被阻塞。",
+        prompt: "用户请求：\n{{prompt}}\n\n计划：\n{{triage}}\n\n构建者：\n{{build}}\n\n审查者裁定：\n{{review}}\n\n调试者：\n{{debug}}\n\n已验收产物：{{acceptedArtifactIds}}\n\n重要约束：仅引用已验收产物的内容撰写移交报告。不要引入已验收产物中不存在的变更、文件或验证结果。\n\n审查已通过，调试已完成。撰写最终移交报告。包括变更的文件、任务日志路径、TODO 扫描结果、验证证据、剩余风险，以及 long-task-protocol DONE 关卡是否通过或任务是否被阻塞。",
         config: {},
       },
     ],
@@ -2708,6 +2718,12 @@ function createDeepResearchModeSpec(): ModeSpec {
     "Boundary: do not fabricate sources, cite claims without evidence, or present one-sided summaries when the literature is divided. Mark uncertainty clearly.",
     "Output: structured research briefing with key findings, source citations, conflicting evidence, confidence levels, and open questions for further investigation.",
   ].join("\n");
+  const factCheckerSoul = [
+    "You are Fact Checker, Ora's deep-research verification gate.",
+    "Responsibility: inspect the research dossier for missing sources, unsupported claims, stale evidence, and unresolved contradictions before any final report is written.",
+    "Boundary: do not write the final report, do not ignore missing evidence, and do not convert uncertainty into confident prose.",
+    "Output: start with `Verdict: PASS | NEEDS_FIX | BLOCKED`, then list blocking issues, source gaps, unsupported claims, and the minimum rework needed before synthesis.",
+  ].join("\n");
 
   return autoLayoutModeSpec(ModeSpecSchema.parse({
     id: DEEP_RESEARCH_MODE_ID,
@@ -2728,7 +2744,7 @@ function createDeepResearchModeSpec(): ModeSpec {
         enabled: true,
         instructions: "定义研究范围、关键问题、优先搜集的资料来源类型，并在开始收集前制定结构化的调查计划。",
         prompt: "用户请求：\n{{prompt}}\n\n创建研究计划。定义范围、关键研究问题、要搜索的资料来源类型以及预期输出的结构。此阶段不要开始研究。",
-        config: {},
+        config: { toolIds: [] },
       },
       {
         id: "gather",
@@ -2755,6 +2771,18 @@ function createDeepResearchModeSpec(): ModeSpec {
         config: {},
       },
       {
+        id: "verify",
+        template: "review",
+        label: "核查研究",
+        title: "核查研究",
+        ownerAgentId: "fact_checker",
+        enabled: true,
+        instructions: "核查研究资料和分析结果是否已经达到可综合成最终报告的标准。必须输出 Verdict，并点名缺失来源、未经支持的论断、过期信息和仍未解决的冲突。",
+        prompt: "用户请求：\n{{prompt}}\n\n研究计划：\n{{scope}}\n\n资料：\n{{gather}}\n\n分析：\n{{analyze}}\n\n执行研究验收。必须以 `Verdict: PASS | NEEDS_FIX | BLOCKED` 开头。\n\n若裁定 NEEDS_FIX，必须用 `Rework: <节点ID>` 指定需要返工的节点。可选节点ID：gather（资料收集）、analyze（分析）。只指定真正有问题的节点，不要总是全部返工。\n- 仅缺来源/资料不足 → Rework: gather\n- 仅分析有缺陷/逻辑漏洞 → Rework: analyze\n- 两者都有问题 → Rework: gather, analyze\n\n明确列出已验收的产物：\nAccepted: gather（若资料收集合格）或 Accepted: gather, analyze（若两者都合格）\n未列在 Accepted 中的产物视为需要返工。\n\n列出阻塞问题、证据缺口、未经支持的论断，以及在综合报告前必须完成的最小修复。",
+        riskLevel: "high",
+        config: { gateOnReviewVerdict: true, reworkNodeIds: ["gather", "analyze"] },
+      },
+      {
         id: "synthesize",
         template: "synthesize",
         label: "综合报告",
@@ -2762,14 +2790,15 @@ function createDeepResearchModeSpec(): ModeSpec {
         ownerAgentId: ORA_ROOT_AGENT_ID,
         enabled: true,
         instructions: "撰写最终研究报告，包含执行摘要、带置信度的关键发现、未解决的问题和来源参考书目。",
-        prompt: "用户请求：\n{{prompt}}\n\n研究计划：\n{{scope}}\n\n证据：\n{{gather}}\n\n分析：\n{{analyze}}\n\n综合最终研究报告。包含执行摘要、带置信度的关键发现、未解决的问题和来源参考书目。",
-        config: {},
+        prompt: "用户请求：\n{{prompt}}\n\n研究计划：\n{{scope}}\n\n证据：\n{{gather}}\n\n分析：\n{{analyze}}\n\n核查结论：\n{{verify}}\n\n已验收产物：{{acceptedArtifactIds}}\n\n重要约束：仅使用上述已验收产物的内容撰写报告。不要引入已验收产物中不存在的来源、数据或推断。不要临时补搜或补充新信息。\n\n综合最终研究报告。包含执行摘要、带置信度的关键发现、未解决的问题和来源参考书目。",
+        config: { toolIds: [] },
       },
     ],
     edges: [
       { id: "scope-gather", source: "scope", target: "gather", kind: "control", label: "gather", enabled: true },
       { id: "gather-analyze", source: "gather", target: "analyze", kind: "verification", label: "analyze", enabled: true },
-      { id: "analyze-synthesize", source: "analyze", target: "synthesize", kind: "control", label: "synthesize", enabled: true },
+      { id: "analyze-verify", source: "analyze", target: "verify", kind: "verification", label: "verify", enabled: true },
+      { id: "verify-synthesize", source: "verify", target: "synthesize", kind: "control", label: "synthesize", enabled: true },
     ],
     stages: [
       {
@@ -2800,6 +2829,15 @@ function createDeepResearchModeSpec(): ModeSpec {
         outputKey: "analyze",
       },
       {
+        id: "verify",
+        label: "核查",
+        nodeId: "verify",
+        speakerId: "fact_checker",
+        speakerLabel: "核查员",
+        stance: "fact_checker",
+        outputKey: "verify",
+      },
+      {
         id: "report",
         label: "报告",
         nodeId: "synthesize",
@@ -2817,18 +2855,22 @@ function createDeepResearchModeSpec(): ModeSpec {
       laneBySpeaker: {
         ora: "ora",
         researcher: "researcher",
+        fact_checker: "fact_checker",
       },
       lanes: [
         { id: ORA_ROOT_AGENT_ID, label: ORA_ROOT_AGENT_LABEL },
         { id: "researcher", label: "研究员" },
+        { id: "fact_checker", label: "核查员" },
       ],
       stanceLabels: {
         ora: ORA_ROOT_AGENT_LABEL,
         researcher: "研究员",
+        fact_checker: "核查员",
       },
       stanceTones: {
         ora: "violet",
         researcher: "blue",
+        fact_checker: "amber",
       },
       showStatus: true,
       showSpeaker: true,
@@ -2874,6 +2916,14 @@ function createDeepResearchModeSpec(): ModeSpec {
         "orchestrator_subagent",
         ["session", "project", "worker"],
         researcherSoul,
+      ),
+      profile(
+        "fact_checker",
+        "核查员",
+        "对研究资料做来源核查、缺口识别和事实验收，在通过前阻止最终报告生成。",
+        "orchestrator_subagent",
+        ["session", "project", "worker", "artifact"],
+        factCheckerSoul,
       ),
     ],
     createdAt: now,

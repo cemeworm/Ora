@@ -29,6 +29,13 @@ export const researchOutputSchema = z.object({
 
 export const reviewOutputSchema = z.object({
   text: z.string(),
+  verdict: z.enum(["pass", "needs_fix", "blocked"]).optional(),
+  acceptedArtifactIds: z.array(z.string()).optional(),
+  findings: z.array(z.object({
+    artifactId: z.string().optional(),
+    severity: z.enum(["blocking", "concern", "suggestion"]),
+    issue: z.string(),
+  })).optional(),
   risks: z.array(z.string()).optional(),
   gaps: z.array(z.string()).optional(),
   approval: z.enum(["approved", "changes_requested"]).optional(),
@@ -53,6 +60,12 @@ export const buildOutputSchema = z.object({
 export const checkOutputSchema = z.object({
   text: z.string(),
   verdict: z.enum(["pass", "fail", "needs_revision"]).optional(),
+  acceptedArtifactIds: z.array(z.string()).optional(),
+  findings: z.array(z.object({
+    artifactId: z.string().optional(),
+    severity: z.enum(["blocking", "concern", "suggestion"]),
+    issue: z.string(),
+  })).optional(),
   issues: z.array(z.string()).optional(),
 });
 

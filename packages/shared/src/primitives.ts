@@ -64,6 +64,7 @@ export const CompletionStopReasonSchema = z.enum([
   "verification_exhausted",
   "forced_final_answer",
   "runtime_tool_loop_limit",
+  "causal_policy_blocked",
 ]);
 export type CompletionStopReason = z.infer<typeof CompletionStopReasonSchema>;
 
