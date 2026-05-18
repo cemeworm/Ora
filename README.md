@@ -1,7 +1,7 @@
 # Ora
 
 <p align="center">
-  <img src="apps/desktop/public/fox_logo.png" alt="Ora Logo" width="200">
+  <img src="apps/desktop/src-tauri/icons/icon_source_1024.png" alt="Ora Logo" width="200">
 </p>
 
 简体中文 | [English](README.en.md)

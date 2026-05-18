@@ -3,6 +3,7 @@ import {
   CoordinationPatternSchema,
   ModeTranscriptLayoutSchema,
   DEBATE_MODE_ID,
+  SINGLE_AGENT_MODE_ID,
   deriveSessionBranchGroupStatus,
   deriveSnapshotGateProjection,
   PlanListStepSchema,
@@ -941,7 +942,7 @@ function resolveSelectedMode(
       return selectedMode;
     }
   }
-  return modes.find((mode) => mode.id === DEBATE_MODE_ID) ?? modes[0];
+  return modes.find((mode) => mode.id === SINGLE_AGENT_MODE_ID) ?? modes[0];
 }
 
 function mergeByKey<T>(
