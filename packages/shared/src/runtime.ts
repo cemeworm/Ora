@@ -515,6 +515,8 @@ export const OraEventTypeSchema = z.enum([
   "tool.repaired",
   "message.delta",
   "agent.message",
+  "child_session.updated",
+  "parent_coordination.updated",
   "message.published",
   "message.routed",
   "token.delta",
@@ -644,6 +646,68 @@ export const AgentConversationMessageSchema = z.object({
   transcript: AgentConversationTranscriptSchema.optional(),
 });
 export type AgentConversationMessage = z.infer<typeof AgentConversationMessageSchema>;
+
+export const ChildSessionClassSchema = z.enum([
+  "temporary_spawn",
+  "mode_subagent",
+]);
+export type ChildSessionClass = z.infer<typeof ChildSessionClassSchema>;
+
+export const ChildSessionStatusSchema = z.enum([
+  "queued",
+  "running",
+  "succeeded",
+  "failed",
+  "cancelled",
+]);
+export type ChildSessionStatus = z.infer<typeof ChildSessionStatusSchema>;
+
+export const ChildSessionReplayRefSchema = z.object({
+  kind: z.enum(["event_range", "session_turn"]).default("event_range"),
+  runId: z.string().min(1),
+  sessionId: z.string().min(1).optional(),
+  fromSeq: z.number().int().nonnegative().optional(),
+  toSeq: z.number().int().nonnegative().optional(),
+});
+export type ChildSessionReplayRef = z.infer<typeof ChildSessionReplayRefSchema>;
+
+export const ChildSessionSummarySchema = z.object({
+  id: z.string().min(1),
+  agentId: z.string().min(1),
+  label: z.string().min(1),
+  sessionClass: ChildSessionClassSchema,
+  status: ChildSessionStatusSchema,
+  summary: z.string().min(1).optional(),
+  lastMessage: z.string().min(1).optional(),
+  artifactIds: z.array(z.string().min(1)).default([]),
+  replayRef: ChildSessionReplayRefSchema.optional(),
+  sourceSessionId: z.string().min(1).optional(),
+  sourceRunId: z.string().min(1).optional(),
+  startedAt: z.number().int().nonnegative(),
+  updatedAt: z.number().int().nonnegative(),
+  completedAt: z.number().int().nonnegative().optional(),
+});
+export type ChildSessionSummary = z.infer<typeof ChildSessionSummarySchema>;
+
+export const ParentCoordinationPhaseSchema = z.enum([
+  "planning",
+  "dispatching",
+  "parallel_independent_work",
+  "waiting_on_required_children",
+  "resuming_with_child_summaries",
+  "synthesizing",
+]);
+export type ParentCoordinationPhase = z.infer<typeof ParentCoordinationPhaseSchema>;
+
+export const ParentCoordinationStateSchema = z.object({
+  phase: ParentCoordinationPhaseSchema,
+  activeChildIds: z.array(z.string().min(1)).default([]),
+  waitingChildIds: z.array(z.string().min(1)).default([]),
+  summary: z.string().min(1).optional(),
+  lastResumedAt: z.number().int().nonnegative().optional(),
+  updatedAt: z.number().int().nonnegative(),
+});
+export type ParentCoordinationState = z.infer<typeof ParentCoordinationStateSchema>;
 
 export const ArtifactRefSchema = z.object({
   id: z.string().min(1),
@@ -1467,6 +1531,8 @@ export const StateSnapshotSchema = z.object({
   checkpoints: z.array(CheckpointMetaSchema),
   events: z.array(OraEventEnvelopeSchema),
   agentMessages: z.array(AgentConversationMessageSchema).default([]),
+  childSessions: z.array(ChildSessionSummarySchema).optional(),
+  parentCoordination: ParentCoordinationStateSchema.optional(),
   artifacts: z.array(ArtifactRefSchema).default([]),
   activeAgents: z.array(z.string().min(1)).default([]),
   queueSummary: QueueSummarySchema.default({}),

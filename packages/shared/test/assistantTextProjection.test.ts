@@ -265,4 +265,35 @@ describe("projectAssistantTextFromSnapshot", () => {
     };
     expect(projectAssistantTextFromSnapshot(snapshot)).toBe("Public");
   });
+
+  it("filters collaboration deltas in events fallback", () => {
+    const snapshot = {
+      events: [
+        { type: "message.delta", payload: { delta: "Parent", content: "Parent" } },
+        { type: "message.delta", payload: { visibility: "collaboration", delta: "Child", content: "Child" } },
+      ],
+    };
+    expect(projectAssistantTextFromSnapshot(snapshot)).toBe("Parent");
+  });
+
+  it("filters child-session deltas by agent id when snapshot carries child summaries", () => {
+    const snapshot = {
+      childSessions: [
+        {
+          id: "run-1:ora-sub-1",
+          agentId: "ora-sub-1",
+          label: "Researcher",
+          sessionClass: "temporary_spawn",
+          status: "succeeded",
+          startedAt: 1,
+          updatedAt: 2,
+        },
+      ],
+      events: [
+        { type: "message.delta", agentId: "ora-sub-1", payload: { delta: "Child result", content: "Child result" } },
+        { type: "message.delta", agentId: "ora", payload: { delta: "Parent synthesis", content: "Parent synthesis" } },
+      ],
+    };
+    expect(projectAssistantTextFromSnapshot(snapshot)).toBe("Parent synthesis");
+  });
 });

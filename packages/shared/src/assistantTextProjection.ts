@@ -1,3 +1,5 @@
+import { ORA_ROOT_AGENT_ID } from "./primitives.js";
+
 export interface AssistantDeltaProjection {
   text: string;
 }
@@ -45,6 +47,14 @@ export function isInternalDeltaPayload(payload: Record<string, unknown>): boolea
     return true;
   }
   return false;
+}
+
+export function isCollaborationDeltaPayload(payload: Record<string, unknown>): boolean {
+  return (
+    payload.visibility === "collaboration" ||
+    payload.audience === "collaboration" ||
+    payload.surface === "collaboration"
+  );
 }
 
 export function isInternalAssistantText(text: string): boolean {
@@ -100,7 +110,7 @@ export function projectAssistantTextFromEvents(
       continue;
     }
     const payload = event.payload as Record<string, unknown>;
-    if (publicOnly && isInternalDeltaPayload(payload)) {
+    if (publicOnly && (isInternalDeltaPayload(payload) || isCollaborationDeltaPayload(payload))) {
       continue;
     }
     const deltaText =
@@ -139,6 +149,7 @@ export function projectAssistantReasoningContentFromSnapshot(
 export function projectAssistantTextFromSnapshot(
   snapshot: {
     output?: unknown;
+    childSessions?: ReadonlyArray<{ agentId: string }>;
     events: ReadonlyArray<{
       type: string;
       payload?: unknown;
@@ -160,7 +171,10 @@ export function projectAssistantTextFromSnapshot(
     }
   }
 
-  return projectAssistantTextFromEvents(snapshot.events, options);
+  return projectAssistantTextFromEvents(
+    snapshot.events.filter((event) => !isHiddenChildAssistantEvent(snapshot, event)),
+    options,
+  );
 }
 
 function extractOutputText(output: unknown): string | undefined {
@@ -180,6 +194,25 @@ function extractOutputReasoningContent(output: unknown): string | undefined {
     return rc.trim() || undefined;
   }
   return undefined;
+}
+
+function isHiddenChildAssistantEvent(
+  snapshot: {
+    childSessions?: ReadonlyArray<{ agentId: string }>;
+  },
+  event: {
+    type: string;
+    agentId?: string | null;
+  },
+): boolean {
+  if (event.type !== "message.delta") {
+    return false;
+  }
+  const agentId = typeof event.agentId === "string" ? event.agentId : undefined;
+  if (!agentId || agentId === ORA_ROOT_AGENT_ID) {
+    return false;
+  }
+  return (snapshot.childSessions ?? []).some((child) => child.agentId === agentId);
 }
 
 function projectAssistantReasoningContentFromEvents(

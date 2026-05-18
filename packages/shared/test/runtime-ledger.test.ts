@@ -252,6 +252,169 @@ describe("runtime session ledger projection", () => {
     expect(projection.gates.find((gate) => gate.gateId === "gate-clarification")?.status).toBe("resolved");
   });
 
+  it("projects child-session summaries and parent coordination from runtime event batches", () => {
+    const childSession = {
+      id: "run-1:ora-sub-1",
+      agentId: "ora-sub-1",
+      label: "Researcher",
+      sessionClass: "temporary_spawn" as const,
+      status: "succeeded" as const,
+      summary: "Collected repo facts.",
+      lastMessage: "Collected repo facts.",
+      artifactIds: [],
+      replayRef: { kind: "event_range" as const, runId: "run-1", fromSeq: 1, toSeq: 2 },
+      sourceRunId: "run-1",
+      startedAt: BASE_TIME + 2,
+      updatedAt: BASE_TIME + 3,
+      completedAt: BASE_TIME + 3,
+    };
+    const coordination = {
+      phase: "resuming_with_child_summaries" as const,
+      activeChildIds: [],
+      waitingChildIds: [],
+      summary: "子任务摘要已回流。",
+      lastResumedAt: BASE_TIME + 3,
+      updatedAt: BASE_TIME + 3,
+    };
+    const ledger = baseLedger([
+      entry({
+        id: "e-run",
+        parentId: "e-session",
+        seq: 1,
+        type: "run.started",
+        runId: "run-1",
+        turnIndex: 1,
+        payload: {
+          input: { prompt: "Coordinate subagents.", createdAt: BASE_TIME, context: {} },
+          config: runConfig(),
+        },
+      }),
+      entry({
+        id: "e-events",
+        parentId: "e-run",
+        seq: 2,
+        type: "runtime.event_batch",
+        runId: "run-1",
+        turnIndex: 1,
+        payload: {
+          status: "running",
+          events: [
+            {
+              id: "evt-child",
+              runId: "run-1",
+              seq: 0,
+              type: "child_session.updated",
+              createdAt: BASE_TIME + 2,
+              pattern: "orchestrator_subagent",
+              payload: { childSession },
+            },
+            {
+              id: "evt-parent",
+              runId: "run-1",
+              seq: 1,
+              type: "parent_coordination.updated",
+              createdAt: BASE_TIME + 3,
+              pattern: "orchestrator_subagent",
+              payload: { coordination },
+            },
+          ],
+        },
+      }),
+    ]);
+
+    const projection = deriveSessionProjection(ledger);
+    const snapshot = deriveRunSnapshot(ledger, "run-1");
+
+    expect(projection.runs[0]?.childSessions).toMatchObject([{ agentId: "ora-sub-1", summary: "Collected repo facts." }]);
+    expect(projection.runs[0]?.parentCoordination).toMatchObject({ phase: "resuming_with_child_summaries" });
+    expect(snapshot?.childSessions).toMatchObject([{ agentId: "ora-sub-1", label: "Researcher" }]);
+    expect(snapshot?.parentCoordination).toMatchObject({ summary: "子任务摘要已回流。" });
+  });
+
+  it("merges child-session durable facts across multiple runtime event batches", () => {
+    const ledger = baseLedger([
+      entry({
+        id: "e-run",
+        parentId: "e-session",
+        seq: 1,
+        type: "run.started",
+        runId: "run-1",
+        turnIndex: 1,
+        payload: {
+          input: { prompt: "Coordinate subagents.", createdAt: BASE_TIME, context: {} },
+          config: runConfig(),
+        },
+      }),
+      entry({
+        id: "e-events-1",
+        parentId: "e-run",
+        seq: 2,
+        type: "runtime.event_batch",
+        runId: "run-1",
+        turnIndex: 1,
+        payload: {
+          status: "running",
+          events: [{
+            id: "evt-child-1",
+            runId: "run-1",
+            seq: 0,
+            type: "child_session.updated",
+            createdAt: BASE_TIME + 2,
+            pattern: "orchestrator_subagent",
+            payload: {
+              childSession: {
+                id: "run-1:ora-sub-1",
+                agentId: "ora-sub-1",
+                label: "Researcher",
+                sessionClass: "temporary_spawn",
+                status: "running",
+                startedAt: BASE_TIME + 2,
+                updatedAt: BASE_TIME + 2,
+              },
+            },
+          }],
+        },
+      }),
+      entry({
+        id: "e-events-2",
+        parentId: "e-events-1",
+        seq: 3,
+        type: "runtime.event_batch",
+        runId: "run-1",
+        turnIndex: 1,
+        payload: {
+          status: "running",
+          events: [{
+            id: "evt-child-2",
+            runId: "run-1",
+            seq: 1,
+            type: "child_session.updated",
+            createdAt: BASE_TIME + 3,
+            pattern: "orchestrator_subagent",
+            payload: {
+              childSession: {
+                id: "run-1:ora-sub-2",
+                agentId: "ora-sub-2",
+                label: "Reviewer",
+                sessionClass: "temporary_spawn",
+                status: "queued",
+                startedAt: BASE_TIME + 3,
+                updatedAt: BASE_TIME + 3,
+              },
+            },
+          }],
+        },
+      }),
+    ]);
+
+    const snapshot = deriveRunSnapshot(ledger, "run-1");
+
+    expect(snapshot?.childSessions).toMatchObject([
+      { agentId: "ora-sub-1", label: "Researcher" },
+      { agentId: "ora-sub-2", label: "Reviewer" },
+    ]);
+  });
+
   it("projects gate.opened facts into run snapshot pending fields without raw gate events", () => {
     const clarification = {
       id: "clarification-1",

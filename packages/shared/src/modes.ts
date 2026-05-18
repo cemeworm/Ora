@@ -227,6 +227,7 @@ export const ModeTranscriptLayoutSchema = z.object({
   sideByStance: z.record(z.enum(["left", "right", "center"])).optional(),
   laneBySpeaker: z.record(z.string().min(1)).optional(),
   summaryStances: z.array(z.string().min(1)).optional(),
+  summaryStageIds: z.array(z.string().min(1)).optional(),
   showStatus: z.boolean().optional(),
   showTimestamp: z.boolean().optional(),
   showSpeaker: z.boolean().optional(),
@@ -234,6 +235,8 @@ export const ModeTranscriptLayoutSchema = z.object({
   showArtifacts: z.boolean().optional(),
   groupBy: z.enum(["speakerId", "stance", "nodeId"]).optional(),
   lanes: z.array(ModeTranscriptLayoutLaneSchema).optional(),
+  ownsFinalAnswer: z.boolean().optional(),
+  supplementalBody: z.enum(["auto", "never"]).optional(),
 });
 export type ModeTranscriptLayout = z.infer<typeof ModeTranscriptLayoutSchema>;
 
@@ -2278,6 +2281,9 @@ function createDebateModeSpec(): ModeSpec {
       style: "two_sided_duel",
       groupId: "debate",
       groupLabel: "结构化辩论",
+      ownsFinalAnswer: true,
+      supplementalBody: "never",
+      summaryStageIds: ["moderator-synthesis"],
       sideByStance: {
         affirmative: "left",
         negative: "right",

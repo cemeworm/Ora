@@ -7,8 +7,10 @@ import {
   type RunStatus,
 } from "./primitives.js";
 import {
+  ChildSessionSummarySchema,
   CheckpointMetaSchema,
   OraEventEnvelopeSchema,
+  ParentCoordinationStateSchema,
   PendingClarificationSchema,
   PlanDecisionGateSchema,
   RunAttentionSchema,
@@ -24,7 +26,9 @@ import {
   StateSnapshotSchema,
   UserTaskInputSchema,
   type CheckpointMeta,
+  type ChildSessionSummary,
   type OraEventEnvelope,
+  type ParentCoordinationState,
   type PlanDecisionGate,
   type RunAttention,
   type RunConfig,
@@ -124,6 +128,8 @@ export const RuntimeRunProjectionSchema = z.object({
   eventCount: z.number().int().nonnegative().default(0),
   checkpoints: z.array(CheckpointMetaSchema).default([]),
   toolResults: z.array(RuntimeToolResultLedgerEntrySchema).default([]),
+  childSessions: z.array(ChildSessionSummarySchema).default([]),
+  parentCoordination: ParentCoordinationStateSchema.optional(),
   gates: z.array(RuntimeGateProjectionSchema).default([]),
   planDecisions: z.array(PlanDecisionGateSchema).default([]),
   output: z.unknown().optional(),
@@ -644,6 +650,7 @@ function applyEntryToProjection(state: ProjectionState, entry: RuntimeSessionEnt
         events: [],
         checkpoints: [],
         toolResults: [],
+        childSessions: [],
         gates: [],
         planDecisions: [],
         startedAt: entry.createdAt,
@@ -663,6 +670,10 @@ function applyEntryToProjection(state: ProjectionState, entry: RuntimeSessionEnt
         status: eventFacts.status ?? payload.status ?? run.status,
         output: eventFacts.output ?? payload.output ?? run.output,
         error: eventFacts.error ?? payload.error ?? run.error,
+        childSessions: eventFacts.childSessions.length > 0
+          ? upsertManyById(run.childSessions, eventFacts.childSessions)
+          : run.childSessions,
+        parentCoordination: eventFacts.parentCoordination ?? run.parentCoordination,
         checkpoints: eventFacts.checkpoints.length > 0
           ? upsertCheckpoints(run.checkpoints, eventFacts.checkpoints)
           : run.checkpoints,
@@ -874,6 +885,8 @@ function runtimeEventBatchFacts(events: readonly OraEventEnvelope[]): {
   output?: unknown;
   error?: string;
   checkpoints: CheckpointMeta[];
+  childSessions: ChildSessionSummary[];
+  parentCoordination?: ParentCoordinationState;
 } {
   let status: RuntimeRunProjection["status"] | undefined;
   let output: unknown;
@@ -933,7 +946,14 @@ function runtimeEventBatchFacts(events: readonly OraEventEnvelope[]): {
       error = payload.reason;
     }
   }
-  return { status, output, error, checkpoints };
+  return {
+    status,
+    output,
+    error,
+    checkpoints,
+    childSessions: childSessionsFromEvents(events),
+    parentCoordination: parentCoordinationFromEvents(events),
+  };
 }
 
 function upsertCheckpoints(
@@ -1049,6 +1069,44 @@ function agentMessagesFromEvents(events: readonly OraEventEnvelope[]): unknown[]
     });
 }
 
+function childSessionsFromEvents(events: readonly OraEventEnvelope[]): ChildSessionSummary[] {
+  const byId = new Map<string, ChildSessionSummary>();
+  for (const event of events) {
+    if (event.type !== "child_session.updated") {
+      continue;
+    }
+    const payload = event.payload as Record<string, unknown> | undefined;
+    const childSession = payload?.childSession;
+    if (!childSession || typeof childSession !== "object") {
+      continue;
+    }
+    const parsed = ChildSessionSummarySchema.safeParse(childSession);
+    if (!parsed.success) {
+      continue;
+    }
+    byId.set(parsed.data.id, parsed.data);
+  }
+  return [...byId.values()].sort((a, b) => a.startedAt - b.startedAt || a.id.localeCompare(b.id));
+}
+
+function parentCoordinationFromEvents(events: readonly OraEventEnvelope[]): ParentCoordinationState | undefined {
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    if (events[i]?.type !== "parent_coordination.updated") {
+      continue;
+    }
+    const payload = events[i]?.payload as Record<string, unknown> | undefined;
+    const coordination = payload?.coordination;
+    if (!coordination || typeof coordination !== "object") {
+      continue;
+    }
+    const parsed = ParentCoordinationStateSchema.safeParse(coordination);
+    if (parsed.success) {
+      return parsed.data;
+    }
+  }
+  return undefined;
+}
+
 function topologyFromEvents(events: readonly OraEventEnvelope[]): { nodes: unknown[]; edges: unknown[] } {
   for (let i = events.length - 1; i >= 0; i--) {
     if (events[i].type === "topology.updated") {
@@ -1132,6 +1190,8 @@ function runtimeRunProjectionToSnapshot(run: RuntimeRunProjection, contextState?
       output: run.output ?? run.finalSnapshot.output,
       error: run.error ?? run.finalSnapshot.error,
       contextState: contextState ?? run.finalSnapshot.contextState,
+      childSessions: run.childSessions.length > 0 ? run.childSessions : (run.finalSnapshot.childSessions ?? []),
+      parentCoordination: run.parentCoordination ?? run.finalSnapshot.parentCoordination,
       events: run.events,
       checkpoints: run.checkpoints.length > 0 ? run.checkpoints : run.finalSnapshot.checkpoints,
       toolResults: run.toolResults.length > 0 ? run.toolResults : run.finalSnapshot.toolResults,
@@ -1169,6 +1229,8 @@ function runtimeRunProjectionToSnapshot(run: RuntimeRunProjection, contextState?
     checkpoints: run.checkpoints,
     events,
     agentMessages: agentMessagesFromEvents(events),
+    childSessions: run.childSessions,
+    parentCoordination: run.parentCoordination,
     artifacts: [],
     activeAgents: fallbackActiveAgentsForRun(run),
     queueSummary: { mode: "dag", pending: 0, inProgress: run.status === "running" ? 1 : 0, completed: run.status === "succeeded" ? 1 : 0, topics: [] },
@@ -1479,6 +1541,10 @@ function upsertById<T extends { id: string }>(items: readonly T[], next: T): T[]
   const byId = new Map(items.map((item) => [item.id, item]));
   byId.set(next.id, next);
   return [...byId.values()];
+}
+
+function upsertManyById<T extends { id: string }>(items: readonly T[], nextItems: readonly T[]): T[] {
+  return nextItems.reduce((current, item) => upsertById(current, item), [...items]);
 }
 
 function isDeterministicApprovedTool(toolId: string): boolean {
