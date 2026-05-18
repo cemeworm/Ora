@@ -513,6 +513,114 @@ describe("desktop workbench state", () => {
     expect(next.liveMessageDeltaBuffer["run-inactive:message-inactive"]?.content).toBe("Background text");
   });
 
+  it("restores a background running session from session live authority when switching back", () => {
+    const activeSnapshot = testSnapshot({
+      runId: "run-active",
+      sessionId: "session-active",
+      status: "running",
+      updatedAt: 100,
+    });
+    const backgroundSnapshot = testSnapshot({
+      runId: "run-inactive",
+      sessionId: "session-inactive",
+      status: "running",
+      updatedAt: 120,
+    });
+    const inactiveSession: OraSessionSummary = {
+      ...sessionSummary("session-inactive"),
+      latestRunId: "run-inactive",
+      status: "running",
+      updatedAt: 120,
+    };
+    const state: WorkbenchState = {
+      ...initialWorkbenchState,
+      selectedSessionId: "session-active",
+      selectedTurnRunId: "run-active",
+      sessions: [sessionSummary("session-active"), inactiveSession],
+      sessionDetailsById: {
+        "session-inactive": {
+          session: inactiveSession,
+          turns: [{
+            runId: "run-inactive",
+            sessionId: "session-inactive",
+            turnIndex: 1,
+            status: "running",
+            pattern: backgroundSnapshot.pattern,
+            prompt: backgroundSnapshot.input.prompt,
+            startedAt: backgroundSnapshot.updatedAt,
+            updatedAt: backgroundSnapshot.updatedAt,
+            eventCount: 0,
+            checkpointCount: 0,
+            artifactCount: 0,
+          }],
+          transcript: [],
+          latestSnapshot: {
+            ...backgroundSnapshot,
+            events: [],
+            actions: [],
+            output: undefined,
+          },
+        },
+      },
+      sessionLiveSnapshotsById: {
+        "session-inactive": backgroundSnapshot,
+      },
+      runLifecycle: lifecycleFromSnapshot(activeSnapshot),
+      activeSessionDetail: {
+        session: sessionSummary("session-active"),
+        turns: [{
+          runId: "run-active",
+          sessionId: "session-active",
+          turnIndex: 1,
+          status: "running",
+          pattern: activeSnapshot.pattern,
+          prompt: activeSnapshot.input.prompt,
+          startedAt: activeSnapshot.updatedAt,
+          updatedAt: activeSnapshot.updatedAt,
+          eventCount: 0,
+          checkpointCount: 0,
+          artifactCount: 0,
+        }],
+        transcript: [],
+        latestSnapshot: activeSnapshot,
+      },
+    };
+    const stream: OraRunEventStream = {
+      runId: "run-inactive",
+      sessionId: "session-inactive",
+      status: "running",
+      events: [{
+        id: "run-inactive:event:1",
+        runId: "run-inactive",
+        seq: 1,
+        type: "message.delta",
+        createdAt: 250,
+        payload: {
+          role: "assistant",
+          messageId: "message-inactive",
+          content: "Background text",
+          delta: "Background text",
+          streaming: true,
+        },
+      } as unknown as OraRunEventStream["events"][number]],
+    } as OraRunEventStream;
+
+    const afterStream = workbenchReducer(state, {
+      type: "APPLY_RUN_STREAM",
+      stream,
+      receivedAt: 260,
+    });
+    const next = workbenchReducer(afterStream, {
+      type: "SELECT_SESSION",
+      sessionId: "session-inactive",
+    });
+
+    expect(afterStream.sessionLiveSnapshotsById["session-inactive"]?.events).toHaveLength(1);
+    expect(getActiveSnapshot(next.runLifecycle)?.runId).toBe("run-inactive");
+    expect(getActiveSnapshot(next.runLifecycle)?.events).toHaveLength(1);
+    expect(next.activeSessionDetail?.latestSnapshot?.events).toHaveLength(1);
+  });
+
   it("hydrates a selected session from turn summaries without loading the latest snapshot", () => {
     const session = {
       ...sessionSummary("session-summary"),
@@ -1086,6 +1194,9 @@ describe("desktop workbench state", () => {
     expect(cachedSnapshot?.events).toEqual([]);
     expect(cachedSnapshot?.actions).toEqual([]);
     expect(cachedSnapshot?.output).toBeUndefined();
+    expect(next.sessionLiveSnapshotsById["session-heavy"]?.events).toHaveLength(50);
+    expect(next.sessionLiveSnapshotsById["session-heavy"]?.actions).toHaveLength(1);
+    expect(next.sessionLiveSnapshotsById["session-heavy"]?.output).toEqual({ text: "large final output" });
   });
 
   it("preserves desktop and runtime latency marks when snapshots merge", () => {
@@ -3263,29 +3374,26 @@ describe("desktop workbench state", () => {
       expect(next.activeSessionDetail?.session.attention?.kind).toBe("needs_plan_decision");
     });
 
-    it("optimistically shows accepted plan decisions as pending implementation runs", () => {
+    it("tracks accepted plan decisions as same-run busy state without creating a pending run", () => {
       const next = workbenchReducer(initialWorkbenchState, {
         type: "BEGIN_PLAN_DECISION_RESOLUTION",
         sessionId: "session-plan",
         decisionId: "run-plan:plan-decision",
         status: "accepted",
         createdAt: 1_714_000_000_100,
-        implementationPrompt: "请按照上述计划开始执行",
       });
 
-      expect(getPendingRunState(next.runLifecycle)).toMatchObject({
-        sessionId: "session-plan",
-        prompt: "请按照上述计划开始执行",
-      });
+      expect(getPendingRunState(next.runLifecycle)).toBeUndefined();
       expect(next.pendingPlanDecisionResolution).toMatchObject({
         decisionId: "run-plan:plan-decision",
         status: "accepted",
       });
       expect(next.isLoading).toBe(true);
       expect(next.busyCommand).toBe("Accept plan");
+      expect(next.commandFeedback).toBe("Plan accepted. Continuing run.");
     });
 
-    it("optimistically dismisses declined plan decisions without blocking composer input", () => {
+    it("tracks declined plan decisions as same-run busy state until resume begins", () => {
       const next = workbenchReducer(initialWorkbenchState, {
         type: "BEGIN_PLAN_DECISION_RESOLUTION",
         sessionId: "session-plan",
@@ -3299,11 +3407,12 @@ describe("desktop workbench state", () => {
         decisionId: "run-plan:plan-decision",
         status: "declined",
       });
-      expect(next.isLoading).toBe(false);
+      expect(next.isLoading).toBe(true);
       expect(next.busyCommand).toBe("Decline plan");
+      expect(next.commandFeedback).toBe("Plan decision submitted. Adjust the plan.");
     });
 
-    it("preserves accepted plan pending run while hydrating the resolved decision", () => {
+    it("clears accepted plan decision busy state when hydration returns the resolved snapshot", () => {
       const sessionId = "session-plan";
       const snapshot = testSnapshot({
         runId: "run-plan",
@@ -3323,7 +3432,6 @@ describe("desktop workbench state", () => {
         decisionId: "run-plan:plan-decision",
         status: "accepted",
         createdAt: 1_714_000_000_100,
-        implementationPrompt: "请按照上述计划开始执行",
       });
       const session = { ...sessionSummary(sessionId), latestRunId: snapshot.runId };
 
@@ -3340,12 +3448,11 @@ describe("desktop workbench state", () => {
         feedback: "Plan accepted.",
       });
 
-      expect(getPendingRunState(next.runLifecycle)).toMatchObject({
-        sessionId,
-        prompt: "请按照上述计划开始执行",
-      });
+      expect(getPendingRunState(next.runLifecycle)).toBeUndefined();
       expect(next.pendingPlanDecisionResolution).toBeUndefined();
-      expect(next.isLoading).toBe(true);
+      expect(next.isLoading).toBe(false);
+      expect(next.busyCommand).toBeUndefined();
+      expect(next.commandFeedback).toBe("Plan accepted.");
     });
 
     it("rolls back failed accepted plan decisions", () => {
@@ -3355,7 +3462,6 @@ describe("desktop workbench state", () => {
         decisionId: "run-plan:plan-decision",
         status: "accepted",
         createdAt: 1_714_000_000_100,
-        implementationPrompt: "请按照上述计划开始执行",
       });
 
       const next = workbenchReducer(state, {

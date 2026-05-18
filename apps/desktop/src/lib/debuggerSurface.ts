@@ -47,7 +47,7 @@ export function debuggerTrailTabDescription(tab: DebuggerTrailTab): string {
     case "compare":
       return "同一 session 中 before/after run 的成本、工具、关卡和结果差异。";
     case "raw":
-      return "trace、checkpoint、artifact、plan 和 snapshot 证据。";
+      return "trace、checkpoint、artifact、plan 和 snapshot 证据；这是完整回放入口。";
   }
 }
 
@@ -69,4 +69,3 @@ export function debuggerModeLabel(mode: ModeCard): string {
 export function debuggerModeReason(mode: ModeCard): string {
   return DEBUGGER_MODE_SHORTLIST.find((preset) => preset.modeId === mode.id)?.reason ?? mode.summary;
 }
-

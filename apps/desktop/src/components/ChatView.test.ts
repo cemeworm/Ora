@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  deriveChildReplaySelection,
   deriveComposerPlanDecisionState,
   deriveCurrentComposerPlanSteps,
   deriveProjectedGateTrays,
@@ -291,6 +292,62 @@ describe("chat view composer plan steps", () => {
       activeSnapshot: { planList: plan } as any,
       runInteractionState: runInteractionState("decision_needed", "plan_decision"),
     })).toEqual([]);
+  });
+});
+
+describe("chat view collaboration panel replay selection", () => {
+  it("maps child replayRef to the first matching beat in the active snapshot", () => {
+    expect(deriveChildReplaySelection({
+      snapshot: {
+        runId: "run-1",
+        events: [
+          { id: "evt-0", seq: 0 },
+          { id: "evt-1", seq: 1 },
+          { id: "evt-2", seq: 2 },
+        ],
+      } as any,
+      child: {
+        id: "run-1:child-1",
+        agentId: "child-1",
+        label: "Researcher",
+        sessionClass: "temporary_spawn",
+        status: "succeeded",
+        startedAt: 1,
+        updatedAt: 2,
+        replayRef: {
+          kind: "event_range",
+          runId: "run-1",
+          fromSeq: 1,
+          toSeq: 2,
+        },
+      } as any,
+    })).toEqual({
+      runId: "run-1",
+      beatId: "evt-1",
+    });
+  });
+
+  it("returns undefined when replayRef points at another run", () => {
+    expect(deriveChildReplaySelection({
+      snapshot: {
+        runId: "run-parent",
+        events: [{ id: "evt-0", seq: 0 }],
+      } as any,
+      child: {
+        id: "run-parent:child-1",
+        agentId: "child-1",
+        label: "Researcher",
+        sessionClass: "temporary_spawn",
+        status: "running",
+        startedAt: 1,
+        updatedAt: 1,
+        replayRef: {
+          kind: "event_range",
+          runId: "run-child",
+          fromSeq: 0,
+        },
+      } as any,
+    })).toBeUndefined();
   });
 });
 

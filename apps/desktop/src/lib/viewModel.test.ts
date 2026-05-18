@@ -119,6 +119,110 @@ describe("desktop session view model", () => {
     });
   });
 
+  it("keeps child collaboration deltas out of assistant chat messages", () => {
+    const createdAt = 1_714_000_000_000;
+    const runId = "run-collaboration-filter";
+    const sessionId = "session-collaboration-filter";
+    const messages = adaptChatMessages(
+      [{
+        id: `${runId}:user`,
+        sessionId,
+        runId,
+        turnIndex: 1,
+        role: "user",
+        content: "总结子任务结果",
+        pattern: "orchestrator_subagent",
+        modeId: SINGLE_AGENT_MODE_ID,
+        createdAt,
+      }],
+      {
+        [runId]: {
+          runId,
+          sessionId,
+          turnIndex: 1,
+          status: "succeeded",
+          pattern: "orchestrator_subagent",
+          modeId: SINGLE_AGENT_MODE_ID,
+          input: { prompt: "总结子任务结果", createdAt, context: {} },
+          config: {
+            modeId: SINGLE_AGENT_MODE_ID,
+            pattern: "orchestrator_subagent",
+            modeSelection: "manual",
+            profileIds: ["ora", "researcher"],
+            providerId: "deepseek",
+            modelRef: "deepseek-chat",
+            approvalMode: "high_risk_only",
+            patternOptions: {},
+            metadata: {},
+            deterministicSeed: "view-model-collaboration-filter-test",
+            skillIds: [],
+            toolIds: [],
+          },
+          topology: { nodes: [], edges: [] },
+          profiles: [],
+          memory: [],
+          plan: [],
+          todos: [],
+          actions: [],
+          toolCalls: [],
+          policyDecisions: [],
+          checkpoints: [],
+          events: [
+            {
+              id: `${runId}:evt-0`,
+              runId,
+              seq: 0,
+              type: "message.delta",
+              createdAt: createdAt + 1,
+              pattern: "orchestrator_subagent",
+              agentId: "ora-sub-1",
+              payload: {
+                role: "assistant",
+                messageId: `${runId}:child`,
+                content: "子 Agent 直接输出",
+                audience: "collaboration",
+              },
+            },
+            {
+              id: `${runId}:evt-1`,
+              runId,
+              seq: 1,
+              type: "message.delta",
+              createdAt: createdAt + 2,
+              pattern: "orchestrator_subagent",
+              agentId: ORA_ROOT_AGENT_ID,
+              payload: {
+                role: "assistant",
+                messageId: `${runId}:parent`,
+                content: "父 Agent 综合结论",
+              },
+            },
+          ],
+          childSessions: [{
+            id: `${runId}:ora-sub-1`,
+            agentId: "ora-sub-1",
+            label: "Researcher",
+            sessionClass: "temporary_spawn",
+            status: "succeeded",
+            summary: "完成资料搜集",
+            startedAt: createdAt + 1,
+            updatedAt: createdAt + 2,
+          }],
+          artifacts: [],
+          activeAgents: [],
+          queueSummary: { mode: "dag", pending: 0, inProgress: 0, completed: 1, topics: [] },
+          sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+          busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+          pendingClarifications: [],
+          pendingApprovals: [],
+          updatedAt: createdAt + 2,
+        } as unknown as OraStateSnapshot,
+      },
+    );
+
+    expect(messages.find((message) => message.role === "assistant")?.content).toBe("父 Agent 综合结论");
+  });
+
   it("uses summary interaction gate for summary-only sessions", () => {
     const createdAt = 1_714_000_000_000;
     const session: OraSessionSummary = {
@@ -3468,6 +3572,127 @@ describe("desktop session view model", () => {
 
     expect(assistant?.turn?.agentMessages.map((message) => message.transcript?.speakerLabel)).toEqual(["正方主辩", "反方主辩"]);
     expect(new Set(assistant?.turn?.agentMessages.map((message) => message.fromAgentId))).toEqual(new Set(["debate_agent"]));
+  });
+
+  it("marks transcript turns as the primary surface and suppresses duplicate body output", () => {
+    const createdAt = 1_714_000_000_000;
+    const finalVerdict = "最终裁决：采用方案A。";
+    const snapshot = {
+      runId: "run-transcript-primary",
+      sessionId: "session-transcript-primary",
+      turnIndex: 1,
+      status: "succeeded",
+      pattern: "orchestrator_subagent",
+      modeId: DEBATE_MODE_ID,
+      input: { prompt: "debate this", createdAt, context: {} },
+      config: {
+        modeId: DEBATE_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["moderator", "debate_agent"],
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-transcript-primary-surface-test",
+        skillIds: [],
+        toolIds: [],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [
+        {
+          id: "moderator",
+          label: "Moderator",
+          role: "Synthesize.",
+          modelRef: "local/smoke-model",
+          toolPolicyId: "orchestrator_subagent.default_policy",
+          memoryNamespaces: ["session"],
+          budget: { maxTokens: 1000, maxToolCalls: 0, maxRuntimeMs: 1000 },
+        },
+        {
+          id: "debate_agent",
+          label: "Debate Agent",
+          role: "Argue both sides.",
+          modelRef: "local/smoke-model",
+          toolPolicyId: "orchestrator_subagent.default_policy",
+          memoryNamespaces: ["session"],
+          budget: { maxTokens: 1000, maxToolCalls: 0, maxRuntimeMs: 1000 },
+        },
+      ],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [],
+      agentMessages: [
+        {
+          id: "run-transcript-primary:agent-message:0",
+          runId: "run-transcript-primary",
+          createdAt: createdAt + 1,
+          fromAgentId: "moderator",
+          toAgentIds: ["debate_agent"],
+          threadId: "run-transcript-primary:debate",
+          nodeId: "synthesis",
+          kind: "reply",
+          status: "done",
+          content: finalVerdict,
+          artifactIds: [],
+          transcript: {
+            kind: "stage_transcript",
+            groupId: "debate",
+            groupLabel: "结构化辩论",
+            stageId: "moderator-synthesis",
+            stageLabel: "主持总结",
+            sequence: 0,
+            speakerLabel: "主持人总结",
+            speakerId: "moderator",
+            stance: "moderator",
+            status: "done",
+            layout: {
+              style: "two_sided_duel",
+              groupId: "debate",
+              groupLabel: "结构化辩论",
+              summaryStageIds: ["moderator-synthesis"],
+              ownsFinalAnswer: true,
+              supplementalBody: "never",
+            },
+          },
+        },
+      ],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 0, completed: 1, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      output: { text: finalVerdict },
+      updatedAt: createdAt + 2,
+    } as unknown as OraStateSnapshot;
+
+    const assistant = adaptChatMessages(
+      [{
+        id: "run-transcript-primary:user",
+        sessionId: "session-transcript-primary",
+        runId: "run-transcript-primary",
+        turnIndex: 1,
+        role: "user",
+        content: "debate this",
+        pattern: "orchestrator_subagent",
+        modeId: DEBATE_MODE_ID,
+        createdAt,
+      }],
+      { "run-transcript-primary": snapshot },
+    ).find((message) => message.role === "assistant");
+
+    expect(assistant?.turn?.presentation).toMatchObject({
+      primarySurface: "stage_transcript",
+      showStandaloneBody: false,
+    });
+    expect(assistant?.turn?.presentation?.transcriptTakeaway).toBeUndefined();
   });
 
   it("keeps root orchestrator handoff content in public timeline items", () => {

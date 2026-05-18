@@ -105,9 +105,17 @@ function renderTranscriptGroup(renderer: TranscriptRendererId, group: StageTrans
   }
 }
 
-export function StageTranscript({ messages, reviewGate }: { messages: TurnAgentConversationMessage[]; reviewGate?: ReviewGateInfo }) {
+export function StageTranscript({
+  messages,
+  reviewGate,
+  takeaway,
+}: {
+  messages: TurnAgentConversationMessage[];
+  reviewGate?: ReviewGateInfo;
+  takeaway?: string;
+}) {
   const groups = groupStageTranscriptMessages(messages);
-  if (groups.length === 0) {
+  if (groups.length === 0 && !takeaway?.trim()) {
     return null;
   }
 
@@ -131,6 +139,21 @@ export function StageTranscript({ messages, reviewGate }: { messages: TurnAgentC
           </TaskList>
         );
       })}
+      {takeaway?.trim() ? (
+        <TaskList>
+          <TaskListHeader>
+            <div className="flex min-w-0 items-center gap-2">
+              <MessagesSquare size={14} />
+              <span className="font-medium text-foreground">最终结论</span>
+            </div>
+          </TaskListHeader>
+          <TaskListBody className="border-l-0 pl-0">
+            <div className="px-4 py-3">
+              <MarkdownContent content={takeaway} className="text-sm leading-7 text-foreground" />
+            </div>
+          </TaskListBody>
+        </TaskList>
+      ) : null}
     </div>
   );
 }

@@ -58,6 +58,7 @@ import { USER_CANCELLED_MESSAGE, USER_INTERRUPTED_MESSAGE, USER_RESUMED_MESSAGE 
 import { deriveSnapshotInteractionProjection, attentionGateKind } from "./runInteractionState";
 import { parseProposedPlan } from "./proposedPlanParser";
 import { mergeAssistantMessageTextProjection } from "./assistantMessageProjection";
+import { deriveAssistantTurnPresentation } from "./assistantTurnPresentation";
 
 const APPROVAL_INTERRUPT_MESSAGE = "需要你确认后，我才能继续。";
 const APPROVAL_INTERRUPT_MESSAGE_EN = "Waiting for your approval before continuing.";
@@ -1007,6 +1008,10 @@ function beatLabel(event: OraEventEnvelope): string {
       return "消息输出";
     case "agent.message":
       return "智能体消息";
+    case "child_session.updated":
+      return "协作子任务更新";
+    case "parent_coordination.updated":
+      return "父 Agent 编排状态";
     case "message.published":
       return "消息发布";
     case "message.routed":
@@ -1385,14 +1390,25 @@ export function adaptChatMessages(
       const suppressStoredAssistant = turn.snapshot
         ? shouldSuppressStoredAssistantFallback(turn.snapshot)
         : false;
-      if (turn.assistant || assistantTurn) {
+      const assistantContent =
+        snapshotAssistant ??
+        (suppressStoredAssistant ? undefined : turn.assistant?.content) ??
+        placeholderAssistantCopy(turn.snapshot);
+      const presentedAssistantTurn = assistantTurn
+        ? {
+            ...assistantTurn,
+            presentation: deriveAssistantTurnPresentation({
+              content: assistantContent,
+              turn: assistantTurn,
+            }),
+          }
+        : assistantTurn;
+
+      if (turn.assistant || presentedAssistantTurn) {
         messages.push({
           id: turn.assistant?.id ?? `${turn.runId}:assistant-pending`,
           role: "assistant",
-          content:
-            snapshotAssistant ??
-            (suppressStoredAssistant ? undefined : turn.assistant?.content) ??
-            placeholderAssistantCopy(turn.snapshot),
+          content: assistantContent,
           timestamp: formatClock(
             turn.assistant?.createdAt ?? turn.snapshot?.updatedAt ?? Date.now(),
           ),
@@ -1401,13 +1417,13 @@ export function adaptChatMessages(
             turnIndex: turn.turnIndex,
             pattern: turn.pattern,
           },
-          turn: assistantTurn,
+          turn: presentedAssistantTurn,
           clarificationOptions: turn.snapshot
             ? clarificationOptionsFromSnapshot(turn.snapshot)
             : undefined,
           isPlaceholder:
             !turn.assistant &&
-            (!assistantTurn || assistantTurn.status === "running"),
+            (!presentedAssistantTurn || presentedAssistantTurn.status === "running"),
         });
       }
 
@@ -1505,10 +1521,19 @@ function overlayLiveMessageDeltas(
     }
     const liveEntries = liveAssistantEntriesForSnapshot(snapshot, liveMessageDeltas);
     const liveText = liveEntries.at(-1)?.content;
-    const nextTurn = message.turn && liveEntries.length > 0
+    const nextTurnBase = message.turn && liveEntries.length > 0
       ? overlayLiveTimelineItems(message.turn, snapshot, liveEntries)
       : message.turn;
     const contentChanged = Boolean(liveText && message.content !== liveText);
+    const nextTurn = nextTurnBase && (contentChanged || nextTurnBase !== message.turn)
+      ? {
+          ...nextTurnBase,
+          presentation: deriveAssistantTurnPresentation({
+            content: contentChanged ? liveText! : message.content,
+            turn: nextTurnBase,
+          }),
+        }
+      : nextTurnBase;
     const turnChanged = nextTurn !== message.turn;
     if (!contentChanged && !turnChanged) {
       return message;
@@ -2015,12 +2040,23 @@ function isInternalAssistantDelta(
   if (isInternalVerifierDelta(snapshot, event)) {
     return true;
   }
+  const agentId = typeof event.agentId === "string" ? event.agentId : undefined;
+  if (
+    agentId &&
+    agentId !== ORA_ROOT_AGENT_ID &&
+    (snapshot.childSessions ?? []).some((child) => child.agentId === agentId)
+  ) {
+    return true;
+  }
   if (!isRecord(event.payload)) {
     return false;
   }
   if (
     event.payload.visibility === "internal" ||
+    event.payload.visibility === "collaboration" ||
     event.payload.audience === "internal" ||
+    event.payload.audience === "collaboration" ||
+    event.payload.surface === "collaboration" ||
     event.payload.public === false
   ) {
     return true;

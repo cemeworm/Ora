@@ -5163,6 +5163,18 @@ class LocalJsonRpcRuntime {
     const clarificationPatch = patch && isRecord(patch.clarifications)
       ? patch.clarifications as Record<string, unknown>
       : {};
+    const planDecisionResolutions = patch && Array.isArray((patch as Record<string, unknown>).planDecisionResolutions)
+      ? ((patch as Record<string, unknown>).planDecisionResolutions as unknown[]).flatMap((value) => {
+          if (!isRecord(value)) return [];
+          if (
+            typeof value.decisionId !== "string" ||
+            (value.status !== "accepted" && value.status !== "declined")
+          ) {
+            return [];
+          }
+          return [{ decisionId: value.decisionId, status: value.status as "accepted" | "declined" }];
+        })
+      : [];
     const resolvedClarificationEvents = snapshot.pendingClarifications
       .filter((clarification) => clarificationPatch[clarification.key] !== undefined || clarificationPatch[clarification.id] !== undefined)
       .map((clarification, index) => createEvent(
@@ -5200,6 +5212,14 @@ class LocalJsonRpcRuntime {
           ...clarificationPatch,
         }
       : snapshot.input.context?.clarifications;
+    const nextPlanDecisions = planDecisionResolutions.length > 0
+      ? snapshot.planDecisions.map((decision) => {
+          const resolution = planDecisionResolutions.find((item) => item.decisionId === decision.id);
+          return resolution
+            ? { ...decision, status: resolution.status, resolvedAt: doneEvent.createdAt }
+            : decision;
+        })
+      : snapshot.planDecisions;
     const updated = {
       ...snapshot,
       status: "succeeded" as const,
@@ -5210,6 +5230,15 @@ class LocalJsonRpcRuntime {
           ...(nextClarifications ? { clarifications: nextClarifications } : {}),
         },
       },
+      config: planDecisionResolutions.some((resolution) => resolution.status === "accepted")
+        ? {
+            ...snapshot.config,
+            metadata: {
+              ...snapshot.config.metadata,
+              taskIntent: "implement",
+            },
+          }
+        : snapshot.config,
       topology: {
         ...snapshot.topology,
         nodes: snapshot.topology.nodes.map((node) => ({ ...node, status: "done" as const })),
@@ -5219,6 +5248,7 @@ class LocalJsonRpcRuntime {
         action.status === "approval_required" ? { ...action, status: "approved" as const } : action,
       ),
       events: [...snapshot.events, resumedEvent, ...resolvedClarificationEvents, doneEvent],
+      planDecisions: nextPlanDecisions,
       pendingClarifications: snapshot.pendingClarifications.filter(
         (clarification) => clarificationPatch[clarification.key] === undefined && clarificationPatch[clarification.id] === undefined,
       ),

@@ -27,6 +27,7 @@ import type {
   TurnTimelineItem,
 } from "../types";
 import { cn } from "../lib/utils";
+import { deriveAssistantTurnPresentation } from "../lib/assistantTurnPresentation";
 import { Message, MessageContent } from "./ai-elements/message";
 import {
   Artifact,
@@ -88,15 +89,13 @@ export const AssistantTurnCard = memo(function AssistantTurnCard({
   );
   const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
   const [copied, setCopied] = useState(false);
-  const bodyContent = shouldSuppressClarificationBody(content, clarificationExchanges)
-    ? ""
-    : content;
-  const timelineItems = visibleTimelineItems(
-    turn?.timelineItems ?? legacyTimelineItems(processSteps),
+  const presentation = turn?.presentation ?? deriveAssistantTurnPresentation({
+    content,
     turn,
-    bodyContent,
     isPlaceholder,
-  );
+  });
+  const bodyContent = presentation?.bodyContent ?? content;
+  const timelineItems = presentation?.visibleTimelineItems ?? [];
   const hasTimeline = timelineItems.length > 0;
   const hasStageTranscript = stageTranscriptMessages.length > 0;
   const visibleArtifacts = turn?.artifacts.filter(isContentArtifact) ?? [];
@@ -124,9 +123,6 @@ export const AssistantTurnCard = memo(function AssistantTurnCard({
   const canShowActions = canCopyContent || canSubmitFeedback || sources.length > 0;
   const currentAgentLabel = turn?.currentAgentLabel?.trim();
   const hasTimelineAgentLabel = timelineItems.some((item) => Boolean(timelineAgentLabel(item)));
-  const timelineContainsAssistantBody = timelineItems.some((item) =>
-    item.kind === "assistant_text" || item.kind === "final_text",
-  );
   const showThinkingIndicator = shouldShowThinkingIndicator({
     isPlaceholder,
     turn,
@@ -193,7 +189,11 @@ export const AssistantTurnCard = memo(function AssistantTurnCard({
           ) : null}
 
           {hasStageTranscript ? (
-            <StageTranscript messages={stageTranscriptMessages} reviewGate={turn?.reviewGate} />
+            <StageTranscript
+              messages={stageTranscriptMessages}
+              reviewGate={turn?.reviewGate}
+              takeaway={presentation?.transcriptTakeaway}
+            />
           ) : null}
 
           {turn?.reviewGate ? (
@@ -216,7 +216,7 @@ export const AssistantTurnCard = memo(function AssistantTurnCard({
             <ClarificationExchangeList exchanges={clarificationExchanges} />
           ) : null}
 
-          {turn?.proposedPlanStatus || (hasTimeline && timelineContainsAssistantBody) || !bodyContent.trim() ? null : (
+          {!presentation?.showStandaloneBody ? null : (
             <MessageContent className="w-full">
               <MarkdownContent
                 content={bodyContent}
@@ -324,26 +324,6 @@ export const AssistantTurnCard = memo(function AssistantTurnCard({
   );
 });
 
-function shouldSuppressClarificationBody(
-  content: string,
-  exchanges: TurnClarificationExchange[],
-): boolean {
-  const pendingQuestions = exchanges
-    .filter((exchange) => exchange.status === "pending" && !exchange.answer)
-    .map((exchange) => exchange.question.trim())
-    .filter(Boolean);
-
-  if (pendingQuestions.length === 0) {
-    return false;
-  }
-
-  return normalizeComparableText(content) === normalizeComparableText(pendingQuestions.join("\n"));
-}
-
-function normalizeComparableText(text: string): string {
-  return text.trim().replace(/\s+/g, " ");
-}
-
 function ClarificationExchangeList({
   exchanges,
 }: {
@@ -383,37 +363,6 @@ function ClarificationExchangeList({
   );
 }
 
-function legacyTimelineItems(processSteps: TurnProcessStep[]): TurnTimelineItem[] {
-  if (processSteps.length === 0) {
-    return [];
-  }
-  const latest = processSteps[processSteps.length - 1];
-  const summaryParts = [
-    latest?.eventType === "agent.handoff" ? latest.label : undefined,
-    latest?.detail || (latest?.eventType === "agent.handoff" ? undefined : latest?.label),
-    latest?.contextLabel ? `对象：${latest.contextLabel}` : undefined,
-    latest?.eventType === "agent.handoff" ? "交接" : undefined,
-  ].filter(Boolean);
-  return [{
-    id: `legacy-status:${latest?.id ?? "process"}`,
-    kind: "status_group",
-    summary: summaryParts.join(" ") || `${processSteps.length} 条执行状态`,
-    steps: processSteps,
-    timestamp: latest?.timestamp ?? "",
-    status: legacyTimelineStatus(processSteps),
-  }];
-}
-
-function legacyTimelineStatus(processSteps: TurnProcessStep[]): TurnProcessStep["status"] {
-  if (processSteps.some((step) => step.status === "blocked")) {
-    return "blocked";
-  }
-  if (processSteps.some((step) => step.status === "active")) {
-    return "active";
-  }
-  return "complete";
-}
-
 function shouldShowThinkingIndicator({
   isPlaceholder,
   turn,
@@ -428,51 +377,6 @@ function shouldShowThinkingIndicator({
     return true;
   }
   return false;
-}
-
-function visibleTimelineItems(
-  items: TurnTimelineItem[],
-  turn: AssistantTurnAttachment | undefined,
-  bodyContent: string,
-  isPlaceholder: boolean,
-): TurnTimelineItem[] {
-  if (
-    turn?.status === "running" ||
-    isPlaceholder ||
-    !bodyContent.trim() ||
-    items.some((item) => item.kind === "assistant_text" || item.kind === "final_text")
-  ) {
-    return items;
-  }
-
-  const latestNonStatusIndex = findLatestNonStatusTimelineIndex(items);
-  return items.filter((item, index) => (
-    item.kind !== "status_group" ||
-    item.status !== "complete" ||
-    !isTrivialCompletedStatusGroup(item) ||
-    index < latestNonStatusIndex
-  ));
-}
-
-function findLatestNonStatusTimelineIndex(items: TurnTimelineItem[]): number {
-  for (let index = items.length - 1; index >= 0; index -= 1) {
-    if (items[index]?.kind !== "status_group") {
-      return index;
-    }
-  }
-  return -1;
-}
-
-function isTrivialCompletedStatusGroup(
-  item: Extract<TurnTimelineItem, { kind: "status_group" }>,
-): boolean {
-  const normalizedSummary = item.summary.trim();
-  if (normalizedSummary !== "已完成") {
-    return false;
-  }
-  return item.steps.every((step) =>
-    [step.label, step.detail].every((text) => !text.trim() || text.trim() === "已完成"),
-  );
 }
 
 function ThinkingIndicator() {

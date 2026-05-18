@@ -1178,6 +1178,7 @@ function WorkbenchInner() {
               dispatch({ type: "SET_MODE_SELECTION", selection })
             }
             onSelectNode={(id) => dispatch({ type: "SELECT_NODE", nodeId: id })}
+            onSelectSession={(sessionId) => void actions.selectSession(sessionId)}
             onStartRun={actions.startRun}
             onToggleDetailDrawer={(drawer) =>
               dispatch({ type: "TOGGLE_DETAIL_DRAWER", drawer })

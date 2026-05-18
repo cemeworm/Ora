@@ -929,6 +929,105 @@ describe("assistant turn display helpers", () => {
     expect(html).not.toContain("协作轨迹");
   });
 
+  it("does not duplicate transcript-owned final answer in a standalone body block", () => {
+    const finalVerdict = "最终裁决：采用方案A。";
+    const turn: AssistantTurnAttachment = {
+      runId: "run-1",
+      turnIndex: 1,
+      status: "done",
+      pattern: "orchestrator_subagent",
+      sources: [],
+      processSteps: [],
+      agentMessages: [
+        agentMessage("message-1", "reply", finalVerdict, {
+          fromAgentId: "moderator",
+          fromAgentLabel: "Moderator",
+          toAgentIds: ["debate_agent"],
+          toAgentLabels: ["Debate Agent"],
+          transcript: {
+            kind: "stage_transcript",
+            groupId: "debate",
+            groupLabel: "结构化辩论",
+            stageId: "moderator-synthesis",
+            stageLabel: "主持总结",
+            sequence: 0,
+            speakerLabel: "主持人总结",
+            speakerId: "moderator",
+            stance: "moderator",
+            status: "done",
+            layout: {
+              style: "two_sided_duel",
+              groupId: "debate",
+              groupLabel: "结构化辩论",
+              summaryStageIds: ["moderator-synthesis"],
+              ownsFinalAnswer: true,
+              supplementalBody: "never",
+            },
+          },
+        }),
+      ],
+      artifacts: [],
+      todos: [],
+      planList: [],
+      approvalCount: 0,
+      clarificationCount: 0,
+      hasProposedPlan: false,
+    };
+
+    const html = renderToStaticMarkup(
+      <AssistantTurnCard content={finalVerdict} turn={turn} />,
+    );
+
+    expect(html.split(finalVerdict).length - 1).toBe(2);
+    expect(html).not.toContain("最终结论");
+  });
+
+  it("embeds non-duplicate transcript takeaway inside the transcript surface", () => {
+    const turn: AssistantTurnAttachment = {
+      runId: "run-1",
+      turnIndex: 1,
+      status: "done",
+      pattern: "orchestrator_subagent",
+      sources: [],
+      processSteps: [],
+      agentMessages: [
+        agentMessage("message-1", "reply", "Red Team critique.", {
+          transcript: {
+            kind: "stage_transcript",
+            groupId: "review",
+            groupLabel: "Review Debate",
+            stageId: "red-team",
+            stageLabel: "Critique",
+            sequence: 0,
+            speakerLabel: "Red Team",
+            speakerId: "red",
+            stance: "red_team",
+            status: "done",
+            layout: {
+              style: "two_sided_duel",
+              groupId: "review",
+              groupLabel: "Review Debate",
+            },
+          },
+        }),
+      ],
+      artifacts: [],
+      todos: [],
+      planList: [],
+      approvalCount: 0,
+      clarificationCount: 0,
+      hasProposedPlan: false,
+    };
+
+    const html = renderToStaticMarkup(
+      <AssistantTurnCard content="最终建议：先保留结构化视图，再补一段简短结论。" turn={turn} />,
+    );
+
+    expect(html).toContain("Review Debate");
+    expect(html).toContain("最终结论");
+    expect(html).toContain("最终建议：先保留结构化视图，再补一段简短结论。");
+  });
+
   it("renders a custom two-sided staged transcript from layout metadata", () => {
     const layout = {
       style: "two_sided_duel",

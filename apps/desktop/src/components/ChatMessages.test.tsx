@@ -1,6 +1,9 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+import { SINGLE_AGENT_MODE_ID } from "@cemeworm/shared";
 import { ChatMessages, messageBottomPaddingPx } from "./ChatMessages";
+import { adaptRenderableChatMessages } from "../lib/viewModel";
+import { getPendingRunState, initialWorkbenchState, workbenchReducer, type WorkbenchState } from "../lib/state";
 import type { OraSessionBranchGroup, OraStateSnapshot } from "../lib/runtimeClient";
 
 describe("ChatMessages bottom inset", () => {
@@ -60,7 +63,7 @@ describe("ChatMessages bottom inset", () => {
       />,
     );
 
-    expect(html).toContain("flex items-center rounded-2xl bg-card px-3.5 py-2.5");
+    expect(html).toContain("flex items-center rounded-2xl bg-muted px-3.5 py-2.5");
     expect(html).not.toContain("rounded-br-md");
     expect(html).toContain("whitespace-pre-wrap break-words leading-5");
     expect(html).not.toContain("<p class=\"my-2");
@@ -134,5 +137,257 @@ describe("ChatMessages bottom inset", () => {
     expect(html).toContain("右侧回答");
     expect(html).toContain("我更喜欢这个");
     expect(html).not.toContain("原回答不应显示");
+  });
+
+  it("renders same-run clarification answers inside the assistant turn without adding a new user bubble", () => {
+    const createdAt = 1_714_000_000_000;
+    const sessionId = "session-clarification-ui";
+    const runId = "run-clarification-ui";
+    const snapshot = {
+      runId,
+      sessionId,
+      turnIndex: 1,
+      status: "succeeded",
+      pattern: "orchestrator_subagent",
+      modeId: SINGLE_AGENT_MODE_ID,
+      input: { prompt: "Needs a decision", createdAt, context: {} },
+      config: {
+        modeId: SINGLE_AGENT_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["solo_agent"],
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "chat-messages-clarification-ui",
+        skillIds: [],
+        toolIds: [],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      planList: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [{
+        id: `${runId}:evt-0`,
+        runId,
+        seq: 0,
+        type: "clarification.required",
+        createdAt: createdAt + 30,
+        pattern: "orchestrator_subagent",
+        payload: {
+          clarification: {
+            id: "clarification:scope",
+            nodeId: "solo_agent",
+            key: "scope",
+            question: "Which scope should I use?",
+            requestedAt: createdAt + 30,
+          },
+          pending: 1,
+        },
+      }, {
+        id: `${runId}:evt-1`,
+        runId,
+        seq: 1,
+        type: "clarification.resolved",
+        createdAt: createdAt + 40,
+        pattern: "orchestrator_subagent",
+        payload: {
+          clarificationId: "clarification:scope",
+          nodeId: "solo_agent",
+          answer: "Use the current session only.",
+          mode: "resume",
+        },
+      }],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 0, completed: 1, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      output: { text: "Continued after clarification" },
+      updatedAt: createdAt + 50,
+    } as unknown as OraStateSnapshot;
+
+    const messages = adaptRenderableChatMessages({
+      transcript: [{
+        id: `${runId}:user`,
+        sessionId,
+        runId,
+        turnIndex: 1,
+        role: "user",
+        content: "Needs a decision",
+        pattern: "orchestrator_subagent",
+        modeId: SINGLE_AGENT_MODE_ID,
+        createdAt,
+      }, {
+        id: `${runId}:assistant`,
+        sessionId,
+        runId,
+        turnIndex: 1,
+        role: "assistant",
+        content: "Continued after clarification",
+        pattern: "orchestrator_subagent",
+        modeId: SINGLE_AGENT_MODE_ID,
+        createdAt: createdAt + 50,
+      }],
+      turnSnapshots: { [runId]: snapshot },
+      selectedSessionId: sessionId,
+    });
+
+    const html = renderToStaticMarkup(
+      <ChatMessages chatMessages={messages} />,
+    );
+
+    expect(html).toContain("Which scope should I use?");
+    expect(html).toContain("Use the current session only.");
+    expect(html).toContain("Continued after clarification");
+    expect(html.match(/rounded-2xl bg-muted px-3\.5 py-2\.5/g)).toHaveLength(1);
+  });
+
+  it("keeps accepted same-run plan decisions out of the message list as synthetic user turns", () => {
+    const createdAt = 1_714_000_000_000;
+    const sessionId = "session-plan-ui";
+    const runId = "run-plan-ui";
+    const proposedPlan = [
+      "<proposed_plan>",
+      "## Runtime status plan",
+      "1. Add shared attention projection.",
+      "2. Persist plan decision gates.",
+      "</proposed_plan>",
+    ].join("\n");
+    const snapshot = {
+      runId,
+      sessionId,
+      turnIndex: 1,
+      status: "succeeded",
+      pattern: "orchestrator_subagent",
+      modeId: SINGLE_AGENT_MODE_ID,
+      input: { prompt: "Plan the runtime work", createdAt, context: {} },
+      config: {
+        modeId: SINGLE_AGENT_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["solo_agent"],
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: { taskIntent: "plan" },
+        deterministicSeed: "chat-messages-plan-ui",
+        skillIds: [],
+        toolIds: [],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      planList: [{
+        id: "step-1",
+        step: "Add shared attention projection.",
+        status: "completed",
+      }, {
+        id: "step-2",
+        step: "Persist plan decision gates.",
+        status: "completed",
+      }],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 0, completed: 1, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      planDecisions: [{
+        id: `${runId}:plan-decision`,
+        runId,
+        sessionId,
+        status: "pending",
+        planContent: "## Runtime status plan\n1. Add shared attention projection.\n2. Persist plan decision gates.",
+        createdAt: createdAt + 10,
+      }],
+      attention: {
+        kind: "needs_plan_decision",
+        blocking: true,
+        sourceRunId: runId,
+        reason: "plan_decision_required",
+        planDecisionId: `${runId}:plan-decision`,
+        pendingActionIds: [],
+        pendingToolCallIds: [],
+        pendingClarificationIds: [],
+      },
+      output: { text: proposedPlan },
+      updatedAt: createdAt + 20,
+    } as unknown as OraStateSnapshot;
+
+    const state: WorkbenchState = {
+      ...initialWorkbenchState,
+      selectedSessionId: sessionId,
+      runLifecycle: {
+        stage: "settled",
+        runId,
+        sessionId,
+        prompt: "Plan the runtime work",
+        createdAt,
+        snapshot,
+      },
+    };
+    const resolving = workbenchReducer(state, {
+      type: "BEGIN_PLAN_DECISION_RESOLUTION",
+      sessionId,
+      decisionId: `${runId}:plan-decision`,
+      status: "accepted",
+      createdAt: createdAt + 25,
+    });
+
+    const messages = adaptRenderableChatMessages({
+      transcript: [{
+        id: `${runId}:user`,
+        sessionId,
+        runId,
+        turnIndex: 1,
+        role: "user",
+        content: "Plan the runtime work",
+        pattern: "orchestrator_subagent",
+        modeId: SINGLE_AGENT_MODE_ID,
+        createdAt,
+      }, {
+        id: `${runId}:assistant`,
+        sessionId,
+        runId,
+        turnIndex: 1,
+        role: "assistant",
+        content: proposedPlan,
+        pattern: "orchestrator_subagent",
+        modeId: SINGLE_AGENT_MODE_ID,
+        createdAt: createdAt + 20,
+      }],
+      turnSnapshots: { [runId]: snapshot },
+      pendingRun: getPendingRunState(resolving.runLifecycle),
+      selectedSessionId: sessionId,
+    });
+
+    const html = renderToStaticMarkup(
+      <ChatMessages chatMessages={messages} />,
+    );
+
+    expect(html).toContain("任务计划");
+    expect(html).toContain("Runtime status plan");
+    expect(html).not.toContain("请按照上述计划开始执行");
+    expect(html.match(/rounded-2xl bg-muted px-3\.5 py-2\.5/g)).toHaveLength(1);
   });
 });

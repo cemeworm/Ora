@@ -1,6 +1,6 @@
 import { deriveSnapshotGateProjection, type ModeSelection } from "@cemeworm/shared";
 import { useCallback, useMemo, useState } from "react";
-import { GitBranchPlus } from "lucide-react";
+import { Bot, GitBranchPlus } from "lucide-react";
 import { ChatHeader } from "./ChatHeader";
 import { ChatMessages } from "./ChatMessages";
 import { ChatInput } from "./ChatInput";
@@ -73,6 +73,7 @@ interface ChatViewProps {
   onSelectMode: (modeId: string) => void;
   onSelectModeSelection: (selection: ModeSelection) => void;
   onSelectNode: (id: string) => void;
+  onSelectSession: (sessionId: string) => void | Promise<void>;
   onStartRun: () => void;
   onToggleDetailDrawer: (drawer: "trails" | "documents") => void;
   detailDrawer: "trails" | "documents" | undefined;
@@ -196,6 +197,25 @@ export function deriveComposerPlanDecisionState({
   };
 }
 
+export function deriveChildReplaySelection({
+  snapshot,
+  child,
+}: {
+  snapshot?: OraStateSnapshot;
+  child: NonNullable<OraStateSnapshot["childSessions"]>[number];
+}): { runId: string; beatId?: string } | undefined {
+  const replayRef = child.replayRef;
+  if (!snapshot || !replayRef || replayRef.runId !== snapshot.runId) {
+    return undefined;
+  }
+  const preferredSeqs = [replayRef.fromSeq, replayRef.toSeq]
+    .filter((seq): seq is number => typeof seq === "number");
+  const beatId = preferredSeqs
+    .map((seq) => snapshot.events.find((event) => event.seq === seq)?.id)
+    .find((id): id is string => typeof id === "string");
+  return { runId: snapshot.runId, beatId };
+}
+
 export function ChatView({
   activeMode,
   activeSnapshot,
@@ -228,6 +248,7 @@ export function ChatView({
   detailDrawer,
   onSelectMode,
   onSelectModeSelection,
+  onSelectSession,
 }: ChatViewProps) {
   const { state, dispatch } = useWorkbench();
   const showWelcome = chatMessages.length === 0 && !runInteractionState.isProcessing;
@@ -376,21 +397,27 @@ export function ChatView({
           />
         )}
         <div className="flex min-h-0 flex-1">
-          <ChatMessages
-            chatMessages={chatMessages}
-            branchGroups={branchGroups}
-            turnSnapshots={turnSnapshots}
-            language={state.language}
-            actionRecords={actionRecords}
-            hasApprovalTray={hasApprovalTray}
-            hasClarificationTray={hasClarificationTray}
-            hasPlanDecisionTray={planDecisionPending}
-            hasPlanStepsTray={currentPlanSteps.length > 0}
-            bottomInsetPx={composerOverlayHeight}
-            projectRootPath={projectRootPath}
-            onOpenArtifact={onOpenArtifact}
-            onSubmitFeedback={onSubmitFeedback}
-            onAdoptBranchGroup={onAdoptBranchGroup}
+          <div className="min-h-0 min-w-0 flex-1">
+            <ChatMessages
+              chatMessages={chatMessages}
+              branchGroups={branchGroups}
+              turnSnapshots={turnSnapshots}
+              language={state.language}
+              actionRecords={actionRecords}
+              hasApprovalTray={hasApprovalTray}
+              hasClarificationTray={hasClarificationTray}
+              hasPlanDecisionTray={planDecisionPending}
+              hasPlanStepsTray={currentPlanSteps.length > 0}
+              bottomInsetPx={composerOverlayHeight}
+              projectRootPath={projectRootPath}
+              onOpenArtifact={onOpenArtifact}
+              onSubmitFeedback={onSubmitFeedback}
+              onAdoptBranchGroup={onAdoptBranchGroup}
+            />
+          </div>
+          <CollaborationPanel
+            snapshot={activeSnapshot}
+            onSelectSession={onSelectSession}
           />
         </div>
         <ChatInput
@@ -465,6 +492,156 @@ export function ChatView({
       </main>
     </div>
   );
+}
+
+function CollaborationPanel({
+  snapshot,
+  onSelectSession,
+}: {
+  snapshot?: OraStateSnapshot;
+  onSelectSession: (sessionId: string) => void | Promise<void>;
+}) {
+  const { dispatch } = useWorkbench();
+  const childSessions = snapshot?.childSessions ?? [];
+  const coordination = snapshot?.parentCoordination;
+  if (childSessions.length === 0 && !coordination) {
+    return null;
+  }
+
+  return (
+    <aside className="hidden h-full w-[22rem] shrink-0 border-l border-border/60 bg-background/70 lg:flex lg:flex-col">
+      <div className="border-b border-border/60 px-4 py-3">
+        <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
+          <Bot className="h-4 w-4" />
+          <span>协作区</span>
+        </div>
+        <p className="mt-1 text-xs leading-5 text-muted-foreground">
+          {coordination
+            ? `父 Agent 阶段：${coordinationPhaseLabel(coordination.phase)}`
+            : "子 Agent 过程会保留在这里，不进入正文区。"}
+        </p>
+      </div>
+      <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-4">
+        {coordination ? (
+          <section className="rounded-xl border border-border/70 bg-card/70 p-3">
+            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+              Parent Coordination
+            </p>
+            <p className="mt-2 text-sm font-medium text-foreground">
+              {coordinationPhaseLabel(coordination.phase)}
+            </p>
+            {coordination.summary ? (
+              <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                {coordination.summary}
+              </p>
+            ) : null}
+            <p className="mt-2 text-xs text-muted-foreground">
+              活跃 {coordination.activeChildIds.length} · 等待 {coordination.waitingChildIds.length}
+            </p>
+          </section>
+        ) : null}
+        {childSessions.map((child) => {
+          const replaySelection = deriveChildReplaySelection({ snapshot, child });
+          return (
+            <section
+              key={child.id}
+              className="rounded-xl border border-border/70 bg-card/70 p-3"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-semibold text-foreground">
+                    {child.label}
+                  </p>
+                  <p className="mt-1 text-[11px] uppercase tracking-[0.16em] text-muted-foreground">
+                    {child.sessionClass === "temporary_spawn" ? "temporary spawn" : "mode subagent"}
+                  </p>
+                </div>
+                <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-foreground">
+                  {childStatusLabel(child.status)}
+                </span>
+              </div>
+              <p className="mt-2 text-xs leading-5 text-muted-foreground">
+                {child.summary ?? child.lastMessage ?? "等待子 Agent 返回结构化摘要。"}
+              </p>
+              <p className="mt-2 text-[11px] text-muted-foreground">
+                产物 {child.artifactIds.length}
+              </p>
+              {replaySelection || child.sourceSessionId ? (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {replaySelection ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        dispatch({ type: "TOGGLE_DETAIL_DRAWER", drawer: "trails" });
+                        dispatch({ type: "SELECT_TURN", runId: replaySelection.runId, snapshot });
+                        if (replaySelection.beatId) {
+                          dispatch({ type: "SELECT_BEAT", beatId: replaySelection.beatId });
+                        }
+                      }}
+                    >
+                      查看完整回放
+                    </Button>
+                  ) : null}
+                  {child.sourceSessionId ? (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => void onSelectSession(child.sourceSessionId!)}
+                    >
+                      打开来源对话
+                    </Button>
+                  ) : null}
+                </div>
+              ) : null}
+            </section>
+          );
+        })}
+      </div>
+    </aside>
+  );
+}
+
+function coordinationPhaseLabel(
+  phase: NonNullable<OraStateSnapshot["parentCoordination"]>["phase"],
+): string {
+  switch (phase) {
+    case "planning":
+      return "规划";
+    case "dispatching":
+      return "派发";
+    case "parallel_independent_work":
+      return "并行无依赖工作";
+    case "waiting_on_required_children":
+      return "等待必需子任务";
+    case "resuming_with_child_summaries":
+      return "吸收子任务摘要";
+    case "synthesizing":
+      return "综合输出";
+    default:
+      return phase;
+  }
+}
+
+function childStatusLabel(
+  status: NonNullable<OraStateSnapshot["childSessions"]>[number]["status"],
+): string {
+  switch (status) {
+    case "queued":
+      return "排队中";
+    case "running":
+      return "执行中";
+    case "succeeded":
+      return "已完成";
+    case "failed":
+      return "失败";
+    case "cancelled":
+      return "已取消";
+    default:
+      return status;
+  }
 }
 
 async function pickLocalChatFiles(): Promise<ComposerLocalFileAttachment[]> {

@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { initialWorkbenchState, type WorkbenchState } from "./state";
 import {
-  acceptedPlanImplementationSubmission,
   buildClarificationSubmissionPrompt,
   buildDesktopRunContext,
   getSelectedInteractiveSnapshot,
@@ -17,13 +16,6 @@ describe("desktop run actions", () => {
     expect(shouldEnableClarificationPreflight("implement")).toBe(false);
     expect(shouldEnableClarificationPreflight("plan")).toBe(false);
     expect(shouldEnableClarificationPreflight("chat")).toBe(false);
-  });
-
-  it("submits accepted plan decisions as implementation runs", () => {
-    expect(acceptedPlanImplementationSubmission()).toEqual({
-      prompt: "请按照上述计划开始执行",
-      taskIntent: "implement",
-    });
   });
 
   it("removes project-required workspace tools when no project is selected", () => {

@@ -640,6 +640,12 @@ function TrailOverview({
             <p className="mt-2 text-[11px] text-bench-700">
               {activeMemorySummary.selectedIds.length} 条已选 · {activeMemorySummary.rejectedCount} 条已排除 · {activeMemorySummary.candidateCount} 条候选 · {activeMemorySummary.renderedChars} 字符
             </p>
+            {activeMemorySummary.traceSummaryLine && (
+              <p className="mt-2 text-[11px] leading-5 text-bench-700">{activeMemorySummary.traceSummaryLine}</p>
+            )}
+            {activeMemorySummary.traceCoverageLine && (
+              <p className="mt-1 text-[11px] leading-5 text-bench-700">{activeMemorySummary.traceCoverageLine}</p>
+            )}
             {activeMemorySummary.selectedIds.length > 0 && (
               <p className="mt-2 truncate font-mono text-[11px] text-bench-700">{activeMemorySummary.selectedIds.join(", ")}</p>
             )}

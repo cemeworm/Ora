@@ -958,6 +958,17 @@ describe("trail debugger view model", () => {
             },
             cards: [{ id: "fact_1" }],
           },
+          activeMemorySummary: {
+            summaryLine: "Deterministic: 1 selected, 1 rejected",
+          },
+          memoryHealthSnapshot: {
+            trace: {
+              fullyTraceable: 3,
+              partiallyTraceable: 1,
+              untraceable: 0,
+              totalItems: 4,
+            },
+          },
         },
       },
     });
@@ -970,6 +981,8 @@ describe("trail debugger view model", () => {
       selectedIds: ["fact_1"],
       rejectedCount: 1,
       renderedChars: 320,
+      traceSummaryLine: "Deterministic: 1 selected, 1 rejected",
+      traceCoverageLine: "溯源覆盖：3 条全链路，1 条部分链路，共 4 条",
     });
   });
 });

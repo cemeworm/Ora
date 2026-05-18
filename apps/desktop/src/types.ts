@@ -326,6 +326,7 @@ export interface TurnAgentConversationMessage {
       sideByStance?: Record<string, "left" | "right" | "center">;
       laneBySpeaker?: Record<string, string>;
       summaryStances?: string[];
+      summaryStageIds?: string[];
       showStatus?: boolean;
       showTimestamp?: boolean;
       showSpeaker?: boolean;
@@ -333,6 +334,8 @@ export interface TurnAgentConversationMessage {
       showArtifacts?: boolean;
       groupBy?: "speakerId" | "stance" | "nodeId";
       lanes?: Array<{ id: string; label: string }>;
+      ownsFinalAnswer?: boolean;
+      supplementalBody?: "auto" | "never";
     };
   };
   timestamp: string;
@@ -364,6 +367,20 @@ export interface ReviewGateInfo {
   degradedDelivery?: boolean;
 }
 
+export type AssistantTurnPrimarySurface =
+  | "stage_transcript"
+  | "plan"
+  | "timeline"
+  | "body";
+
+export interface AssistantTurnPresentation {
+  primarySurface: AssistantTurnPrimarySurface;
+  bodyContent: string;
+  showStandaloneBody: boolean;
+  transcriptTakeaway?: string;
+  visibleTimelineItems: TurnTimelineItem[];
+}
+
 export interface AssistantTurnAttachment {
   runId: string;
   turnIndex: number;
@@ -385,6 +402,7 @@ export interface AssistantTurnAttachment {
   hasProposedPlan: boolean;
   proposedPlanStatus?: "streaming" | "complete";
   planContent?: string;
+  presentation?: AssistantTurnPresentation;
   activeLoadingTarget?: AssistantTurnActiveLoadingTarget;
   reviewGate?: ReviewGateInfo;
 }

@@ -38,21 +38,10 @@ const FILE_MODIFICATION_TOOL_IDS = [
 ];
 
 type DesktopLatencyMark = NonNullable<OraStateSnapshot["latency"]>["marks"][number];
-export const ACCEPTED_PLAN_IMPLEMENT_PROMPT = "请按照上述计划开始执行";
 
 export function shouldEnableClarificationPreflight(taskIntent: WorkbenchState["taskIntent"]): boolean {
   void taskIntent;
   return false;
-}
-
-export function acceptedPlanImplementationSubmission(): {
-  prompt: string;
-  taskIntent: WorkbenchState["taskIntent"];
-} {
-  return {
-    prompt: ACCEPTED_PLAN_IMPLEMENT_PROMPT,
-    taskIntent: "implement",
-  };
 }
 
 export function toolIdsForRun(modeToolIds: readonly string[] | undefined, projectId: string | undefined): string[] {
@@ -150,6 +139,18 @@ export function buildPendingClarificationResumePatch(
       [clarification.key]: trimmed,
     },
   };
+}
+
+function clarificationIdsFromAnswers(
+  snapshot: Pick<OraStateSnapshot, "pendingClarifications"> | undefined,
+  answers: Record<string, unknown>,
+): string[] {
+  if (!snapshot) return [];
+  return snapshot.pendingClarifications
+    .filter((clarification) =>
+      answers[clarification.id] !== undefined || answers[clarification.key] !== undefined,
+    )
+    .map((clarification) => clarification.id);
 }
 
 export function getSelectedInteractiveSnapshot(
@@ -733,26 +734,32 @@ export function useRunActions() {
 
   async function submitClarificationOption(answer: string) {
     if (!state.selectedSessionId || !state.selectedTurnRunId) return;
+    const selectedSnapshot = getSelectedInteractiveSnapshot(state);
     const clarificationPatch = buildPendingClarificationResumePatch(
-      getSelectedInteractiveSnapshot(state),
+      selectedSnapshot,
       answer,
     );
     if (!clarificationPatch) return;
     flushSync(() => {
       dispatch({
-        type: "BEGIN_RUN_REQUEST",
-        sessionId: state.selectedSessionId!,
-        prompt: answer,
-        createdAt: Date.now(),
+        type: "BEGIN_RUN_RESUME",
+        runId: state.selectedTurnRunId!,
+        approvedActionIds: [],
+        resolvedClarificationIds: clarificationIdsFromAnswers(
+          selectedSnapshot,
+          clarificationPatch.clarifications as Record<string, unknown>,
+        ),
+        updatedAt: Date.now(),
       });
     });
     await waitForPendingRunPaint();
     try {
-      const snapshot = await runtimeClient.resumeRun(
+      const handle = await runtimeClient.resumeStreamingRun(
         state.selectedTurnRunId,
         USER_RESUMED_MESSAGE,
         clarificationPatch,
       );
+      const snapshot = await runtimeClient.getRunState(handle.runId);
       await refreshCurrentSession(snapshot, `Clarification submitted for ${snapshot.runId}.`);
     } catch (error) {
       dispatch({
@@ -766,26 +773,27 @@ export function useRunActions() {
   async function submitAllClarifications(answers: Record<string, string>) {
     if (!state.selectedSessionId || !state.selectedTurnRunId) return;
     if (Object.keys(answers).length === 0) return;
-
-    const submittedPrompt = buildClarificationSubmissionPrompt(
-      answers,
-      getSelectedInteractiveSnapshot(state)?.pendingClarifications ?? [],
-    );
+    const selectedSnapshot = getSelectedInteractiveSnapshot(state);
     flushSync(() => {
       dispatch({
-        type: "BEGIN_RUN_REQUEST",
-        sessionId: state.selectedSessionId!,
-        prompt: submittedPrompt,
-        createdAt: Date.now(),
+        type: "BEGIN_RUN_RESUME",
+        runId: state.selectedTurnRunId!,
+        approvedActionIds: [],
+        resolvedClarificationIds: clarificationIdsFromAnswers(
+          selectedSnapshot,
+          answers,
+        ),
+        updatedAt: Date.now(),
       });
     });
     await waitForPendingRunPaint();
     try {
-      const snapshot = await runtimeClient.resumeRun(
+      const handle = await runtimeClient.resumeStreamingRun(
         state.selectedTurnRunId,
         USER_RESUMED_MESSAGE,
         { clarifications: answers },
       );
+      const snapshot = await runtimeClient.getRunState(handle.runId);
       await refreshCurrentSession(snapshot, `Clarifications submitted for ${snapshot.runId}.`);
     } catch (error) {
       dispatch({
@@ -817,12 +825,25 @@ export function useRunActions() {
       ? buildPendingClarificationResumePatch(selectedSnapshot, submittedPrompt)
       : undefined;
     flushSync(() => {
-      dispatch({
-        type: "BEGIN_RUN_REQUEST",
-        sessionId,
-        prompt: submittedPrompt,
-        createdAt: Date.now(),
-      });
+      if (clarificationPatch && state.selectedTurnRunId) {
+        dispatch({
+          type: "BEGIN_RUN_RESUME",
+          runId: state.selectedTurnRunId,
+          approvedActionIds: [],
+          resolvedClarificationIds: clarificationIdsFromAnswers(
+            selectedSnapshot,
+            clarificationPatch.clarifications as Record<string, unknown>,
+          ),
+          updatedAt: Date.now(),
+        });
+      } else {
+        dispatch({
+          type: "BEGIN_RUN_REQUEST",
+          sessionId,
+          prompt: submittedPrompt,
+          createdAt: Date.now(),
+        });
+      }
       if (options.clearPromptIfMatched ?? true) {
         dispatch({ type: "CLEAR_PROMPT_IF_MATCH", text: submittedPrompt });
       }
@@ -847,11 +868,12 @@ export function useRunActions() {
     }
     if (clarificationPatch && state.selectedTurnRunId) {
       try {
-        const snapshot = await runtimeClient.resumeRun(
+        const handle = await runtimeClient.resumeStreamingRun(
           state.selectedTurnRunId,
           USER_RESUMED_MESSAGE,
           clarificationPatch,
         );
+        const snapshot = await runtimeClient.getRunState(handle.runId);
         await refreshCurrentSession(snapshot, `Clarification submitted for ${snapshot.runId}.`);
         return;
       } catch (error) {
@@ -983,7 +1005,13 @@ export function useRunActions() {
       .filter((a) => a.state === "approval_required" && pendingApprovalIds.has(a.id))
       .map((a) => a.id) ?? [];
     flushSync(() => {
-      dispatch({ type: "BEGIN_RUN_RESUME", runId: state.selectedTurnRunId!, approvedActionIds, updatedAt: Date.now() });
+      dispatch({
+        type: "BEGIN_RUN_RESUME",
+        runId: state.selectedTurnRunId!,
+        approvedActionIds,
+        resolvedClarificationIds: [],
+        updatedAt: Date.now(),
+      });
       dispatch({ type: "SET_BUSY_COMMAND", command: "Approve" });
     });
     await waitForPendingRunPaint();
@@ -1040,9 +1068,6 @@ export function useRunActions() {
       return false;
     }
     const currentTaskIntent = state.taskIntent;
-    const implementationPrompt = status === "accepted"
-      ? acceptedPlanImplementationSubmission().prompt
-      : undefined;
     const startedAt = Date.now();
     flushSync(() => {
       dispatch({
@@ -1051,10 +1076,8 @@ export function useRunActions() {
         decisionId,
         status,
         createdAt: startedAt,
-        implementationPrompt,
       });
     });
-    await waitForPendingRunPaint();
     try {
       const detail = await runtimeClient.resolvePlanDecision({ sessionId, decisionId, status });
       dispatch({
@@ -1066,6 +1089,36 @@ export function useRunActions() {
       });
       if (status === "declined") {
         dispatch({ type: "SET_TASK_INTENT", taskIntent: currentTaskIntent });
+      }
+      if (!state.selectedTurnRunId) {
+        return false;
+      }
+      flushSync(() => {
+        dispatch({
+          type: "BEGIN_RUN_RESUME",
+          runId: state.selectedTurnRunId!,
+          approvedActionIds: [],
+          resolvedClarificationIds: [],
+          planDecisionId: decisionId,
+          planDecisionStatus: status,
+          updatedAt: Date.now(),
+        });
+      });
+      await waitForPendingRunPaint();
+      const handle = await runtimeClient.resumeStreamingRun(
+        state.selectedTurnRunId,
+        USER_RESUMED_MESSAGE,
+        { planDecisionResolutions: [{ decisionId, status }] },
+      );
+      const snapshot = await runtimeClient.getRunState(handle.runId);
+      await refreshCurrentSession(
+        snapshot,
+        status === "accepted"
+          ? `Plan accepted and resumed on ${snapshot.runId}.`
+          : `Plan revision resumed on ${snapshot.runId}.`,
+      );
+      if (status === "accepted") {
+        dispatch({ type: "SET_TASK_INTENT", taskIntent: "implement" });
       }
       return true;
     } catch (error) {
@@ -1080,15 +1133,7 @@ export function useRunActions() {
   }
 
   async function acceptPlanDecisionAndStartImplementation() {
-    const accepted = await resolvePlanDecision("accepted");
-    if (!accepted) return;
-    const submission = acceptedPlanImplementationSubmission();
-    dispatch({ type: "SET_TASK_INTENT", taskIntent: submission.taskIntent });
-    await startRunWithOptions({
-      prompt: submission.prompt,
-      taskIntent: submission.taskIntent,
-      clearPromptIfMatched: false,
-    });
+    await resolvePlanDecision("accepted");
   }
 
   async function forkRun() {

@@ -187,6 +187,8 @@ export interface ActiveMemorySummary {
   rejectedCount: number;
   renderedChars: number;
   warnings: string[];
+  traceSummaryLine?: string;
+  traceCoverageLine?: string;
 }
 
 export interface ConversationViewEntry {
@@ -1082,6 +1084,12 @@ export function buildActiveMemorySummary(snapshot: OraStateSnapshot): ActiveMemo
   const activeMemory = isRecord(snapshot.config.metadata.activeMemory)
     ? snapshot.config.metadata.activeMemory
     : undefined;
+  const activeMemorySummary = isRecord(snapshot.config.metadata.activeMemorySummary)
+    ? snapshot.config.metadata.activeMemorySummary
+    : undefined;
+  const memoryHealthSnapshot = isRecord(snapshot.config.metadata.memoryHealthSnapshot)
+    ? snapshot.config.metadata.memoryHealthSnapshot
+    : undefined;
   const decision = activeMemory && isRecord(activeMemory.decision)
     ? activeMemory.decision
     : undefined;
@@ -1107,6 +1115,17 @@ export function buildActiveMemorySummary(snapshot: OraStateSnapshot): ActiveMemo
     rejectedCount: rejectedIds.length,
     renderedChars,
     warnings,
+    traceSummaryLine: typeof activeMemorySummary?.summaryLine === "string" ? activeMemorySummary.summaryLine : undefined,
+    traceCoverageLine: (() => {
+      const trace = isRecord(memoryHealthSnapshot?.trace) ? memoryHealthSnapshot.trace : undefined;
+      const fully = typeof trace?.fullyTraceable === "number" ? trace.fullyTraceable : undefined;
+      const partial = typeof trace?.partiallyTraceable === "number" ? trace.partiallyTraceable : undefined;
+      const total = typeof trace?.totalItems === "number" ? trace.totalItems : undefined;
+      if (fully === undefined || partial === undefined || total === undefined) {
+        return undefined;
+      }
+      return `溯源覆盖：${fully} 条全链路，${partial} 条部分链路，共 ${total} 条`;
+    })(),
   };
 }
 
@@ -1686,6 +1705,8 @@ function isImportantActionEvent(event: OraStateSnapshot["events"][number]): bool
 
 function eventKind(type: string): SemanticTimelineItem["kind"] {
   if (type.startsWith("run.")) return "run";
+  if (type === "child_session.updated") return "agent";
+  if (type === "parent_coordination.updated") return "handoff";
   if (type.startsWith("agent.") || type === "agent.message" || type === "message.published" || type === "message.routed") return "agent";
   if (type.startsWith("tool.")) return "tool";
   if (type.startsWith("approval.") || type.startsWith("clarification.")) return "gate";
@@ -1755,6 +1776,10 @@ function timelineLabel(eventType: string) {
       return "节点已跳过";
     case "agent.message":
       return "智能体消息";
+    case "child_session.updated":
+      return "协作子任务更新";
+    case "parent_coordination.updated":
+      return "父 Agent 编排状态";
     case "message.published":
       return "消息已发布";
     case "message.routed":
