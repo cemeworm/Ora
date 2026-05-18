@@ -2889,6 +2889,9 @@ function isTimelineTextDuplicate(text: string, candidate: string): boolean {
   if (normalizedText.includes(normalizedCandidate) && normalizedCandidate.length >= 40) {
     return true;
   }
+  if (hasSubstantialTimelineTextOverlap(normalizedText, normalizedCandidate)) {
+    return true;
+  }
   return normalizedCandidate.includes(normalizedText) && normalizedText.length >= normalizedCandidate.length * 0.8;
 }
 
@@ -2922,6 +2925,47 @@ function isTimelineTextPrefixOfFinalOutput(text: string, finalText: string): boo
 
 function normalizeTimelineText(text: string): string {
   return text.replace(/\s+/g, "");
+}
+
+function hasSubstantialTimelineTextOverlap(left: string, right: string): boolean {
+  const shorterLength = Math.min(left.length, right.length);
+  const longerLength = Math.max(left.length, right.length);
+  if (shorterLength < 40 || shorterLength < longerLength * 0.45) {
+    return false;
+  }
+  return bigramDiceCoefficient(left, right) >= 0.4;
+}
+
+function bigramDiceCoefficient(left: string, right: string): number {
+  const leftBigrams = textBigrams(left);
+  const rightBigrams = textBigrams(right);
+  if (leftBigrams.length === 0 || rightBigrams.length === 0) {
+    return 0;
+  }
+  const counts = new Map<string, number>();
+  for (const bigram of leftBigrams) {
+    counts.set(bigram, (counts.get(bigram) ?? 0) + 1);
+  }
+  let intersection = 0;
+  for (const bigram of rightBigrams) {
+    const count = counts.get(bigram) ?? 0;
+    if (count > 0) {
+      intersection += 1;
+      counts.set(bigram, count - 1);
+    }
+  }
+  return (2 * intersection) / (leftBigrams.length + rightBigrams.length);
+}
+
+function textBigrams(text: string): string[] {
+  if (text.length < 2) {
+    return text ? [text] : [];
+  }
+  const result: string[] = [];
+  for (let index = 0; index < text.length - 1; index += 1) {
+    result.push(text.slice(index, index + 2));
+  }
+  return result;
 }
 
 function agentLabelForTimeline(

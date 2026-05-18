@@ -5209,6 +5209,103 @@ describe("desktop session view model", () => {
     expect(timelineText.filter((content) => content === "文件已就绪。")).toHaveLength(1);
   });
 
+  it("keeps only final repaired output when a tool failure follows a similar assistant draft", () => {
+    const createdAt = 1_714_000_000_000;
+    const runId = "run-tool-failure-repaired-output";
+    const sessionId = "session-tool-failure-repaired-output";
+    const draftText = "已记住，QC。你在本对话中我将直接称呼你 QC。如果需要跨会话持久化，可以告诉我我们项目中是否有保存用户信息的配置文件。";
+    const finalText = "已记住，QC。在当前会话中我会直接称呼你 QC。由于共享状态写入工具暂时不可用，这个信息目前只在本次对话中生效；如果你需要我跨会话记住，可以告诉我项目里是否有特定的配置文件（如用户设定、SOUL.md 等），我可以帮你更新进去。";
+    const snapshot = {
+      runId,
+      sessionId,
+      turnIndex: 1,
+      status: "succeeded",
+      pattern: "orchestrator_subagent",
+      modeId: SINGLE_AGENT_MODE_ID,
+      input: { prompt: "我叫QC，记住", createdAt, context: {} },
+      config: {
+        modeId: SINGLE_AGENT_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["orchestrator"],
+        providerId: "deepseek",
+        modelRef: "deepseek-chat",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-tool-failure-repaired-output-test",
+        skillIds: [],
+        toolIds: ["shared_state.write"],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [
+        {
+          id: `${runId}:evt-0`,
+          runId,
+          seq: 0,
+          type: "message.delta",
+          agentId: "orchestrator",
+          createdAt,
+          pattern: "orchestrator_subagent",
+          payload: { role: "assistant", messageId: `${runId}:assistant:orchestrator:0`, content: draftText },
+        },
+        {
+          id: `${runId}:evt-1`,
+          runId,
+          seq: 1,
+          type: "tool.called",
+          agentId: "orchestrator",
+          createdAt: createdAt + 100,
+          pattern: "orchestrator_subagent",
+          payload: {
+            toolId: "shared_state.write",
+            status: "failed",
+            error: "Unsupported runtime tool: shared_state.write",
+          },
+        },
+      ],
+      artifacts: [],
+      agentMessages: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 0, completed: 1, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      output: { text: finalText },
+      updatedAt: createdAt + 200,
+    } as unknown as OraStateSnapshot;
+
+    const assistant = adaptChatMessages(
+      [{
+        id: `${runId}:user`,
+        sessionId,
+        runId,
+        turnIndex: 1,
+        role: "user",
+        content: "我叫QC，记住",
+        pattern: "orchestrator_subagent",
+        modeId: SINGLE_AGENT_MODE_ID,
+        createdAt,
+      }],
+      { [runId]: snapshot },
+    ).find((message) => message.role === "assistant");
+    const answerItems = assistant?.turn?.timelineItems
+      ?.flatMap((item) => item.kind === "assistant_text" || item.kind === "final_text" ? [item.content] : []) ?? [];
+
+    expect(assistant?.content).toBe(finalText);
+    expect(answerItems).toEqual([finalText]);
+    expect(answerItems).not.toContain(draftText);
+  });
+
   it("shows only the final output text for completed model delta timelines", () => {
     const createdAt = 1_714_000_000_000;
     const snapshot = {
