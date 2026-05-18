@@ -1029,10 +1029,14 @@ export class LocalEvaluationStore {
     const mergedScore = scoredResults.length > 0
       ? scoreFromEvaluatorResults(scoredResults, spec.profileId, snapshot.status === "failed" || Boolean(snapshot.error))
       : base.score;
+    const mergedMetricScores = syncExplicitLlmJudgeMetricScore(
+      metricScores.length > 0 ? metricScores : base.metricScores,
+      evaluatorResults,
+    );
     return {
       ...base,
       score: mergedScore,
-      metricScores: metricScores.length > 0 ? metricScores : base.metricScores,
+      metricScores: mergedMetricScores,
       evaluatorResults,
       annotationTasks,
     };
@@ -3845,6 +3849,39 @@ function llmJudgeScoreMetric(evaluationCase: EvaluationCase, observations: Evalu
     failureTags: passed ? [] : ["low_output_quality", "poor_outcome_quality"],
     details: { lengthScore: roundScore(lengthScore), relevanceScore: roundScore(relevanceScore), structureScore: roundScore(structureScore) },
   });
+}
+
+function syncExplicitLlmJudgeMetricScore(
+  metricScores: EvaluationMetricScore[],
+  evaluatorResults: EvaluationEvaluatorResult[],
+): EvaluationMetricScore[] {
+  const judgeResults = evaluatorResults.filter(
+    (result): result is EvaluationEvaluatorResult & { score: number } =>
+      result.evaluatorKind === "llm_judge" && typeof result.score === "number"
+  );
+  if (judgeResults.length === 0) {
+    return metricScores;
+  }
+  const judgeScore = roundScore(average(judgeResults.map((result) => result.score)));
+  const failureTags = [...new Set(judgeResults.flatMap((result) => result.failureTags))];
+  const latestRationale = judgeResults.at(-1)?.rationale ?? "LLM judge evaluated output quality.";
+  const judgeMetric = EvaluationMetricScoreSchema.parse({
+    metricId: "llm_judge_score",
+    score: judgeScore,
+    passed: judgeScore >= 0.7 && !failureTags.includes("judge_failed"),
+    rationale: latestRationale,
+    failureTags,
+    details: {
+      evaluatorIds: judgeResults.map((result) => result.evaluatorId),
+      source: "explicit_llm_judge",
+      scoredJudgeCount: judgeResults.length,
+    },
+  });
+  const existingIndex = metricScores.findIndex((metric) => metric.metricId === "llm_judge_score");
+  if (existingIndex === -1) {
+    return [...metricScores, judgeMetric];
+  }
+  return metricScores.map((metric, index) => index === existingIndex ? judgeMetric : metric);
 }
 
 function effectiveCausalEpisodes(observations: EvaluationObservation): Array<Record<string, unknown>> {

@@ -2169,7 +2169,13 @@ describe("LocalRunStore", () => {
         score: 0.92,
         passed: true,
       });
+      expect(detail.attempts[0]?.metricScores.find((metric) => metric.metricId === "llm_judge_score")).toMatchObject({
+        score: 0.92,
+        passed: true,
+        details: expect.objectContaining({ source: "explicit_llm_judge" }),
+      });
       expect(detail.run.caseResults[0]?.evaluatorResults[0]?.rationale).toBe("Meets the rubric.");
+      expect(detail.run.caseResults[0]?.metricScores.find((metric) => metric.metricId === "llm_judge_score")?.score).toBe(0.92);
     } finally {
       globalThis.fetch = previousFetch;
       if (previousKey === undefined) {
