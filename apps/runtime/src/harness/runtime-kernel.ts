@@ -125,6 +125,7 @@ import {
 import { PackageManager } from "../package-manager.js";
 import {
   isInternalProviderAssistantText,
+  stripInternalAssistantText,
   type NodeRuntimeLoopState,
   runNodeRuntimeLoop,
   type RunNodeRuntimeLoopDeps,
@@ -1637,7 +1638,8 @@ export async function executeRuntimeKernel(
         );
         // Do not emit empty final message/token deltas — they mislead the
         // transcript into treating an empty response as meaningful output.
-        if (response.text.trim().length > 0) {
+        const cleanedText = stripInternalAssistantText(response.text);
+        if (cleanedText.length > 0) {
           emit(
             "message.delta",
             {
@@ -1647,9 +1649,9 @@ export async function executeRuntimeKernel(
                 nodeId: params.planItemId ?? params.agentId,
                 actionId: action.id,
               }),
-              content: response.text,
+              content: cleanedText,
               ...(response.reasoningContent ? { reasoningContent: response.reasoningContent } : {}),
-              ...(isInternalProviderAssistantText(response.text)
+              ...(isInternalProviderAssistantText(cleanedText)
                 ? { visibility: "internal" }
                 : {}),
             },

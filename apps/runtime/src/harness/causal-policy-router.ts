@@ -30,7 +30,12 @@ export interface PolicyRouterOutput {
 function estimateGoalUncertainty(input: PolicyRouterInput): number {
   const ts = input.taskState;
   if (!ts?.selectedLatentGoal || ts.selectedLatentGoal.length === 0) {
-    return 0.7;
+    // Heuristic fallback when no explicit cognitive state from the LLM:
+    // use runtime signals to estimate how well we understand the user's goal.
+    if (input.clarificationCount > 0) return 0.3; // user clarified intent
+    if (input.toolCallCount >= 3) return 0.4; // agent is executing, path is stable
+    if (input.hasUnresolvedPlanItems) return 0.5; // structured but not precise
+    return 0.7; // session just started, no signals yet
   }
   if ((ts.latentGoalHypotheses?.length ?? 0) <= 1) {
     return 0.3;

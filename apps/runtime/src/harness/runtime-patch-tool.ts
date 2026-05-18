@@ -206,22 +206,31 @@ function applyUnifiedHunks(beforeContent: string, filePatch: ParsedFilePatch, ta
   for (const hunk of filePatch.hunks) {
     const expectedOriginal = hunk.lines.filter((line) => line.kind !== "add");
     const replacement = hunk.lines.filter((line) => line.kind !== "remove");
-    if (expectedOriginal.length !== hunk.oldCount) {
-      throw new Error(`file.apply_patch hunk oldCount mismatch for ${targetPath}: ${hunk.header}`);
-    }
-    if (replacement.length !== hunk.newCount) {
-      throw new Error(`file.apply_patch hunk newCount mismatch for ${targetPath}: ${hunk.header}`);
-    }
 
-    const startIndex = Math.max(0, hunk.oldStart - 1 + lineDelta);
-    const actual = workingLines.slice(startIndex, startIndex + expectedOriginal.length);
+    // Derive effective counts from the body, fixing up header mismatches
+    // that can happen with LLM-generated patches.
+    const effectiveOldCount = expectedOriginal.length;
+    const effectiveNewCount = replacement.length;
+
+    let startIndex = Math.max(0, hunk.oldStart - 1 + lineDelta);
+    const actual = workingLines.slice(startIndex, startIndex + effectiveOldCount);
+
     if (!matchesHunk(actual, expectedOriginal)) {
-      throw new Error(`file.apply_patch context mismatch for ${targetPath} at ${hunk.header}`);
+      // Fuzzy fallback: ignore leading/trailing whitespace.
+      if (!matchesHunkTrimmed(actual, expectedOriginal)) {
+        // Fuzzy fallback: search in a window around the expected position.
+        const found = searchHunkInWindow(workingLines, expectedOriginal, startIndex);
+        if (found < 0) {
+          throw new Error(`file.apply_patch context mismatch for ${targetPath} at ${hunk.header}`);
+        }
+        startIndex = found;
+      }
     }
 
-    const replacementLines = materializeReplacementLines(actual, replacement);
-    workingLines.splice(startIndex, expectedOriginal.length, ...replacementLines);
-    lineDelta += hunk.newCount - hunk.oldCount;
+    const finalActual = workingLines.slice(startIndex, startIndex + effectiveOldCount);
+    const replacementLines = materializeReplacementLines(finalActual, replacement);
+    workingLines.splice(startIndex, effectiveOldCount, ...replacementLines);
+    lineDelta += effectiveNewCount - effectiveOldCount;
   }
 
   return composeContentLines(workingLines, lineEnding);
@@ -242,6 +251,41 @@ function matchesHunk(actual: readonly PatchLineRecord[], expected: readonly Hunk
     }
   }
   return true;
+}
+
+function matchesHunkTrimmed(actual: readonly PatchLineRecord[], expected: readonly HunkLine[]): boolean {
+  if (actual.length !== expected.length) {
+    return false;
+  }
+  for (let index = 0; index < expected.length; index += 1) {
+    const expectedLine = expected[index]!;
+    const actualLine = actual[index]!;
+    if (expectedLine.text.trim() !== actualLine.text.trim()) {
+      return false;
+    }
+    if (expectedLine.noNewlineAtEnd === true && actualLine.hasNewline) {
+      return false;
+    }
+  }
+  return true;
+}
+
+const HUNK_SEARCH_WINDOW = 50;
+
+function searchHunkInWindow(
+  workingLines: readonly PatchLineRecord[],
+  expected: readonly HunkLine[],
+  expectedStart: number,
+): number {
+  const windowStart = Math.max(0, expectedStart - HUNK_SEARCH_WINDOW);
+  const windowEnd = Math.min(workingLines.length, expectedStart + HUNK_SEARCH_WINDOW);
+  for (let i = windowStart; i <= windowEnd - expected.length; i += 1) {
+    const candidate = workingLines.slice(i, i + expected.length);
+    if (matchesHunkTrimmed(candidate, expected)) {
+      return i;
+    }
+  }
+  return -1;
 }
 
 function materializeReplacementLines(actual: readonly PatchLineRecord[], replacement: readonly HunkLine[]): PatchLineRecord[] {

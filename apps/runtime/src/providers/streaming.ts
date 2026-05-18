@@ -1,4 +1,5 @@
 import type { ModelRequest, ModelResponse, ModelStreamCallbacks, ModelStreamChunk } from "./types.js";
+import { stripInternalAssistantText } from "../harness/node-runtime-loop.js";
 
 type SseMessage = {
   event?: string;
@@ -161,11 +162,14 @@ export function streamFallback(provider: (request: ModelRequest) => Promise<Mode
     const response = await provider(request);
     await callbacks?.onStreamEvent?.({ kind: "fallback_response", streamMode: "fallback_single", raw: response.raw });
     if (response.text) {
-      await emitTextDelta(callbacks, {
-        delta: response.text,
-        text: response.text,
-        raw: response.raw,
-      });
+      const cleaned = stripInternalAssistantText(response.text);
+      if (cleaned.length > 0) {
+        await emitTextDelta(callbacks, {
+          delta: cleaned,
+          text: cleaned,
+          raw: response.raw,
+        });
+      }
     }
     return {
       ...response,

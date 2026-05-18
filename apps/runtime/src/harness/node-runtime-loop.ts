@@ -197,10 +197,39 @@ export function isInternalProviderAssistantText(text: string): boolean {
   if (/<\/?tool_plan_mode_reminder\b|<\/?file_grep_policy\b/i.test(trimmed)) {
     return true;
   }
-  if (/<[^>]*DSML[^>]*tool_calls|<tool_call\b|parameter\s+name=/i.test(trimmed)) {
+  if (/<[^>]*DSML[^>]*tool_calls|parameter\s+name=/i.test(trimmed)) {
     return true;
   }
-  return /^\{"tool"\s*:\s*"[a-z0-9_.-]+"\s*,\s*"args"\s*:/i.test(trimmed);
+  // Match <tool_call> at any stage to prevent streaming prefix leak.
+  if (/<tool_c/i.test(trimmed)) {
+    return true;
+  }
+  // Match {"tool":"... JSON tool call (complete or partial).
+  if (/\{"tool"\s*:\s*"/i.test(trimmed)) {
+    return true;
+  }
+  return false;
+}
+
+const TOOL_CALL_TAG_RE = /<tool_call[\s\S]*?<\/tool_call>/gi;
+const PARAMETER_TAG_RE = /<parameter\s+name=["'][^"']*["'][\s\S]*?<\/parameter>/gi;
+const INTERNAL_META_TAG_RE = /<\/?(?:tool_plan_mode_reminder|file_grep_policy)[^>]*>/gi;
+const DSML_TAG_RE = /<[^>]*DSML[^>]*tool_calls[^>]*>/gi;
+const INLINE_TOOL_JSON_RE = /\{"tool"\s*:\s*"[a-z0-9_.-]+"\s*,\s*"args"\s*:\{[^}]*\}\s*\}/gi;
+
+/**
+ * Strips tool-call markers, DSML tags, and other internal protocol text from
+ * assistant output before it reaches user-visible surfaces.  Used in
+ * non-streaming / fallback paths where the full response is emitted at once.
+ */
+export function stripInternalAssistantText(text: string): string {
+  return text
+    .replace(TOOL_CALL_TAG_RE, "")
+    .replace(PARAMETER_TAG_RE, "")
+    .replace(INTERNAL_META_TAG_RE, "")
+    .replace(DSML_TAG_RE, "")
+    .replace(INLINE_TOOL_JSON_RE, "")
+    .trim();
 }
 
 function emitRuntimeStatusProgress(
@@ -719,6 +748,8 @@ export async function runNodeRuntimeLoop(
         title: params.title,
         iteration,
       });
+      const planList = deps.planList();
+      const hasUnresolvedPlanItems = planList.some(s => s.status !== "completed");
       const completionDecision = routeIntervention({
         surfaceRequest: input.prompt,
         taskState: undefined,
@@ -728,7 +759,7 @@ export async function runNodeRuntimeLoop(
         clarificationCount: 0,
         hasPendingApprovals: false,
         hasPendingPlanDecisions: false,
-        hasUnresolvedPlanItems: false,
+        hasUnresolvedPlanItems,
         modelResponseText: currentResponse.text,
         decisionContext: {
           phase: "completion",
@@ -976,6 +1007,8 @@ export async function runNodeRuntimeLoop(
     nodeLoopController.emitToolRequested(toolRequestedParams);
 
     const toolRisk = classifyToolRisk(toolCall.tool);
+    const planList = deps.planList();
+    const hasUnresolvedPlanItems = planList.some(s => s.status !== "completed");
     const policyResult = routeIntervention({
       surfaceRequest: input.prompt,
       taskState: undefined,
@@ -985,7 +1018,7 @@ export async function runNodeRuntimeLoop(
       clarificationCount: 0,
       hasPendingApprovals: false,
       hasPendingPlanDecisions: false,
-      hasUnresolvedPlanItems: false,
+      hasUnresolvedPlanItems,
       modelResponseText: response.text,
       decisionContext: {
         phase: "tool_request",

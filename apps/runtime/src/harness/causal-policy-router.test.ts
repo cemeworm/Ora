@@ -352,6 +352,87 @@ describe("causal policy router", () => {
       expect(result.policyDecision.reason).toContain("diminishing returns");
     });
 
+    it("lowers goalUncertainty from 0.7 to 0.3 after user clarifies intent", () => {
+      // Before clarification: no signals
+      const before = routeIntervention({
+        surfaceRequest: "优化那个东西",
+        taskState: undefined,
+        proposedToolId: undefined,
+        proposedToolRisk: "low",
+        toolCallCount: 0,
+        clarificationCount: 0,
+        hasPendingApprovals: false,
+        hasPendingPlanDecisions: false,
+        hasUnresolvedPlanItems: false,
+        modelResponseText: "",
+      });
+      expect(before.policyDecision.goalUncertainty).toBe(0.7);
+      expect(before.action).toBe("clarify");
+
+      // After user clarifies: clarificationCount > 0
+      const after = routeIntervention({
+        surfaceRequest: "优化那个东西",
+        taskState: undefined,
+        proposedToolId: undefined,
+        proposedToolRisk: "low",
+        toolCallCount: 0,
+        clarificationCount: 1,
+        hasPendingApprovals: false,
+        hasPendingPlanDecisions: false,
+        hasUnresolvedPlanItems: false,
+        modelResponseText: "",
+      });
+      expect(after.policyDecision.goalUncertainty).toBe(0.3);
+    });
+
+    it("lowers goalUncertainty to 0.4 when agent has made several tool calls", () => {
+      const result = routeIntervention({
+        surfaceRequest: "帮我重构auth模块",
+        taskState: undefined,
+        proposedToolId: "file.write",
+        proposedToolRisk: "medium",
+        toolCallCount: 4,
+        clarificationCount: 0,
+        hasPendingApprovals: false,
+        hasPendingPlanDecisions: false,
+        hasUnresolvedPlanItems: false,
+        modelResponseText: "",
+      });
+      expect(result.policyDecision.goalUncertainty).toBe(0.4);
+    });
+
+    it("lowers goalUncertainty to 0.5 when unresolved plan items exist", () => {
+      const result = routeIntervention({
+        surfaceRequest: "帮我实现用户认证功能",
+        taskState: undefined,
+        proposedToolId: undefined,
+        proposedToolRisk: "low",
+        toolCallCount: 0,
+        clarificationCount: 0,
+        hasPendingApprovals: false,
+        hasPendingPlanDecisions: false,
+        hasUnresolvedPlanItems: true,
+        modelResponseText: "",
+      });
+      expect(result.policyDecision.goalUncertainty).toBe(0.5);
+    });
+
+    it("returns default goalUncertainty 0.7 when no heuristic signals are present", () => {
+      const result = routeIntervention({
+        surfaceRequest: "帮我优化一下那个东西的性能",
+        taskState: undefined,
+        proposedToolId: undefined,
+        proposedToolRisk: "low",
+        toolCallCount: 0,
+        clarificationCount: 0,
+        hasPendingApprovals: false,
+        hasPendingPlanDecisions: false,
+        hasUnresolvedPlanItems: false,
+        modelResponseText: "",
+      });
+      expect(result.policyDecision.goalUncertainty).toBe(0.7);
+    });
+
     it("recommends answer_directly (not stop) when little work has been done", () => {
       const result = routeIntervention({
         surfaceRequest: "解释什么是闭包",

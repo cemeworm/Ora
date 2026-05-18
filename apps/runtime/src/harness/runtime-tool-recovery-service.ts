@@ -27,7 +27,7 @@ import type {
   RuntimeToolFailureRequest,
   RuntimeToolFailureResult,
 } from "./runtime-middleware.js";
-import type { NodeRuntimeLoopState } from "./node-runtime-loop.js";
+import { stripInternalAssistantText, type NodeRuntimeLoopState } from "./node-runtime-loop.js";
 import {
   proposeRuntimeRecoveryToolAction,
 } from "./runtime-tool-action-proposal.js";
@@ -397,13 +397,14 @@ export class RuntimeToolRecoveryService {
       error: incident.detail,
     };
     const degradedToolContent = `Workspace tool degraded for ${toolCall.tool}:\n${JSON.stringify(fallbackOutput, null, 2)}`;
+    const cleanedAssistantText = stripInternalAssistantText(failure.response.text);
     this.deps.replaceMessages(
       toolCall.source === "provider_native" && toolCall.providerCallId
         ? [
             ...this.deps.getMessages(),
             {
               role: "assistant",
-              content: failure.response.text,
+              content: cleanedAssistantText,
               reasoningContent: failure.response.reasoningContent,
               toolCalls: failure.response.toolCalls?.filter(
                 (call) => call.id === toolCall.providerCallId,
@@ -418,7 +419,7 @@ export class RuntimeToolRecoveryService {
           ]
         : [
             ...this.deps.getMessages(),
-            { role: "assistant", content: failure.response.text },
+            { role: "assistant", content: cleanedAssistantText },
             {
               role: "user",
               content: degradedToolContent,
