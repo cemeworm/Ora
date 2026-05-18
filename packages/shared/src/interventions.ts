@@ -12,6 +12,26 @@ export const InterventionActionSchema = z.enum([
 ]);
 export type InterventionAction = z.infer<typeof InterventionActionSchema>;
 
+export const CausalDecisionSourceSchema = z.enum([
+  "router_primary",
+  "runtime_followup",
+  "adapter_inferred",
+]);
+export type CausalDecisionSource = z.infer<typeof CausalDecisionSourceSchema>;
+
+export const CausalDecisionKindSchema = z.enum([
+  "run_start",
+  "clarification_resume",
+  "tool_request",
+  "completion",
+  "clarification_triggered",
+  "approval_triggered",
+  "plan_updated",
+  "adapter_inferred",
+  "decision",
+]);
+export type CausalDecisionKind = z.infer<typeof CausalDecisionKindSchema>;
+
 export const CausalTaskStateSchema = z.object({
   surfaceRequest: z.string().default(""),
   latentGoalHypotheses: z.array(z.string()).default([]),
@@ -46,6 +66,11 @@ export const CausalDecisionContextSchema = z.object({
   turnIndex: z.number().int().positive().optional(),
   replyMessageId: z.string().min(1).optional(),
   toolId: z.string().min(1).optional(),
+  toolCallId: z.string().min(1).optional(),
+  actionId: z.string().min(1).optional(),
+  clarificationId: z.string().min(1).optional(),
+  planDecisionId: z.string().min(1).optional(),
+  planStepId: z.string().min(1).optional(),
   iteration: z.number().int().nonnegative().optional(),
   agentId: z.string().min(1).optional(),
   nodeId: z.string().min(1).optional(),
@@ -53,6 +78,9 @@ export const CausalDecisionContextSchema = z.object({
 export type CausalDecisionContext = z.infer<typeof CausalDecisionContextSchema>;
 
 export const CausalDecisionRecordSchema = z.object({
+  decisionId: z.string().min(1).optional(),
+  source: CausalDecisionSourceSchema.default("router_primary"),
+  decisionKind: CausalDecisionKindSchema.optional(),
   taskState: CausalTaskStateSchema,
   policyDecision: InterventionPolicyDecisionSchema,
   chosenIntervention: InterventionActionSchema,

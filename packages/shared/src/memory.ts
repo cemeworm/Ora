@@ -83,7 +83,7 @@ export type ActiveMemoryFreshness = z.infer<typeof ActiveMemoryFreshnessSchema>;
 
 export const ActiveMemoryCandidateSchema = z.object({
   id: z.string().min(1),
-  kind: z.enum(["fact", "section"]),
+  kind: z.enum(["fact", "section", "scenario"]),
   scope: ActiveMemoryScopeSchema.default({}),
   category: z.string().min(1),
   content: z.string().min(1),
@@ -115,7 +115,7 @@ export type ActiveMemoryAdmissionDecision = z.infer<typeof ActiveMemoryAdmission
 
 export const ActiveMemoryCardSchema = z.object({
   id: z.string().min(1),
-  kind: z.enum(["fact", "section"]),
+  kind: z.enum(["fact", "section", "scenario"]),
   category: z.string().min(1),
   confidence: z.number().min(0).max(1),
   sourceRunId: z.string().min(1).optional(),
@@ -285,3 +285,142 @@ export const WikiPageSchema = z.object({
   digest: z.string().default(""),
 });
 export type WikiPage = z.infer<typeof WikiPageSchema>;
+
+// === Phase 2: Scenario Memory ===
+
+export const ScenarioMemoryCategorySchema = z.enum([
+  "workflow",
+  "style_preference",
+  "constraint",
+  "goal_background",
+  "project_context",
+]);
+export type ScenarioMemoryCategory = z.infer<typeof ScenarioMemoryCategorySchema>;
+
+export const ScenarioMemorySchema = z.object({
+  id: z.string().min(1),
+  title: z.string().min(1).max(140),
+  summary: z.string().min(1).max(600),
+  category: ScenarioMemoryCategorySchema,
+  confidence: z.number().min(0).max(1).default(0.5),
+  sourceFactIds: z.array(z.string().min(1)).default([]),
+  sourceSignalIds: z.array(z.string().min(1)).default([]),
+  sourceRunIds: z.array(z.string().min(1)).default([]),
+  createdAt: z.string().min(1),
+  updatedAt: z.string().min(1),
+});
+export type ScenarioMemory = z.infer<typeof ScenarioMemorySchema>;
+
+export const ScenarioCompilationDecisionSchema = z.object({
+  scenarioId: z.string().min(1),
+  action: z.enum(["create", "merge", "split", "update", "discard"]),
+  reason: z.string().min(1),
+  sourceIds: z.array(z.string().min(1)).default([]),
+  mergedFromScenarioIds: z.array(z.string().min(1)).default([]),
+  decidedAt: z.string().min(1),
+});
+export type ScenarioCompilationDecision = z.infer<typeof ScenarioCompilationDecisionSchema>;
+
+// === Phase 1: Task Memory Offload ===
+
+export const TaskEvidenceSourceKindSchema = z.enum([
+  "tool_output",
+  "search_result",
+  "file_snippet",
+  "error_log",
+]);
+export type TaskEvidenceSourceKind = z.infer<typeof TaskEvidenceSourceKindSchema>;
+
+export const TaskEvidenceRefSchema = z.object({
+  id: z.string().min(1),
+  runId: z.string().min(1),
+  sessionId: z.string().min(1).optional(),
+  sourceKind: TaskEvidenceSourceKindSchema,
+  sourceActionId: z.string().min(1).optional(),
+  summary: z.string().max(200).default(""),
+  contentHash: z.string().min(1).optional(),
+  byteLength: z.number().int().nonnegative().default(0),
+  createdAt: z.string().min(1),
+});
+export type TaskEvidenceRef = z.infer<typeof TaskEvidenceRefSchema>;
+
+export const TaskNodeKindSchema = z.enum([
+  "subproblem",
+  "tool_operation",
+  "decision",
+  "failure_recovery",
+]);
+export type TaskNodeKind = z.infer<typeof TaskNodeKindSchema>;
+
+export const TaskNodeStatusSchema = z.enum([
+  "pending",
+  "in_progress",
+  "done",
+  "failed",
+]);
+export type TaskNodeStatus = z.infer<typeof TaskNodeStatusSchema>;
+
+export const TaskNodeSchema = z.object({
+  id: z.string().min(1),
+  runId: z.string().min(1),
+  sessionId: z.string().min(1).optional(),
+  kind: TaskNodeKindSchema,
+  label: z.string().min(1).max(140),
+  summary: z.string().max(400).default(""),
+  status: TaskNodeStatusSchema.default("pending"),
+  evidenceRefIds: z.array(z.string().min(1)).default([]),
+  parentNodeId: z.string().min(1).optional(),
+  createdAt: z.string().min(1),
+  updatedAt: z.string().min(1).optional(),
+});
+export type TaskNode = z.infer<typeof TaskNodeSchema>;
+
+export const TaskCanvasSchema = z.object({
+  runId: z.string().min(1),
+  sessionId: z.string().min(1).optional(),
+  nodes: z.array(TaskNodeSchema).default([]),
+  evidenceRefs: z.array(TaskEvidenceRefSchema).default([]),
+  generatedAt: z.string().min(1),
+  summary: z.string().max(500).default(""),
+});
+export type TaskCanvas = z.infer<typeof TaskCanvasSchema>;
+
+export const TaskCanvasRenderSchema = z.object({
+  canvas: TaskCanvasSchema,
+  renderedPrompt: z.string().default(""),
+  renderedChars: z.number().int().nonnegative().default(0),
+});
+export type TaskCanvasRender = z.infer<typeof TaskCanvasRenderSchema>;
+
+// === Phase 3: Trace and Observability ===
+
+export const MemoryTraceStepKindSchema = z.enum([
+  "active_memory_card",
+  "scenario",
+  "fact",
+  "signal",
+  "wiki_claim",
+  "task_node",
+  "evidence_ref",
+  "run",
+]);
+export type MemoryTraceStepKind = z.infer<typeof MemoryTraceStepKindSchema>;
+
+export const MemoryTraceStepSchema = z.object({
+  kind: MemoryTraceStepKindSchema,
+  id: z.string().min(1),
+  label: z.string().max(200).default(""),
+  summary: z.string().max(300).default(""),
+  sourceRunIds: z.array(z.string().min(1)).default([]),
+  parentIds: z.array(z.string().min(1)).default([]),
+});
+export type MemoryTraceStep = z.infer<typeof MemoryTraceStepSchema>;
+
+export const MemoryTraceChainSchema = z.object({
+  rootId: z.string().min(1),
+  rootKind: MemoryTraceStepKindSchema,
+  steps: z.array(MemoryTraceStepSchema).default([]),
+  generatedAt: z.string().min(1),
+  summary: z.string().max(400).default(""),
+});
+export type MemoryTraceChain = z.infer<typeof MemoryTraceChainSchema>;

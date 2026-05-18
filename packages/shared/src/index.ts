@@ -18,6 +18,7 @@ export * from "./diagnostics.js";
 export * from "./comparison.js";
 export * from "./evaluation.js";
 export * from "./interventions.js";
+export * from "./causal-intervention-episodes.js";
 export * from "./tool-risk.js";
 export * from "./feedback-loop.js";
 export * from "./self-iteration.js";

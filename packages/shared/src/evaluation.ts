@@ -46,6 +46,8 @@ export const EvaluationMetricIdSchema = z.enum([
   "effective_intervention",
   "over_action",
   "counterfactual_lift",
+  "task_success_rate",
+  "llm_judge_score",
 ]);
 export type EvaluationMetricId = z.infer<typeof EvaluationMetricIdSchema>;
 
