@@ -1,12 +1,12 @@
-# Ora Memory：长期记忆、活跃注入与知识演化
+# Ora Memory：长期记忆、任务压缩、场景注入与知识演化
 
-本文描述 Ora 的 **Memory 系统** — 它不只是「记住用户偏好」，而是一组 admission、active memory、journal、wiki、dreaming、updates 构成的完整记忆生命周期。读完本文，应能理解一份事实如何从 run 中提取，如何被检索注入到后续对话，以及如何演化成结构化知识。
+本文描述 Ora 的 **Memory 系统**。它不只是「记住用户偏好」，而是一组 long-term memory、task memory、scenario memory、active memory、journal、wiki、dreaming、updates、trace/observability 共同组成的完整记忆生命周期。读完本文，应能理解一份事实如何从 run 中提取，如何被聚合成场景知识、注入到后续对话，以及如何在需要时回钻到具体 run / signal / evidence。
 
 ## 阅读地图
 
 | 关注点 | 对应章节 |
 | --- | --- |
-| 五大子系统概览与数据流 | [1. 系统总览](#1-系统总览) |
+| 核心子系统概览与数据流 | [1. 系统总览](#1-系统总览) |
 | 核心数据结构 | [2. 核心数据结构](#2-核心数据结构) |
 | Mode 如何控制 memory 行为 | [3. Memory Policy：Mode 对 memory 的控制](#3-memory-policy-mode-对-memory-的控制) |
 | Active Memory 如何检索、评分、渲染 | [4. Active Memory：检索与注入](#4-active-memory检索与注入) |
@@ -27,28 +27,33 @@
 | `apps/runtime/src/memory-admission.ts` | Provider-backed admission：模型驱动的候选筛选 |
 | `apps/runtime/src/memory-updates.ts` | 更新调度：run 结束后触发 memory 提取 |
 | `apps/runtime/src/memory-journal.ts` | Short-Term Memory Journal：短期信号存储 |
+| `apps/runtime/src/task-memory.ts` | Task Memory：run 期工具证据与轻量任务画布 |
+| `apps/runtime/src/memory-scenarios.ts` | Scenario Memory：facts/signals 聚合成中层场景 |
 | `apps/runtime/src/memory-wiki.ts` | Memory Wiki：结构化知识页面编译 |
 | `apps/runtime/src/memory-dreaming.ts` | Memory Dreaming：三阶段信号聚类与晋升候补 |
 | `apps/runtime/src/memory-index.ts` | Memory Index：SQLite FTS5 全文检索 |
 | `apps/runtime/src/memory-observability.ts` | 可观测性：Health Snapshot 与 Trace 构建 |
+| `apps/runtime/src/memory-trace.ts` | Memory Trace：card/scenario/task/wiki 的 drill-down 来源链 |
 | `apps/runtime/src/mode-selection.ts` | `resolveMemoryPolicy` 与 `withMemoryPrompt` 入口 |
 
 ## 1. 系统总览
 
 > **最近更新 (2026-05-16)**：混合语义检索（embedding + FTS5）、CAS 并发控制（`_version` 单调版本号）、Dreaming 全链路接入、Section summaries 质量门控、Memory 损坏保护、Provider 更新降级、2-gram Jaccard 语义去重、组合淘汰评分。
 
-Ora 的 memory 系统由五个子系统组成，每个负责生命周期的一个阶段：
+Ora 的 memory 系统由长期事实层、任务压缩层、场景聚合层、注入层、知识演化层和溯源观测层组成：
 
 ```mermaid
 flowchart TD
     subgraph 运行时
         RUN["Run 执行 / 对话"] --> UPDATE["Memory Updates<br/>从 run 提取事实"]
+        RUN --> TASK["Task Memory<br/>工具后处理 → task canvas"]
         RUN --> ACTIVE["Active Memory<br/>检索相关记忆注入 prompt"]
     end
 
     subgraph 存储层
         LTM["Long-Term Memory<br/>memory.json / 项目级"]
         JOURNAL["Short-Term Journal<br/>memory-journal.jsonl"]
+        SCENARIO["Scenario Memory<br/>memory-scenarios.json"]
         INDEX["Memory Index<br/>SQLite FTS5"]
         WIKI["Memory Wiki<br/>结构化知识页面"]
     end
@@ -69,7 +74,10 @@ flowchart TD
 
     RUN -->|"scheduleLongTermMemoryUpdate"| UPDATE
     UPDATE -->|"LongTermMemoryManager.updateFromRun"| LTM
+    UPDATE -->|"compileFromFacts"| SCENARIO
     LTM -->|"collectActiveMemoryCandidates"| ACTIVE
+    SCENARIO -->|"listCandidates"| ACTIVE
+    TASK -->|"renderOverlay"| ACTIVE
     JOURNAL -->|"clusterSignals"| DREAM
     DREAM -->|"factsFromPromotionPreview"| LTM
     LTM -->|"compileFromProfile"| WIKI
@@ -83,11 +91,13 @@ flowchart TD
     UPDATE -->|"record"| TRAILS
 ```
 
-**五个子系统的核心职责：**
+**各层核心职责：**
 
 | 子系统 | 一句话职责 | Source of Truth |
 | --- | --- | --- |
 | **Long-Term Memory** | 持久化用户/项目级事实与剖面，支持确定性或 Provider 驱动更新 | `memory.json` 文件 |
+| **Task Memory** | 在单次 run 生命周期内捕获工具证据与任务节点，用 `<ora_task_memory>` 提供轻量执行态上下文 | run 期辅助层，不是 durable truth |
+| **Scenario Memory** | 将多个 facts / signals 聚合成可检索的场景块，作为 facts 与 wiki 之间的中层 | `memory-scenarios.json` |
 | **Active Memory** | 每次 run 前检索相关记忆，评分择优，渲染为 `<ora_active_memory>` 注入系统 prompt | 衍生自 Long-Term Memory |
 | **Memory Journal** | 短期信号存储（memory_intent、correction 等），为 dreaming 提供原材料 | `memory-journal.jsonl` |
 | **Memory Wiki** | 从 Long-Term Memory 编译结构化知识页面（claims、contradictions、open questions） | wiki 目录下的 JSON 文件 |
@@ -109,10 +119,16 @@ Run 开始
   → withMemoryPrompt（根据 policy 决定是否注入）
     → resolveMemoryPolicy（合并 mode.memoryPolicy + runtimeAtoms）
     → buildActiveMemoryContext
-      → retrieveActiveMemoryCandidates（从 Long-Term Memory 收集候选）
+      → retrieveActiveMemoryCandidates（从 Long-Term Memory + Scenario Memory 收集候选）
       → admitActiveMemoryCandidates（确定性评分门槛）
       → renderActiveMemoryCards（渲染为 XML block）
     → 将 overlay 写入 RunConfig.metadata.memoryPromptOverlay
+
+Run 进行中（工具密集长任务）
+  → Runtime post-tool hook
+    → TaskMemoryStore.captureEvidence / captureNode
+    → renderOverlay(runId)
+    → 将 `<ora_task_memory>` 与 `<ora_active_memory>` 合并进入 Memory Context section
 ```
 
 ## 2. 核心数据结构
@@ -154,7 +170,7 @@ LongTermMemoryFact {
 ```typescript
 // 候选 — 检索阶段的中间产物
 ActiveMemoryCandidate {
-  id, kind: "fact" | "section"
+  id, kind: "fact" | "section" | "scenario"
   scope: { user, projectId?, sessionId?, profileId? }
   category, content, confidence
   freshness: "fresh" | "aging" | "stale" | "unknown"
@@ -164,7 +180,7 @@ ActiveMemoryCandidate {
 
 // 卡片 — admission 后的最终选择
 ActiveMemoryCard {
-  id, kind: "fact" | "section"
+  id, kind: "fact" | "section" | "scenario"
   category, confidence, sourceRunId?, freshness
   content                   // ≤420 字符
 }
@@ -561,7 +577,7 @@ MemoryHealthSnapshot {
 
 ### 8.2 Active Memory Trace
 
-`buildActiveMemoryTrace`（`memory-observability.ts:129`）为每次 active memory 注入构建可追踪记录：
+`buildActiveMemoryTrace`（`memory-observability.ts:213`）为每次 active memory 注入构建可追踪记录，并连同 `memoryHealthSnapshot` 一起落入 run metadata，供桌面端 Trails 消费：
 
 ```typescript
 ActiveMemoryTrace {
@@ -575,15 +591,15 @@ ActiveMemoryTrace {
 }
 ```
 
-`extendActiveMemorySummary` 将 trace 扁平化为 UI 友好的格式（summaryLine、timingLine、topCandidates），可直接供 Trails 面板使用。
+`extendActiveMemorySummary` 将 trace 扁平化为 UI 友好的格式（summaryLine、timingLine、topCandidates），可直接供 Trails 面板使用。`buildMemoryHealthSnapshot` 则提供 facts / scenarios / task nodes / wiki claims 的溯源覆盖统计。
 
 ### 8.3 桌面端消费
 
 桌面端 Trails 通过以下方式消费 memory 数据：
 
 - `snapshot.memory` 中的 `MemoryRecord[]` → 渲染 Memory 标签页
-- `memoryPrompt.done` trail 观测 → 展示 active memory 注入的时间和决策
-- `ActiveMemoryTrace` → 展示每次注入的候选评分和筛选详情
+- `memoryPrompt.done` trail 观测 → 展示 active memory 注入的时间、决策、trace 和 trace coverage
+- `config.metadata.activeMemorySummary` / `memoryHealthSnapshot` → 展示每次注入的候选摘要与溯源覆盖
 
 ## 9. 常见误解与边界
 

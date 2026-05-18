@@ -2,7 +2,7 @@
 
 本文描述当前 Ora runtime loop 的主结构：Task Flow 兼容层、run 外层生命周期、continuation dispatcher、mode 编排层、单个 node 内部的 model-tool loop，以及 plan list、gate、streaming finalization 如何进入持久 projection。
 
-> **最近更新 (2026-05-16)**：事件分类三级模型、消息架构统一、final output guard 60 字符阈值、流式延迟标记。
+> **最近更新 (2026-05-19)**：新增父/子协作状态投影（`childSessions` / `parentCoordination`）、child delta 协作面隔离、`replayRef` 事件范围引用；同时把 DeepSeek 相关的高波动上下文从 system prompt 迁移到 `<turn_local_metadata>`，并补上 stable prefix / drift diagnostics。
 
 ## 阅读地图
 
@@ -13,6 +13,12 @@ Ora 的 runtime loop 不是单一循环，而是几层边界叠在一起：
 3. **Resume / Continuation 层**：`RunResumeService` 先解析 resume patch、gate resolution 和 resume strategy；`RunContinuationDispatcher` 只负责根据 ledger-backed continuation frame 判断恢复 suspended node、whole-mode fallback，或给出 missing-owner diagnostic。approved tool continuation 的 replay 是 resume strategy 的一条路径，不是 dispatcher 自己执行。
 4. **Mode 编排层**：`executeModeSpec` 按 mode nodes/stages 推进 agent 调用，并同步 plan、todo、queue、topology。
 5. **Node 执行层**：`runNodeRuntimeLoop` 在单个 agent/node 内做模型调用、工具调用、审批、澄清、plan-list lifecycle、恢复和强制 finalization。
+
+本轮实现还补上了一个新的可见性约束：
+
+- 用户正文只消费父 Agent 的最终叙事。
+- 子 Agent 的流式 delta 会被标记为 `audience/visibility = collaboration`，不再进入正文投影。
+- 子 Agent 的低频结构事实通过 `child_session.updated` / `parent_coordination.updated` 进入 snapshot 与 ledger-backed projection，供 desktop 右侧协作区和 Trails 消费。
 
 主要源码入口：
 
@@ -46,6 +52,31 @@ Ora 的 runtime loop 不是单一循环，而是几层边界叠在一起：
 - `/packages/shared/src/assistantTextProjection.ts`
 - `/packages/shared/src/runtime-ledger.ts`
 - `/packages/shared/src/runtime-timeline.ts`
+
+## 0.1 Prompt / Cache 边界
+
+从 2026-05-19 起，Ora 在 runtime loop 中把 prompt 上下文明确分成四层：
+
+1. **Stable system prefix**
+   - `project_instructions`
+   - `agent_profile`
+   - `operating_protocol`
+   - `turn_local_metadata_guidance`
+   - `tool_protocol` / `skills_guidance`
+2. **Volatile system suffix**
+   - 仍然必须走 system、但会变化的低频说明
+3. **Append-only conversation history**
+   - 历史 user / assistant / tool 消息
+4. **Current-turn metadata**
+   - 以 `<turn_local_metadata>` 形式前缀到当前 user message
+   - 包含当前日期时间、时区、locale、clarifications、attachments 等高波动信息
+
+这层拆分的目的不是“让 prompt 更好看”，而是让 DeepSeek / OpenAI-compatible provider 能在字节级 prefix cache 上尽量保持长前缀稳定。几个执行规则：
+
+- 当前时间、当前用户消息 excerpt、当前轮附件摘要、clarifications 不再进入 system prompt。
+- runtime 保存的 `input.prompt` 仍然是原始用户输入；模型可见的 `<turn_local_metadata>` 在当前轮装配时注入，并在 `run-store` 重建历史 context 时根据持久化的 `input.createdAt` / `input.context` 再生成相同字节。
+- `node-runtime-loop` 会在每次 provider 请求前发出 `cache_diagnostics` 型 `node.updated`，记录 stable prefix / volatile suffix / turn metadata / tools 的 hash 和变化来源。
+- `openai-compatible` / `openai` provider 在请求线上会把 `stableSystemPrefix` 与动态 system tail 拆成独立 developer/system message，避免逻辑层的 stablePrefix 停留在“只存在于中间对象里”。
 
 ## 0. Task Flow、Run、Session 的边界
 

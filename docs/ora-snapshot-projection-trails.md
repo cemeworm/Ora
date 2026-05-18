@@ -2,7 +2,7 @@
 
 本文解释 runtime 产生的执行事实如何经过 snapshot、projection、trails 三层加工，最终变成 desktop UI 可消费的七个标签页。它把 `StateSnapshot` → `toFlowRunDetail` / `toSessionTurn` → `synthesizeLocalTrail` → `trailViewModel` → `TrailsTabs` 串成一条完整的消费链。
 
-> **最近更新 (2026-05-16)**：Gate 投影路径统一 (toFlowRunDetail→deriveSnapshotGateProjection)、Ledger snapshot 字段从 events 重建 (toolCalls/actions/topology/agentMessages)、preservedSettledSnapshot 竞态修复 (sessionId/runId 守卫)、Attention 派生函数统一 (attentionKindForStatus)、UI 绕过 GateProjection 修复 (isApprovalGateSnapshot)。
+> **最近更新 (2026-05-19)**：新增 `childSessions` / `parentCoordination` snapshot 字段，child delta 与正文分流，desktop 右侧协作区消费共享投影。
 
 ## 阅读地图
 
@@ -22,7 +22,7 @@
 | 文件 | 职责 |
 | --- | --- |
 | `packages/shared/src/runtime.ts` | `StateSnapshot` schema、`deriveRunInteraction`、`deriveRunAttention`、`RunAttention` 类型 |
-| `packages/shared/src/assistantTextProjection.ts` | 统一 assistant 文本投影：`output.text` 优先、`message.delta` 合并、internal delta 过滤 |
+| `packages/shared/src/assistantTextProjection.ts` | 统一 assistant 文本投影：`output.text` 优先、`message.delta` 合并、internal / collaboration delta 过滤 |
 | `packages/shared/src/runtime-timeline.ts` | `deriveRuntimeTimelineProjection`：从 snapshot 提取事件时间线 |
 | `apps/runtime/src/run-projections.ts` | `toRunHandle`、`toFlowRunDetail`、`toSessionTurn`、`toRunSummary`、`buildRunTrailMetrics` |
 | `apps/runtime/src/telemetry/trails.ts` | `synthesizeLocalTrail`：从 snapshot 合成 TrailObservation 数组 |
@@ -59,6 +59,8 @@ StateSnapshot {
   checkpoints: CheckpointMeta[],
   events: OraEventEnvelope[],
   agentMessages: AgentConversationMessage[],
+  childSessions: ChildSessionSummary[],
+  parentCoordination: ParentCoordinationState,
   artifacts: ArtifactRef[],
   activeAgents: string[],
   queueSummary, sharedStateSummary, busStats,
@@ -295,6 +297,7 @@ projectAssistantTextFromSnapshot(snapshot)
      -> read public message.delta only
      -> merge delta-sized chunks and cumulative content
      -> filter internal/tool-protocol/recovery fallback text
+     -> filter collaboration-only child deltas
 ```
 
 这条规则解决的是同一份 assistant 输出在多个 read model 中不一致的问题。当前主要消费者包括：
@@ -307,6 +310,12 @@ projectAssistantTextFromSnapshot(snapshot)
 | Desktop assistant projection wrapper | `apps/desktop/src/lib/assistantMessageProjection.ts` | 兼容旧调用点，实际 re-export shared helper |
 
 权威顺序很重要：**terminal snapshot 的 `output.text` 是最终 assistant text；只有缺失时才从 `message.delta` 投影。** `message.delta.payload.delta` 表示增量片段时直接追加；只有 `content` 时按累计文本/重复片段/新增片段判断合并，避免 cumulative content 被重复拼接，也避免 chunk-sized content 只留下最后一片。
+
+这条规则现在还额外承担父/子协作的可见性边界：
+
+- 正文区只消费父 Agent 的最终叙事文本
+- child agent 若被标记为 `collaboration`，其 delta 只进入协作区、Trails 和按需回放
+- `childSessions` / `parentCoordination` 是协作区和历史语义视图的共享权威字段
 
 这不是 ledger 的替代层。ledger 负责保存和重建 `output`、event batch、tool/gate facts；assistant text projection 只负责在读取时解释这些事实。
 

@@ -2,7 +2,7 @@
 
 本文描述 Ora 的 **Ledger 事实层** — 它不只是一份运行时日志，而是 Ora 的事件溯源、状态投影与恢复事实的 source of truth。读完本文，对 Ora 的架构理解会从「流程图」升级到「状态模型」。
 
-> **最近更新 (2026-05-16)**：Gate 重开支持（`state.gates.set()` 语义）、SessionSummary.interactionGate 字段。
+> **最近更新 (2026-05-19)**：新增 child collaboration durable facts（`child_session.updated` / `parent_coordination.updated`）与 `replayRef` 事件范围引用；同时明确 current-turn metadata 不作为用户原始 prompt 持久化，而是在 model context 重建时按输入事实再生成。
 
 ## 阅读地图
 
@@ -177,6 +177,11 @@ function runtimeSessionEntryReplayOrder(entry): number {
 
 用户消息。如果 entry 带有 `runId`，会被加入 `transcript` 数组。
 
+> **current-turn metadata 约束**：`user.message` / `run.started.input.prompt` 持久化的是用户原始文本，不把 `<turn_local_metadata>` 直接写成用户可见 prompt。模型请求装配时，runtime 会根据 `run.started.input.createdAt` 与 `run.started.input.context` 重新生成 `<turn_local_metadata>`，并把它前缀到对应 turn 的 user message。这样可以同时满足两件事：
+>
+> 1. 用户与 transcript 看到的仍是原始输入。
+> 2. DeepSeek/OpenAI-compatible 的历史 context 重建仍能复现之前请求中相同的 metadata 字节，避免破坏 prefix cache。
+
 ### 3.4 `run.started`
 
 ```json
@@ -192,6 +197,15 @@ function runtimeSessionEntryReplayOrder(entry): number {
 ```
 
 Run 的出生证明。投影中初始化一个 `RuntimeRunProjection`，状态为 `running`。
+
+`input.context` 在这里只存**可重建 metadata 的事实源**，例如：
+
+- `createdAt`
+- `userTemporalContext.timezone / locale`
+- `clarifications`
+- 当前消息附带的 `attachedProjectFiles / attachedLocalFiles / attachedImages`
+
+它们不是为了直接进 system prompt，而是为了在后续 `buildConversationMessages*()` 重建 model context 时生成 deterministic 的 `<turn_local_metadata>`。
 
 ### 3.5 `runtime.event_batch`
 
@@ -218,6 +232,13 @@ Run 的出生证明。投影中初始化一个 `RuntimeRunProjection`，状态�
 > - **低频 `:update-` batch**：在 durable boundary（`run.done`、`run.failed`、`checkpoint.created` 等）写入，携带 compact `snapshot`。
 >
 > 投影可从最近的 `:update-` snapshot 结合 gate/tool result 等独立 entry 重建必要状态。详见[第 10 章](#10-event-batch-slim-与-projection-可重建性)。
+
+本轮新增的协作事实也通过 `runtime.event_batch` 耐久化：
+
+- `child_session.updated`：低频写入 child session 的结构化摘要、状态、artifact 归属与 `replayRef`
+- `parent_coordination.updated`：低频写入父 Agent 当前编排阶段、活跃 child 集与等待栅栏
+
+这两类事实不会把 child 原文全文抬升成主 ledger 的正文权威；它们只服务于协作 UI、语义视图和按需回放入口。
 
 ### 3.6 `assistant.checkpoint`
 
@@ -430,7 +451,7 @@ flowchart TD
 | `session.info` | 更新 `title`、`projectId`、`archivedAt` |
 | `user.message` | 如有 `runId`，追加到 `transcript` |
 | `run.started` | 创建新的 `RuntimeRunProjection` 并加入 `runs` |
-| `runtime.event_batch` | 合并 events、status、output、error、snapshot 到 run |
+| `runtime.event_batch` | 合并 events、status、output、error、snapshot 到 run，并提取 `childSessions` / `parentCoordination` 等低频 durable facts |
 | `assistant.checkpoint` | 追加 checkpoint 到 run |
 | `assistant.message` | 更新 run 状态、output、snapshot；如有内容追加到 transcript |
 | `tool.result` | 追加 tool result 到 run.toolResults |
@@ -472,6 +493,7 @@ Terminal state invariant 位于 gate 检查之前，保证了：即使 ledger �
 - `status`、`attention`、`planDecisions` 等运行时字段以 projection 为准，覆盖 finalSnapshot
 - `pendingClarifications` / `pendingApprovals` 从 gates 中提取
 - `toolResults` 优先使用 ledger projection 中的 `tool.result` entries，避免只依赖 live `toolCalls` envelope
+- `childSessions` / `parentCoordination` 优先使用 event batch 中提取出的结构事实，保持协作区、历史语义视图与 ledger-backed snapshot 一致
 - 返回的 `StateSnapshot.snapshotSource` 标记为 `"ledger"`，供 runtime/desktop 明确区分权威 read model 与 streaming live view
 - 如果没有 finalSnapshot，从 run projection 构建最小 snapshot
 
