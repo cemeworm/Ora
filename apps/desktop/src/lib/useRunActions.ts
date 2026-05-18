@@ -152,6 +152,23 @@ export function buildPendingClarificationResumePatch(
   };
 }
 
+export function getSelectedInteractiveSnapshot(
+  state: Pick<WorkbenchState, "runLifecycle" | "selectedTurnRunId" | "activeSessionDetail">,
+): OraStateSnapshot | undefined {
+  const activeSnapshot = getActiveSnapshot(state.runLifecycle);
+  if (!state.selectedTurnRunId) {
+    return activeSnapshot;
+  }
+  if (activeSnapshot?.runId === state.selectedTurnRunId) {
+    return activeSnapshot;
+  }
+  const latestSnapshot = state.activeSessionDetail?.latestSnapshot;
+  if (latestSnapshot?.runId === state.selectedTurnRunId) {
+    return latestSnapshot;
+  }
+  return activeSnapshot;
+}
+
 export function stableViewModelCacheKey(params: {
   activeSessionId?: string;
   selectedModeId: string;
@@ -716,7 +733,10 @@ export function useRunActions() {
 
   async function submitClarificationOption(answer: string) {
     if (!state.selectedSessionId || !state.selectedTurnRunId) return;
-    const clarificationPatch = buildPendingClarificationResumePatch(getActiveSnapshot(state.runLifecycle), answer);
+    const clarificationPatch = buildPendingClarificationResumePatch(
+      getSelectedInteractiveSnapshot(state),
+      answer,
+    );
     if (!clarificationPatch) return;
     flushSync(() => {
       dispatch({
@@ -747,7 +767,10 @@ export function useRunActions() {
     if (!state.selectedSessionId || !state.selectedTurnRunId) return;
     if (Object.keys(answers).length === 0) return;
 
-    const submittedPrompt = buildClarificationSubmissionPrompt(answers, getActiveSnapshot(state.runLifecycle)?.pendingClarifications ?? []);
+    const submittedPrompt = buildClarificationSubmissionPrompt(
+      answers,
+      getSelectedInteractiveSnapshot(state)?.pendingClarifications ?? [],
+    );
     flushSync(() => {
       dispatch({
         type: "BEGIN_RUN_REQUEST",
@@ -789,8 +812,9 @@ export function useRunActions() {
     const submittedProjectFileAttachments = state.sessionProjectFileAttachments[sessionId] ?? [];
     const submittedLocalFileAttachments = state.sessionLocalFileAttachments[sessionId] ?? [];
     const submittedImageAttachments = state.sessionImageAttachments[sessionId] ?? [];
-    const clarificationPatch = getActiveSnapshot(state.runLifecycle)?.runId === state.selectedTurnRunId
-      ? buildPendingClarificationResumePatch(getActiveSnapshot(state.runLifecycle), submittedPrompt)
+    const selectedSnapshot = getSelectedInteractiveSnapshot(state);
+    const clarificationPatch = selectedSnapshot?.runId === state.selectedTurnRunId
+      ? buildPendingClarificationResumePatch(selectedSnapshot, submittedPrompt)
       : undefined;
     flushSync(() => {
       dispatch({

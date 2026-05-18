@@ -1343,7 +1343,7 @@ export function adaptChatMessages(
         : false;
       const assistantTurn = turn.snapshot
         ? buildAssistantTurnAttachment(turn.snapshot, canDisplayLivePlanBody ? liveAssistantPlan : undefined)
-        : canDisplayStoredPlan
+        : turn.assistant
           ? ({
               runId: turn.runId,
               turnIndex: turn.turnIndex ?? 1,
@@ -1356,8 +1356,9 @@ export function adaptChatMessages(
               todos: [],
               approvalCount: 0,
               clarificationCount: 0,
-              hasProposedPlan: true,
-              planContent: storedPlan!.planContent,
+              hasProposedPlan: Boolean(storedPlan),
+              proposedPlanStatus: storedPlan?.hasCompletePlan ? "complete" : storedPlan ? "streaming" : undefined,
+              planContent: storedPlan?.planContent,
               currentAgentLabel: turn.assistant?.agentLabel,
             } satisfies AssistantTurnAttachment)
           : undefined;

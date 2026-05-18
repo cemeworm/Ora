@@ -171,6 +171,86 @@ describe("trail debugger view model", () => {
     });
   });
 
+  it("filters runtime follow-up causal records and keeps only effective episodes by default", () => {
+    const snapshot = baseSnapshot({
+      events: [
+        {
+          id: "evt-primary",
+          runId: "run-test",
+          seq: 3,
+          type: "causal.decision.recorded",
+          createdAt: 1000,
+          payload: {
+            source: "router_primary",
+            taskState: { surfaceRequest: "读取 README" },
+            policyDecision: {
+              goalUncertainty: 0.3,
+              factUncertainty: 0.2,
+              contextUncertainty: 0.2,
+              actionRisk: 0.1,
+              userCost: 0.05,
+              reversibility: "high",
+              recommendedAction: "use_tool",
+              reason: "use_tool: low uncertainty, safe to proceed",
+              wouldChangeOutcomeIfWrong: false,
+            },
+            chosenIntervention: "use_tool",
+            alternativeInterventions: [],
+            recordedAt: 1000,
+            decisionContext: { phase: "tool_request", toolId: "file.read" },
+          },
+        },
+        {
+          id: "evt-followup",
+          runId: "run-test",
+          seq: 4,
+          type: "causal.decision.recorded",
+          createdAt: 1001,
+          payload: {
+            source: "runtime_followup",
+            decisionKind: "approval_triggered",
+            taskState: { surfaceRequest: "读取 README" },
+            policyDecision: {
+              goalUncertainty: 0.3,
+              factUncertainty: 0.2,
+              contextUncertainty: 0.2,
+              actionRisk: 0.8,
+              userCost: 0.5,
+              reversibility: "low",
+              recommendedAction: "request_approval",
+              reason: "request_approval: approval gate triggered at runtime",
+              wouldChangeOutcomeIfWrong: true,
+            },
+            chosenIntervention: "request_approval",
+            alternativeInterventions: [],
+            recordedAt: 1001,
+            decisionContext: { phase: "approval_triggered", toolId: "file.read" },
+          },
+        },
+      ],
+      toolCalls: [{
+        id: "run-test:tool-call-0",
+        runId: "run-test",
+        toolId: "file.read",
+        args: {},
+        source: "provider_native",
+        status: "succeeded",
+        requestedAt: 1000,
+        updatedAt: 1001,
+      }],
+    });
+
+    const summary = buildCausalDecisionSummary(snapshot);
+
+    expect(summary.totalDecisions).toBe(1);
+    expect(summary.hiddenDecisionCount).toBe(1);
+    expect(summary.decisions[0]).toMatchObject({
+      eventId: "evt-primary",
+      intervention: "use_tool",
+      outcomeSummary: "已执行 file.read，并产出成功结果。",
+    });
+  });
+
   it("prioritizes failed runs and points developers to flow evidence", () => {
     const snapshot = baseSnapshot({
       status: "failed",

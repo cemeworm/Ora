@@ -271,7 +271,7 @@ export interface WorkbenchState {
   sessionLocalFileAttachments: Record<string, ComposerLocalFileAttachment[]>;
   sessionImageAttachments: Record<string, ComposerImageAttachment[]>;
   runLifecycle: RunLifecycle;
-  preservedSettledSnapshot: OraStateSnapshot | undefined;
+  preservedSettledSnapshots: Record<string, OraStateSnapshot>;
   preservedSettledSessionId: string | undefined;
   liveMessageDeltaBuffer: LiveMessageDeltaBuffer;
   pendingPlanDecisionResolution: PendingPlanDecisionResolution | undefined;
@@ -473,7 +473,7 @@ export const initialWorkbenchState: WorkbenchState = {
   sessionLocalFileAttachments: {},
   sessionImageAttachments: {},
   runLifecycle: { stage: "idle" },
-  preservedSettledSnapshot: undefined,
+  preservedSettledSnapshots: {},
   preservedSettledSessionId: undefined,
   liveMessageDeltaBuffer: {},
   pendingPlanDecisionResolution: undefined,
@@ -1240,7 +1240,17 @@ export function mergeRunStreamSnapshot(
 ): OraStateSnapshot | undefined {
   if (stream.snapshot) {
     const merged = mergeStateSnapshot(snapshot, stream.snapshot);
-    return merged ? normalizeDesktopSnapshot(mergeStreamLatency(merged, stream)) : undefined;
+    if (!merged) return undefined;
+    const events = canAppendStreamEvents(merged.events, stream.events)
+      ? [...merged.events, ...stream.events]
+      : mergeEventsBySeq(merged.events, stream.events);
+    const planList = mergeStreamPlanListUpdates(merged, stream);
+    return normalizeDesktopSnapshot(mergeStreamLatency({
+      ...merged,
+      planList,
+      events,
+      updatedAt: stream.events.at(-1)?.createdAt ?? merged.updatedAt,
+    }, stream));
   }
   if (!snapshot || snapshot.runId !== stream.runId) {
     return snapshot;
@@ -1310,9 +1320,9 @@ export function deriveRenderableTurnSnapshots(params: {
   activeSnapshot: OraStateSnapshot | undefined;
   turnSnapshots: Record<string, OraStateSnapshot>;
   selectedSessionId: string | undefined;
-  preservedSettledSnapshot: OraStateSnapshot | undefined;
+  preservedSettledSnapshots: Record<string, OraStateSnapshot>;
 }): Record<string, OraStateSnapshot> {
-  const { detail, activeSnapshot: latestSnapshot, turnSnapshots, selectedSessionId, preservedSettledSnapshot } = params;
+  const { detail, activeSnapshot: latestSnapshot, turnSnapshots, selectedSessionId, preservedSettledSnapshots } = params;
   if (!detail) {
     if (latestSnapshot && latestSnapshot.sessionId === selectedSessionId) {
       return { [latestSnapshot.runId]: latestSnapshot };
@@ -1345,10 +1355,10 @@ export function deriveRenderableTurnSnapshots(params: {
     }
   }
 
-  if (preservedSettledSnapshot) {
-    const { sessionId, runId } = preservedSettledSnapshot;
-    if ((!sessionId || sessionId === activeSessionId) && !scopedSnapshots[runId]) {
-      scopedSnapshots[runId] = preservedSettledSnapshot;
+  for (const [runId, snapshot] of Object.entries(preservedSettledSnapshots)) {
+    const snapshotMatchesSession = !snapshot.sessionId || snapshot.sessionId === activeSessionId;
+    if (!scopedSnapshots[runId] && snapshotMatchesSession) {
+      scopedSnapshots[runId] = snapshot;
     }
   }
 
@@ -3299,21 +3309,8 @@ export function workbenchReducer(
         ...state,
         sessions,
         activeSessionDetail,
-        preservedSettledSnapshot:
-          streamBelongsToActiveTurn &&
-          streamSnapshot &&
-          // 仅当 stream 属于同一 session 且不同于被保留的 run 时才清除
-          (!state.preservedSettledSessionId || streamSessionId === state.preservedSettledSessionId) &&
-          streamSnapshot.runId !== state.preservedSettledSnapshot?.runId
-            ? undefined
-            : state.preservedSettledSnapshot,
-        preservedSettledSessionId:
-          streamBelongsToActiveTurn &&
-          streamSnapshot &&
-          (!state.preservedSettledSessionId || streamSessionId === state.preservedSettledSessionId) &&
-          streamSnapshot.runId !== state.preservedSettledSnapshot?.runId
-            ? undefined
-            : state.preservedSettledSessionId,
+        preservedSettledSnapshots: state.preservedSettledSnapshots,
+        preservedSettledSessionId: state.preservedSettledSessionId,
         sessionDetailsById: (() => {
           let next = activeSessionDetail
             ? cacheSessionDetail(state.sessionDetailsById, activeSessionDetail)
@@ -3532,9 +3529,9 @@ export function workbenchReducer(
           createdAt: action.createdAt,
         },
         liveMessageDeltaBuffer: {},
-        preservedSettledSnapshot: currentSnapshot && isSettledRunStatus(currentSnapshot.status)
-          ? currentSnapshot
-          : state.preservedSettledSnapshot,
+        preservedSettledSnapshots: currentSnapshot && isSettledRunStatus(currentSnapshot.status)
+          ? { ...state.preservedSettledSnapshots, [currentSnapshot.runId]: currentSnapshot }
+          : state.preservedSettledSnapshots,
         preservedSettledSessionId: currentSnapshot && isSettledRunStatus(currentSnapshot.status)
           ? currentSnapshot.sessionId ?? state.selectedSessionId
           : state.preservedSettledSessionId,
@@ -3558,8 +3555,6 @@ export function workbenchReducer(
       return {
         ...state,
         selectedTurnRunId: action.runId,
-        preservedSettledSnapshot: undefined,
-        preservedSettledSessionId: undefined,
         runLifecycle:
           state.runLifecycle.stage === "pending"
             ? { ...state.runLifecycle, runId: action.runId }

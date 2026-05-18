@@ -130,15 +130,33 @@ export function deriveProjectedGateTrays({
   };
 }
 
+export function resolveComposerGateSnapshot({
+  activeSnapshot,
+  turnSnapshots,
+  sourceRunId,
+}: {
+  activeSnapshot?: OraStateSnapshot;
+  turnSnapshots: Record<string, OraStateSnapshot | undefined>;
+  sourceRunId?: string;
+}) {
+  if (sourceRunId && turnSnapshots[sourceRunId]) {
+    return turnSnapshots[sourceRunId];
+  }
+  return activeSnapshot;
+}
+
 export function deriveCurrentComposerPlanSteps({
   activeSnapshot,
-  runInteractionState: _runInteractionState,
+  runInteractionState,
 }: {
   activeSnapshot?: Pick<OraStateSnapshot, "planList">;
-  runInteractionState: Pick<DesktopRunInteractionState, "isProcessing">;
+  runInteractionState: Pick<DesktopRunInteractionState, "isProcessing" | "gateKind" | "status">;
 }): TurnPlanListStep[] {
   const snapshotPlan = activeSnapshot?.planList;
   if (!snapshotPlan || snapshotPlan.length === 0) {
+    return [];
+  }
+  if (runInteractionState.gateKind) {
     return [];
   }
 
@@ -226,7 +244,13 @@ export function ChatView({
   const projectFileAttachments = state.sessionProjectFileAttachments[selectedSession.id] ?? [];
   const localFileAttachments = state.sessionLocalFileAttachments[selectedSession.id] ?? [];
   const imageAttachments = state.sessionImageAttachments[selectedSession.id] ?? [];
-  const attention = activeSnapshot?.attention ?? state.activeSessionDetail?.session.attention;
+  const composerGateSnapshot = resolveComposerGateSnapshot({
+    activeSnapshot,
+    turnSnapshots,
+    sourceRunId: runInteractionState.sourceRunId,
+  });
+  const attention =
+    composerGateSnapshot?.attention ?? state.activeSessionDetail?.session.attention;
   const {
     approvalActions: pendingApprovalActions,
     clarificationQuestions: pendingClarifications,
@@ -235,10 +259,10 @@ export function ChatView({
   } = deriveProjectedGateTrays({
     attention,
     actionRecords,
-    pendingClarifications: activeSnapshot?.pendingClarifications ?? [],
+    pendingClarifications: composerGateSnapshot?.pendingClarifications ?? [],
   });
   const { planDecisionPending } = deriveComposerPlanDecisionState({
-    activeSnapshot,
+    activeSnapshot: composerGateSnapshot,
     pendingResolution: state.pendingPlanDecisionResolution,
     sessionId: selectedSession.id,
   });
@@ -247,12 +271,13 @@ export function ChatView({
     setComposerOverlayHeight((current) => current === height ? current : height);
   }, []);
 
+  const gateKind = runInteractionState.gateKind;
   const currentPlanSteps = useMemo<TurnPlanListStep[]>(
     () => deriveCurrentComposerPlanSteps({
-      activeSnapshot,
+      activeSnapshot: composerGateSnapshot,
       runInteractionState,
     }),
-    [activeSnapshot?.planList],
+    [composerGateSnapshot, gateKind],
   );
   const branchGroups = state.activeSessionDetail?.branchGroups ?? [];
   const [branchPanelOpen, setBranchPanelOpen] = useState(false);

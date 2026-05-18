@@ -8,7 +8,11 @@ import type { OraRunTrail, OraStateSnapshot } from "./runtimeClient";
 import type { ActionRecord, AgentProfile } from "../types";
 import type { DebuggerTrailTab } from "./debuggerSurface";
 import { deriveSnapshotInteractionProjection, snapshotPendingPlanDecision, type SnapshotInteractionProjection } from "./runInteractionState";
-import { deriveSnapshotGateProjection, projectAssistantTextFromSnapshot } from "@cemeworm/shared";
+import {
+  deriveCausalInterventionEpisodes,
+  deriveSnapshotGateProjection,
+  projectAssistantTextFromSnapshot,
+} from "@cemeworm/shared";
 
 export type TrailDebuggerTab = "overview" | "flow" | "agents" | "tools" | "latency" | "evidence" | "compare";
 export type TrailFindingSeverity = "error" | "warning" | "info";
@@ -2190,12 +2194,18 @@ export function buildCommunicationGraph(snapshot: OraStateSnapshot): Communicati
 // ---- Causal Decision Summary ----
 
 export interface CausalDecisionSummaryItem {
-  eventId: string;
-  eventSeq: number;
+  eventId?: string;
+  eventSeq?: number;
+  decisionId: string;
   runId: string;
   turnIndex: number;
   timestamp: string;
-  replyMessageId: string;
+  source: string;
+  effective: boolean;
+  status: string;
+  goalImpact: string;
+  outcomeSummary: string;
+  replyMessageId?: string;
   replyLabel: string;
   phase: string;
   phaseLabel: string;
@@ -2223,33 +2233,38 @@ export interface CausalDecisionSummaryItem {
 export interface CausalDecisionSummary {
   decisions: CausalDecisionSummaryItem[];
   totalDecisions: number;
+  hiddenDecisionCount: number;
 }
 
 export function buildCausalDecisionSummary(snapshot: OraStateSnapshot): CausalDecisionSummary {
+  const eventSeqById = new Map(snapshot.events.map((event) => [event.id, event.seq]));
   const decisions: CausalDecisionSummaryItem[] = [];
   const nodeLabels = new Map(snapshot.topology.nodes.map((node) => [node.id, node.label]));
   const agentLabels = buildAgentLabelMap(snapshot);
   const assistantPreview = previewAssistantReply(snapshot);
-  for (const event of snapshot.events) {
-    if (event.type !== "causal.decision.recorded") continue;
-    const payload = event.payload as Record<string, unknown> | undefined;
-    if (!payload) continue;
-    const pd = (payload.policyDecision ?? {}) as Record<string, unknown>;
-    const ts = (payload.taskState ?? {}) as Record<string, unknown>;
-    const context = isRecord(payload.decisionContext) ? payload.decisionContext : {};
-    const turnIndex = positiveInt(context.turnIndex) ?? snapshot.turnIndex ?? 1;
-    const replyMessageId = nonEmptyString(context.replyMessageId) ?? `${event.runId}:assistant`;
-    const agentId = event.agentId ?? nonEmptyString(context.agentId);
-    const nodeId = event.nodeId ?? nonEmptyString(context.nodeId);
-    const phase = nonEmptyString(context.phase) ?? inferCausalDecisionPhase(context, event);
-    const iteration = nonnegativeInt(context.iteration);
-    const toolId = nonEmptyString(context.toolId);
+  const episodes = deriveCausalInterventionEpisodes(snapshot);
+  const visibleEpisodes = episodes.filter((episode) => episode.effective);
+
+  for (const episode of visibleEpisodes) {
+    const turnIndex = episode.turnIndex ?? snapshot.turnIndex ?? 1;
+    const replyMessageId = episode.replyMessageId ?? `${episode.runId}:assistant`;
+    const agentId = episode.agentId;
+    const nodeId = episode.nodeId;
+    const phase = episode.phase ?? inferCausalDecisionPhase({}, undefined);
+    const iteration = episode.iteration;
+    const toolId = episode.toolId;
     decisions.push({
-      eventId: event.id,
-      eventSeq: event.seq,
-      runId: event.runId,
+      eventId: episode.eventId,
+      eventSeq: episode.eventId ? eventSeqById.get(episode.eventId) : undefined,
+      decisionId: episode.decisionId,
+      runId: episode.runId,
       turnIndex,
-      timestamp: formatTimestamp(event.createdAt),
+      timestamp: formatTimestamp(episode.recordedAt),
+      source: episode.source,
+      effective: episode.effective,
+      status: episode.status,
+      goalImpact: episode.goalImpact,
+      outcomeSummary: episode.outcomeSummary,
       replyMessageId,
       replyLabel: shortReplyId(replyMessageId),
       phase,
@@ -2261,23 +2276,25 @@ export function buildCausalDecisionSummary(snapshot: OraStateSnapshot): CausalDe
       toolId,
       iteration,
       assistantPreview,
-      intervention: String(payload.chosenIntervention ?? "unknown"),
-      reason: String(pd.reason ?? ""),
-      goalUncertainty: Number(pd.goalUncertainty ?? 0),
-      factUncertainty: Number(pd.factUncertainty ?? 0),
-      contextUncertainty: Number(pd.contextUncertainty ?? 0),
-      actionRisk: Number(pd.actionRisk ?? 0),
-      userCost: Number(pd.userCost ?? 0),
-      reversibility: String(pd.reversibility ?? "medium"),
-      wouldChangeOutcomeIfWrong: Boolean(pd.wouldChangeOutcomeIfWrong ?? false),
-      surfaceRequest: String(ts.surfaceRequest ?? ""),
-      selectedLatentGoal: String(ts.selectedLatentGoal ?? ""),
-      keyUncertainties: Array.isArray(ts.keyUncertainties)
-        ? ts.keyUncertainties.filter((u): u is string => typeof u === "string")
-        : [],
+      intervention: episode.chosenIntervention,
+      reason: episode.reason,
+      goalUncertainty: episode.goalUncertainty,
+      factUncertainty: episode.factUncertainty,
+      contextUncertainty: episode.contextUncertainty,
+      actionRisk: episode.actionRisk,
+      userCost: episode.userCost,
+      reversibility: episode.reversibility,
+      wouldChangeOutcomeIfWrong: episode.wouldChangeOutcomeIfWrong,
+      surfaceRequest: episode.surfaceRequest,
+      selectedLatentGoal: episode.selectedLatentGoal,
+      keyUncertainties: episode.keyUncertainties,
     });
   }
-  return { decisions, totalDecisions: decisions.length };
+  return {
+    decisions,
+    totalDecisions: decisions.length,
+    hiddenDecisionCount: Math.max(episodes.length - decisions.length, 0),
+  };
 }
 
 function previewAssistantReply(snapshot: OraStateSnapshot): string {
@@ -2300,16 +2317,17 @@ function nonnegativeInt(value: unknown): number | undefined {
   return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : undefined;
 }
 
-function shortReplyId(replyMessageId: string): string {
+function shortReplyId(replyMessageId?: string): string {
+  if (!replyMessageId) return "#assistant";
   const segment = replyMessageId.split(":").at(-1);
   return segment ? `#${segment}` : `#${replyMessageId}`;
 }
 
-function inferCausalDecisionPhase(context: Record<string, unknown>, event: OraStateSnapshot["events"][number]): string {
+function inferCausalDecisionPhase(context: Record<string, unknown>, event?: OraStateSnapshot["events"][number]): string {
   if (nonEmptyString(context.toolId)) {
     return "tool_request";
   }
-  if (event.nodeId && event.nodeId !== "run") {
+  if (event?.nodeId && event.nodeId !== "run") {
     return "node_decision";
   }
   return "decision";

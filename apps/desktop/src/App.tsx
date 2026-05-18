@@ -679,6 +679,50 @@ function WorkbenchInner() {
     );
   }, [state.activeSessionDetail]);
 
+  const loadedHistorySnapshotsRef = useRef<string | undefined>();
+
+  useEffect(() => {
+    const detail = state.activeSessionDetail;
+    if (!detail) return;
+    const sessionId = detail.session.sessionId;
+    if (loadedHistorySnapshotsRef.current === sessionId) return;
+
+    const missingRunIds = detail.turns
+      .map((t) => t.runId)
+      .filter((runId) => !turnSnapshots[runId]);
+
+    if (missingRunIds.length === 0) {
+      loadedHistorySnapshotsRef.current = sessionId;
+      return;
+    }
+
+    let cancelled = false;
+    void (async () => {
+      const results = await Promise.allSettled(
+        missingRunIds.map((runId) => runtimeClient.getRunState(runId)),
+      );
+      if (cancelled) return;
+      setTurnSnapshots((current) => {
+        let next = { ...current };
+        for (const result of results) {
+          if (result.status !== "fulfilled") continue;
+          const snapshot = result.value;
+          const existing = current[snapshot.runId];
+          const merged = mergeStateSnapshot(existing, snapshot);
+          if (merged) {
+            next[snapshot.runId] = merged;
+          }
+        }
+        return limitTurnSnapshots(next);
+      });
+      loadedHistorySnapshotsRef.current = sessionId;
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [state.activeSessionDetail?.session.sessionId, turnSnapshots, runtimeClient]);
+
   useEffect(() => {
     if (state.detailDrawer !== "trails" || !state.selectedTurnRunId) {
       return;
@@ -750,14 +794,14 @@ function WorkbenchInner() {
         activeSnapshot: getActiveSnapshot(state.runLifecycle),
         turnSnapshots,
         selectedSessionId: state.selectedSessionId,
-        preservedSettledSnapshot: state.preservedSettledSnapshot,
+        preservedSettledSnapshots: state.preservedSettledSnapshots,
       }),
     [
       state.activeSessionDetail,
       turnSnapshots,
       getActiveSnapshot(state.runLifecycle),
       state.selectedSessionId,
-      state.preservedSettledSnapshot,
+      state.preservedSettledSnapshots,
     ],
   );
 

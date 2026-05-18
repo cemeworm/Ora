@@ -9,6 +9,8 @@ import { deriveRunInteractionState } from "./runInteractionState";
 import type { OraSessionDetail, OraSessionSummary, OraStateSnapshot } from "./runtimeClient";
 import type { PendingRunState, RunLifecycle } from "./state";
 import type { DeriveRunInteractionStateParams } from "./runInteractionState";
+import { deriveProjectedGateTrays, resolveComposerGateSnapshot } from "../components/ChatView";
+import { getComposerTrayVisibility } from "../components/ChatInput";
 
 type RunStatus =
   | "running"
@@ -299,6 +301,96 @@ describe("runInteractionState cross-surface consistency", () => {
     expect(surfaces.composer_send).toBe(false);
     expect(surfaces.composer_stop).toBe(false);
     expect(surfaces.trails_status).toBe("clarification required");
+  });
+
+  it("clarification_required without live activeSnapshot still shows the clarification tray for the selected turn", () => {
+    const selectedRunSnapshot = activeSnapshot({
+      runId: "run-clarify",
+      status: "interrupted",
+      pendingClarifications: [{
+        id: "c1",
+        key: "scope",
+        question: "What scope?",
+        nodeId: "n1",
+        nodeLabel: "Review",
+        requestedAt: 1000,
+        options: [],
+      }],
+      attention: {
+        kind: "needs_clarification",
+        blocking: true,
+        sourceRunId: "run-clarify",
+        reason: "clarification_required",
+        pendingActionIds: [],
+        pendingToolCallIds: [],
+        pendingClarificationIds: ["c1"],
+      },
+    });
+    const state = derive({
+      selectedSessionId: "session-1",
+      selectedTurnRunId: "run-clarify",
+      activeSessionDetail: activeDetail({
+        session: sessionSummary({
+          status: "interrupted",
+          attention: {
+            kind: "needs_clarification",
+            blocking: true,
+            sourceRunId: "run-clarify",
+            reason: "clarification_required",
+            pendingActionIds: [],
+            pendingToolCallIds: [],
+            pendingClarificationIds: ["c1"],
+          },
+        }),
+        turns: [
+          turn({
+            runId: "run-clarify",
+            status: "interrupted",
+            attention: {
+              kind: "needs_clarification",
+              blocking: true,
+              sourceRunId: "run-clarify",
+              reason: "clarification_required",
+              pendingActionIds: [],
+              pendingToolCallIds: [],
+              pendingClarificationIds: ["c1"],
+            },
+          }),
+        ],
+      }),
+      turnSnapshots: {
+        "run-clarify": selectedRunSnapshot,
+      },
+    });
+    const composerGateSnapshot = resolveComposerGateSnapshot({
+      activeSnapshot: undefined,
+      turnSnapshots: {
+        "run-clarify": selectedRunSnapshot,
+      },
+      sourceRunId: state.sourceRunId,
+    });
+    const trays = deriveProjectedGateTrays({
+      attention: composerGateSnapshot?.attention,
+      actionRecords: [],
+      pendingClarifications: composerGateSnapshot?.pendingClarifications ?? [],
+    });
+    const composer = getComposerTrayVisibility({
+      isLoading: false,
+      clarificationCount: trays.clarificationQuestions.length,
+      canSubmitClarifications: true,
+      hasPlanDecision: false,
+      canResolvePlanDecision: false,
+    });
+
+    expect(state.status).toBe("clarification_required");
+    expect(state.authority).toBe("active_snapshot");
+    expect(trays.hasClarificationTray).toBe(true);
+    expect(trays.clarificationQuestions.map((item) => item.id)).toEqual(["c1"]);
+    expect(composer).toEqual({
+      showClarificationTray: true,
+      showPlanDecisionTray: false,
+      hideComposer: false,
+    });
   });
 
   it("paused: all surfaces agree on interrupted", () => {

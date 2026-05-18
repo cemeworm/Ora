@@ -5,6 +5,7 @@ import {
   deriveProjectedGateTrays,
   getActiveChatProvider,
   getChatInputContextState,
+  resolveComposerGateSnapshot,
 } from "./ChatView";
 
 describe("chat view provider selection", () => {
@@ -138,6 +139,37 @@ describe("chat view projected gate trays", () => {
       hasClarificationTray: true,
     });
   });
+
+  it("falls back to the selected turn snapshot for clarification trays when live activeSnapshot is absent", () => {
+    const snapshot = {
+      runId: "run-clarify",
+      attention: {
+        kind: "needs_clarification",
+        blocking: true,
+        sourceRunId: "run-clarify",
+        reason: "clarification_required",
+        pendingClarificationIds: ["clarification-1"],
+      },
+      pendingClarifications,
+    } as any;
+
+    const composerGateSnapshot = resolveComposerGateSnapshot({
+      activeSnapshot: undefined,
+      turnSnapshots: { "run-clarify": snapshot },
+      sourceRunId: "run-clarify",
+    });
+
+    expect(deriveProjectedGateTrays({
+      attention: composerGateSnapshot?.attention,
+      actionRecords,
+      pendingClarifications: composerGateSnapshot?.pendingClarifications ?? [],
+    })).toMatchObject({
+      approvalActions: [],
+      clarificationQuestions: [{ id: "clarification-1" }],
+      hasApprovalTray: false,
+      hasClarificationTray: true,
+    });
+  });
 });
 
 describe("chat view composer plan decision state", () => {
@@ -236,6 +268,30 @@ describe("chat view composer plan steps", () => {
       { step: "整理结果", status: "completed" },
     ]);
   });
+
+  it("hides plan steps while a clarification gate is open", () => {
+    const plan = [
+      { id: "step-1", step: "搜索网页", status: "in_progress" },
+      { id: "step-2", step: "整理结果", status: "pending" },
+    ] as const;
+
+    expect(deriveCurrentComposerPlanSteps({
+      activeSnapshot: { planList: plan } as any,
+      runInteractionState: runInteractionState("clarification_required", "clarification"),
+    })).toEqual([]);
+  });
+
+  it("hides plan steps while a plan decision gate is open", () => {
+    const plan = [
+      { id: "step-1", step: "搜索网页", status: "completed" },
+      { id: "step-2", step: "整理结果", status: "completed" },
+    ] as const;
+
+    expect(deriveCurrentComposerPlanSteps({
+      activeSnapshot: { planList: plan } as any,
+      runInteractionState: runInteractionState("decision_needed", "plan_decision"),
+    })).toEqual([]);
+  });
 });
 
 function contextState(totalTokens: number) {
@@ -253,9 +309,13 @@ function contextState(totalTokens: number) {
   };
 }
 
-function runInteractionState(status: "running" | "done") {
+function runInteractionState(
+  status: "running" | "done" | "clarification_required" | "decision_needed",
+  gateKind?: "clarification" | "plan_decision",
+) {
   return {
     status,
     isProcessing: status === "running",
+    gateKind,
   };
 }

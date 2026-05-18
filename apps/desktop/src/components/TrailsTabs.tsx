@@ -552,9 +552,14 @@ function TrailOverview({
       {causalDecisionSummary.totalDecisions > 0 && (
         <DockCard title="Agent 干预决策" icon={<Route size={16} />}>
           <div className="space-y-3">
+            {causalDecisionSummary.hiddenDecisionCount > 0 && (
+              <p className="text-[11px] leading-5 text-bench-600">
+                默认仅展示真正改变执行路径的有效决策；已过滤 {causalDecisionSummary.hiddenDecisionCount} 条运行时补记或未形成独立结果的记录。
+              </p>
+            )}
             {causalDecisionSummary.decisions.map((decision) => (
               <div
-                key={decision.eventId}
+                key={decision.decisionId}
                 className="rounded-md bg-bench-50 px-3 py-2.5 ring-1 ring-inset ring-bench-200"
               >
                 <div className="mb-2 flex items-start justify-between gap-2">
@@ -563,7 +568,8 @@ function TrailOverview({
                       {interventionLabel(decision.intervention)}
                     </span>
                     <p className="mt-0.5 text-[11px] leading-5 text-bench-600">
-                      第 {decision.turnIndex} 轮 · 回复 {decision.replyLabel} · 事件 #{decision.eventSeq} · {decision.phaseLabel}
+                      第 {decision.turnIndex} 轮 · {decision.phaseLabel}
+                      {decision.eventSeq ? ` · 事件 #${decision.eventSeq}` : ""}
                     </p>
                     {(decision.agentLabel || decision.nodeLabel) && (
                       <p className="text-[11px] leading-5 text-bench-500">
@@ -579,14 +585,21 @@ function TrailOverview({
                     }`}>
                       {decision.wouldChangeOutcomeIfWrong ? "可能改变结果" : "影响有限"}
                     </span>
-                    <button
-                      type="button"
-                      onClick={() => onTimelineEventClick(decision.eventId)}
-                      className="rounded px-1.5 py-0.5 text-[11px] font-semibold text-bench-700 underline-offset-2 hover:bg-white hover:text-bench-900 hover:underline focus:outline-none focus:ring-2 focus:ring-bench-300"
-                    >
-                      查看时间线
-                    </button>
+                    {decision.eventId && (
+                      <button
+                        type="button"
+                        onClick={() => onTimelineEventClick(decision.eventId!)}
+                        className="rounded px-1.5 py-0.5 text-[11px] font-semibold text-bench-700 underline-offset-2 hover:bg-white hover:text-bench-900 hover:underline focus:outline-none focus:ring-2 focus:ring-bench-300"
+                      >
+                        查看时间线
+                      </button>
+                    )}
                   </div>
+                </div>
+
+                <div className="mb-2 rounded bg-white/70 px-2 py-1.5 text-[11px] leading-5 text-bench-700 ring-1 ring-inset ring-bench-200">
+                  <p><span className="font-semibold text-bench-900">结果</span> · {episodeStatusLabel(decision.status)} · {goalImpactLabel(decision.goalImpact)}</p>
+                  <p className="mt-1">{decision.outcomeSummary}</p>
                 </div>
 
                 <p className="mb-2 line-clamp-2 rounded bg-white/70 px-2 py-1.5 text-[11px] leading-5 text-bench-700 ring-1 ring-inset ring-bench-200">
@@ -1987,6 +2000,28 @@ function interventionLabel(action: string): string {
     case "request_approval": return "请求确认";
     case "stop": return "停止";
     default: return action;
+  }
+}
+
+function episodeStatusLabel(status: string): string {
+  switch (status) {
+    case "resolved": return "已形成结果";
+    case "pending": return "等待后续";
+    case "blocked": return "已阻断";
+    case "superseded": return "已被覆盖";
+    case "abandoned": return "未落地";
+    case "applied": return "已应用";
+    default: return "证据不足";
+  }
+}
+
+function goalImpactLabel(impact: string): string {
+  switch (impact) {
+    case "strong_positive": return "明显推进目标";
+    case "weak_positive": return "有助推进目标";
+    case "negative": return "对目标有负面影响";
+    case "neutral": return "对目标影响中性";
+    default: return "目标贡献未知";
   }
 }
 

@@ -4,6 +4,7 @@ import {
   acceptedPlanImplementationSubmission,
   buildClarificationSubmissionPrompt,
   buildDesktopRunContext,
+  getSelectedInteractiveSnapshot,
   isDisposableEmptySession,
   shouldEnableClarificationPreflight,
   stableViewModelCacheKey,
@@ -188,6 +189,37 @@ describe("desktop run actions", () => {
 
   it("keeps single clarification answer as the pending user message", () => {
     expect(buildClarificationSubmissionPrompt({ intent_guard: "我们是收单机构。" })).toBe("我们是收单机构。");
+  });
+
+  it("uses the selected turn latestSnapshot for clarification resumes when no live snapshot is active", () => {
+    const latestSnapshot = {
+      runId: "run-clarify",
+      sessionId: "session-empty",
+      status: "interrupted",
+      pendingClarifications: [{
+        id: "clarification:intent_guard",
+        key: "intent_guard",
+        question: "请补充角色",
+        nodeId: "root",
+        nodeLabel: "Ora",
+        options: [],
+        requestedAt: 1,
+      }],
+      input: { prompt: "test" },
+      updatedAt: 2,
+    } as unknown as OraStateSnapshot;
+
+    const state = stateWithSession({
+      selectedTurnRunId: "run-clarify",
+      activeSessionDetail: {
+        session: sessionSummary("session-empty"),
+        turns: [],
+        transcript: [],
+        latestSnapshot,
+      },
+    });
+
+    expect(getSelectedInteractiveSnapshot(state)?.runId).toBe("run-clarify");
   });
 
   it("includes attached local files in run context", () => {
