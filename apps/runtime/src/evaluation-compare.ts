@@ -37,6 +37,9 @@ export interface MetricAggregate {
   winRate: number;  // proportion of cases where B > A
   lossRate: number; // proportion of cases where B < A
   tieRate: number;  // proportion where delta = 0
+  pValue?: number;  // paired t-test (two-tailed)
+  cohensD?: number; // effect size (meanDelta / std of deltas)
+  significant?: boolean; // p < 0.05
 }
 
 export interface NetLift {
@@ -237,6 +240,9 @@ function buildMetricAggregates(cases: CaseComparison[]): MetricAggregate[] {
       }
     }
 
+    // Paired t-test and Cohen's d
+    const stats = n >= 2 ? pairedTTest(deltas) : { pValue: undefined, cohensD: undefined, significant: undefined };
+
     aggregates.push({
       metricId,
       meanA: count > 0 ? sumA / count : 0,
@@ -246,10 +252,120 @@ function buildMetricAggregates(cases: CaseComparison[]): MetricAggregate[] {
       winRate: wins / n,
       lossRate: losses / n,
       tieRate: ties / n,
+      ...stats,
     });
   }
 
   return aggregates;
+}
+
+function pairedTTest(deltas: number[]): { pValue: number; cohensD: number; significant: boolean } {
+  const n = deltas.length;
+  const mean = deltas.reduce((s, d) => s + d, 0) / n;
+  const variance = deltas.reduce((s, d) => s + (d - mean) ** 2, 0) / (n - 1);
+  const std = Math.sqrt(variance);
+  if (std === 0 || Math.abs(mean) < 1e-10) {
+    return { pValue: 1, cohensD: 0, significant: false };
+  }
+  const cohensD = mean / std;
+  const se = std / Math.sqrt(n);
+  const t = mean / se;
+  const pValue = tPValue(Math.abs(t), n - 1);
+  return {
+    pValue: round(pValue),
+    cohensD: round(cohensD),
+    significant: pValue < 0.05,
+  };
+}
+
+function tPValue(t: number, df: number): number {
+  if (df < 1) return 1;
+  // Use normal approximation for large df
+  if (df > 100) return 2 * (1 - normalCDF(t));
+  // For small df, use the relationship with the beta distribution
+  const x = df / (df + t * t);
+  const p = regularizedBeta(x, df / 2, 0.5);
+  return Math.min(1, 2 * Math.min(p, 1 - p));
+}
+
+function normalCDF(x: number): number {
+  // Abramowitz and Stegun approximation
+  const a1 = 0.254829592;
+  const a2 = -0.284496736;
+  const a3 = 1.421413741;
+  const a4 = -1.453152027;
+  const a5 = 1.061405429;
+  const p = 0.3275911;
+  const sign = x < 0 ? -1 : 1;
+  x = Math.abs(x) / Math.sqrt(2);
+  const t = 1 / (1 + p * x);
+  const y = 1 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * Math.exp(-x * x);
+  return 0.5 * (1 + sign * y);
+}
+
+function regularizedBeta(x: number, a: number, b: number): number {
+  if (x <= 0) return 0;
+  if (x >= 1) return 1;
+  // Use continued fraction representation for the incomplete beta
+  const maxIter = 200;
+  const epsilon = 1e-10;
+  const front = Math.exp(logBeta(a, b) + a * Math.log(x) + b * Math.log(1 - x));
+  let f = 1;
+  let c = 1;
+  let d = 1 - (a + b) * x / (a + 1);
+  if (Math.abs(d) < epsilon) d = epsilon;
+  d = 1 / d;
+  let h = d;
+  for (let m = 1; m <= maxIter; m++) {
+    const m2 = 2 * m;
+    // even step
+    const evenN = m * (b - m) * x / ((a + m2 - 1) * (a + m2));
+    d = 1 + evenN * d;
+    if (Math.abs(d) < epsilon) d = epsilon;
+    c = 1 + evenN / c;
+    if (Math.abs(c) < epsilon) c = epsilon;
+    d = 1 / d;
+    h *= d * c;
+    // odd step
+    const oddN = -(a + m) * (a + b + m) * x / ((a + m2) * (a + m2 + 1));
+    d = 1 + oddN * d;
+    if (Math.abs(d) < epsilon) d = epsilon;
+    c = 1 + oddN / c;
+    if (Math.abs(c) < epsilon) c = epsilon;
+    d = 1 / d;
+    const del = d * c;
+    h *= del;
+    if (Math.abs(del - 1) < epsilon) break;
+  }
+  return front * (h / a);
+}
+
+function logBeta(a: number, b: number): number {
+  return lgamma(a) + lgamma(b) - lgamma(a + b);
+}
+
+function lgamma(x: number): number {
+  if (x < 0.5) {
+    const pi = 3.141592653589793;
+    return Math.log(pi / Math.sin(pi * x)) - lgamma(1 - x);
+  }
+  // Stirling approximation for x >= 0.5
+  const sqrt2pi = 2.5066282746310002;
+  const g = 607 / 128;
+  const cof: number[] = [
+    0.999999999999997, 57.15623566586292, -59.59796035547549,
+    14.13609797474175, -0.4919138160976202, 0.3399464998481189e-4,
+    0.4652362892704858e-4, -0.9837447530487956e-4, 0.1580887032249125e-3,
+    -0.2102644417241049e-3, 0.2174396181152126e-3, -0.1643181065367639e-3,
+    0.8441822398385274e-4, -0.2619083840158141e-4, 0.3689918265953162e-5,
+  ];
+  let z = x - 1;
+  let ser = cof[0]!;
+  for (let i = 1; i < cof.length; i++) {
+    ser += cof[i]! / (z + i);
+  }
+  const tmp = z + g + 0.5;
+  return Math.log(sqrt2pi) + (x - 0.5) * Math.log(tmp) - tmp + Math.log(ser);
 }
 
 function computeNetLift(
@@ -262,21 +378,22 @@ function computeNetLift(
   const byId = (id: string) => aggregates.find((a) => a.metricId === id)?.meanDelta ?? 0;
 
   const outcomeLift =
-    byId("effective_intervention") * 0.4 +
-    byId("intent_resolution") * 0.2 +
-    byId("counterfactual_lift") * 0.2;
+    byId("task_success_rate") * 0.30 +
+    byId("llm_judge_score") * 0.25 +
+    byId("effective_intervention") * 0.15 +
+    byId("intent_resolution") * 0.10 +
+    byId("counterfactual_lift") * 0.10;
 
-  const decisionLift = byId("clarification_precision") * 0.2;
+  const decisionLift = byId("clarification_precision") * 0.10;
 
-  // Cost penalty: increase in over_action + token/tool cost ratio
   const summaryA = configSummary(runA, configAId);
   const summaryB = configSummary(runB, configBId);
   const costRatio = (summaryA?.averageCostUsd ?? 0) > 0
     ? ((summaryB?.averageCostUsd ?? 0) - (summaryA?.averageCostUsd ?? 0)) / (summaryA!.averageCostUsd)
     : 0;
   const costPenalty =
-    Math.abs(Math.min(0, byId("over_action"))) * 0.1 +
-    Math.max(0, costRatio) * 0.1;
+    Math.abs(Math.min(0, byId("over_action"))) * 0.05 +
+    Math.max(0, costRatio) * 0.05;
 
   const netLift = outcomeLift + decisionLift - costPenalty;
 
@@ -299,11 +416,23 @@ function computeVerdict(
   const intentRes = byId("intent_resolution");
   const overAction = byId("over_action");
   const tokenEff = byId("token_efficiency");
+  const taskSuccess = byId("task_success_rate");
+  const llmJudge = byId("llm_judge_score");
 
   const outcomeImproved = cases.filter((c) => c.direction === "improved").length;
   const outcomeDegraded = cases.filter((c) => c.direction === "degraded").length;
 
   const conditions: ConditionCheck[] = [
+    {
+      condition: "task_success_rate 不下降（用户任务完成率）",
+      passed: (taskSuccess?.meanDelta ?? 0) >= 0,
+      detail: `Δ = ${formatDelta(taskSuccess?.meanDelta)}`,
+    },
+    {
+      condition: "llm_judge_score 有可感知提升 (+3% 以上)",
+      passed: (llmJudge?.meanDelta ?? 0) >= 0.03,
+      detail: `Δ = ${formatDelta(llmJudge?.meanDelta)}`,
+    },
     {
       condition: "effective_intervention 明显提升 (+10% 以上)",
       passed: (effInt?.meanDelta ?? 0) >= 0.1,
@@ -345,7 +474,7 @@ function computeVerdict(
   const passedCount = conditions.filter((c) => c.passed).length;
   const overall: ComparisonVerdict =
     passedCount === conditions.length ? "causal_wins" :
-    passedCount >= 4 ? "mixed" :
+    passedCount >= 5 ? "mixed" :
     netLift.netLift > 0 ? "mixed" :
     "legacy_wins";
 
@@ -400,11 +529,14 @@ function formatMarkdown(r: EvaluationComparisonReport): string {
   // Metric Deltas
   lines.push("## Metric Deltas");
   lines.push("");
-  lines.push("| Metric | Mean A | Mean B | Δ Mean | Δ Median | Win Rate | Loss Rate |");
-  lines.push("|---|---:|---:|---:|---:|---:|");
+  lines.push("| Metric | Mean A | Mean B | Δ Mean | Δ Median | Win Rate | Loss Rate | p-value | Cohen's d |");
+  lines.push("|---|---:|---:|---:|---:|---:|---:|---:|");
   for (const m of r.metricAggregates) {
+    const pStr = m.pValue !== undefined ? (m.pValue < 0.001 ? "<0.001" : m.pValue.toFixed(3)) : "-";
+    const dStr = m.cohensD !== undefined ? (m.cohensD > 0 ? "+" : "") + m.cohensD.toFixed(2) : "-";
+    const sigMark = m.significant ? " *" : "";
     lines.push(
-      `| ${m.metricId} | ${pct(m.meanA)} | ${pct(m.meanB)} | ${formatDelta(m.meanDelta)} | ${formatDelta(m.medianDelta)} | ${pct(m.winRate)} | ${pct(m.lossRate)} |`
+      `| ${m.metricId}${sigMark} | ${pct(m.meanA)} | ${pct(m.meanB)} | ${formatDelta(m.meanDelta)} | ${formatDelta(m.medianDelta)} | ${pct(m.winRate)} | ${pct(m.lossRate)} | ${pStr} | ${dStr} |`
     );
   }
   lines.push("");
@@ -480,4 +612,154 @@ function verdictLabel(v: ComparisonVerdict): string {
     case "mixed": return "⚠️ 互有胜负";
     case "inconclusive": return "❓ 数据不足以判定";
   }
+}
+
+/**
+ * Multi-config comparison within a single evaluation run.
+ * Compares every pair of configs and ranks them by net lift.
+ */
+
+export interface ConfigPairResult {
+  configA: string;
+  configB: string;
+  netLift: NetLift;
+  verdict: ComparisonVerdict;
+  topImprovedMetrics: string[];
+  topDegradedMetrics: string[];
+}
+
+export interface MultiConfigComparisonReport {
+  meta: {
+    runId: string;
+    configIds: string[];
+    comparedAt: number;
+  };
+  pairs: ConfigPairResult[];
+  ranking: { configId: string; netLiftScore: number }[];
+  summary: string;
+}
+
+export function compareEvaluationConfigs(
+  run: EvaluationRun,
+  options?: { referenceConfigId?: string }
+): MultiConfigComparisonReport {
+  const configIds = run.spec.configs.map((c) => c.id);
+  if (configIds.length < 2) {
+    return {
+      meta: { runId: run.id, configIds, comparedAt: Date.now() },
+      pairs: [],
+      ranking: configIds.map((id) => ({ configId: id, netLiftScore: 0 })),
+      summary: "Need at least 2 configs for comparison.",
+    };
+  }
+
+  const pairs: ConfigPairResult[] = [];
+  const configScores = new Map<string, number>();
+
+  for (const id of configIds) {
+    configScores.set(id, 0);
+  }
+
+  const comparePairs = options?.referenceConfigId
+    ? configIds.filter((id) => id !== options.referenceConfigId).map((id) => [options.referenceConfigId!, id] as const)
+    : configIds.flatMap((a, i) => configIds.slice(i + 1).map((b) => [a, b] as const));
+
+  for (const [configA, configB] of comparePairs) {
+    const pairReport = compareEvaluationRuns(run, run, { configAId: configA, configBId: configB });
+    const topImproved = pairReport.metricAggregates
+      .filter((m) => m.meanDelta > 0.03)
+      .sort((a, b) => b.meanDelta - a.meanDelta)
+      .slice(0, 3)
+      .map((m) => m.metricId);
+    const topDegraded = pairReport.metricAggregates
+      .filter((m) => m.meanDelta < -0.03)
+      .sort((a, b) => a.meanDelta - b.meanDelta)
+      .slice(0, 3)
+      .map((m) => m.metricId);
+
+    pairs.push({
+      configA,
+      configB,
+      netLift: pairReport.netLift,
+      verdict: pairReport.verdict.overall,
+      topImprovedMetrics: topImproved,
+      topDegradedMetrics: topDegraded,
+    });
+
+    configScores.set(configB, (configScores.get(configB) ?? 0) + pairReport.netLift.netLift);
+  }
+
+  const ranking = [...configScores.entries()]
+    .sort(([, a], [, b]) => b - a)
+    .map(([configId, netLiftScore]) => ({ configId, netLiftScore: round(netLiftScore) }));
+
+  const bestConfig = ranking[0]?.configId ?? "";
+  const bestLabel = run.spec.configs.find((c) => c.id === bestConfig)?.label ?? bestConfig;
+  const summary = ranking.length >= 2
+    ? `Best: ${bestLabel} (${bestConfig}). Full ranking: ${ranking.map((r, i) => `${i + 1}. ${r.configId} (${r.netLiftScore > 0 ? "+" : ""}${r.netLiftScore})`).join(", ")}.`
+    : "Insufficient data for ranking.";
+
+  return {
+    meta: { runId: run.id, configIds, comparedAt: Date.now() },
+    pairs,
+    ranking,
+    summary,
+  };
+}
+
+export function formatMultiConfigReport(
+  report: MultiConfigComparisonReport,
+  format: "markdown" | "json"
+): string {
+  if (format === "json") {
+    return JSON.stringify(report, null, 2);
+  }
+  const lines: string[] = [];
+  lines.push("# Causal Intervention Level Comparison Report");
+  lines.push("");
+  lines.push(`**Run**: \`${report.meta.runId}\``);
+  lines.push(`**Configs**: ${report.meta.configIds.join(", ")}`);
+  lines.push(`**Compared**: ${new Date(report.meta.comparedAt).toISOString()}`);
+  lines.push("");
+
+  lines.push("## Ranking");
+  lines.push("");
+  lines.push("| Rank | Config | Net Lift Score |");
+  lines.push("|---|---|---|");
+  for (let i = 0; i < report.ranking.length; i++) {
+    const r = report.ranking[i]!;
+    lines.push(`| ${i + 1} | ${r.configId} | ${r.netLiftScore > 0 ? "+" : ""}${r.netLiftScore} |`);
+  }
+  lines.push("");
+
+  lines.push("## Pairwise Comparisons");
+  lines.push("");
+  for (const pair of report.pairs) {
+    const verdictEmoji = pair.verdict === "causal_wins" ? "✅" : pair.verdict === "mixed" ? "⚠️" : "❌";
+    lines.push(`### ${pair.configA} → ${pair.configB} ${verdictEmoji}`);
+    lines.push("");
+    lines.push(`- **Net Lift**: ${pair.netLift.netLift > 0 ? "+" : ""}${pair.netLift.netLift}`);
+    lines.push(`- **Outcome Lift**: ${pair.netLift.outcomeLift > 0 ? "+" : ""}${pair.netLift.outcomeLift}`);
+    lines.push(`- **Decision Lift**: ${pair.netLift.decisionLift > 0 ? "+" : ""}${pair.netLift.decisionLift}`);
+    lines.push(`- **Cost Penalty**: ${pair.netLift.costPenalty}`);
+    lines.push(`- **Verdict**: ${pair.verdict}`);
+    if (pair.topImprovedMetrics.length > 0) {
+      lines.push(`- **Top Improved**: ${pair.topImprovedMetrics.join(", ")}`);
+    }
+    if (pair.topDegradedMetrics.length > 0) {
+      lines.push(`- **Top Degraded**: ${pair.topDegradedMetrics.join(", ")}`);
+    }
+    lines.push("");
+  }
+
+  if (report.pairs.length === 0) {
+    lines.push("(No pairwise comparisons available)");
+    lines.push("");
+  }
+
+  lines.push("## Summary");
+  lines.push("");
+  lines.push(report.summary);
+
+  return lines.join("\n");
 }

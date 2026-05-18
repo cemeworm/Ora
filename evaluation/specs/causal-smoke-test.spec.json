@@ -1,0 +1,46 @@
+{
+  "datasetId": "dataset-0004",
+  "profileId": "orchestration",
+  "repetitions": 1,
+  "concurrency": 1,
+  "timeoutMs": 120000,
+  "objective": {
+    "kind": "outcome",
+    "target": "run.output",
+    "metrics": [
+      "task_success_rate",
+      "llm_judge_score",
+      "intent_resolution",
+      "clarification_precision",
+      "effective_intervention",
+      "over_action",
+      "counterfactual_lift",
+      "token_efficiency",
+      "tool_efficiency",
+      "agentic_cost_score"
+    ],
+    "metadata": {
+      "retrofitCausalDecisions": true
+    }
+  },
+  "configs": [
+    {
+      "id": "causal-record-only",
+      "label": "Record Only",
+      "runConfig": {
+        "pattern": "orchestrator_subagent",
+        "modeSelection": "auto",
+        "providerId": "deepseek",
+        "modelRef": "deepseek-v4-flash",
+        "causalInterventionLevel": "record_only",
+        "metadata": {
+          "evaluationBatch": "causal-smoke"
+        }
+      }
+    }
+  ],
+  "metadata": {
+    "retrofitCausalDecisions": true,
+    "description": "Smoke test with 1 config to verify the eval pipeline works end-to-end."
+  }
+}

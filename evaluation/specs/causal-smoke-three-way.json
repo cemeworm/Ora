@@ -1,9 +1,9 @@
 {
-  "datasetId": "<import-causal-intervention-decision-dataset-first>",
+  "datasetId": "dataset-0004",
   "profileId": "orchestration",
   "repetitions": 1,
-  "concurrency": 2,
-  "timeoutMs": 300000,
+  "concurrency": 1,
+  "timeoutMs": 120000,
   "objective": {
     "kind": "outcome",
     "target": "run.output",
@@ -26,43 +26,43 @@
   "configs": [
     {
       "id": "causal-record-only",
-      "label": "Causal Record Only (仅记录)",
+      "label": "Record Only",
       "runConfig": {
         "pattern": "orchestrator_subagent",
         "modeSelection": "auto",
+        "providerId": "deepseek",
+        "modelRef": "deepseek-v4-flash",
         "causalInterventionLevel": "record_only",
-        "metadata": {
-          "evaluationBatch": "causal-three-way-comparison"
-        }
+        "metadata": { "evaluationBatch": "causal-smoke-three-way" }
       }
     },
     {
       "id": "causal-advisory",
-      "label": "Causal Advisory (建议模式)",
+      "label": "Advisory",
       "runConfig": {
         "pattern": "orchestrator_subagent",
         "modeSelection": "auto",
+        "providerId": "deepseek",
+        "modelRef": "deepseek-v4-flash",
         "causalInterventionLevel": "advisory",
-        "metadata": {
-          "evaluationBatch": "causal-three-way-comparison"
-        }
+        "metadata": { "evaluationBatch": "causal-smoke-three-way" }
       }
     },
     {
       "id": "causal-enforcing",
-      "label": "Causal Enforcing (强制模式)",
+      "label": "Enforcing",
       "runConfig": {
         "pattern": "orchestrator_subagent",
         "modeSelection": "auto",
+        "providerId": "deepseek",
+        "modelRef": "deepseek-v4-flash",
         "causalInterventionLevel": "enforcing",
-        "metadata": {
-          "evaluationBatch": "causal-three-way-comparison"
-        }
+        "metadata": { "evaluationBatch": "causal-smoke-three-way" }
       }
     }
   ],
   "metadata": {
     "retrofitCausalDecisions": true,
-    "description": "Three-way comparison spec for causal policy router at three intervention levels: record_only (baseline) vs advisory (gate approvals/stops) vs enforcing (block all non-safe tools). Each config runs the same 101 cases with different causalInterventionLevel. Use 'ora-runtime eval compare-configs' to generate the multi-way comparison report."
+    "description": "Three-way smoke test: record_only vs advisory vs enforcing on 3 cases."
   }
 }
