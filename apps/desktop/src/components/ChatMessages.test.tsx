@@ -48,7 +48,7 @@ describe("ChatMessages bottom inset", () => {
     expect(html).not.toContain("lucide-user");
   });
 
-  it("renders user messages with a compact right-anchored bubble", () => {
+  it("renders user messages with a compact rounded bubble", () => {
     const html = renderToStaticMarkup(
       <ChatMessages
         chatMessages={[{
@@ -60,7 +60,8 @@ describe("ChatMessages bottom inset", () => {
       />,
     );
 
-    expect(html).toContain("flex items-center rounded-2xl rounded-br-md bg-card px-3.5 py-2.5");
+    expect(html).toContain("flex items-center rounded-2xl bg-card px-3.5 py-2.5");
+    expect(html).not.toContain("rounded-br-md");
     expect(html).toContain("whitespace-pre-wrap break-words leading-5");
     expect(html).not.toContain("<p class=\"my-2");
     expect(html).toContain("h-6 w-6");

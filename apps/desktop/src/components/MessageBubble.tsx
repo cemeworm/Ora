@@ -64,7 +64,7 @@ export function MessageBubble({ role, content, children, className }: MessageBub
           <div
             className={cn(
               isUser
-                ? "flex items-center rounded-2xl rounded-br-md bg-card px-3.5 py-2.5 text-foreground shadow-xs ring-1 ring-inset ring-border"
+                ? "flex items-center rounded-2xl bg-card px-3.5 py-2.5 text-foreground shadow-xs ring-1 ring-inset ring-border"
                 : "rounded-[22px] border border-transparent bg-transparent text-foreground",
             )}
           >
