@@ -71,17 +71,29 @@ await verifyPackagedSidecar();
 
 function resolveEsbuildBinary() {
   const pnpmDir = path.join(repoRoot, "node_modules", ".pnpm");
-  const esbuildDir = readdirSync(pnpmDir).find(
-    (name) => name.startsWith("esbuild@") && !name.startsWith("@esbuild")
-  );
-  if (!esbuildDir) {
-    throw new Error("Unable to locate an esbuild binary in the workspace install.");
+  let tried = [];
+
+  if (existsSync(pnpmDir)) {
+    const esbuildDirs = readdirSync(pnpmDir)
+      .filter((name) => name.startsWith("esbuild@") && !name.startsWith("@esbuild"))
+      .sort()
+      .reverse();
+    for (const esbuildDir of esbuildDirs) {
+      const candidate = path.join(pnpmDir, esbuildDir, "node_modules", "esbuild", "bin", "esbuild");
+      tried.push(candidate);
+      if (existsSync(candidate)) {
+        return candidate;
+      }
+    }
   }
-  const esbuildPackage = path.join(pnpmDir, esbuildDir, "node_modules", "esbuild", "bin", "esbuild");
-  if (!existsSync(esbuildPackage)) {
-    throw new Error(`esbuild binary not found at ${esbuildPackage}`);
+
+  const dotBinPath = path.join(repoRoot, "node_modules", ".bin", "esbuild");
+  if (existsSync(dotBinPath)) {
+    tried.push(dotBinPath);
+    return realpathSync(dotBinPath);
   }
-  return esbuildPackage;
+
+  throw new Error(`Unable to locate an esbuild binary. Tried:\n${tried.map((p) => `  - ${p}`).join("\n")}`);
 }
 
 function runtimePackageNames() {
