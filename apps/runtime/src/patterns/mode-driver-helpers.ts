@@ -14,6 +14,34 @@ export type ExecutionBag = Record<string, unknown>;
  * the raw text is wrapped as { text, _degraded: true }.
  * The raw text is always preserved under `<key>_raw`.
  */
+function extractJsonFromText(raw: string): unknown | undefined {
+  // try direct JSON parse
+  try {
+    return JSON.parse(raw);
+  } catch {
+    // continue
+  }
+  // try to extract from markdown code fence
+  const fenceMatch = /```(?:json)?\s*\n?([\s\S]*?)```/i.exec(raw);
+  if (fenceMatch) {
+    try {
+      return JSON.parse(fenceMatch[1].trim());
+    } catch {
+      // continue
+    }
+  }
+  // try to find JSON object in text (first { ... } pair)
+  const objectMatch = /\{[\s\S]*\}/.exec(raw);
+  if (objectMatch) {
+    try {
+      return JSON.parse(objectMatch[0]);
+    } catch {
+      // continue
+    }
+  }
+  return undefined;
+}
+
 export function writeBag(
   bag: ExecutionBag,
   key: string,
@@ -28,15 +56,25 @@ export function writeBag(
     return;
   }
 
-  try {
-    const parsed = JSON.parse(raw);
-    bag[key] = schema.parse(parsed);
-  } catch {
-    bag[key] = { text: raw, _degraded: true } satisfies { text: string; _degraded: true };
-    console.warn(
-      `[bag] schema validation failed for key "${key}" (template: ${template}), stored as degraded text`,
-    );
+  const parsed = extractJsonFromText(raw);
+  if (parsed) {
+    try {
+      bag[key] = schema.parse(parsed);
+      return;
+    } catch {
+      // schema validation failed even though JSON was parsed
+    }
   }
+
+  bag[key] = { text: raw, _degraded: true } satisfies { text: string; _degraded: true };
+  const degradedKeys: string[] = Array.isArray(bag._degradedKeys) ? (bag._degradedKeys as string[]) : [];
+  if (!degradedKeys.includes(key)) {
+    degradedKeys.push(key);
+    bag._degradedKeys = degradedKeys;
+  }
+  console.warn(
+    `[bag] schema validation failed for key "${key}" (template: ${template}), stored as degraded text`,
+  );
 }
 
 /** Bag keys for orchestrator-subagent pattern: decompose → research → review → synthesize. */

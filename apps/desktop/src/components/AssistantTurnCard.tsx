@@ -1090,9 +1090,26 @@ function isContentArtifact(artifact: TurnArtifactAttachment): boolean {
 }
 
 function ReviewGateBanner({ gate }: { gate: ReviewGateInfo }) {
-  const { reviewVerdict, verificationBlocked, reviewReworkCount, reviewIssues } = gate;
+  const { reviewVerdict, verificationBlocked, reviewReworkCount, reviewIssues, degradedDelivery } = gate;
 
-  const config = {
+  const isDegraded = degradedDelivery && reviewVerdict !== "pass";
+  const config: {
+    icon: ReactNode;
+    label: string;
+    bg: string;
+    border: string;
+    text: string;
+    iconColor: string;
+  } = isDegraded ? {
+    icon: <AlertCircle size={16} />,
+    label: reviewVerdict === "needs_fix"
+      ? `降级交付 · 返工 ${reviewReworkCount}/2 轮未通过`
+      : "降级交付 · 核查阻塞",
+    bg: "bg-orange-50/70 dark:bg-orange-950/30",
+    border: "border-orange-200 dark:border-orange-800/50",
+    text: "text-orange-800 dark:text-orange-200",
+    iconColor: "text-orange-600 dark:text-orange-400",
+  } : {
     pass: {
       icon: <ShieldCheck size={16} />,
       label: "审查通过",

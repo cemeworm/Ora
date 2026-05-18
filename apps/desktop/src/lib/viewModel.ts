@@ -2146,6 +2146,7 @@ function extractReviewGate(output: unknown): AssistantTurnAttachment["reviewGate
     reviewIssues: Array.isArray(o.reviewIssues) ? o.reviewIssues.filter((i): i is string => typeof i === "string") : [],
     blockedNodeId: typeof o.blockedNodeId === "string" ? o.blockedNodeId : undefined,
     reviewFindings: extractReviewFindings(o.reviewFindings),
+    degradedDelivery: o.degradedDelivery === true,
   };
 }
 

@@ -70,3 +70,119 @@ describe("parseAgentTeamReviewVerdict", () => {
     });
   });
 });
+
+describe("structured TeamTaskPlan parsing", () => {
+  it("parses scope output with goal, successCriteria, scopeBoundaries", async () => {
+    const { writeBag } = await import("./mode-driver-helpers.js");
+    const bag: Record<string, unknown> = {};
+    const plan = {
+      text: "Research plan for company X",
+      goal: "Assess Company X's market position and growth prospects in the AI infrastructure market",
+      successCriteria: [
+        "Market size and growth rate sourced from at least 3 independent reports",
+        "Competitor landscape mapped with >= 5 named competitors",
+        "Confidence levels assigned to each key finding",
+      ],
+      steps: [
+        { id: "1", description: "Search for market reports" },
+        { id: "2", description: "Map competitor landscape" },
+      ],
+      scopeBoundaries: [
+        "No financial modeling or valuation",
+        "No primary research (surveys, interviews)",
+      ],
+    };
+    writeBag(bag, "scope", JSON.stringify(plan), "decompose");
+    expect(bag.scope).toMatchObject({
+      text: plan.text,
+      goal: plan.goal,
+      successCriteria: plan.successCriteria,
+      scopeBoundaries: plan.scopeBoundaries,
+    });
+    expect(bag._degradedKeys).toBeUndefined();
+  });
+
+  it("degrades scope output missing required text field", async () => {
+    const { writeBag } = await import("./mode-driver-helpers.js");
+    const bag: Record<string, unknown> = {};
+    writeBag(bag, "scope", JSON.stringify({ goal: "test" }), "decompose");
+    expect(bag.scope).toMatchObject({ _degraded: true });
+    expect(bag._degradedKeys).toEqual(["scope"]);
+  });
+
+  it("parses scope output even when wrapped in markdown fence", async () => {
+    const { writeBag } = await import("./mode-driver-helpers.js");
+    const bag: Record<string, unknown> = {};
+    const plan = { text: "ok", goal: "test", successCriteria: ["criterion 1"] };
+    writeBag(bag, "scope", "```json\n" + JSON.stringify(plan) + "\n```\n\nHere's the plan.", "decompose");
+    expect(bag.scope).toMatchObject({ goal: "test", successCriteria: ["criterion 1"] });
+    expect(bag._degradedKeys).toBeUndefined();
+  });
+});
+
+describe("writeBag JSON extraction", () => {
+  it("parses direct JSON and validates against schema", async () => {
+    const { writeBag } = await import("./mode-driver-helpers.js");
+    const bag: Record<string, unknown> = {};
+    writeBag(bag, "research", JSON.stringify({
+      text: "Found 3 sources",
+      findings: [{ claim: "Market is growing", source: "report.pdf" }],
+      confidence: "high",
+    }), "research");
+    expect(bag.research).toMatchObject({
+      text: "Found 3 sources",
+      findings: [{ claim: "Market is growing", source: "report.pdf" }],
+      confidence: "high",
+    });
+    expect(bag._degradedKeys).toBeUndefined();
+  });
+
+  it("extracts JSON from markdown code fence", async () => {
+    const { writeBag } = await import("./mode-driver-helpers.js");
+    const bag: Record<string, unknown> = {};
+    writeBag(bag, "research",
+      "Here is my research:\n\n```json\n" +
+      JSON.stringify({ text: "ok", findings: [], confidence: "low" }) +
+      "\n```\n\nLet me know if you need more.",
+      "research",
+    );
+    expect(bag.research).toMatchObject({
+      text: "ok",
+      findings: [],
+      confidence: "low",
+    });
+    expect(bag._degradedKeys).toBeUndefined();
+  });
+
+  it("stores degraded when JSON is unparseable", async () => {
+    const { writeBag } = await import("./mode-driver-helpers.js");
+    const bag: Record<string, unknown> = {};
+    writeBag(bag, "research", "Just some plain text without any JSON at all.", "research");
+    expect(bag.research).toMatchObject({
+      text: "Just some plain text without any JSON at all.",
+      _degraded: true,
+    });
+    expect(bag._degradedKeys).toEqual(["research"]);
+  });
+
+  it("stores degraded when schema validation fails", async () => {
+    const { writeBag } = await import("./mode-driver-helpers.js");
+    const bag: Record<string, unknown> = {};
+    writeBag(bag, "research", JSON.stringify({ text: "ok" }), "research");
+    expect(bag.research).toMatchObject({
+      text: "ok",
+    });
+    // researchOutputSchema requires text, findings/confidence are optional — so this should pass
+    expect(bag._degradedKeys).toBeUndefined();
+  });
+
+  it("accumulates multiple degraded keys", async () => {
+    const { writeBag } = await import("./mode-driver-helpers.js");
+    const bag: Record<string, unknown> = {};
+    writeBag(bag, "research", "no json here", "research");
+    writeBag(bag, "build", "also not json", "build");
+    expect(bag._degradedKeys).toEqual(["research", "build"]);
+    expect(bag.research).toMatchObject({ _degraded: true });
+    expect(bag.build).toMatchObject({ _degraded: true });
+  });
+});

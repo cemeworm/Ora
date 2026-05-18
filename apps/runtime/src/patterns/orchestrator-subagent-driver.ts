@@ -109,7 +109,7 @@ async function executeStagedTranscriptMode(input: ModeExecutionInput): Promise<P
   const groupId = layout?.groupId ?? modeSpec.id;
   const groupLabel = layout?.groupLabel ?? modeSpec.label;
   const nodesById = new Map(nodes.map((node) => [node.id, node]));
-  const bag: ExecutionBag = { prompt };
+  const bag: ExecutionBag = { prompt, degradedDelivery: "" };
   const stageOutputs: Array<{ speakerLabel: string; content: string }> = [];
   let completedNodes = 0;
   let previousStageMessageId: string | undefined;
@@ -291,27 +291,51 @@ async function executeStagedTranscriptMode(input: ModeExecutionInput): Promise<P
     }
 
     if (gatedReviewVerdict) {
-      const remainingNodes = nodes.slice(nodes.findIndex((candidate) => candidate.id === node.id) + 1);
-      for (const remaining of remainingNodes) {
+      const currentIndex = nodes.findIndex((candidate) => candidate.id === node.id);
+      const remainingNodes = nodes.slice(currentIndex + 1);
+      const finalNode = remainingNodes.at(-1);
+      const intermediateNodes = finalNode ? remainingNodes.slice(0, -1) : remainingNodes;
+
+      for (const remaining of intermediateNodes) {
         context.setPlanStatus(remaining.id, "skipped");
       }
+
+      if (finalNode) {
+        const degradedReason =
+          gatedReviewVerdict.verdict.verdict === "needs_fix"
+            ? `核查未通过：${(bag.reviewReworkCount ?? 0)} 轮返工后仍未解决所有阻塞问题。`
+            : "核查阻塞：缺少关键信息或外部条件不满足。";
+        bag.degradedDelivery = `${degradedReason} 以下输出为降级交付。必须明确标注所有未经核查的推断、低置信度来源和未解决的阻塞问题。不要假装验证已通过。`;
+        context.setPlanStatus(finalNode.id, "running");
+        const finalReworkRound = typeof bag.reviewReworkCount === "number" ? bag.reviewReworkCount : 0;
+        await executeStagedNode(finalNode, {
+          reworkRound: finalReworkRound,
+          reviewerOutput: asText(gatedReviewVerdict.output),
+        });
+        context.setPlanStatus(finalNode.id, "done");
+      }
+
       context.setQueueSummary({
         pending: 0,
         inProgress: 0,
         completed: totalActiveNodes,
       });
+
+      const degradedText = stageOutputs.at(-1)?.content ?? asText(gatedReviewVerdict.output);
       return {
         output: {
-          text: asText(gatedReviewVerdict.output),
+          text: degradedText,
           pattern: modeSpec.family,
           modeId: modeSpec.id,
           stages: stageOutputs,
           reviewVerdict: gatedReviewVerdict.verdict.verdict,
           verificationBlocked: true,
+          degradedDelivery: true,
           blockedNodeId: gatedReviewVerdict.nodeId,
           reviewIssues: gatedReviewVerdict.verdict.issues,
           reviewReworkCount: bag.reviewReworkCount ?? 0,
           reviewFindings: bag.reviewFindings,
+          degradedKeys: bag._degradedKeys,
         },
       };
     }
@@ -335,6 +359,7 @@ async function executeStagedTranscriptMode(input: ModeExecutionInput): Promise<P
       reviewIssues: bag.reviewIssues,
       reviewReworkCount: bag.reviewReworkCount ?? 0,
       reviewFindings: bag.reviewFindings,
+      degradedKeys: bag._degradedKeys,
     },
   };
 }

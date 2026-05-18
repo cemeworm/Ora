@@ -361,6 +361,7 @@ export interface ReviewGateInfo {
   reviewIssues: string[];
   blockedNodeId?: string;
   reviewFindings?: ReviewGateFinding[];
+  degradedDelivery?: boolean;
 }
 
 export interface AssistantTurnAttachment {

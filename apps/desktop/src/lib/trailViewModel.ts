@@ -985,6 +985,20 @@ function checkVerificationBlocked(ctx: { snapshot: OraStateSnapshot }): TrailFin
   }];
 }
 
+function checkDegradedOutputs(ctx: { snapshot: OraStateSnapshot }): TrailFinding[] {
+  const output = ctx.snapshot.output as Record<string, unknown> | undefined;
+  const degradedKeys = Array.isArray(output?.degradedKeys) ? output.degradedKeys.filter((k): k is string => typeof k === "string") : [];
+  if (degradedKeys.length === 0) return [];
+  return [{
+    id: "bag.degraded-outputs",
+    severity: "warning",
+    title: `${degradedKeys.length} 个产物结构化解析失败`,
+    message: `以下产出的 JSON 解析或 schema 验证失败，已降级为纯文本：${degradedKeys.join("、")}。考虑增强对应 prompt 的 JSON 输出要求。`,
+    targetType: "run",
+    suggestedTab: "overview",
+  }];
+}
+
 const FINDING_CHECKS: FindingCheck[] = [
   checkRunFailure,
   checkStrategyDegradation,
@@ -1003,6 +1017,7 @@ const FINDING_CHECKS: FindingCheck[] = [
   checkAgentCommunication,
   checkToolBudgetExceeded,
   checkVerificationBlocked,
+  checkDegradedOutputs,
 ];
 
 export function buildPendingApprovalItems(snapshot: OraStateSnapshot): PendingApprovalItem[] {

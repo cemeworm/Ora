@@ -325,7 +325,7 @@ export function ChatView({
         {showWelcome && (
           <div className="pointer-events-none absolute left-0 right-0 top-[calc(50%-160px)] z-10 flex justify-center px-6">
             <div className="flex w-full max-w-container-md flex-col items-center gap-2 text-center">
-              <div className="flex items-center gap-2 text-2xl font-bold">
+<div className="flex items-center gap-2 text-2xl font-bold">
                 <span>{getWelcomeGreeting(new Date(), state.language, projectLabel)}</span>
               </div>
             </div>

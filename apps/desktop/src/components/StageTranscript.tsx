@@ -572,8 +572,16 @@ function RoleLanesRenderer({ group, reviewGate }: { group: StageTranscriptGroup;
 }
 
 function VerdictLaneBadge({ gate }: { gate: ReviewGateInfo }) {
-  const { reviewVerdict, reviewReworkCount, reviewIssues, reviewFindings } = gate;
-  const config = {
+  const { reviewVerdict, reviewReworkCount, reviewIssues, reviewFindings, degradedDelivery } = gate;
+
+  const isDegraded = degradedDelivery && reviewVerdict !== "pass";
+  const config = isDegraded ? {
+    icon: <AlertCircle size={12} />,
+    label: reviewVerdict === "needs_fix"
+      ? `降级交付 · 返工${reviewReworkCount}轮未通过`
+      : "降级交付 · 核查阻塞",
+    className: "bg-orange-100 text-orange-800 border-orange-200 dark:bg-orange-900/30 dark:text-orange-300 dark:border-orange-700/50",
+  } : {
     pass: {
       icon: <ShieldCheck size={12} />,
       label: "通过",

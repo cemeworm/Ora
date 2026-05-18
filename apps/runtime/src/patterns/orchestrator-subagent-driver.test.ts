@@ -110,16 +110,22 @@ describe("executeOrchestratorSubagent deep research verification gate", () => {
       definition: modeSpecToPatternDefinition(modeSpec!),
     });
 
-    expect(callLog).toHaveLength(10);
+    expect(callLog).toHaveLength(17);
     expect(callLog[0]).toContain("ora:");
     expect(callLog[0]).toContain("规划");
+    // 4 rework targets × (1 initial + 2 rework rounds) = 3 each
     expect(callLog.filter((entry) => entry.includes("researcher:研究员 收集")).length).toBe(3);
     expect(callLog.filter((entry) => entry.includes("researcher:研究员 分析")).length).toBe(3);
+    expect(callLog.filter((entry) => entry.includes("缺口分析员")).length).toBe(3);
+    expect(callLog.filter((entry) => entry.includes("证据整理员")).length).toBe(3);
+    // verify runs 3 times (initial + 2 rework)
     expect(callLog.filter((entry) => entry.includes("fact_checker:核查员 核查")).length).toBe(3);
-    expect(callLog.some((entry) => entry.includes("ora:综合报告"))).toBe(false);
+    // synthesize runs in degraded delivery mode
+    expect(callLog.some((entry) => entry.includes("ora:综合报告"))).toBe(true);
     expect(result.output).toMatchObject({
       reviewVerdict: "needs_fix",
       verificationBlocked: true,
+      degradedDelivery: true,
       blockedNodeId: "verify",
       reviewReworkCount: 2,
     });
@@ -315,12 +321,13 @@ describe("executeOrchestratorSubagent code_development review gate", () => {
     expect(callLog.filter((entry) => entry.includes("builder:Builder Implement")).length).toBe(3);
     // reviewer runs 3 times: initial + 2 rework rounds
     expect(callLog.filter((entry) => entry.includes("reviewer:Reviewer Review")).length).toBe(3);
-    // debug and handoff should be skipped
+    // debug is skipped (intermediate), handoff runs in degraded mode
     expect(callLog.some((entry) => entry.includes("debugger"))).toBe(false);
-    expect(callLog.some((entry) => entry.includes("ora:Ora Finalize"))).toBe(false);
+    expect(callLog.some((entry) => entry.includes("ora:Ora Finalize"))).toBe(true);
     expect(result.output).toMatchObject({
       reviewVerdict: "needs_fix",
       verificationBlocked: true,
+      degradedDelivery: true,
       blockedNodeId: "review",
       reviewReworkCount: 2,
     });
@@ -610,6 +617,125 @@ function createFullReworkFallbackContext(callLog: string[]): PatternExecutionCon
     currentSharedState: () => sharedStateSummary,
   };
 }
+
+// --- run-0103 regression: tool boundary ---
+
+function createToolIdsCaptureContext(
+  callLog: string[],
+  toolIdsByNode: Map<string, string[] | undefined>,
+): PatternExecutionContext {
+  const queueSummary: QueueSummary = { mode: "backlog", pending: 0, inProgress: 0, completed: 0, topics: [] };
+  const sharedStateSummary: SharedStateSummary = { enabled: false, storeKind: "none", version: 0, entries: [] };
+  const busStats: BusStats = { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} };
+  return {
+    projectId: "test-project",
+    queueSummary,
+    sharedStateSummary,
+    busStats,
+    systemPrompt: (extra) => extra,
+    setPlanStatus: () => {},
+    setQueueSummary: (patch) => Object.assign(queueSummary, patch),
+    checkpointNode: () => {},
+    runRecoverableNode: async (_params, execute) => ({ status: "completed", output: await execute() }),
+    runDelegatedTask: async (_params, execute) => execute(),
+    ensureClarification: async () => undefined,
+    claimWorker: () => {},
+    releaseWorker: () => {},
+    agentLabel: (agentId) => agentId,
+    callAgent: async ({ agentId, title, toolIds }) => {
+      callLog.push(`${agentId}:${title}`);
+      toolIdsByNode.set(title, toolIds);
+      if (agentId === "fact_checker") {
+        return "Verdict: PASS";
+      }
+      return `${agentId}:${title}`;
+    },
+    remember: () => {},
+    captureMemory: () => {},
+    publishArtifact: () => {},
+    publishMessage: () => {},
+    routeMessage: () => {},
+    emitAgentMessage: () => ({ id: `msg-${callLog.length}` }),
+    writeSharedState: () => {},
+    currentSharedState: () => sharedStateSummary,
+  };
+}
+
+describe("deep research tool boundary regression (run-0103)", () => {
+  it("scope and synthesize nodes have toolIds: [] in mode preset", () => {
+    const modeSpec = getModePreset(DEEP_RESEARCH_MODE_ID);
+    expect(modeSpec).toBeDefined();
+    const scopeNode = modeSpec!.nodes.find((n) => n.id === "scope");
+    const synthesizeNode = modeSpec!.nodes.find((n) => n.id === "synthesize");
+    const gatherNode = modeSpec!.nodes.find((n) => n.id === "gather");
+    expect(scopeNode).toBeDefined();
+    expect(synthesizeNode).toBeDefined();
+    expect(gatherNode).toBeDefined();
+    // scope and synthesize must block web tools
+    const scopeConfig = scopeNode!.config as { toolIds?: unknown };
+    const synthConfig = synthesizeNode!.config as { toolIds?: unknown };
+    const gatherConfig = gatherNode!.config as { toolIds?: unknown };
+    expect(Array.isArray(scopeConfig.toolIds) && scopeConfig.toolIds.length === 0).toBe(true);
+    expect(Array.isArray(synthConfig.toolIds) && synthConfig.toolIds.length === 0).toBe(true);
+    // gather must have NO tool restriction (undefined or missing)
+    expect(gatherConfig.toolIds).toBeUndefined();
+  });
+
+  it("scope receives empty toolIds and gather receives full tools during execution", async () => {
+    const modeSpec = getModePreset(DEEP_RESEARCH_MODE_ID);
+    expect(modeSpec).toBeDefined();
+    const callLog: string[] = [];
+    const toolIdsByNode = new Map<string, string[] | undefined>();
+    const context = createToolIdsCaptureContext(callLog, toolIdsByNode);
+    const config: RunConfig = {
+      pattern: "orchestrator_subagent",
+      modeId: DEEP_RESEARCH_MODE_ID,
+      modeSelection: "manual",
+      profileIds: [],
+      skillIds: [],
+      toolIds: [],
+      approvalMode: "high_risk_only",
+      permissionMode: "auto_review",
+      patternOptions: {},
+      metadata: {},
+      causalInterventionLevel: "record_only",
+      deterministicSeed: "test-seed",
+    };
+
+    await executeOrchestratorSubagent({
+      context,
+      prompt: "Research a company",
+      config,
+      modeSpec: modeSpec!,
+      definition: modeSpecToPatternDefinition(modeSpec!),
+    });
+
+    // scope/planning gets empty toolIds
+    const scopeEntry = [...toolIdsByNode.entries()].find(([title]) => title.includes("规划"));
+    expect(scopeEntry).toBeDefined();
+    expect(scopeEntry![1]).toEqual([]);
+
+    // gather/research gets undefined toolIds (no restriction = all tools available)
+    const gatherEntry = [...toolIdsByNode.entries()].find(([title]) => title.includes("收集"));
+    expect(gatherEntry).toBeDefined();
+    expect(gatherEntry![1]).toBeUndefined();
+
+    // gap_analysis gets empty toolIds
+    const gapEntry = [...toolIdsByNode.entries()].find(([title]) => title.includes("缺口"));
+    expect(gapEntry).toBeDefined();
+    expect(gapEntry![1]).toEqual([]);
+
+    // compile gets empty toolIds
+    const compileEntry = [...toolIdsByNode.entries()].find(([title]) => title.includes("整理"));
+    expect(compileEntry).toBeDefined();
+    expect(compileEntry![1]).toEqual([]);
+
+    // synthesize gets empty toolIds
+    const synthEntry = [...toolIdsByNode.entries()].find(([title]) => title.includes("综合报告"));
+    expect(synthEntry).toBeDefined();
+    expect(synthEntry![1]).toEqual([]);
+  });
+});
 
 describe("deep research targeted rework routing", () => {
   it("only re-runs gather when verdict specifies Rework: gather", async () => {

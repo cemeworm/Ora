@@ -16,7 +16,10 @@ import { z } from "zod";
 
 export const planOutputSchema = z.object({
   text: z.string(),
+  goal: z.string().optional(),
+  successCriteria: z.array(z.string()).optional(),
   steps: z.array(z.object({ id: z.string(), description: z.string() })).optional(),
+  scopeBoundaries: z.array(z.string()).optional(),
   researchNeeded: z.boolean().optional(),
   reviewNeeded: z.boolean().optional(),
 });
@@ -49,7 +52,10 @@ export const synthesisOutputSchema = z.object({
 
 export const triageOutputSchema = z.object({
   text: z.string(),
+  goal: z.string().optional(),
+  successCriteria: z.array(z.string()).optional(),
   backlog: z.array(z.object({ id: z.string(), owner: z.string(), description: z.string() })).optional(),
+  scopeBoundaries: z.array(z.string()).optional(),
 });
 
 export const buildOutputSchema = z.object({
