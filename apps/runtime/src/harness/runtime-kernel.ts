@@ -139,6 +139,7 @@ import { activePlanStepId, advancePlanListFromLifecycle, planListUpdatedPayload 
 import { classifyContinuationDispatch } from "../run-continuation-dispatcher.js";
 import { DIAGNOSTIC_FAILURE_SYMBOL } from "../run-kernel-execution-service.js";
 import { createResumeCheckpoint } from "../run-resume-mutation.js";
+import { SkillAutoGenService } from "./skill-auto-gen.js";
 import {
   injectRootAgentTopology,
   rootAgentProfile,
@@ -178,6 +179,8 @@ export interface RuntimeKernelOptions {
   /** auto_review 模式自动批准时调用，携带被批准的 action IDs。
       实现方应写入 gate.resolved ledger entries。 */
   onApprovalAutoResolved?: (actionIds: string[]) => void;
+  autoGenService?: SkillAutoGenService;
+  autoGenStatePath?: string;
 }
 
 class KernelRuntimeContext {
@@ -710,6 +713,9 @@ export async function executeRuntimeKernel(
   const startedAt = now();
   const projectId = input.projectId ?? "local-project";
   const skillRegistry = options.skillRegistry ?? new RuntimeSkillRegistry();
+  const autoGenService = options.autoGenService ?? new SkillAutoGenService(skillRegistry, {
+    statePath: options.autoGenStatePath ?? path.join(os.homedir(), ".ora", "skills", "auto-gen-state.json"),
+  });
   const toolRegistry = options.toolRegistry ?? new RuntimeToolRegistry();
   const promptCache = options.promptCache ?? new PromptSectionCache({
     maxEntries: 200,
@@ -2206,6 +2212,7 @@ export async function executeRuntimeKernel(
         });
         skillRegistry.flushTelemetry();
         skillRegistry.evaluateCuratorIfDue();
+        autoGenService.analyzeRun(runId, "interrupted", kernelRuntimeContext.toolCalls);
         promptCache.saveSnapshot();
         return kernelRuntimeContext.assembleFinalSnapshot({
           status: "interrupted",
@@ -2308,8 +2315,14 @@ export async function executeRuntimeKernel(
 
     skillRegistry.flushTelemetry();
     skillRegistry.evaluateCuratorIfDue();
+    const autoGenAction = autoGenService.analyzeRun(runId, "succeeded", kernelRuntimeContext.toolCalls);
     promptCache.saveSnapshot();
     emit("run.done", { status: "succeeded", output });
+    if (autoGenAction) {
+      autoGenService.executeCreation(autoGenAction, config).catch(() => {
+        // fire-and-forget: errors are logged inside executeCreation
+      });
+    }
     const checkpoint = createResumeCheckpoint({
       runId,
       index: 0,
@@ -2824,7 +2837,13 @@ export async function executeRuntimeKernel(
 
   skillRegistry.flushTelemetry();
   skillRegistry.evaluateCuratorIfDue();
+  const autoGenAction = autoGenService.analyzeRun(runId, snapshot.status, kernelRuntimeContext.toolCalls);
   promptCache.saveSnapshot();
+  if (autoGenAction) {
+    autoGenService.executeCreation(autoGenAction, config).catch(() => {
+      // fire-and-forget: errors are logged inside executeCreation
+    });
+  }
 
   return {
     snapshot,
