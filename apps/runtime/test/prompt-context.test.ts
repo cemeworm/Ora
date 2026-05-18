@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { buildAgentPromptContext, temporalContextPrompt } from "../src/harness/prompt-context.js";
 
 describe("prompt temporal context", () => {
-  it("anchors the prompt to the run timestamp and timezone", () => {
+  it("returns stable temporal guidance instead of volatile timestamps", () => {
     const temporalContext = temporalContextPrompt({
       createdAt: Date.parse("2026-05-09T01:23:45.000Z"),
       context: {
@@ -13,15 +13,13 @@ describe("prompt temporal context", () => {
       },
     });
 
-    expect(temporalContext).toContain("Current date: 2026-05-09");
-    expect(temporalContext).toContain("Current local time: 2026-05-09 09:23:45");
-    expect(temporalContext).toContain("Timezone: Asia/Shanghai");
-    expect(temporalContext).toContain("Locale: zh-CN");
-    expect(temporalContext).toContain("Current UTC time: 2026-05-09T01:23:45.000Z");
+    expect(temporalContext).toContain("Temporal reasoning protocol:");
+    expect(temporalContext).toContain("not embedded as durable system facts");
+    expect(temporalContext).not.toContain("Current date: 2026-05-09");
     expect(temporalContext).toContain("latest, recent, today, this week");
   });
 
-  it("includes temporal context in the assembled system prompt", () => {
+  it("keeps temporal guidance inside the assembled stable system prompt", () => {
     const prompt = buildAgentPromptContext({
       agentId: "ora",
       stageSystem: "Answer the user.",
@@ -33,8 +31,9 @@ describe("prompt temporal context", () => {
 
     expect(prompt.sections.some((section) => section.id === "temporal_context")).toBe(true);
     expect(prompt.stablePrefix).toContain("Ora operating protocol:");
-    expect(prompt.system).toContain("Current temporal context:");
-    expect(prompt.system).toContain("Current date: 2026-05-09");
+    expect(prompt.stablePrefix).toContain("Temporal reasoning protocol:");
+    expect(prompt.system).toContain("Temporal reasoning protocol:");
+    expect(prompt.system).not.toContain("Current date: 2026-05-09");
   });
 
   it("includes project instructions when provided", () => {

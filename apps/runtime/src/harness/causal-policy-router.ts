@@ -172,7 +172,7 @@ export function routeIntervention(input: PolicyRouterInput): PolicyRouterOutput 
     keyUncertainties: keyUncertainties.length > 0 ? keyUncertainties : (input.taskState?.keyUncertainties ?? []),
     constraints: input.taskState?.constraints ?? [],
     candidateInterventions: input.taskState?.candidateInterventions ?? [],
-    chosenIntervention: input.taskState?.chosenIntervention,
+    chosenIntervention: action,
     alternativeInterventions: input.taskState?.alternativeInterventions ?? [],
     counterfactualRiskIfSkipped: input.taskState?.counterfactualRiskIfSkipped ?? "",
     expectedOutcomeLift: input.taskState?.expectedOutcomeLift ?? "",
@@ -181,6 +181,7 @@ export function routeIntervention(input: PolicyRouterInput): PolicyRouterOutput 
   };
 
   const alternativeInterventions = computeAlternativeInterventions(action, input);
+  taskState.alternativeInterventions = alternativeInterventions;
 
   const decisionRecord: CausalDecisionRecord = {
     decisionId,

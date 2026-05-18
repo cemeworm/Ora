@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { AgentProfile, SkillDescriptor } from "@cemeworm/shared";
 import { buildAgentPromptContext, userClarificationContextPrompt } from "../src/harness/prompt-context.js";
+import { turnLocalMetadataGuidancePrompt } from "../src/harness/runtime-prompts.js";
 
 const availableSkills: SkillDescriptor[] = [
   {
@@ -53,6 +54,7 @@ describe("buildAgentPromptContext", () => {
       customPersona: "Custom Agent Persona: research-pro\nSOUL:\nBe rigorous.",
       systemAgentOverride: "System Agent Override: researcher\nRole:\nBe stricter.",
       stageSystem: "You are the research subagent. Return concise findings.",
+      turnLocalMetadataGuidance: turnLocalMetadataGuidancePrompt(),
       workspaceContext: "Ora project workspace context:\n- Root path: /repo",
       clarificationContext: "Resolved clarification:\n- Use staging.",
       memoryContext: "Use long-term memory when relevant.",
@@ -68,6 +70,7 @@ describe("buildAgentPromptContext", () => {
       "agent_system_prompt",
       "agent_profile",
       "operating_protocol",
+      "turn_local_metadata_guidance",
       "tool_protocol",
       "skills_guidance",
       "available_skills",
@@ -81,6 +84,7 @@ describe("buildAgentPromptContext", () => {
     expect(context.stablePrefix).toContain("Custom Agent Persona: research-pro");
     expect(context.stablePrefix).toContain("Ora operating protocol:");
     expect(context.stablePrefix).toContain("Clarify first when missing or ambiguous requirements");
+    expect(context.stablePrefix).toContain("Turn-local metadata protocol:");
     expect(context.stablePrefix).toContain("Workspace tool protocol:");
     expect(context.stablePrefix).toContain("<available_skills>");
     expect(context.stablePrefix).not.toContain("Ora project workspace context:");
@@ -105,12 +109,13 @@ describe("buildAgentPromptContext", () => {
     const context = buildAgentPromptContext({
       agentId: "solo_agent",
       stageSystem: "You are the solo agent.",
+      turnLocalMetadataGuidance: turnLocalMetadataGuidancePrompt(),
       availableSkills: [availableSkills[1]!],
       toolIds: ["file.read"],
       skillSnippets: ["  "],
     });
 
-    expect(context.sections.map((section) => section.id)).toEqual(["operating_protocol", "skills_guidance", "stage_instructions"]);
+    expect(context.sections.map((section) => section.id)).toEqual(["operating_protocol", "turn_local_metadata_guidance", "skills_guidance", "stage_instructions"]);
     expect(context.stablePrefix).toContain("Ora operating protocol:");
     expect(context.system).toContain("Ora operating protocol:");
     expect(context.system).toContain("You are the solo agent.");
@@ -122,6 +127,7 @@ describe("buildAgentPromptContext", () => {
       profile,
       systemAgentOverride: "System Agent Override: researcher\nSOUL:\nBe skeptical.",
       stageSystem: "You are the researcher.",
+      turnLocalMetadataGuidance: turnLocalMetadataGuidancePrompt(),
       workspaceContext: "Ora project workspace context:\n- Root path: /repo",
       clarificationContext: userClarificationContextPrompt({
         clarifications: { environment: "staging" },

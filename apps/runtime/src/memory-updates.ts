@@ -5,11 +5,14 @@ import { ModeSelectionDeps, resolveMemoryPolicy } from "./mode-selection.js";
 import { invokeRunProvider, type ModelMessage } from "./providers/index.js";
 import { assistantTextForRun } from "./session-title.js";
 import type { ShortTermMemoryJournal } from "./memory-journal.js";
+import type { ScenarioStore } from "./memory-scenarios.js";
 
 export interface MemoryUpdateDeps {
   longTermMemory: LongTermMemoryManager;
   longTermMemoryQueue: LongTermMemoryUpdateQueue;
   journal?: ShortTermMemoryJournal;
+  scenarioStore?: ScenarioStore;
+  projectScenarioStore?: (projectId: string) => ScenarioStore;
   modeSelectionDeps: () => ModeSelectionDeps;
   buildConversationMessages: (sessionId: string, currentPrompt: string, excludeRunId?: string) => ModelMessage[];
   getCachedRun: (runId: string) => StateSnapshot | undefined;
@@ -75,6 +78,18 @@ export async function processLongTermMemoryUpdate(
         category: fact.category,
         confidence: fact.confidence,
       });
+    }
+  }
+
+  if (factsAdded.length > 0) {
+    const scenarioStore = projectId
+      ? deps.projectScenarioStore?.(projectId)
+      : deps.scenarioStore;
+    if (scenarioStore) {
+      scenarioStore.compileFromFacts(
+        manager.get().facts,
+        deps.journal?.readRecent(200),
+      );
     }
   }
 

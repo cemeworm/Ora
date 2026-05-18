@@ -1,4 +1,4 @@
-import type { ModeSpec, StateSnapshot } from "@cemeworm/shared";
+import type { ModeSpec, StateSnapshot, UserTaskInput } from "@cemeworm/shared";
 import { fetchLangfusePrompt } from "../telemetry/langfuse.js";
 
 export async function resolveModeSystemPrompt(mode: ModeSpec): Promise<string | undefined> {
@@ -54,14 +54,93 @@ export function summarizeProgressPayload(payload: unknown): unknown {
 }
 
 export function userFacingLanguagePrompt(userPrompt: string): string {
-  const excerpt = userPrompt.trim().replace(/\s+/g, " ").slice(0, 400);
+  void userPrompt;
   return [
     "User-facing output language:",
     "- User-facing output follows current user message language.",
     "- If the current user message explicitly asks for a response language, obey that explicit request.",
     "- Keep code, commands, paths, logs, identifiers, quoted text, and proper nouns in their original language unless the user asks to translate them.",
-    excerpt ? `- Current user message excerpt: ${JSON.stringify(excerpt)}` : undefined,
   ].filter(Boolean).join("\n");
+}
+
+export function turnLocalMetadataGuidancePrompt(): string {
+  return [
+    "Turn-local metadata protocol:",
+    "- Current-turn volatile context is delivered in a <turn_local_metadata> block prepended to the latest user message.",
+    "- Treat that block as high-priority context for the current turn, not as a durable system instruction.",
+    "- If exact current time, date, or timezone matters, prefer a runtime time tool over assumptions.",
+    "- For freshness-sensitive questions, verify with tools and cite exact dates in the answer.",
+  ].join("\n");
+}
+
+export function turnLocalMetadataPrompt(params: {
+  createdAt?: number;
+  context?: UserTaskInput["context"];
+  now?: () => number;
+}): string | undefined {
+  const lines: string[] = [];
+  const timestamp = Number.isFinite(params.createdAt)
+    ? params.createdAt
+    : params.now
+      ? params.now()
+      : undefined;
+
+  if (timestamp !== undefined) {
+    const timezone = resolvePromptTimezone(params.context);
+    const locale = resolvePromptLocale(params.context);
+    lines.push(`Current local date: ${formatZonedDate(timestamp, timezone)}`);
+    lines.push(`Current local time: ${formatZonedDateTime(timestamp, timezone)}`);
+    lines.push(`Timezone: ${timezone}`);
+    if (locale) {
+      lines.push(`Locale: ${locale}`);
+    }
+    lines.push(`Current UTC time: ${new Date(timestamp).toISOString()}`);
+  }
+
+  const clarifications = turnLocalClarifications(params.context);
+  if (clarifications.length > 0) {
+    lines.push("Clarifications:");
+    lines.push(...clarifications.map((entry) => `- ${entry}`));
+  }
+
+  const attachedProjectFiles = attachedProjectFilesTurnMetadata(params.context?.attachedProjectFiles);
+  if (attachedProjectFiles.length > 0) {
+    lines.push("Attached project files:");
+    lines.push(...attachedProjectFiles.map((entry) => `- ${entry}`));
+  }
+
+  const attachedLocalFiles = attachedLocalFilesTurnMetadata(params.context?.attachedLocalFiles);
+  if (attachedLocalFiles.length > 0) {
+    lines.push("Attached local files:");
+    lines.push(...attachedLocalFiles.map((entry) => `- ${entry}`));
+  }
+
+  const attachedImages = attachedImagesTurnMetadata(params.context?.attachedImages);
+  if (attachedImages.length > 0) {
+    lines.push("Attached images:");
+    lines.push(...attachedImages.map((entry) => `- ${entry}`));
+  }
+
+  if (lines.length === 0) {
+    return undefined;
+  }
+
+  return [
+    "<turn_local_metadata>",
+    ...lines,
+    "</turn_local_metadata>",
+  ].join("\n");
+}
+
+export function promptWithTurnLocalMetadata(prompt: string, turnLocalMetadata: string | undefined): string {
+  const trimmedPrompt = prompt.trim();
+  if (!turnLocalMetadata?.trim()) {
+    return trimmedPrompt;
+  }
+  if (!trimmedPrompt) {
+    return turnLocalMetadata.trim();
+  }
+  return `${turnLocalMetadata.trim()}\n${trimmedPrompt}`;
 }
 
 export function workspaceSystemPrompt(workspace: unknown): string | undefined {
@@ -166,6 +245,17 @@ export function attachedProjectFilesSystemPrompt(attachedFiles: unknown): string
   ].join("\n");
 }
 
+export function attachedProjectFilesTurnMetadata(attachedFiles: unknown): string[] {
+  if (!Array.isArray(attachedFiles)) {
+    return [];
+  }
+  return attachedFiles
+    .map(readAttachedProjectFile)
+    .filter((file): file is AttachedProjectFilePromptEntry => Boolean(file))
+    .slice(0, 12)
+    .map((file) => `${file.name} (${file.mimeType}, ${file.sizeBytes} bytes) at ${file.path}`);
+}
+
 export function attachedImagesSystemPrompt(attachedImages: unknown): string | undefined {
   if (!Array.isArray(attachedImages) || attachedImages.length === 0) {
     return undefined;
@@ -191,6 +281,17 @@ export function attachedImagesSystemPrompt(attachedImages: unknown): string | un
     "These images are already available in the current message; do not ask the user to upload them again.",
     "</attached_images>",
   ].join("\n");
+}
+
+export function attachedImagesTurnMetadata(attachedImages: unknown): string[] {
+  if (!Array.isArray(attachedImages)) {
+    return [];
+  }
+  return attachedImages
+    .map(readAttachedImage)
+    .filter((img): img is AttachedImagePromptEntry => Boolean(img))
+    .slice(0, 12)
+    .map((img) => `Image (${img.mimeType}, ${img.sizeBytes} bytes)`);
 }
 
 interface AttachedImagePromptEntry {
@@ -254,6 +355,17 @@ export function attachedLocalFilesSystemPrompt(attachedFiles: unknown): string |
     "Use the embedded content above when answering questions about these files.",
     "</attached_local_files>",
   ].join("\n");
+}
+
+export function attachedLocalFilesTurnMetadata(attachedFiles: unknown): string[] {
+  if (!Array.isArray(attachedFiles)) {
+    return [];
+  }
+  return attachedFiles
+    .map(readAttachedLocalFile)
+    .filter((file): file is AttachedLocalFilePromptEntry => Boolean(file))
+    .slice(0, 12)
+    .map((file) => `${file.name} (${file.mimeType}, ${file.sizeBytes} bytes) at ${file.path}`);
 }
 
 interface AttachedProjectFilePromptEntry {
@@ -325,6 +437,98 @@ function readAttachedLocalFile(value: unknown): AttachedLocalFilePromptEntry | u
     content,
     truncated: record.truncated === true,
   };
+}
+
+function turnLocalClarifications(context: UserTaskInput["context"] | undefined): string[] {
+  const clarifications = context?.clarifications;
+  if (!clarifications || typeof clarifications !== "object" || clarifications === null) {
+    return [];
+  }
+  return Object.entries(clarifications as Record<string, unknown>)
+    .filter(([, value]) => value !== undefined && value !== null && String(value).trim().length > 0)
+    .slice(0, 8)
+    .map(([key, value]) => `${key}: ${String(value).trim().slice(0, 1000)}`);
+}
+
+function resolvePromptTimezone(context: UserTaskInput["context"] | undefined): string {
+  const candidates = [
+    readNestedString(context, ["userTemporalContext", "timezone"]),
+    readString(context?.timezone),
+    readString(context?.timeZone),
+  ];
+  for (const candidate of candidates) {
+    if (candidate && isValidTimezone(candidate)) {
+      return candidate;
+    }
+  }
+  const localTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  return isValidTimezone(localTimezone) ? localTimezone : "UTC";
+}
+
+function resolvePromptLocale(context: UserTaskInput["context"] | undefined): string | undefined {
+  return (
+    readNestedString(context, ["userTemporalContext", "locale"])
+    ?? readString(context?.locale)
+    ?? readString(context?.language)
+  );
+}
+
+function formatZonedDate(timestamp: number, timezone: string): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date(timestamp));
+  return `${partValue(parts, "year")}-${partValue(parts, "month")}-${partValue(parts, "day")}`;
+}
+
+function formatZonedDateTime(timestamp: number, timezone: string): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).formatToParts(new Date(timestamp));
+  return [
+    `${partValue(parts, "year")}-${partValue(parts, "month")}-${partValue(parts, "day")}`,
+    `${partValue(parts, "hour")}:${partValue(parts, "minute")}:${partValue(parts, "second")}`,
+  ].join(" ");
+}
+
+function partValue(parts: Intl.DateTimeFormatPart[], type: Intl.DateTimeFormatPartTypes): string {
+  return parts.find((part) => part.type === type)?.value ?? "";
+}
+
+function isValidTimezone(value: string | undefined): value is string {
+  if (!value?.trim()) {
+    return false;
+  }
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: value }).format(new Date(0));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function readNestedString(value: unknown, path: string[]): string | undefined {
+  let current: unknown = value;
+  for (const key of path) {
+    if (!current || typeof current !== "object" || Array.isArray(current)) {
+      return undefined;
+    }
+    current = (current as Record<string, unknown>)[key];
+  }
+  return readString(current);
+}
+
+function readString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
 function indentAttachedFileContent(content: string): string {

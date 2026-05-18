@@ -15,6 +15,7 @@ import {
   fetchProviderEndpoint,
   isDeepSeekCompatible,
   normalizeMessages,
+  openAiSystemMessages,
   openAiChatTools,
   openAiResponsesTools,
   providerToolName,
@@ -246,8 +247,11 @@ function createChatCompletionsPayload(config: ProviderConfig, request: Parameter
   const { instructions, dialog } = splitInstructionMessages(messages);
   const deepseek = isDeepSeekCompatible(config);
   const chatMessages = [
-    ...(request.system?.trim() ? [{ role: "system", content: request.system.trim() }] : []),
-    ...(instructions ? [{ role: "system", content: instructions }] : []),
+    ...openAiSystemMessages({
+      system: request.system,
+      instructions,
+      stableSystemPrefix: request.providerCache?.stableSystemPrefix,
+    }),
     ...dialog.map((message) => {
       if (message.role === "tool") {
         if (!message.toolCallId) return undefined;

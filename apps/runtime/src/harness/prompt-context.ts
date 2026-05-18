@@ -8,6 +8,7 @@ export type AgentPromptSectionId =
   | "project_instructions"
   | "agent_profile"
   | "operating_protocol"
+  | "turn_local_metadata_guidance"
   | "stage_instructions"
   | "workspace_context"
   | "temporal_context"
@@ -36,6 +37,7 @@ export interface AgentPromptContextInput {
   stageSystem: string;
   workspaceContext?: string;
   projectInstructionsContext?: string;
+  turnLocalMetadataGuidance?: string;
   temporalContext?: string;
   clarificationContext?: string;
   memoryContext?: string;
@@ -64,6 +66,7 @@ export function buildAgentPromptContext(input: AgentPromptContextInput): BuiltAg
     cachedSection(cache, "project_instructions", "Project Instructions", cache?.hashInput(input.projectInstructionsContext), () => input.projectInstructionsContext),
     cachedSection(cache, "agent_profile", "Agent Profile", cache?.hashInput({ agentId: input.agentId, profile: input.profile, customAgentId: input.customAgentId }), () => profileSection(input.agentId, input.profile, input.customAgentId)),
     cachedSection(cache, "operating_protocol", "Operating Protocol", "static:v1", () => operatingProtocolSection()),
+    cachedSection(cache, "turn_local_metadata_guidance", "Turn-local Metadata Guidance", cache?.hashInput(input.turnLocalMetadataGuidance), () => input.turnLocalMetadataGuidance),
     cachedSection(cache, "tool_protocol", "Tool Protocol", cache?.hashInput(input.toolProtocol), () => input.toolProtocol),
     cachedSection(cache, "skills_guidance", "Skills Guidance", "static:v1", () => skillsGuidanceSection()),
     cachedSection(cache, "available_skills", "Available Skills", cache?.hashInput(input.availableSkills), () => availableSkillsSection(input.availableSkills)),
@@ -110,30 +113,12 @@ export function temporalContextPrompt(params: {
   context?: UserTaskInput["context"];
   now?: () => number;
 }): string | undefined {
-  const timestamp = Number.isFinite(params.createdAt)
-    ? params.createdAt
-    : params.now
-      ? params.now()
-      : undefined;
-  if (timestamp === undefined) {
-    return undefined;
-  }
-
-  const timezone = resolvePromptTimezone(params.context);
-  const localDate = formatZonedDate(timestamp, timezone);
-  const localDateTime = formatZonedDateTime(timestamp, timezone);
-  const utcDateTime = new Date(timestamp).toISOString();
-  const locale = resolvePromptLocale(params.context);
-
+  void params;
   return [
-    "Current temporal context:",
-    `- Current date: ${localDate}`,
-    `- Current local time: ${localDateTime}`,
-    `- Timezone: ${timezone}`,
-    locale ? `- Locale: ${locale}` : undefined,
-    `- Current UTC time: ${utcDateTime}`,
-    "Anchor all time-sensitive reasoning to this temporal context.",
-    "If the user asks for latest, recent, today, this week, this month, or other freshness-sensitive facts, prefer web search and cite exact dates in the answer.",
+    "Temporal reasoning protocol:",
+    "- Current date, current time, locale, and timezone are not embedded as durable system facts.",
+    "- When exact current time, date, or timezone matters, obtain it from the current turn metadata or by calling a runtime time tool.",
+    "- If the user asks for latest, recent, today, this week, this month, or other freshness-sensitive facts, prefer web search and cite exact dates in the answer.",
   ].filter(Boolean).join("\n");
 }
 
@@ -379,6 +364,7 @@ const STABLE_PROMPT_PREFIX_SECTION_IDS = new Set<AgentPromptSectionId>([
   "project_instructions",
   "agent_profile",
   "operating_protocol",
+  "turn_local_metadata_guidance",
   "tool_protocol",
   "skills_guidance",
   "available_skills",
@@ -386,6 +372,7 @@ const STABLE_PROMPT_PREFIX_SECTION_IDS = new Set<AgentPromptSectionId>([
   "mcp_deferred_tools",
   "computer_use_context",
   "task_intent_context",
+  "temporal_context",
 ]);
 
 function stablePromptPrefix(sections: readonly AgentPromptSection[]): string {
@@ -447,95 +434,4 @@ function computerUseContextSection(toolIds: readonly string[] | undefined): stri
     "- In Builder Session, modifying an existing Widget must update the SAME Widget, not create a duplicate.",
     "</computer_use_guidance>",
   ].join("\n");
-}
-
-function resolvePromptTimezone(context: UserTaskInput["context"] | undefined): string {
-  const candidates = [
-    readNestedString(context, ["userTemporalContext", "timezone"]),
-    readString(context?.timezone),
-    readString(context?.timeZone),
-  ];
-  for (const candidate of candidates) {
-    if (candidate && isValidTimezone(candidate)) {
-      return candidate;
-    }
-  }
-  const localTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-  return isValidTimezone(localTimezone) ? localTimezone : "UTC";
-}
-
-function resolvePromptLocale(context: UserTaskInput["context"] | undefined): string | undefined {
-  return (
-    readNestedString(context, ["userTemporalContext", "locale"])
-    ?? readString(context?.locale)
-    ?? readString(context?.language)
-  );
-}
-
-function formatZonedDate(timestamp: number, timezone: string): string {
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: timezone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).formatToParts(new Date(timestamp));
-  return `${partValue(parts, "year")}-${partValue(parts, "month")}-${partValue(parts, "day")}`;
-}
-
-function formatZonedDateTime(timestamp: number, timezone: string): string {
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: timezone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  }).formatToParts(new Date(timestamp));
-  return [
-    `${partValue(parts, "year")}-${partValue(parts, "month")}-${partValue(parts, "day")}`,
-    `${partValue(parts, "hour")}:${partValue(parts, "minute")}:${partValue(parts, "second")}`,
-  ].join(" ");
-}
-
-function partValue(
-  parts: Intl.DateTimeFormatPart[],
-  type: Intl.DateTimeFormatPartTypes,
-): string {
-  return parts.find((part) => part.type === type)?.value ?? "";
-}
-
-function isValidTimezone(value: string | undefined): value is string {
-  if (!value?.trim()) {
-    return false;
-  }
-  try {
-    new Intl.DateTimeFormat("en-US", { timeZone: value }).format(new Date(0));
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function readNestedString(
-  value: unknown,
-  path: readonly string[],
-): string | undefined {
-  let current: unknown = value;
-  for (const segment of path) {
-    if (!current || typeof current !== "object") {
-      return undefined;
-    }
-    current = (current as Record<string, unknown>)[segment];
-  }
-  return readString(current);
-}
-
-function readString(value: unknown): string | undefined {
-  if (typeof value !== "string") {
-    return undefined;
-  }
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : undefined;
 }

@@ -24,6 +24,11 @@ import {
   finalizeActiveMemoryContext,
   retrieveActiveMemoryCandidates,
 } from "./active-memory.js";
+import {
+  buildActiveMemoryTrace,
+  buildMemoryHealthSnapshot,
+  extendActiveMemorySummary,
+} from "./memory-observability.js";
 import { RuntimeSkillRegistry } from "./harness/capability-registries.js";
 import { LongTermMemoryManager, type MemoryModelInvoker } from "./memory.js";
 import { admitWithProvider } from "./memory-admission.js";
@@ -57,6 +62,9 @@ export interface ModeSelectionDeps {
   buildConversationMessages: (sessionId: string, currentPrompt: string) => ModelMessage[];
   memoryIndexStore?: import("./memory-index.js").MemoryIndexStore;
   embeddingProvider?: import("./memory-index.js").EmbeddingProvider;
+  journal?: import("./memory-journal.js").ShortTermMemoryJournal;
+  scenarioStore?: import("./memory-scenarios.js").ScenarioStore;
+  projectScenarioStore?: (projectId: string) => import("./memory-scenarios.js").ScenarioStore;
 }
 
 function renderHybridOverlay(
@@ -259,6 +267,7 @@ export async function withMemoryPrompt(
     return config;
   }
   const recentMessages = session ? deps.buildConversationMessages(session.sessionId, input.prompt) : [];
+  const scenarioCandidates = collectScenarioCandidates(deps, input.projectId);
   const activeMemoryRequest = {
     memory: deps.longTermMemory.get(),
     projectMemory: input.projectId ? deps.longTermMemory.getProject(input.projectId) : undefined,
@@ -268,8 +277,15 @@ export async function withMemoryPrompt(
     profileIds: config.profileIds,
     recentMessages,
     maxCandidates: policy.injectionMaxFacts,
+    scenarioCandidates,
   };
   const activeMemory = await buildActiveMemoryContextForPolicy(config, activeMemoryRequest, policy);
+  const memoryHealthSnapshot = buildMemoryHealthSnapshot({
+    profile: deps.longTermMemory.get(),
+    index: deps.memoryIndexStore,
+    journal: deps.journal,
+    scenarioStore: deps.scenarioStore,
+  });
 
   // D3: Hybrid/semantic retrieval via MemoryIndexStore + EmbeddingProvider
   if (
@@ -332,19 +348,43 @@ export async function withMemoryPrompt(
         if (mergedCards.length > 0) {
           const reason = `Hybrid retrieval: ${mergedCards.length} cards (lexical+semantic merged)`;
           const overlay = renderHybridOverlay(mergedCards, reason);
+          const hybridDecision = {
+            ...activeMemory.decision,
+            mode: "hybrid" as const,
+            reason,
+            selectedIds: mergedCards.map((c) => c.id),
+            rejectedIds: activeMemory.decision.candidateIds.filter((id) => !mergedCards.some((card) => card.id === id)),
+          };
+          const activeMemoryTrace = buildActiveMemoryTrace({
+            ...activeMemory,
+            decision: {
+              ...activeMemory.decision,
+              reason,
+              selectedIds: hybridDecision.selectedIds,
+              rejectedIds: hybridDecision.rejectedIds,
+              budget: {
+                ...activeMemory.decision.budget,
+                renderedChars: overlay.length,
+              },
+            },
+            cards: mergedCards,
+            rendered: overlay,
+          }, {
+            retrievalCorpus: scenarioCandidates.length > 0 ? "long_term+scenario" : "long_term",
+            semanticEnabled: true,
+            diversityEnabled: policy.diversityEnabled,
+          });
           return RunConfigSchema.parse({
             ...config,
             metadata: {
               ...config.metadata,
               activeMemory: {
-                decision: {
-                  ...activeMemory.decision,
-                  mode: "hybrid" as const,
-                  reason,
-                  selectedIds: mergedCards.map((c) => c.id),
-                },
+                decision: hybridDecision,
                 cards: mergedCards,
               },
+              activeMemoryTrace,
+              activeMemorySummary: extendActiveMemorySummary(activeMemoryTrace),
+              memoryHealthSnapshot,
               ...(overlay ? { memoryPromptOverlay: overlay } : {}),
             },
           });
@@ -356,6 +396,11 @@ export async function withMemoryPrompt(
   }
 
   const overlay = activeMemory.rendered || undefined;
+  const activeMemoryTrace = buildActiveMemoryTrace(activeMemory, {
+    retrievalCorpus: scenarioCandidates.length > 0 ? "long_term+scenario" : "long_term",
+    semanticEnabled: policy.retrievalMode === "hybrid" || policy.retrievalMode === "semantic",
+    diversityEnabled: policy.diversityEnabled,
+  });
   return RunConfigSchema.parse({
     ...config,
     metadata: {
@@ -364,9 +409,37 @@ export async function withMemoryPrompt(
         decision: activeMemory.decision,
         cards: activeMemory.cards,
       },
+      activeMemoryTrace,
+      activeMemorySummary: extendActiveMemorySummary(activeMemoryTrace),
+      memoryHealthSnapshot,
       ...(overlay ? { memoryPromptOverlay: overlay } : {}),
     },
   });
+}
+
+function collectScenarioCandidates(
+  deps: ModeSelectionDeps,
+  projectId: string | undefined,
+): Array<{
+  id: string;
+  kind: "scenario";
+  category: string;
+  content: string;
+  confidence: number;
+  sourceRunIds: string[];
+}> {
+  const candidates = [
+    ...(deps.scenarioStore?.listCandidates() ?? []),
+    ...(projectId ? deps.projectScenarioStore?.(projectId).listCandidates() ?? [] : []),
+  ];
+  const deduped = new Map<string, (typeof candidates)[number]>();
+  for (const candidate of candidates) {
+    const existing = deduped.get(candidate.id);
+    if (!existing || candidate.confidence > existing.confidence) {
+      deduped.set(candidate.id, candidate);
+    }
+  }
+  return [...deduped.values()];
 }
 
 async function buildActiveMemoryContextForPolicy(
@@ -446,11 +519,19 @@ function buildMemoryAdmissionInvoker(
 export function resolveMemoryPolicy(config: RunConfig, deps: ModeSelectionDeps) {
   const requestedModeId = config.modeId ?? config.pattern;
   const modeSpec = deps.applySystemAgentOverridesToMode(deps.modeStore.resolve(requestedModeId, config.pattern));
-  return {
+  const resolved = {
     ...modeSpec.memoryPolicy,
     enabled: modeSpec.memoryPolicy.enabled && modeSpec.runtimeAtoms.includes("long_term_memory"),
     updaterProviderId: modeSpec.memoryPolicy.updaterProviderId ?? config.providerId,
   };
+  const evaluationMemoryMode = config.metadata?.evaluationMemoryMode;
+  if (evaluationMemoryMode === "disabled") {
+    return {
+      ...resolved,
+      enabled: false,
+    };
+  }
+  return resolved;
 }
 
 async function routeAutoMode(

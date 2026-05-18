@@ -1049,8 +1049,9 @@ describe("provider adapters", () => {
       expect(body.input[0]?.content?.[0]?.text).toBe([
         "Stable identity block",
         "Capability contract",
-        "Dynamic stage instruction",
       ].join("\n\n"));
+      expect(body.input[1]?.role).toBe("developer");
+      expect(body.input[1]?.content?.[0]?.text).toBe("Dynamic stage instruction");
       return new Response(JSON.stringify({ id: "resp_prefix", output_text: "OK" }), {
         status: 200,
         headers: { "content-type": "application/json" },
@@ -1629,6 +1630,43 @@ describe("DeepSeek provider", () => {
 
     const response = await provider({ prompt: "Think.", reasoningEffort: "high" });
     expect(response.text).toBe("DeepSeek reasoning answer.");
+  });
+
+  it("splits DeepSeek stable system prefix from the volatile system tail", async () => {
+    const fetchImpl = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as {
+        messages: Array<{ role: string; content: string; reasoning_content?: string }>;
+      };
+      expect(body.messages.slice(0, 3)).toEqual([
+        { role: "system", content: "Stable identity block\n\nCapability contract" },
+        { role: "system", content: "Dynamic stage instruction" },
+        { role: "user", content: "Say hello.", reasoning_content: "" },
+      ]);
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: "Hello from DeepSeek." } }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    });
+
+    const provider = createModelProvider(deepseekConfig, {
+      env: { DEEPSEEK_API_KEY: "test-key" },
+      fetchImpl,
+    });
+
+    const response = await provider({
+      system: [
+        "Stable identity block",
+        "Capability contract",
+        "Dynamic stage instruction",
+      ].join("\n\n"),
+      providerCache: {
+        stableSystemPrefix: [
+          "Stable identity block",
+          "Capability contract",
+        ].join("\n\n"),
+      },
+      messages: [{ role: "user", content: "Say hello." }],
+    });
+    expect(response.text).toBe("Hello from DeepSeek.");
   });
 
   it("ensures reasoning_content is present for DeepSeek tool-call assistant messages", async () => {

@@ -319,26 +319,52 @@ export class LocalFeedbackLoopStore {
   }
 
   private causalInterventionInsights(projectId: string, signals: ProjectSignal[]): ProjectInsight[] {
-    const causalSignals = signals.filter((signal) =>
+    const semanticTags = ["latent_goal_missing", "latent_goal_mismatch", "under_clarification"];
+    const interventionTags = ["wrong_intervention", "over_clarification", "over_action", "low_counterfactual_lift", "poor_outcome_quality"];
+    const semanticSignals = signals.filter((signal) =>
       signal.source === "evaluation_result" &&
-      ["over_clarification", "wrong_intervention", "low_counterfactual_lift", "over_action"].includes(String(signal.metadata.failureTag ?? ""))
+      semanticTags.includes(String(signal.metadata.failureTag ?? ""))
     );
-    if (causalSignals.length === 0) return [];
-    const tags = [...new Set(causalSignals.map((s) => String(s.metadata.failureTag ?? "unknown")))];
-    return [buildInsight({
-      projectId,
-      id: `${projectId}:insight:causal_intervention_gap`,
-      title: "Causal intervention patterns detected",
-      summary: `${causalSignals.length} evaluation signal(s) show gaps: ${tags.join(", ")}. Consider reviewing intervention policy or adding dataset cases.`,
-      signalIds: causalSignals.map((signal) => signal.id),
-      confidence: Math.min(0.88, 0.65 + causalSignals.length * 0.08),
-      updatedAt: latestTimestamp(causalSignals),
-      actions: filterActionsByRule([
-        openEvaluationFeedbackAction(),
-        createEvaluationCaseAction(projectId, "Create causal evaluation case from failure pattern"),
-        draftSelfIterationAction(projectId, "Draft prompt contract adjustment"),
-      ], this.ruleForProject(projectId, "eval_regression")),
-    })];
+    const interventionSignals = signals.filter((signal) =>
+      signal.source === "evaluation_result" &&
+      interventionTags.includes(String(signal.metadata.failureTag ?? ""))
+    );
+    const insights: ProjectInsight[] = [];
+    if (semanticSignals.length > 0) {
+      const tags = [...new Set(semanticSignals.map((signal) => String(signal.metadata.failureTag ?? "unknown")))];
+      insights.push(buildInsight({
+        projectId,
+        id: `${projectId}:insight:causal_semantic_state_gap`,
+        title: "Causal semantic-state gaps detected",
+        summary: `${semanticSignals.length} evaluation signal(s) point to task-understanding gaps: ${tags.join(", ")}. Review Trail episodes, clarification strategy, or semantic extraction quality.`,
+        signalIds: semanticSignals.map((signal) => signal.id),
+        confidence: Math.min(0.9, 0.66 + semanticSignals.length * 0.08),
+        updatedAt: latestTimestamp(semanticSignals),
+        actions: filterActionsByRule([
+          openEvaluationFeedbackAction(),
+          createEvaluationCaseAction(projectId, "Create semantic-state regression case"),
+          draftSelfIterationAction(projectId, "Draft semantic extractor or clarification prompt adjustment"),
+        ], this.ruleForProject(projectId, "eval_regression")),
+      }));
+    }
+    if (interventionSignals.length > 0) {
+      const tags = [...new Set(interventionSignals.map((signal) => String(signal.metadata.failureTag ?? "unknown")))];
+      insights.push(buildInsight({
+        projectId,
+        id: `${projectId}:insight:causal_intervention_gap`,
+        title: "Causal intervention patterns detected",
+        summary: `${interventionSignals.length} evaluation signal(s) show intervention or outcome gaps: ${tags.join(", ")}. Review intervention policy, outcome quality, or add comparison cases.`,
+        signalIds: interventionSignals.map((signal) => signal.id),
+        confidence: Math.min(0.88, 0.65 + interventionSignals.length * 0.08),
+        updatedAt: latestTimestamp(interventionSignals),
+        actions: filterActionsByRule([
+          openEvaluationFeedbackAction(),
+          createEvaluationCaseAction(projectId, "Create causal intervention regression case"),
+          draftSelfIterationAction(projectId, "Draft intervention policy adjustment"),
+        ], this.ruleForProject(projectId, "eval_regression")),
+      }));
+    }
+    return insights;
   }
 
   private applyInsightState(insight: ProjectInsight): ProjectInsight {
@@ -590,6 +616,41 @@ function signalsForEvaluationRun(projectId: string, run: EvaluationRun): Project
         overallScore: score,
       },
     }));
+  }
+  for (const result of run.caseResults) {
+    for (const failureTag of result.averageScore.failureTags) {
+      signals.push(ProjectSignalSchema.parse({
+        id: `${projectId}:signal:evaluation:${run.id}:${result.configId}:${result.caseId}:${failureTag}`,
+        projectId,
+        source: "evaluation_result",
+        sourceRef: run.id,
+        title: "Evaluation case failure pattern",
+        summary: `Case ${result.caseId} (${result.configId}) triggered ${failureTag}.`,
+        severity: result.averageScore.overallScore < 0.45 ? "critical" : "warning",
+        confidence: 0.78,
+        createdAt: run.startedAt,
+        updatedAt: run.updatedAt,
+        evidence: [{
+          id: `${run.id}:${result.caseId}`,
+          label: "Open Evaluation run",
+          target: {
+            kind: "evaluation",
+            id: run.id,
+            evaluationRunId: run.id,
+            datasetId: run.spec.datasetId,
+          },
+        }],
+        metadata: {
+          evaluationRunId: run.id,
+          datasetId: run.spec.datasetId,
+          profileId: run.spec.profileId,
+          caseId: result.caseId,
+          configId: result.configId,
+          failureTag,
+          overallScore: result.averageScore.overallScore,
+        },
+      }));
+    }
   }
   return signals;
 }

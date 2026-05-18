@@ -83,6 +83,47 @@ function causalDecisionEvent(index: number, overrides: Record<string, unknown> =
   };
 }
 
+async function runCausalEvalCase(params: {
+  datasetCase: Record<string, unknown>;
+  metrics: string[];
+  snapshot: StateSnapshot;
+}) {
+  const tmpDir = mkdtempSync(resolve(tmpdir(), "ora-causal-eval-case-"));
+  const store = new LocalEvaluationStore(tmpDir);
+  try {
+    const datasetDetail = store.importDataset({
+      name: "Causal Eval Case",
+      content: JSON.stringify([params.datasetCase]),
+      sourceFormat: "json",
+    });
+    const runDetail = await store.startRun({
+      datasetId: datasetDetail.dataset.id,
+      profileId: "outcome",
+      configs: [{ id: "causal", label: "Causal", runConfig: { pattern: "solo_agent" } }],
+      repetitions: 1,
+      concurrency: 1,
+      timeoutMs: 30_000,
+      objective: {
+        kind: "outcome",
+        target: "run.output",
+        metrics: params.metrics as any,
+        assertions: [],
+        evaluators: [{
+          id: "heuristic",
+          kind: "heuristic",
+          label: "Heuristic",
+          weight: 1,
+          metrics: params.metrics as any,
+          assertions: [],
+        }],
+      },
+    }, async () => params.snapshot);
+    return runDetail.attempts[0]!;
+  } finally {
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Policy router unit tests
 // ---------------------------------------------------------------------------
@@ -734,5 +775,106 @@ describe("causal eval smoke", () => {
     } finally {
       rmSync(tmpDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("causal eval taxonomy", () => {
+  it("tags native runs without latent goals as latent_goal_missing", async () => {
+    const attempt = await runCausalEvalCase({
+      datasetCase: {
+        id: "case-1",
+        input: { prompt: "帮我优化一下那个东西的性能", context: {} },
+        expected: {
+          structured: {
+            latentGoal: "改善特定组件或系统的性能表现",
+            expectedIntervention: "clarify",
+            successCriteria: "Ora 主动追问具体优化目标，而非猜测或直接行动",
+          },
+        },
+      },
+      metrics: ["intent_resolution"],
+      snapshot: mockSnapshot({
+        events: [
+          causalDecisionEvent(1, {
+            taskState: {
+              surfaceRequest: "帮我优化一下那个东西的性能",
+              latentGoalHypotheses: [],
+              selectedLatentGoal: "",
+              keyUncertainties: ["用户目标不明确"],
+              constraints: [],
+              candidateInterventions: ["clarify"],
+              chosenIntervention: "clarify",
+              alternativeInterventions: ["answer_directly"],
+              counterfactualRiskIfSkipped: "直接猜测优化目标可能浪费大量时间在错误的方向上",
+              expectedOutcomeLift: "",
+              confidence: 0.35,
+              stopCondition: "",
+            },
+          }),
+        ],
+        output: "你具体想优化哪个组件或系统的性能？",
+      }),
+    });
+
+    const metric = attempt.metricScores.find((item) => item.metricId === "intent_resolution");
+    expect(metric?.passed).toBe(false);
+    expect(metric?.failureTags).toContain("latent_goal_missing");
+  });
+
+  it("distinguishes under_clarification and poor_outcome_quality", async () => {
+    const attempt = await runCausalEvalCase({
+      datasetCase: {
+        id: "case-2",
+        input: { prompt: "这个错误怎么修", context: {} },
+        expected: {
+          structured: {
+            expectedIntervention: "clarify",
+            successCriteria: "Ora 请求提供错误详情而非凭空猜测修复方案",
+          },
+        },
+      },
+      metrics: ["clarification_precision", "task_success_rate", "llm_judge_score"],
+      snapshot: mockSnapshot({
+        events: [
+          causalDecisionEvent(1, {
+            chosenIntervention: "answer_directly",
+            taskState: {
+              surfaceRequest: "这个错误怎么修",
+              latentGoalHypotheses: ["修复某个错误"],
+              selectedLatentGoal: "修复一个具体程序错误",
+              keyUncertainties: [],
+              constraints: [],
+              candidateInterventions: ["answer_directly"],
+              chosenIntervention: "answer_directly",
+              alternativeInterventions: ["clarify"],
+              counterfactualRiskIfSkipped: "",
+              expectedOutcomeLift: "",
+              confidence: 0.7,
+              stopCondition: "",
+            },
+            policyDecision: {
+              goalUncertainty: 0.2,
+              factUncertainty: 0.2,
+              contextUncertainty: 0.2,
+              actionRisk: 0.1,
+              userCost: 0.05,
+              reversibility: "high",
+              recommendedAction: "answer_directly",
+              reason: "answer_directly: low uncertainty",
+              wouldChangeOutcomeIfWrong: false,
+            },
+          }),
+        ],
+        output: "",
+      }),
+    });
+
+    const clarificationMetric = attempt.metricScores.find((item) => item.metricId === "clarification_precision");
+    const successMetric = attempt.metricScores.find((item) => item.metricId === "task_success_rate");
+    const judgeMetric = attempt.metricScores.find((item) => item.metricId === "llm_judge_score");
+
+    expect(clarificationMetric?.failureTags).toContain("under_clarification");
+    expect(successMetric?.failureTags).toContain("poor_outcome_quality");
+    expect(judgeMetric?.failureTags).toContain("poor_outcome_quality");
   });
 });

@@ -10,6 +10,7 @@ import {
   type ModeSpec,
 } from "@cemeworm/shared";
 import { FileLongTermMemoryStore, LongTermMemoryManager } from "../src/memory.js";
+import { ScenarioStore } from "../src/memory-scenarios.js";
 import { withMemoryPrompt, type ModeSelectionDeps } from "../src/mode-selection.js";
 import { invokeRunProvider } from "../src/providers/index.js";
 
@@ -141,11 +142,98 @@ describe("withMemoryPrompt provider admission", () => {
     expect(activeMemory.decision?.selectedIds).toEqual([]);
     expect(String(activeMemory.decision?.reason)).toContain("fell back to deterministic");
   });
+
+  it("injects scenario candidates into active memory and exposes observability metadata", async () => {
+    const memory = new LongTermMemoryManager(new FileLongTermMemoryStore(tempDir));
+    const scenarios = new ScenarioStore(tempDir);
+    scenarios.upsert({
+      title: "pnpm monorepo workflow",
+      summary: "Use pnpm for workspace installs and prefer filtered commands for package-scoped work.",
+      category: "workflow",
+      confidence: 0.91,
+      sourceFactIds: ["fact_pnpm"],
+      sourceRunIds: ["run_pnpm_1"],
+    });
+
+    const config = RunConfigSchema.parse({
+      pattern: "single_agent",
+      modeId: SINGLE_AGENT_MODE_ID,
+      profileIds: [],
+      skillIds: [],
+      toolIds: [],
+      approvalMode: "high_risk_only",
+      patternOptions: {},
+      metadata: {},
+      deterministicSeed: "test-seed",
+    });
+
+    const result = await withMemoryPrompt(
+      config,
+      { prompt: "继续这个 pnpm workspace 改动，按之前的工作流来。", context: {}, createdAt: Date.now() },
+      undefined,
+      createDeps(memory, "deterministic", scenarios),
+    );
+
+    const activeMemory = result.metadata.activeMemory as {
+      cards?: Array<{ id?: string; kind?: string; content?: string }>;
+    };
+    const activeMemorySummary = result.metadata.activeMemorySummary as {
+      summaryLine?: string;
+    };
+    const memoryHealthSnapshot = result.metadata.memoryHealthSnapshot as {
+      trace?: { totalItems?: number };
+    };
+
+    expect(activeMemory.cards?.some((card) => card.kind === "scenario" && String(card.id).includes("scenario_"))).toBe(true);
+    expect(String(result.metadata.memoryPromptOverlay)).toContain("pnpm monorepo workflow");
+    expect(typeof activeMemorySummary.summaryLine).toBe("string");
+    expect(memoryHealthSnapshot.trace?.totalItems).toBeTypeOf("number");
+  });
+
+  it("honors evaluationMemoryMode=disabled and skips memory injection", async () => {
+    const memory = new LongTermMemoryManager(new FileLongTermMemoryStore(tempDir));
+    memory.saveProfile(LongTermMemoryProfileSchema.parse({
+      lastUpdated: "2026-05-18T00:00:00.000Z",
+      user: {
+        personalContext: {
+          summary: "User's name is QC.",
+          updatedAt: "2026-05-18T00:00:00.000Z",
+        },
+      },
+      facts: [],
+    }));
+
+    const config = RunConfigSchema.parse({
+      pattern: "single_agent",
+      modeId: SINGLE_AGENT_MODE_ID,
+      profileIds: [],
+      skillIds: [],
+      toolIds: [],
+      approvalMode: "high_risk_only",
+      patternOptions: {},
+      metadata: {
+        evaluationMemoryMode: "disabled",
+      },
+      deterministicSeed: "test-seed",
+    });
+
+    const result = await withMemoryPrompt(
+      config,
+      { prompt: "继续沿用之前的用户偏好。", context: {}, createdAt: Date.now() },
+      undefined,
+      createDeps(memory, "provider"),
+    );
+
+    expect(mockedInvokeRunProvider).not.toHaveBeenCalled();
+    expect(result.metadata.memoryPromptOverlay).toBeUndefined();
+    expect(result.metadata.activeMemory).toBeUndefined();
+  });
 });
 
 function createDeps(
   longTermMemory: LongTermMemoryManager,
-  admissionMode: "provider" | "provider_fallback",
+  admissionMode: "deterministic" | "provider" | "provider_fallback",
+  scenarioStore?: ScenarioStore,
 ): ModeSelectionDeps {
   const baseMode = getModePreset(SINGLE_AGENT_MODE_ID);
   if (!baseMode) {
@@ -170,5 +258,6 @@ function createDeps(
     longTermMemory,
     applySystemAgentOverridesToMode: (input) => input,
     buildConversationMessages: () => [],
+    scenarioStore,
   };
 }

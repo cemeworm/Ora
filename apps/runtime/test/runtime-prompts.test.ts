@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { attachedLocalFilesSystemPrompt, attachedProjectFilesSystemPrompt, projectInstructionsSystemPrompt } from "../src/harness/runtime-prompts.js";
+import {
+  attachedLocalFilesSystemPrompt,
+  attachedProjectFilesSystemPrompt,
+  projectInstructionsSystemPrompt,
+  promptWithTurnLocalMetadata,
+  turnLocalMetadataPrompt,
+} from "../src/harness/runtime-prompts.js";
 
 describe("runtime prompts", () => {
   it("formats attached project files for agent file tools", () => {
@@ -45,6 +51,51 @@ describe("runtime prompts", () => {
         truncated: true,
       },
     ])).toContain("# Notes");
+  });
+
+  it("builds turn-local metadata blocks for temporal and attachment context", () => {
+    const metadata = turnLocalMetadataPrompt({
+      createdAt: Date.parse("2026-05-09T01:23:45.000Z"),
+      context: {
+        userTemporalContext: {
+          timezone: "Asia/Shanghai",
+          locale: "zh-CN",
+        },
+        clarifications: {
+          environment: "staging",
+        },
+        attachedProjectFiles: [
+          {
+            projectId: "project-a",
+            path: "src/App.tsx",
+            name: "App.tsx",
+            mimeType: "text/typescript",
+            sizeBytes: 128,
+          },
+        ],
+      },
+    });
+
+    expect(metadata).toContain("<turn_local_metadata>");
+    expect(metadata).toContain("Current local date: 2026-05-09");
+    expect(metadata).toContain("Current local time: 2026-05-09 09:23:45");
+    expect(metadata).toContain("Clarifications:");
+    expect(metadata).toContain("- environment: staging");
+    expect(metadata).toContain("Attached project files:");
+    expect(metadata).toContain("App.tsx (text/typescript, 128 bytes) at src/App.tsx");
+  });
+
+  it("prepends turn-local metadata without mutating the user prompt body", () => {
+    const prompt = promptWithTurnLocalMetadata(
+      "Explain the failure.",
+      "<turn_local_metadata>\nCurrent local date: 2026-05-09\n</turn_local_metadata>",
+    );
+    expect(prompt).toBe([
+      "<turn_local_metadata>",
+      "Current local date: 2026-05-09",
+      "</turn_local_metadata>",
+      "Explain the failure.",
+    ].join("\n"));
   });
 });
 

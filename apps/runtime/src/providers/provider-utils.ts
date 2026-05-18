@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import type { ModelTokenUsage, ProviderConfig } from "@cemeworm/shared";
 import type { ModelMessage, ModelRequest, ModelToolCall, ModelToolDefinition } from "./types.js";
@@ -198,6 +199,76 @@ export function splitInstructionMessages(messages: readonly ModelMessage[]): {
   return {
     instructions: instructionParts.filter(Boolean).join("\n\n"),
     dialog,
+  };
+}
+
+export function splitStableSystemPrompt(
+  system: string | undefined,
+  stableSystemPrefix: string | undefined,
+): {
+  stablePrefix: string | undefined;
+  suffix: string | undefined;
+} {
+  const trimmedSystem = system?.trim() ?? "";
+  const trimmedStablePrefix = stableSystemPrefix?.trim() ?? "";
+  if (!trimmedSystem || !trimmedStablePrefix || !trimmedSystem.startsWith(trimmedStablePrefix)) {
+    return {
+      stablePrefix: trimmedSystem || undefined,
+      suffix: undefined,
+    };
+  }
+  const suffix = trimmedSystem.slice(trimmedStablePrefix.length).trim();
+  return {
+    stablePrefix: trimmedStablePrefix,
+    suffix: suffix || undefined,
+  };
+}
+
+export function openAiSystemMessages(params: {
+  system?: string;
+  instructions?: string;
+  stableSystemPrefix?: string;
+}): Array<{ role: "system"; content: string }> {
+  const system = params.system?.trim() ?? "";
+  const instructions = params.instructions?.trim() ?? "";
+  const { stablePrefix, suffix } = splitStableSystemPrompt(system, params.stableSystemPrefix);
+  return [
+    ...(stablePrefix ? [{ role: "system" as const, content: stablePrefix }] : []),
+    ...(suffix ? [{ role: "system" as const, content: suffix }] : []),
+    ...(instructions ? [{ role: "system" as const, content: instructions }] : []),
+  ];
+}
+
+export interface ModelRequestCacheDiagnostics {
+  stableSystemPrefixHash?: string;
+  stableSystemPrefixChars: number;
+  fullSystemHash?: string;
+  volatileSystemSuffixHash?: string;
+  volatileSystemSuffixChars: number;
+  toolsHash?: string;
+  latestTurnMetadataHash?: string;
+  latestTurnMetadataChars: number;
+}
+
+export function buildModelRequestCacheDiagnostics(request: Pick<ModelRequest, "system" | "messages" | "prompt" | "tools" | "providerCache">): ModelRequestCacheDiagnostics {
+  const messages = normalizeMessages(request);
+  const { stablePrefix, suffix } = splitStableSystemPrompt(
+    request.system,
+    request.providerCache?.stableSystemPrefix,
+  );
+  const latestTurnMetadata = extractLatestTurnLocalMetadata(messages);
+  const toolFingerprint = request.tools?.length
+    ? hashText(JSON.stringify(openAiChatTools(request.tools)))
+    : undefined;
+  return {
+    ...(stablePrefix ? { stableSystemPrefixHash: hashText(stablePrefix) } : {}),
+    stableSystemPrefixChars: stablePrefix?.length ?? 0,
+    ...(request.system?.trim() ? { fullSystemHash: hashText(request.system.trim()) } : {}),
+    ...(suffix ? { volatileSystemSuffixHash: hashText(suffix) } : {}),
+    volatileSystemSuffixChars: suffix?.length ?? 0,
+    ...(toolFingerprint ? { toolsHash: toolFingerprint } : {}),
+    ...(latestTurnMetadata ? { latestTurnMetadataHash: hashText(latestTurnMetadata) } : {}),
+    latestTurnMetadataChars: latestTurnMetadata?.length ?? 0,
   };
 }
 
@@ -638,17 +709,15 @@ export function buildResponsesInput(request: ModelRequest) {
   const messages = normalizeMessages(request);
   const { instructions, dialog } = splitInstructionMessages(messages);
   const input: Array<Record<string, unknown>> = [
-    ...(instructions
-      ? [
-          {
-            type: "message",
-            role: "developer",
-            content: toInputText(request.system?.trim() ? `${request.system.trim()}\n\n${instructions}` : instructions),
-          }
-        ]
-      : request.system?.trim()
-        ? [{ type: "message", role: "developer", content: toInputText(request.system.trim()) }]
-        : []),
+    ...openAiSystemMessages({
+      system: request.system,
+      instructions,
+      stableSystemPrefix: request.providerCache?.stableSystemPrefix,
+    }).map((message) => ({
+      type: "message",
+      role: "developer",
+      content: toInputText(message.content),
+    })),
     ...dialog.flatMap((message): Array<Record<string, unknown>> => {
       if (message.role === "tool") {
         return [{
@@ -683,6 +752,40 @@ export function buildResponsesInput(request: ModelRequest) {
     }),
   ];
   return input;
+}
+
+function hashText(value: string): string {
+  return createHash("sha256").update(value).digest("hex").slice(0, 16);
+}
+
+function extractLatestTurnLocalMetadata(messages: readonly ModelMessage[]): string | undefined {
+  let sawCurrentTurnUser = false;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.role === "assistant" || message.role === "tool") {
+      if (sawCurrentTurnUser) {
+        return undefined;
+      }
+      continue;
+    }
+    if (message.role === "system" || message.role === "developer") {
+      continue;
+    }
+    if (message.role !== "user") {
+      continue;
+    }
+    sawCurrentTurnUser = true;
+    const content = message.content.trimStart();
+    if (!content.startsWith("<turn_local_metadata>")) {
+      continue;
+    }
+    const closeIndex = content.indexOf("</turn_local_metadata>");
+    if (closeIndex < 0) {
+      return content;
+    }
+    return content.slice(0, closeIndex + "</turn_local_metadata>".length);
+  }
+  return undefined;
 }
 
 export function appendIfDefined<T extends object, K extends string, V>(

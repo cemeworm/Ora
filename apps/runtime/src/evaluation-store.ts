@@ -133,6 +133,42 @@ const PersistedEvaluationRunSchema = z.object({
 type EvaluationManifest = z.infer<typeof EvaluationManifestSchema>;
 type PersistedEvaluationRun = z.infer<typeof PersistedEvaluationRunSchema>;
 
+const DEFAULT_EVALUATION_FIXTURE_EXCLUDES = [
+  ".git",
+  "node_modules",
+  "dist",
+  "build",
+  "coverage",
+  ".turbo",
+];
+
+const EvaluationWorkspaceFixtureManifestSchema = z.object({
+  schemaVersion: z.literal(1).default(1),
+  fixtureId: z.string().min(1),
+  description: z.string().min(1).optional(),
+  sourceRoot: z.string().min(1),
+  materializationRoot: z.string().min(1),
+  isolation: z.object({
+    strategy: z.literal("copy").default("copy"),
+    resetBetweenAttempts: z.boolean().default(true),
+    exclude: z.array(z.string().min(1)).default(DEFAULT_EVALUATION_FIXTURE_EXCLUDES),
+  }).default({}),
+  projectWorkspace: z.object({
+    label: z.string().min(1).optional(),
+    metadata: z.record(z.unknown()).default({}),
+  }).default({}),
+});
+
+type EvaluationWorkspaceFixtureManifest = z.infer<typeof EvaluationWorkspaceFixtureManifestSchema>;
+
+type EvaluationWorkspaceFixtureRuntime = {
+  manifestPath: string;
+  sourceRoot: string;
+  materializationRoot: string;
+  exclusionPrefixes: string[];
+  manifest: EvaluationWorkspaceFixtureManifest;
+};
+
 type RunExecutor = (params: { input: UserTaskInput; config: Partial<RunConfig> }) => Promise<StateSnapshot>;
 type FeedbackCurator = (params: {
   feedbackId: string;
@@ -665,6 +701,7 @@ export class LocalEvaluationStore {
   async startRun(params: unknown, executeRun: RunExecutor): Promise<EvaluationRunDetail> {
     const spec = EvaluationSpecSchema.parse(params);
     const dataset = this.getDataset({ datasetId: spec.datasetId });
+    const fixtureRuntime = resolveEvaluationWorkspaceFixtureRuntime(spec);
     const evaluationRunId = this.nextEvaluationRunId();
     const startedAt = this.now();
     const totalAttempts = dataset.cases.length * spec.configs.length * spec.repetitions;
@@ -759,7 +796,8 @@ export class LocalEvaluationStore {
             spec,
             executeRun,
             langfuseExperimentName,
-            dataset
+            dataset,
+            fixtureRuntime,
           );
           attempt = result.attempt;
           annotationTasks = result.annotationTasks;
@@ -1108,7 +1146,8 @@ export class LocalEvaluationStore {
     spec: EvaluationSpec,
     executeRun: RunExecutor,
     langfuseExperimentName: string | undefined,
-    dataset: EvaluationDatasetDetail
+    dataset: EvaluationDatasetDetail,
+    fixtureRuntime?: EvaluationWorkspaceFixtureRuntime,
   ): Promise<{ attempt: EvaluationAttempt; annotationTasks: Array<Partial<EvaluationAnnotationTask>> }> {
     const attemptStartedAt = this.now();
     const timeoutMs = spec.timeoutMs ?? resolveDefaultTimeoutMs(dataset);
@@ -1117,6 +1156,24 @@ export class LocalEvaluationStore {
     const prompt = typeof formatConstraint === "string" && formatConstraint.trim()
       ? `[Format: ${formatConstraint.trim()}]\n\n${evaluationCase.input.prompt}`
       : evaluationCase.input.prompt;
+    const projectWorkspace = fixtureRuntime
+      ? this.materializeEvaluationFixtureWorkspace(
+          fixtureRuntime,
+          evaluationRunId,
+          evaluationCase,
+          config,
+          repetition,
+        )
+      : normalizeProjectWorkspaceContext(evaluationCase.input.context?.projectWorkspace) ?? { rootPath: process.cwd() };
+    const evaluationFixtureContext = fixtureRuntime
+      ? {
+          fixtureId: fixtureRuntime.manifest.fixtureId,
+          manifestPath: fixtureRuntime.manifestPath,
+          sourceRoot: fixtureRuntime.sourceRoot,
+          workspaceRoot: projectWorkspace.rootPath,
+          strategy: fixtureRuntime.manifest.isolation.strategy,
+        }
+      : undefined;
 
     const runPromise = executeRun({
       input: {
@@ -1129,7 +1186,8 @@ export class LocalEvaluationStore {
           evaluationRunId,
           evaluationConfigId: config.id,
           evaluationProfileId: spec.profileId,
-          projectWorkspace: evaluationCase.input.context?.projectWorkspace ?? { rootPath: process.cwd() },
+          projectWorkspace,
+          ...(evaluationFixtureContext ? { evaluationFixture: evaluationFixtureContext } : {}),
         },
         createdAt: attemptStartedAt,
       },
@@ -1289,6 +1347,41 @@ export class LocalEvaluationStore {
       attempts: [...attempts],
     });
     this.saveRun(evaluationRunId);
+  }
+
+  private materializeEvaluationFixtureWorkspace(
+    fixtureRuntime: EvaluationWorkspaceFixtureRuntime,
+    evaluationRunId: string,
+    evaluationCase: EvaluationCase,
+    config: EvaluationConfig,
+    repetition: number,
+  ): { label?: string; rootPath: string; [key: string]: unknown } {
+    const workspaceRoot = path.join(
+      fixtureRuntime.materializationRoot,
+      sanitizeFixtureSegment(evaluationRunId),
+      sanitizeFixtureSegment(evaluationCase.id),
+      sanitizeFixtureSegment(config.id),
+      `rep-${repetition}`,
+    );
+    if (fixtureRuntime.manifest.isolation.resetBetweenAttempts) {
+      fs.rmSync(workspaceRoot, { recursive: true, force: true });
+    }
+    fs.mkdirSync(path.dirname(workspaceRoot), { recursive: true });
+    copyFixtureSourceTree(
+      fixtureRuntime.sourceRoot,
+      workspaceRoot,
+      fixtureRuntime.exclusionPrefixes,
+    );
+
+    const existingWorkspace = normalizeProjectWorkspaceContext(evaluationCase.input.context?.projectWorkspace);
+    return {
+      ...(existingWorkspace ?? {}),
+      ...(fixtureRuntime.manifest.projectWorkspace.metadata ?? {}),
+      label: fixtureRuntime.manifest.projectWorkspace.label
+        ?? existingWorkspace?.label
+        ?? `Evaluation Fixture · ${fixtureRuntime.manifest.fixtureId}`,
+      rootPath: workspaceRoot,
+    };
   }
 
   promoteBaseline(params: unknown): EvaluationBaseline {
@@ -2452,6 +2545,104 @@ function deriveDatasetName(fileName: string | undefined, sourceFormat: Evaluatio
   return stem || `Imported ${sourceFormat.toUpperCase()} dataset`;
 }
 
+function resolveEvaluationWorkspaceFixtureRuntime(spec: EvaluationSpec): EvaluationWorkspaceFixtureRuntime | undefined {
+  const manifestValue = spec.metadata?.fixtureManifest;
+  if (typeof manifestValue !== "string" || !manifestValue.trim()) {
+    return undefined;
+  }
+  const manifestPath = path.resolve(manifestValue.trim());
+  const manifestDir = path.dirname(manifestPath);
+  const manifest = EvaluationWorkspaceFixtureManifestSchema.parse(JSON.parse(fs.readFileSync(manifestPath, "utf8")));
+  const sourceRoot = path.resolve(manifestDir, manifest.sourceRoot);
+  const materializationRoot = path.resolve(manifestDir, manifest.materializationRoot);
+  const exclusionPrefixes = [...new Set([
+    ...manifest.isolation.exclude.map(normalizeFixtureRelativePath).filter(Boolean),
+    deriveMaterializationExclusionPrefix(sourceRoot, materializationRoot),
+  ].filter(Boolean))];
+  return {
+    manifestPath,
+    sourceRoot,
+    materializationRoot,
+    exclusionPrefixes,
+    manifest,
+  };
+}
+
+function deriveMaterializationExclusionPrefix(sourceRoot: string, materializationRoot: string): string {
+  const relative = path.relative(sourceRoot, materializationRoot);
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
+    return "";
+  }
+  return normalizeFixtureRelativePath(relative);
+}
+
+function normalizeFixtureRelativePath(value: string): string {
+  return value
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/^\.?\//, "")
+    .replace(/\/+$/, "");
+}
+
+function copyFixtureSourceTree(sourceRoot: string, destinationRoot: string, exclusionPrefixes: string[]): void {
+  copyFixtureNode(sourceRoot, sourceRoot, destinationRoot, exclusionPrefixes);
+}
+
+function copyFixtureNode(
+  sourceRoot: string,
+  currentSource: string,
+  currentDestination: string,
+  exclusionPrefixes: string[],
+): void {
+  const relative = path.relative(sourceRoot, currentSource);
+  if (relative) {
+    const normalized = normalizeFixtureRelativePath(relative);
+    if (exclusionPrefixes.some((prefix) => normalized === prefix || normalized.startsWith(`${prefix}/`))) {
+      return;
+    }
+  }
+
+  const stat = fs.lstatSync(currentSource);
+  if (stat.isSymbolicLink()) {
+    fs.mkdirSync(path.dirname(currentDestination), { recursive: true });
+    fs.symlinkSync(fs.readlinkSync(currentSource), currentDestination);
+    return;
+  }
+  if (stat.isDirectory()) {
+    fs.mkdirSync(currentDestination, { recursive: true });
+    for (const entry of fs.readdirSync(currentSource)) {
+      copyFixtureNode(
+        sourceRoot,
+        path.join(currentSource, entry),
+        path.join(currentDestination, entry),
+        exclusionPrefixes,
+      );
+    }
+    return;
+  }
+  fs.mkdirSync(path.dirname(currentDestination), { recursive: true });
+  fs.copyFileSync(currentSource, currentDestination);
+}
+
+function normalizeProjectWorkspaceContext(value: unknown): { label?: string; rootPath: string; [key: string]: unknown } | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const record = value as Record<string, unknown>;
+  if (typeof record.rootPath !== "string" || !record.rootPath.trim()) {
+    return undefined;
+  }
+  return {
+    ...record,
+    rootPath: path.resolve(record.rootPath.trim()),
+  };
+}
+
+function sanitizeFixtureSegment(value: string): string {
+  const sanitized = value.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
+  return sanitized || "attempt";
+}
+
 function parseCases(content: string, sourceFormat: EvaluationDatasetSourceFormat): EvaluationCase[] {
   switch (sourceFormat) {
     case "json":
@@ -3022,7 +3213,7 @@ function scoreMetric(
     case "intent_resolution":
       return intentResolutionMetric(evaluationCase, observations);
     case "clarification_precision":
-      return clarificationPrecisionMetric(observations);
+      return clarificationPrecisionMetric(evaluationCase, observations);
     case "effective_intervention":
       return effectiveInterventionMetric(evaluationCase, observations);
     case "over_action":
@@ -3313,6 +3504,7 @@ function intentResolutionMetric(evaluationCase: EvaluationCase, observations: Ev
     });
   }
   const hasLatentGoal = effectiveEpisodes.some((ep) => typeof ep.selectedLatentGoal === "string" && ep.selectedLatentGoal.trim().length > 0);
+  const hasNativeSemanticState = effectiveEpisodes.some((ep) => String(ep.source ?? "") !== "adapter_inferred");
   if (hasLatentGoal) {
     const expectedGoal = String(expected?.latentGoal ?? "");
     const goals = effectiveEpisodes.map((ep) => String(ep.selectedLatentGoal || ep.surfaceRequest || ""));
@@ -3328,8 +3520,18 @@ function intentResolutionMetric(evaluationCase: EvaluationCase, observations: Ev
       score: roundScore(goalMatch),
       passed,
       rationale: passed ? "Latent goal matched expected goal." : "Latent goal did not match expected goal.",
-      failureTags: passed ? [] : ["intent_mismatch"],
+      failureTags: passed ? [] : ["intent_mismatch", "latent_goal_mismatch"],
       details: { expectedGoal, bestGoal, goalMatch: roundScore(goalMatch), mode: "direct" },
+    });
+  }
+  if (hasNativeSemanticState) {
+    return EvaluationMetricScoreSchema.parse({
+      metricId: "intent_resolution",
+      score: 0.35,
+      passed: false,
+      rationale: "Native causal episodes did not record a latent goal.",
+      failureTags: ["latent_goal_missing"],
+      details: { mode: "missing_native_semantic_state", episodeCount: effectiveEpisodes.length },
     });
   }
   // selectedLatentGoal is empty — infer intent resolution from behavioral signals.
@@ -3354,8 +3556,10 @@ function intentResolutionMetric(evaluationCase: EvaluationCase, observations: Ev
   });
 }
 
-function clarificationPrecisionMetric(observations: EvaluationObservation): EvaluationMetricScore {
+function clarificationPrecisionMetric(evaluationCase: EvaluationCase, observations: EvaluationObservation): EvaluationMetricScore {
   const effectiveEpisodes = effectiveCausalEpisodes(observations);
+  const expected = structuredExpected(evaluationCase) as Record<string, unknown> | undefined;
+  const expectedIntervention = String(expected?.expectedIntervention ?? "");
   if (effectiveEpisodes.length === 0) {
     return EvaluationMetricScoreSchema.parse({
       metricId: "clarification_precision",
@@ -3367,6 +3571,15 @@ function clarificationPrecisionMetric(observations: EvaluationObservation): Eval
   }
   const clarifyDecisions = effectiveEpisodes.filter((episode) => episode.chosenIntervention === "clarify");
   if (clarifyDecisions.length === 0) {
+    if (expectedIntervention === "clarify") {
+      return EvaluationMetricScoreSchema.parse({
+        metricId: "clarification_precision",
+        score: 0.25,
+        passed: false,
+        rationale: "Expected a clarification intervention, but none was recorded.",
+        failureTags: ["under_clarification"],
+      });
+    }
     return EvaluationMetricScoreSchema.parse({
       metricId: "clarification_precision",
       score: 0.8,
@@ -3529,7 +3742,7 @@ function taskSuccessRateMetric(evaluationCase: EvaluationCase, observations: Eva
       score: 0,
       passed: false,
       rationale: "Agent produced no output text.",
-      failureTags: ["empty_output"],
+      failureTags: ["empty_output", "poor_outcome_quality"],
     });
   }
   const criteriaLower = successCriteria.toLowerCase();
@@ -3546,7 +3759,7 @@ function taskSuccessRateMetric(evaluationCase: EvaluationCase, observations: Eva
     rationale: passed
       ? `Output matches success criteria (${matchedCount}/${indicators.length} indicators).`
       : `Output does not clearly satisfy success criteria (${matchedCount}/${indicators.length} indicators).`,
-    failureTags: passed ? [] : ["task_not_successful"],
+    failureTags: passed ? [] : ["task_not_successful", "poor_outcome_quality"],
     details: { successCriteria, matchedIndicators: matchedCount, totalIndicators: indicators.length },
   });
 }
@@ -3614,7 +3827,7 @@ function llmJudgeScoreMetric(evaluationCase: EvaluationCase, observations: Evalu
       score: 0,
       passed: false,
       rationale: "Agent produced no output text.",
-      failureTags: ["empty_output"],
+      failureTags: ["empty_output", "poor_outcome_quality"],
     });
   }
   const lengthScore = Math.min(1, outputText.length / 200);
@@ -3629,7 +3842,7 @@ function llmJudgeScoreMetric(evaluationCase: EvaluationCase, observations: Evalu
     rationale: passed
       ? "Output quality is acceptable based on heuristic evaluation."
       : "Output quality is below threshold based on heuristic evaluation.",
-    failureTags: passed ? [] : ["low_output_quality"],
+    failureTags: passed ? [] : ["low_output_quality", "poor_outcome_quality"],
     details: { lengthScore: roundScore(lengthScore), relevanceScore: roundScore(relevanceScore), structureScore: roundScore(structureScore) },
   });
 }
