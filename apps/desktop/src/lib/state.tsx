@@ -2264,6 +2264,7 @@ function createPendingRunSnapshot(
       patternOptions: {},
       metadata: {},
       deterministicSeed: `${stream.runId}:pending-stream`,
+      causalInterventionLevel: "record_only" as const,
       skillIds: [],
       toolIds: [],
     },

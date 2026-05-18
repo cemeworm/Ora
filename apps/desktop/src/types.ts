@@ -348,6 +348,21 @@ export type AssistantTurnActiveLoadingTarget =
   | { kind: "proposed_plan" }
   | { kind: "thinking" };
 
+export interface ReviewGateFinding {
+  artifactId?: string;
+  severity: "blocking" | "concern" | "suggestion";
+  issue: string;
+}
+
+export interface ReviewGateInfo {
+  reviewVerdict: "pass" | "needs_fix" | "blocked";
+  verificationBlocked: boolean;
+  reviewReworkCount: number;
+  reviewIssues: string[];
+  blockedNodeId?: string;
+  reviewFindings?: ReviewGateFinding[];
+}
+
 export interface AssistantTurnAttachment {
   runId: string;
   turnIndex: number;
@@ -370,6 +385,7 @@ export interface AssistantTurnAttachment {
   proposedPlanStatus?: "streaming" | "complete";
   planContent?: string;
   activeLoadingTarget?: AssistantTurnActiveLoadingTarget;
+  reviewGate?: ReviewGateInfo;
 }
 
 export type RuntimeBridgeMode = "initializing" | "tauri" | "browser_mock" | "unavailable" | "error";

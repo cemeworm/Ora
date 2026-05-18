@@ -11,10 +11,15 @@ import {
   ListTodo,
   LoaderCircle,
   MessageSquareWarning,
+  RotateCcw,
   Send,
+  ShieldAlert,
+  ShieldCheck,
+  ShieldX,
 } from "lucide-react";
 import type {
   AssistantTurnAttachment,
+  ReviewGateInfo,
   TurnArtifactAttachment,
   TurnClarificationExchange,
   TurnFileChangeAttachment,
@@ -188,7 +193,11 @@ export const AssistantTurnCard = memo(function AssistantTurnCard({
           ) : null}
 
           {hasStageTranscript ? (
-            <StageTranscript messages={stageTranscriptMessages} />
+            <StageTranscript messages={stageTranscriptMessages} reviewGate={turn?.reviewGate} />
+          ) : null}
+
+          {turn?.reviewGate ? (
+            <ReviewGateBanner gate={turn.reviewGate} />
           ) : null}
 
           {hasTimeline ? (
@@ -1078,6 +1087,55 @@ function lcsTable(beforeLines: string[], afterLines: string[]): number[][] {
 
 function isContentArtifact(artifact: TurnArtifactAttachment): boolean {
   return artifact.label !== "Recovery artifact";
+}
+
+function ReviewGateBanner({ gate }: { gate: ReviewGateInfo }) {
+  const { reviewVerdict, verificationBlocked, reviewReworkCount, reviewIssues } = gate;
+
+  const config = {
+    pass: {
+      icon: <ShieldCheck size={16} />,
+      label: "审查通过",
+      bg: "bg-emerald-50/70 dark:bg-emerald-950/30",
+      border: "border-emerald-200 dark:border-emerald-800/50",
+      text: "text-emerald-800 dark:text-emerald-200",
+      iconColor: "text-emerald-600 dark:text-emerald-400",
+    },
+    needs_fix: {
+      icon: reviewReworkCount > 0 ? <RotateCcw size={16} /> : <AlertCircle size={16} />,
+      label: reviewReworkCount > 0 ? `返工中 (${reviewReworkCount}/2)` : "需返工",
+      bg: "bg-amber-50/70 dark:bg-amber-950/30",
+      border: "border-amber-200 dark:border-amber-800/50",
+      text: "text-amber-800 dark:text-amber-200",
+      iconColor: "text-amber-600 dark:text-amber-400",
+    },
+    blocked: {
+      icon: <ShieldX size={16} />,
+      label: verificationBlocked ? "核查阻断" : "已阻塞",
+      bg: "bg-red-50/70 dark:bg-red-950/30",
+      border: "border-red-200 dark:border-red-800/50",
+      text: "text-red-800 dark:text-red-200",
+      iconColor: "text-red-600 dark:text-red-400",
+    },
+  }[reviewVerdict];
+
+  return (
+    <div className={cn("rounded-lg border px-4 py-3", config.bg, config.border)}>
+      <div className="flex items-center gap-2.5">
+        <span className={cn("shrink-0", config.iconColor)}>{config.icon}</span>
+        <span className={cn("text-sm font-semibold", config.text)}>{config.label}</span>
+      </div>
+      {reviewIssues.length > 0 ? (
+        <ul className="mt-2 space-y-1">
+          {reviewIssues.slice(0, 3).map((issue, index) => (
+            <li key={index} className={cn("text-xs leading-5", config.text, "opacity-80")}>
+              {issue}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  );
 }
 
 export function processSummary(

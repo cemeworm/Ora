@@ -128,6 +128,7 @@ function activeSnapshot(
       modeSelection: "manual",
       profileIds: [],
       patternOptions: {},
+      causalInterventionLevel: "record_only" as const,
       deterministicSeed: "test",
     } as OraStateSnapshot["config"],
     topology: { nodes: [], edges: [] },

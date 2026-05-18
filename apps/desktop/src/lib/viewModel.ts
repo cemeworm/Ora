@@ -284,6 +284,7 @@ function createEmptySessionPreview(
       patternOptions: {},
       metadata: {},
       deterministicSeed: "ora-preview",
+      causalInterventionLevel: "record_only" as const,
     },
     topology: definition.topology,
     profiles: definition.profiles,
@@ -2131,6 +2132,37 @@ function normalizeUrl(raw: string): string {
   }
 }
 
+function extractReviewGate(output: unknown): AssistantTurnAttachment["reviewGate"] {
+  if (!output || typeof output !== "object") return undefined;
+  const o = output as Record<string, unknown>;
+  const reviewVerdict = o.reviewVerdict;
+  if (typeof reviewVerdict !== "string" || !["pass", "needs_fix", "blocked"].includes(reviewVerdict)) {
+    return undefined;
+  }
+  return {
+    reviewVerdict: reviewVerdict as "pass" | "needs_fix" | "blocked",
+    verificationBlocked: o.verificationBlocked === true,
+    reviewReworkCount: typeof o.reviewReworkCount === "number" ? o.reviewReworkCount : 0,
+    reviewIssues: Array.isArray(o.reviewIssues) ? o.reviewIssues.filter((i): i is string => typeof i === "string") : [],
+    blockedNodeId: typeof o.blockedNodeId === "string" ? o.blockedNodeId : undefined,
+    reviewFindings: extractReviewFindings(o.reviewFindings),
+  };
+}
+
+type ReviewGate = NonNullable<AssistantTurnAttachment["reviewGate"]>;
+
+function extractReviewFindings(value: unknown): ReviewGate["reviewFindings"] {
+  if (!Array.isArray(value)) return undefined;
+  const findings: ReviewGate["reviewFindings"] = value
+    .filter((f): f is Record<string, unknown> => typeof f === "object" && f !== null && typeof f.issue === "string")
+    .map((f) => ({
+      artifactId: typeof f.artifactId === "string" ? f.artifactId : undefined,
+      severity: (["blocking", "concern", "suggestion"].includes(String(f.severity)) ? String(f.severity) : "concern") as "blocking" | "concern" | "suggestion",
+      issue: String(f.issue),
+    }));
+  return findings && findings.length > 0 ? findings : undefined;
+}
+
 function buildAssistantTurnAttachment(
   snapshot: OraStateSnapshot,
   liveProposedPlan?: ReturnType<typeof parseProposedPlan>,
@@ -2170,6 +2202,7 @@ function buildAssistantTurnAttachment(
     proposedPlanStatus: proposedPlan?.status === "streaming" ? "streaming" : proposedPlan ? "complete" : undefined,
     planContent: proposedPlan?.planContent,
     activeLoadingTarget: activeLoadingTargetFromSnapshot(snapshot, status, timelineItems),
+    reviewGate: extractReviewGate(snapshot.output),
   };
   if (!liveProposedPlan) {
     turnAttachmentCache.set(snapshot, result);

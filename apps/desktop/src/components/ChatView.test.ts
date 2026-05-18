@@ -222,7 +222,7 @@ describe("chat view composer plan steps", () => {
     ]);
   });
 
-  it("hides completed active snapshot plans after the run is done", () => {
+  it("shows active snapshot plans even after the run is done", () => {
     const plan = [
       { id: "step-1", step: "搜索网页", status: "completed" },
       { id: "step-2", step: "整理结果", status: "completed" },
@@ -231,7 +231,10 @@ describe("chat view composer plan steps", () => {
     expect(deriveCurrentComposerPlanSteps({
       activeSnapshot: { planList: plan } as any,
       runInteractionState: runInteractionState("done"),
-    })).toEqual([]);
+    })).toEqual([
+      { step: "搜索网页", status: "completed" },
+      { step: "整理结果", status: "completed" },
+    ]);
   });
 });
 

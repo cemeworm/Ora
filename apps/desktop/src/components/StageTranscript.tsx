@@ -1,5 +1,5 @@
-import { CheckCircle2, Circle, LoaderCircle, MessagesSquare } from "lucide-react";
-import type { TurnAgentConversationMessage } from "../types";
+import { AlertCircle, CheckCircle2, Circle, LoaderCircle, MessagesSquare, RotateCcw, ShieldCheck, ShieldX } from "lucide-react";
+import type { ReviewGateInfo, TurnAgentConversationMessage } from "../types";
 import { cn } from "../lib/utils";
 import { MarkdownContent } from "./MarkdownContent";
 import { TaskList, TaskListBody, TaskListHeader } from "./ai-elements/task";
@@ -89,7 +89,7 @@ function groupByTranscriptField(
   return groups;
 }
 
-function renderTranscriptGroup(renderer: TranscriptRendererId, group: StageTranscriptGroup) {
+function renderTranscriptGroup(renderer: TranscriptRendererId, group: StageTranscriptGroup, reviewGate?: ReviewGateInfo) {
   switch (renderer) {
     case "two_sided_duel": return <TwoSidedDuelTranscriptRenderer group={group} />;
     case "rubric_matrix": return <RubricMatrixRenderer group={group} />;
@@ -98,14 +98,14 @@ function renderTranscriptGroup(renderer: TranscriptRendererId, group: StageTrans
     case "comparison_table": return <ComparisonTableRenderer group={group} />;
     case "artifact_gallery": return <ArtifactGalleryRenderer group={group} />;
     case "kanban_pipeline": return <KanbanPipelineRenderer group={group} />;
-    case "role_lanes": return <RoleLanesRenderer group={group} />;
+    case "role_lanes": return <RoleLanesRenderer group={group} reviewGate={reviewGate} />;
     default: return group.entries.map((message) => (
       <StageTranscriptEntry key={message.id} message={message} />
     ));
   }
 }
 
-export function StageTranscript({ messages }: { messages: TurnAgentConversationMessage[] }) {
+export function StageTranscript({ messages, reviewGate }: { messages: TurnAgentConversationMessage[]; reviewGate?: ReviewGateInfo }) {
   const groups = groupStageTranscriptMessages(messages);
   if (groups.length === 0) {
     return null;
@@ -122,10 +122,11 @@ export function StageTranscript({ messages }: { messages: TurnAgentConversationM
                 <MessagesSquare size={14} />
                 <span className="font-medium text-foreground">{group.label}</span>
                 <span className="truncate text-xs text-muted-foreground">{group.entries.length} 个阶段</span>
+                {reviewGate ? <VerdictLaneBadge gate={reviewGate} /> : null}
               </div>
             </TaskListHeader>
             <TaskListBody className={cn("border-l-0 pl-0", renderer === "stage_list" && "divide-y divide-border")}>
-              {renderTranscriptGroup(renderer, group)}
+              {renderTranscriptGroup(renderer, group, reviewGate)}
             </TaskListBody>
           </TaskList>
         );
@@ -519,7 +520,7 @@ function ArtifactCard({ group, message }: { group: StageTranscriptGroup; message
 
 // ── role_lanes ────────────────────────────────────────────────────────
 
-function RoleLanesRenderer({ group }: { group: StageTranscriptGroup }) {
+function RoleLanesRenderer({ group, reviewGate }: { group: StageTranscriptGroup; reviewGate?: ReviewGateInfo }) {
   const layout = group.layout;
   const lanes = layout?.lanes;
   const columns: Array<{ id: string; label: string; entries: TurnAgentConversationMessage[] }> = lanes
@@ -539,13 +540,20 @@ function RoleLanesRenderer({ group }: { group: StageTranscriptGroup }) {
         entries: [...entries].sort((a, b) => (a.transcript?.sequence ?? 0) - (b.transcript?.sequence ?? 0)),
       }));
 
+  const VERIFIER_STAGE_IDS = new Set(["verify", "review", "check"]);
+
   return (
     <div className="space-y-4 px-2 py-3">
-      {columns.map((col) => (
+      {columns.map((col) => {
+        const isVerifierLane = reviewGate && col.entries.some(
+          (e) => VERIFIER_STAGE_IDS.has(e.transcript?.stageId ?? ""),
+        );
+        return (
         <div key={col.id} className="rounded-xl border border-border bg-muted/15">
           <div className="flex items-center gap-2 border-b border-border px-4 py-2">
             <span className="text-xs font-semibold text-foreground">{col.label}</span>
             <span className="text-xs text-muted-foreground">{col.entries.length}</span>
+            {isVerifierLane ? <VerdictLaneBadge gate={reviewGate!} /> : null}
           </div>
           <div className="flex flex-wrap gap-3 p-3">
             {col.entries.length === 0 ? (
@@ -557,8 +565,57 @@ function RoleLanesRenderer({ group }: { group: StageTranscriptGroup }) {
             )}
           </div>
         </div>
-      ))}
+        );
+      })}
     </div>
+  );
+}
+
+function VerdictLaneBadge({ gate }: { gate: ReviewGateInfo }) {
+  const { reviewVerdict, reviewReworkCount, reviewIssues, reviewFindings } = gate;
+  const config = {
+    pass: {
+      icon: <ShieldCheck size={12} />,
+      label: "通过",
+      className: "bg-emerald-100 text-emerald-800 border-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-300 dark:border-emerald-700/50",
+    },
+    needs_fix: {
+      icon: reviewReworkCount > 0 ? <RotateCcw size={12} /> : <AlertCircle size={12} />,
+      label: reviewReworkCount > 0 ? `返工 ${reviewReworkCount}/2` : "需返工",
+      className: "bg-amber-100 text-amber-800 border-amber-200 dark:bg-amber-900/30 dark:text-amber-300 dark:border-amber-700/50",
+    },
+    blocked: {
+      icon: <ShieldX size={12} />,
+      label: "阻断",
+      className: "bg-red-100 text-red-800 border-red-200 dark:bg-red-900/30 dark:text-red-300 dark:border-red-700/50",
+    },
+  }[reviewVerdict];
+
+  const findingsCount = reviewFindings?.length ?? 0;
+  const labelWithCount = findingsCount > 0 ? `${config.label} (${findingsCount})` : config.label;
+
+  const tooltipLines: string[] = [];
+  if (reviewFindings?.length) {
+    for (const f of reviewFindings) {
+      const prefix = f.severity === "blocking" ? "!!" : f.severity === "concern" ? "!" : "·";
+      tooltipLines.push(`${prefix} [${f.artifactId ?? "general"}] ${f.issue}`);
+    }
+  } else if (reviewIssues.length > 0) {
+    tooltipLines.push(...reviewIssues.slice(0, 3));
+  }
+  const title = tooltipLines.length > 0 ? tooltipLines.join("\n") : undefined;
+
+  return (
+    <span
+      title={title}
+      className={cn(
+        "ml-auto inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium",
+        config.className,
+      )}
+    >
+      {config.icon}
+      {labelWithCount}
+    </span>
   );
 }
 

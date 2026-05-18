@@ -132,15 +132,11 @@ export function deriveProjectedGateTrays({
 
 export function deriveCurrentComposerPlanSteps({
   activeSnapshot,
-  runInteractionState,
+  runInteractionState: _runInteractionState,
 }: {
   activeSnapshot?: Pick<OraStateSnapshot, "planList">;
   runInteractionState: Pick<DesktopRunInteractionState, "isProcessing">;
 }): TurnPlanListStep[] {
-  if (!runInteractionState.isProcessing) {
-    return [];
-  }
-
   const snapshotPlan = activeSnapshot?.planList;
   if (!snapshotPlan || snapshotPlan.length === 0) {
     return [];
@@ -256,7 +252,7 @@ export function ChatView({
       activeSnapshot,
       runInteractionState,
     }),
-    [activeSnapshot?.planList, runInteractionState.isProcessing],
+    [activeSnapshot?.planList],
   );
   const branchGroups = state.activeSessionDetail?.branchGroups ?? [];
   const [branchPanelOpen, setBranchPanelOpen] = useState(false);

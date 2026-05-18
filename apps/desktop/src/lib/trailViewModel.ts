@@ -954,6 +954,37 @@ function checkToolBudgetExceeded(ctx: { snapshot: OraStateSnapshot }): TrailFind
   }];
 }
 
+function checkVerificationBlocked(ctx: { snapshot: OraStateSnapshot }): TrailFinding[] {
+  const output = ctx.snapshot.output as Record<string, unknown> | undefined;
+  if (!output || output.verificationBlocked !== true) return [];
+  const reviewVerdict = typeof output.reviewVerdict === "string" ? output.reviewVerdict : "unknown";
+  const reworkCount = typeof output.reviewReworkCount === "number" ? output.reviewReworkCount : 0;
+  const blockedNodeId = typeof output.blockedNodeId === "string" ? output.blockedNodeId : undefined;
+  const issues = Array.isArray(output.reviewIssues) ? output.reviewIssues.filter((i): i is string => typeof i === "string") : [];
+  const findings = Array.isArray(output.reviewFindings) ? output.reviewFindings : [];
+  const findingsSummary = findings.length > 0
+    ? findings.slice(0, 5).map((f: Record<string, unknown>) => {
+        const sev = f.severity === "blocking" ? "!!" : f.severity === "concern" ? "!" : "·";
+        return `${sev} [${f.artifactId ?? "general"}] ${f.issue}`;
+      }).join("；")
+    : "";
+  const message = [
+    `审查裁定: ${reviewVerdict === "needs_fix" ? "需返工" : reviewVerdict === "blocked" ? "阻塞" : reviewVerdict}`,
+    reworkCount > 0 ? `，已返工 ${reworkCount} 轮` : "",
+    blockedNodeId ? `，阻塞节点: ${blockedNodeId}` : "",
+    findingsSummary ? `。详细发现: ${findingsSummary}` : "",
+    issues.length > 0 && !findingsSummary ? `。问题: ${issues.slice(0, 3).join("；")}` : "",
+  ].join("");
+  return [{
+    id: "verification.blocked",
+    severity: reviewVerdict === "blocked" ? "error" : "warning",
+    title: `核查阻断${findings.length > 0 ? ` · ${findings.length} 条发现` : ""}`,
+    message,
+    targetType: "run",
+    suggestedTab: "overview",
+  }];
+}
+
 const FINDING_CHECKS: FindingCheck[] = [
   checkRunFailure,
   checkStrategyDegradation,
@@ -971,6 +1002,7 @@ const FINDING_CHECKS: FindingCheck[] = [
   checkModelOutputQuality,
   checkAgentCommunication,
   checkToolBudgetExceeded,
+  checkVerificationBlocked,
 ];
 
 export function buildPendingApprovalItems(snapshot: OraStateSnapshot): PendingApprovalItem[] {
@@ -1531,6 +1563,18 @@ function currentBlockingGate(
   const planDecision = snapshotPendingPlanDecision(snapshot);
   if (interaction.gateKind === "plan_decision" || planDecision) {
     return "决策 · 计划确认";
+  }
+  const output = snapshot.output as Record<string, unknown> | undefined;
+  if (output?.verificationBlocked === true) {
+    const verdict = typeof output.reviewVerdict === "string" ? output.reviewVerdict : "unknown";
+    const reworkCount = typeof output.reviewReworkCount === "number" ? output.reviewReworkCount : 0;
+    if (verdict === "needs_fix") {
+      return `核查阻断 · 返工 ${reworkCount}/2 轮后仍未通过`;
+    }
+    if (verdict === "blocked") {
+      return "核查阻断 · 外部条件不满足";
+    }
+    return "核查阻断";
   }
   return "无";
 }

@@ -5387,6 +5387,7 @@ class LocalJsonRpcRuntime {
           ...(provider?.customAgentId ? { customAgentId: provider.customAgentId } : {}),
         },
         deterministicSeed: "ora-smoke",
+        causalInterventionLevel: "record_only" as const,
       },
       topology: {
         nodes: definition.topology.nodes.map((node) => ({
