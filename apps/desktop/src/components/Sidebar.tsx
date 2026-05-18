@@ -664,7 +664,8 @@ export const Sidebar = memo(function Sidebar({
           .filter((session) => session.projectId === project.projectId)
           .sort(
             (a, b) =>
-              (b.lastUserMessageAt ?? b.createdAt) - (a.lastUserMessageAt ?? a.createdAt) ||
+              (b.lastUserMessageAt ?? b.createdAt) -
+                (a.lastUserMessageAt ?? a.createdAt) ||
               a.sessionId.localeCompare(b.sessionId),
           )
           .map((session) => ({
@@ -699,7 +700,8 @@ export const Sidebar = memo(function Sidebar({
         .filter((session) => !session.projectId)
         .sort(
           (a, b) =>
-            (b.lastUserMessageAt ?? b.createdAt) - (a.lastUserMessageAt ?? a.createdAt) ||
+            (b.lastUserMessageAt ?? b.createdAt) -
+              (a.lastUserMessageAt ?? a.createdAt) ||
             a.sessionId.localeCompare(b.sessionId),
         )
         .map((session) => ({
@@ -838,7 +840,8 @@ export const Sidebar = memo(function Sidebar({
       <div className="flex h-12 shrink-0 flex-col justify-center px-2">
         {open ? (
           <div className="flex items-center justify-between gap-2 pr-1">
-            <div className="ml-1 flex min-w-0 items-center gap-2">
+            <div className=" flex min-w-0 items-center gap-1.5">
+              <img src="/fox_head_trans.png" alt="Ora" className="h-7 w-7" />
               <div className="cursor-default font-serif text-[15px] text-primary">
                 Ora
               </div>
@@ -851,7 +854,7 @@ export const Sidebar = memo(function Sidebar({
         ) : (
           <div className="group/workspace-header flex w-full items-center justify-center">
             <div className="block pt-1 font-serif text-primary group-hover/workspace-header:hidden">
-              O
+              <img src="/fox_head_trans.png" alt="Ora" className="h-7 w-7" />
             </div>
             <SidebarTrigger className="hidden group-hover/workspace-header:inline-flex" />
           </div>
