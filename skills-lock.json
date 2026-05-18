@@ -1,6 +1,12 @@
 {
   "version": 1,
   "skills": {
+    "guizang-ppt-skill": {
+      "source": "op7418/guizang-ppt-skill",
+      "sourceType": "github",
+      "skillPath": "SKILL.md",
+      "computedHash": "0dd07ebe11909ab42014e7c8aa5b5d3678f95a0aa34a6ee3fa465a38afb6d16b"
+    },
     "opencli-adapter-author": {
       "source": "jackwener/opencli",
       "sourceType": "github",
