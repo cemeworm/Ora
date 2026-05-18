@@ -252,6 +252,57 @@ describe("sidebar release update check", () => {
   });
 });
 
+describe("sidebar session sorting by lastUserMessageAt", () => {
+  it("sorts by lastUserMessageAt descending, falling back to createdAt", () => {
+    const sessions: Array<{ sessionId: string; title: string; turnCount: number; createdAt: number; updatedAt: number; lastUserMessageAt?: number }> = [
+      { sessionId: "s1", title: "old-chat", turnCount: 0, createdAt: 1000, updatedAt: 2000 },
+      { sessionId: "s2", title: "recent-user", turnCount: 1, createdAt: 2000, updatedAt: 3000, lastUserMessageAt: 5000 },
+      { sessionId: "s3", title: "mid-user", turnCount: 1, createdAt: 3000, updatedAt: 4000, lastUserMessageAt: 4000 },
+      { sessionId: "s4", title: "no-messages", turnCount: 0, createdAt: 1500, updatedAt: 2500 },
+    ];
+
+    const sorted = [...sessions].sort(
+      (a, b) =>
+        (b.lastUserMessageAt ?? b.createdAt) - (a.lastUserMessageAt ?? a.createdAt) ||
+        a.sessionId.localeCompare(b.sessionId),
+    );
+
+    // s2 (lastUserMessageAt=5000) > s3 (4000) > s4 (createdAt=1500) > s1 (createdAt=1000)
+    expect(sorted.map((s) => s.sessionId)).toEqual(["s2", "s3", "s4", "s1"]);
+  });
+
+  it("new sessions without user messages sort by createdAt descending", () => {
+    const sessions: Array<{ sessionId: string; title: string; turnCount: number; createdAt: number; updatedAt: number; lastUserMessageAt?: number }> = [
+      { sessionId: "s1", title: "newer", turnCount: 0, createdAt: 2000, updatedAt: 2000 },
+      { sessionId: "s2", title: "older", turnCount: 0, createdAt: 1000, updatedAt: 1000 },
+    ];
+
+    const sorted = [...sessions].sort(
+      (a, b) =>
+        (b.lastUserMessageAt ?? b.createdAt) - (a.lastUserMessageAt ?? a.createdAt) ||
+        a.sessionId.localeCompare(b.sessionId),
+    );
+
+    expect(sorted.map((s) => s.sessionId)).toEqual(["s1", "s2"]);
+  });
+
+  it("newer session without messages ranks above older session with stale messages", () => {
+    const sessions: Array<{ sessionId: string; title: string; turnCount: number; createdAt: number; updatedAt: number; lastUserMessageAt?: number }> = [
+      { sessionId: "s1", title: "old-with-msg", turnCount: 1, createdAt: 1000, updatedAt: 1000, lastUserMessageAt: 3000 },
+      { sessionId: "s2", title: "new-no-msg", turnCount: 0, createdAt: 5000, updatedAt: 5000 },
+    ];
+
+    const sorted = [...sessions].sort(
+      (a, b) =>
+        (b.lastUserMessageAt ?? b.createdAt) - (a.lastUserMessageAt ?? a.createdAt) ||
+        a.sessionId.localeCompare(b.sessionId),
+    );
+
+    // s2 (createdAt=5000) should be first, s1 (lastUserMessageAt=3000) second
+    expect(sorted.map((s) => s.sessionId)).toEqual(["s2", "s1"]);
+  });
+});
+
 describe("sidebar archive copy", () => {
   it("localizes archive confirmation copy", () => {
     expect(translateCopy("zh", "Archive this chat?")).toBe("归档这个对话？");

@@ -442,6 +442,9 @@ export function deriveSessionProjection(
     contextState: state.contextState,
     createdAt: state.createdAt ?? entries[0]?.createdAt ?? 0,
     updatedAt: Math.max(state.updatedAt, latest?.updatedAt ?? 0, entries.at(-1)?.createdAt ?? 0),
+    lastUserMessageAt: state.transcript
+      .filter((m) => m.role === "user")
+      .reduce((max, m) => Math.max(max, m.createdAt), 0) || undefined,
     archivedAt: state.archivedAt,
   });
   const turns = runs.map(toLedgerSessionTurn);
@@ -695,6 +698,7 @@ function applyEntryToProjection(state: ProjectionState, entry: RuntimeSessionEnt
           pattern: runPattern(run),
           modeId: run?.modeId,
           createdAt: entry.createdAt,
+          agentLabel: payload.snapshot ? agentLabelFromSnapshot(payload.snapshot) : undefined,
         }));
       }
       break;
@@ -1467,6 +1471,37 @@ function isDeterministicApprovedTool(toolId: string): boolean {
 
 function runPattern(run: RuntimeRunProjection | undefined): RuntimeRunProjection["pattern"] {
   return run?.pattern ?? "orchestrator_subagent";
+}
+
+/** Extract the current agent label from a state snapshot for transcript recording. */
+export function agentLabelFromSnapshot(snapshot: {
+  profiles: Array<{ id: string; label: string }>;
+  agentMessages?: Array<{ fromAgentId: string }>;
+  activeAgents?: string[];
+}): string | undefined {
+  const profiles = new Map(snapshot.profiles.map((p) => [p.id, p.label]));
+
+  // Prefer the first non-root active agent
+  const activeNonRoot = snapshot.activeAgents?.find((id) => id !== ORA_ROOT_AGENT_ID);
+  if (activeNonRoot && profiles.has(activeNonRoot)) {
+    return profiles.get(activeNonRoot);
+  }
+
+  // Fall back to the latest agent message from a non-root agent
+  const latestAgentMessage = [...(snapshot.agentMessages ?? [])]
+    .reverse()
+    .find((msg) => msg.fromAgentId !== ORA_ROOT_AGENT_ID);
+  if (latestAgentMessage) {
+    return profiles.get(latestAgentMessage.fromAgentId) ?? latestAgentMessage.fromAgentId;
+  }
+
+  // Fall back to the first non-root profile
+  const firstNonRoot = snapshot.profiles.find((p) => p.id !== ORA_ROOT_AGENT_ID);
+  if (firstNonRoot) {
+    return firstNonRoot.label;
+  }
+
+  return undefined;
 }
 
 export function runtimeSessionProjectionToDetail(projection: RuntimeSessionProjection): SessionDetail {

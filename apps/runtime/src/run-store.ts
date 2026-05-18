@@ -106,6 +106,7 @@ import {
   SystemAgentOverrideUpdateParams,
   UserTaskInput,
   UserTaskInputSchema,
+  agentLabelFromSnapshot,
   deriveRunSnapshot,
   deriveSessionProjection,
   type RuntimeSessionEntry,
@@ -4524,6 +4525,7 @@ export class LocalRunStore {
           pattern: run.pattern,
           modeId: run.modeId,
           createdAt: run.updatedAt,
+          agentLabel: agentLabelFromSnapshot(run),
         }));
       }
     }

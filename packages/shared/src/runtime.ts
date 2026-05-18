@@ -1044,6 +1044,7 @@ export const SessionSummarySchema = z.object({
   createdAt: z.number().int().nonnegative(),
   updatedAt: z.number().int().nonnegative(),
   archivedAt: z.number().int().nonnegative().optional(),
+  lastUserMessageAt: z.number().int().nonnegative().optional(),
 });
 export type SessionSummary = z.infer<typeof SessionSummarySchema>;
 
@@ -1077,6 +1078,7 @@ export const SessionTranscriptMessageSchema = z.object({
   pattern: CoordinationPatternSchema,
   modeId: ModeIdSchema.optional(),
   createdAt: z.number().int().nonnegative(),
+  agentLabel: z.string().optional(),
 });
 export type SessionTranscriptMessage = z.infer<typeof SessionTranscriptMessageSchema>;
 

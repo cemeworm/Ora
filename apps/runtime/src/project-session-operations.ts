@@ -150,7 +150,10 @@ export function listSessions(params: unknown, deps: ProjectSessionOperationDeps)
   return [...deps.sessions.values()]
     .filter((session) => session.archivedAt === undefined)
     .filter((session) => (parsed.projectId ? session.projectId === parsed.projectId : true))
-    .sort((a, b) => b.updatedAt - a.updatedAt || a.sessionId.localeCompare(b.sessionId))
+    .sort((a, b) =>
+      (b.lastUserMessageAt ?? b.createdAt) - (a.lastUserMessageAt ?? a.createdAt) ||
+      a.sessionId.localeCompare(b.sessionId),
+    )
     .slice(0, parsed.limit)
     .map((session) => SessionSummarySchema.parse(sessionWithLatestAttention(session, deps)));
 }

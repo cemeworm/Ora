@@ -49,14 +49,20 @@ export function deriveRuntimeReadModelsFromLedgers(ledgers: RuntimeSessionLedger
   }
   return {
     runs: runs.sort((a, b) => a.runId.localeCompare(b.runId)),
-    sessions: sessions.sort((a, b) => b.updatedAt - a.updatedAt || a.sessionId.localeCompare(b.sessionId)),
+    sessions: sessions.sort((a, b) =>
+      (b.lastUserMessageAt ?? b.createdAt) - (a.lastUserMessageAt ?? a.createdAt) ||
+      a.sessionId.localeCompare(b.sessionId),
+    ),
   };
 }
 
 export function deriveRuntimeSessionReadModelsFromLedgers(ledgers: RuntimeSessionLedger[]): RuntimeSessionReadModel[] {
   return ledgers
     .map((ledger) => cachedProjection(ledger).session)
-    .sort((a, b) => b.updatedAt - a.updatedAt || a.sessionId.localeCompare(b.sessionId));
+    .sort((a, b) =>
+      (b.lastUserMessageAt ?? b.createdAt) - (a.lastUserMessageAt ?? a.createdAt) ||
+      a.sessionId.localeCompare(b.sessionId),
+    );
 }
 
 /** 写入新 entry 后使缓存失效 */

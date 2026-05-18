@@ -664,7 +664,7 @@ export const Sidebar = memo(function Sidebar({
           .filter((session) => session.projectId === project.projectId)
           .sort(
             (a, b) =>
-              b.updatedAt - a.updatedAt ||
+              (b.lastUserMessageAt ?? b.createdAt) - (a.lastUserMessageAt ?? a.createdAt) ||
               a.sessionId.localeCompare(b.sessionId),
           )
           .map((session) => ({
@@ -699,7 +699,8 @@ export const Sidebar = memo(function Sidebar({
         .filter((session) => !session.projectId)
         .sort(
           (a, b) =>
-            b.updatedAt - a.updatedAt || a.sessionId.localeCompare(b.sessionId),
+            (b.lastUserMessageAt ?? b.createdAt) - (a.lastUserMessageAt ?? a.createdAt) ||
+            a.sessionId.localeCompare(b.sessionId),
         )
         .map((session) => ({
           id: session.sessionId,

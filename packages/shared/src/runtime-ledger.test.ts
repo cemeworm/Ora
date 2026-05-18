@@ -633,3 +633,63 @@ describe("terminal state integrity", () => {
     expect(cleanFailed.reason).toBe("something crashed");
   });
 });
+
+describe("SessionSummary lastUserMessageAt", () => {
+  function doneEvent(runId: string, seq: number, createdAt: number, status = "succeeded") {
+    return { id: `ev-${runId}-${seq}`, runId, seq, type: "run.done", createdAt, payload: { status } };
+  }
+
+  it("is undefined when transcript has no user messages", () => {
+    const entries = [
+      entry({ id: "root", type: "session.created", createdAt: 1000 }),
+      entry({ id: "run1", type: "run.started", runId: "r1", parentId: "root", turnIndex: 1, seq: 1, createdAt: 1001, payload: { input: { prompt: "no-user" }, config: { providerId: "mock", modelRef: "mock" } } }),
+      entry({ id: "batch1", type: "runtime.event_batch", runId: "r1", parentId: "run1", turnIndex: 1, seq: 2, createdAt: 1002, payload: { events: [doneEvent("r1", 2, 1002)], status: "succeeded" } }),
+    ];
+    const projection = deriveSessionProjection(ledger(entries, "batch1"));
+    expect(projection.session.lastUserMessageAt).toBeUndefined();
+  });
+
+  it("captures the most recent user message createdAt", () => {
+    const entries = [
+      entry({ id: "root", type: "session.created", createdAt: 1000 }),
+      entry({ id: "msg1", type: "user.message", runId: "r1", parentId: "root", turnIndex: 1, seq: 1, createdAt: 2000, payload: { content: "first" } }),
+      entry({ id: "run1", type: "run.started", runId: "r1", parentId: "msg1", turnIndex: 1, seq: 2, createdAt: 2001, payload: { input: { prompt: "first" }, config: { providerId: "mock", modelRef: "mock" } } }),
+      entry({ id: "batch1", type: "runtime.event_batch", runId: "r1", parentId: "run1", turnIndex: 1, seq: 3, createdAt: 2002, payload: { events: [doneEvent("r1", 3, 2002)], status: "succeeded" } }),
+      entry({ id: "msg2", type: "user.message", runId: "r2", parentId: "batch1", turnIndex: 2, seq: 4, createdAt: 5000, payload: { content: "second" } }),
+      entry({ id: "run2", type: "run.started", runId: "r2", parentId: "msg2", turnIndex: 2, seq: 5, createdAt: 5001, payload: { input: { prompt: "second" }, config: { providerId: "mock", modelRef: "mock" } } }),
+      entry({ id: "batch2", type: "runtime.event_batch", runId: "r2", parentId: "run2", turnIndex: 2, seq: 6, createdAt: 5002, payload: { events: [doneEvent("r2", 6, 5002)], status: "succeeded" } }),
+    ];
+    const projection = deriveSessionProjection(ledger(entries, "batch2"));
+    expect(projection.session.lastUserMessageAt).toBe(5000);
+  });
+
+  it("picks the latest among multiple user messages in the same session", () => {
+    const entries = [
+      entry({ id: "root", type: "session.created", createdAt: 1000 }),
+      entry({ id: "msg1", type: "user.message", runId: "r1", parentId: "root", turnIndex: 1, seq: 1, createdAt: 2000, payload: { content: "first" } }),
+      entry({ id: "run1", type: "run.started", runId: "r1", parentId: "msg1", turnIndex: 1, seq: 2, createdAt: 2001, payload: { input: { prompt: "first" }, config: { providerId: "mock", modelRef: "mock" } } }),
+      entry({ id: "batch1", type: "runtime.event_batch", runId: "r1", parentId: "run1", turnIndex: 1, seq: 3, createdAt: 2002, payload: { events: [doneEvent("r1", 3, 2002)], status: "succeeded" } }),
+      entry({ id: "msg2", type: "user.message", runId: "r2", parentId: "batch1", turnIndex: 2, seq: 4, createdAt: 3000, payload: { content: "second" } }),
+      entry({ id: "run2", type: "run.started", runId: "r2", parentId: "msg2", turnIndex: 2, seq: 5, createdAt: 3001, payload: { input: { prompt: "second" }, config: { providerId: "mock", modelRef: "mock" } } }),
+      entry({ id: "batch2", type: "runtime.event_batch", runId: "r2", parentId: "run2", turnIndex: 2, seq: 6, createdAt: 3002, payload: { events: [doneEvent("r2", 6, 3002)], status: "succeeded" } }),
+      entry({ id: "msg3", type: "user.message", runId: "r3", parentId: "batch2", turnIndex: 3, seq: 7, createdAt: 4000, payload: { content: "third" } }),
+      entry({ id: "run3", type: "run.started", runId: "r3", parentId: "msg3", turnIndex: 3, seq: 8, createdAt: 4001, payload: { input: { prompt: "third" }, config: { providerId: "mock", modelRef: "mock" } } }),
+      entry({ id: "batch3", type: "runtime.event_batch", runId: "r3", parentId: "run3", turnIndex: 3, seq: 9, createdAt: 4002, payload: { events: [doneEvent("r3", 9, 4002)], status: "succeeded" } }),
+    ];
+    const projection = deriveSessionProjection(ledger(entries, "batch3"));
+    expect(projection.session.lastUserMessageAt).toBe(4000);
+  });
+
+  it("not affected by assistant messages or tool results", () => {
+    const entries = [
+      entry({ id: "root", type: "session.created", createdAt: 1000 }),
+      entry({ id: "msg1", type: "user.message", runId: "r1", parentId: "root", turnIndex: 1, seq: 1, createdAt: 2000, payload: { content: "hello" } }),
+      entry({ id: "run1", type: "run.started", runId: "r1", parentId: "msg1", turnIndex: 1, seq: 2, createdAt: 2001, payload: { input: { prompt: "hello" }, config: { providerId: "mock", modelRef: "mock" } } }),
+      entry({ id: "batch1", type: "runtime.event_batch", runId: "r1", parentId: "run1", turnIndex: 1, seq: 3, createdAt: 9999, payload: { events: [doneEvent("r1", 3, 9999)], status: "succeeded" } }),
+    ];
+    const projection = deriveSessionProjection(ledger(entries, "batch1"));
+    // lastUserMessageAt should still be 2000 (the user message time),
+    // not 9999 (assistant streaming event time).
+    expect(projection.session.lastUserMessageAt).toBe(2000);
+  });
+});

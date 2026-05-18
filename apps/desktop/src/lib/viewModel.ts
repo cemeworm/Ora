@@ -1357,6 +1357,7 @@ export function adaptChatMessages(
               clarificationCount: 0,
               hasProposedPlan: true,
               planContent: storedPlan!.planContent,
+              currentAgentLabel: turn.assistant?.agentLabel,
             } satisfies AssistantTurnAttachment)
           : undefined;
       const rawAssistantText = turn.snapshot
