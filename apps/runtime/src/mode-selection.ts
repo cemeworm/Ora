@@ -19,9 +19,14 @@ import {
   modeSpecToPatternDefinition,
   withDefaultWebToolIds
 } from "@cemeworm/shared";
-import { buildActiveMemoryContext } from "./active-memory.js";
+import {
+  buildActiveMemoryContext,
+  finalizeActiveMemoryContext,
+  retrieveActiveMemoryCandidates,
+} from "./active-memory.js";
 import { RuntimeSkillRegistry } from "./harness/capability-registries.js";
-import { LongTermMemoryManager } from "./memory.js";
+import { LongTermMemoryManager, type MemoryModelInvoker } from "./memory.js";
+import { admitWithProvider } from "./memory-admission.js";
 import { ModeSpecFileStore } from "./modes.js";
 import { invokeRunProvider, type ModelMessage } from "./providers/index.js";
 import {
@@ -253,16 +258,18 @@ export async function withMemoryPrompt(
   if (!input?.prompt) {
     return config;
   }
-  const activeMemory = buildActiveMemoryContext({
+  const recentMessages = session ? deps.buildConversationMessages(session.sessionId, input.prompt) : [];
+  const activeMemoryRequest = {
     memory: deps.longTermMemory.get(),
     projectMemory: input.projectId ? deps.longTermMemory.getProject(input.projectId) : undefined,
     prompt: input.prompt,
     projectId: input.projectId,
     sessionId: session?.sessionId,
     profileIds: config.profileIds,
-    recentMessages: session ? deps.buildConversationMessages(session.sessionId, input.prompt) : [],
+    recentMessages,
     maxCandidates: policy.injectionMaxFacts,
-  });
+  };
+  const activeMemory = await buildActiveMemoryContextForPolicy(config, activeMemoryRequest, policy);
 
   // D3: Hybrid/semantic retrieval via MemoryIndexStore + EmbeddingProvider
   if (
@@ -360,6 +367,80 @@ export async function withMemoryPrompt(
       ...(overlay ? { memoryPromptOverlay: overlay } : {}),
     },
   });
+}
+
+async function buildActiveMemoryContextForPolicy(
+  config: RunConfig,
+  request: Parameters<typeof buildActiveMemoryContext>[0],
+  policy: ReturnType<typeof resolveMemoryPolicy>,
+) {
+  if (policy.admissionMode === "deterministic") {
+    return buildActiveMemoryContext(request);
+  }
+
+  const candidates = retrieveActiveMemoryCandidates(request);
+  const invokeModel = buildMemoryAdmissionInvoker(config, policy);
+  if (!invokeModel) {
+    if (policy.admissionMode === "provider_fallback") {
+      return buildActiveMemoryContext(request);
+    }
+    return finalizeActiveMemoryContext({
+      decision: {
+        status: "NONE",
+        mode: policy.admissionMode,
+        reason: "Provider admission was requested, but no eligible provider was configured.",
+        candidateIds: candidates.map((candidate) => candidate.id),
+        selectedIds: [],
+        rejectedIds: candidates.map((candidate) => candidate.id),
+        budget: {
+          maxCandidates: request.maxCandidates ?? Math.max(candidates.length, 1),
+          maxChars: request.maxChars ?? 1800,
+          renderedChars: 0,
+        },
+        warnings: ["Provider-backed memory admission is unavailable."],
+      },
+      cards: [],
+    }, request.maxChars);
+  }
+
+  const providerResult = await admitWithProvider(
+    candidates,
+    {
+      candidates,
+      prompt: request.prompt,
+      recentMessages: request.recentMessages,
+      maxSummaryChars: policy.admissionMaxSummaryChars,
+    },
+    invokeModel,
+    policy.admissionTimeoutMs,
+  );
+
+  return finalizeActiveMemoryContext({
+    decision: providerResult.decision,
+    cards: providerResult.cards,
+  }, request.maxChars);
+}
+
+function buildMemoryAdmissionInvoker(
+  config: RunConfig,
+  policy: ReturnType<typeof resolveMemoryPolicy>,
+): MemoryModelInvoker | undefined {
+  const toolModelProviderId = config.metadata?.toolModelProviderId;
+  const effectiveProviderId = policy.updaterProviderId
+    ?? (typeof toolModelProviderId === "string" && toolModelProviderId !== "auto" ? toolModelProviderId : undefined)
+    ?? config.providerId;
+
+  if (!effectiveProviderId && !config.providerConfig) {
+    return undefined;
+  }
+
+  return async (request) => {
+    const response = await invokeRunProvider({
+      ...config,
+      providerId: effectiveProviderId,
+    }, request);
+    return response.text;
+  };
 }
 
 export function resolveMemoryPolicy(config: RunConfig, deps: ModeSelectionDeps) {

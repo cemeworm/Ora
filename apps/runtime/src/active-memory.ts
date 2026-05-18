@@ -66,19 +66,7 @@ const STOP_WORDS = new Set([
 export function buildActiveMemoryContext(request: ActiveMemoryRequest): ActiveMemoryContext {
   const candidates = retrieveActiveMemoryCandidates(request);
   const admitted = admitActiveMemoryCandidates(candidates, request);
-  const rendered = renderActiveMemoryCards(admitted.cards, admitted.decision.reason, request.maxChars ?? DEFAULT_MAX_CHARS);
-  const decision = {
-    ...admitted.decision,
-    budget: {
-      ...admitted.decision.budget,
-      renderedChars: rendered.length,
-    },
-  };
-  return ActiveMemoryContextSchema.parse({
-    decision,
-    cards: admitted.cards,
-    rendered,
-  });
+  return finalizeActiveMemoryContext(admitted, request.maxChars ?? DEFAULT_MAX_CHARS);
 }
 
 export function retrieveActiveMemoryCandidates(request: ActiveMemoryRequest): ActiveMemoryCandidate[] {
@@ -194,6 +182,25 @@ export function admitActiveMemoryCandidates(
     },
     cards,
   };
+}
+
+export function finalizeActiveMemoryContext(
+  admitted: Pick<ActiveMemoryContext, "decision" | "cards">,
+  maxChars = DEFAULT_MAX_CHARS,
+): ActiveMemoryContext {
+  const rendered = renderActiveMemoryCards(admitted.cards, admitted.decision.reason, maxChars);
+  const decision = {
+    ...admitted.decision,
+    budget: {
+      ...admitted.decision.budget,
+      renderedChars: rendered.length,
+    },
+  };
+  return ActiveMemoryContextSchema.parse({
+    decision,
+    cards: admitted.cards,
+    rendered,
+  });
 }
 
 function renderActiveMemoryCards(
