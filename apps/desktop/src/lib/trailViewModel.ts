@@ -8,7 +8,7 @@ import type { OraRunTrail, OraStateSnapshot } from "./runtimeClient";
 import type { ActionRecord, AgentProfile } from "../types";
 import type { DebuggerTrailTab } from "./debuggerSurface";
 import { deriveSnapshotInteractionProjection, snapshotPendingPlanDecision, type SnapshotInteractionProjection } from "./runInteractionState";
-import { deriveSnapshotGateProjection } from "@cemeworm/shared";
+import { deriveSnapshotGateProjection, projectAssistantTextFromSnapshot } from "@cemeworm/shared";
 
 export type TrailDebuggerTab = "overview" | "flow" | "agents" | "tools" | "latency" | "evidence" | "compare";
 export type TrailFindingSeverity = "error" | "warning" | "info";
@@ -2131,6 +2131,22 @@ export function buildCommunicationGraph(snapshot: OraStateSnapshot): Communicati
 // ---- Causal Decision Summary ----
 
 export interface CausalDecisionSummaryItem {
+  eventId: string;
+  eventSeq: number;
+  runId: string;
+  turnIndex: number;
+  timestamp: string;
+  replyMessageId: string;
+  replyLabel: string;
+  phase: string;
+  phaseLabel: string;
+  agentId?: string;
+  agentLabel?: string;
+  nodeId?: string;
+  nodeLabel?: string;
+  toolId?: string;
+  iteration?: number;
+  assistantPreview: string;
   intervention: string;
   reason: string;
   goalUncertainty: number;
@@ -2152,13 +2168,40 @@ export interface CausalDecisionSummary {
 
 export function buildCausalDecisionSummary(snapshot: OraStateSnapshot): CausalDecisionSummary {
   const decisions: CausalDecisionSummaryItem[] = [];
+  const nodeLabels = new Map(snapshot.topology.nodes.map((node) => [node.id, node.label]));
+  const agentLabels = buildAgentLabelMap(snapshot);
+  const assistantPreview = previewAssistantReply(snapshot);
   for (const event of snapshot.events) {
     if (event.type !== "causal.decision.recorded") continue;
     const payload = event.payload as Record<string, unknown> | undefined;
     if (!payload) continue;
     const pd = (payload.policyDecision ?? {}) as Record<string, unknown>;
     const ts = (payload.taskState ?? {}) as Record<string, unknown>;
+    const context = isRecord(payload.decisionContext) ? payload.decisionContext : {};
+    const turnIndex = positiveInt(context.turnIndex) ?? snapshot.turnIndex ?? 1;
+    const replyMessageId = nonEmptyString(context.replyMessageId) ?? `${event.runId}:assistant`;
+    const agentId = event.agentId ?? nonEmptyString(context.agentId);
+    const nodeId = event.nodeId ?? nonEmptyString(context.nodeId);
+    const phase = nonEmptyString(context.phase) ?? inferCausalDecisionPhase(context, event);
+    const iteration = nonnegativeInt(context.iteration);
+    const toolId = nonEmptyString(context.toolId);
     decisions.push({
+      eventId: event.id,
+      eventSeq: event.seq,
+      runId: event.runId,
+      turnIndex,
+      timestamp: formatTimestamp(event.createdAt),
+      replyMessageId,
+      replyLabel: shortReplyId(replyMessageId),
+      phase,
+      phaseLabel: causalDecisionPhaseLabel(phase, toolId, iteration),
+      agentId,
+      agentLabel: agentId ? agentLabels.get(agentId) ?? agentId : undefined,
+      nodeId,
+      nodeLabel: nodeId ? nodeLabels.get(nodeId) ?? nodeId : undefined,
+      toolId,
+      iteration,
+      assistantPreview,
       intervention: String(payload.chosenIntervention ?? "unknown"),
       reason: String(pd.reason ?? ""),
       goalUncertainty: Number(pd.goalUncertainty ?? 0),
@@ -2176,4 +2219,57 @@ export function buildCausalDecisionSummary(snapshot: OraStateSnapshot): CausalDe
     });
   }
   return { decisions, totalDecisions: decisions.length };
+}
+
+function previewAssistantReply(snapshot: OraStateSnapshot): string {
+  const text = projectAssistantTextFromSnapshot(snapshot, { maxChars: 160 }).trim();
+  if (!text) {
+    return "当前回复尚无可预览内容。";
+  }
+  return text.length > 160 ? `${text.slice(0, 160)}...` : text;
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function positiveInt(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : undefined;
+}
+
+function nonnegativeInt(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : undefined;
+}
+
+function shortReplyId(replyMessageId: string): string {
+  const segment = replyMessageId.split(":").at(-1);
+  return segment ? `#${segment}` : `#${replyMessageId}`;
+}
+
+function inferCausalDecisionPhase(context: Record<string, unknown>, event: OraStateSnapshot["events"][number]): string {
+  if (nonEmptyString(context.toolId)) {
+    return "tool_request";
+  }
+  if (event.nodeId && event.nodeId !== "run") {
+    return "node_decision";
+  }
+  return "decision";
+}
+
+function causalDecisionPhaseLabel(phase: string, toolId?: string, iteration?: number): string {
+  const suffix = iteration !== undefined ? ` #${iteration}` : "";
+  switch (phase) {
+    case "run_start":
+      return "运行开始";
+    case "clarification_resume":
+      return "澄清恢复";
+    case "tool_request":
+      return toolId ? `工具请求 · ${toolId}${suffix}` : `工具请求${suffix}`;
+    case "completion":
+      return `回复完成${suffix}`;
+    case "node_decision":
+      return "节点决策";
+    default:
+      return "决策";
+  }
 }

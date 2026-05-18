@@ -243,9 +243,6 @@ export const AssistantTurnCard = memo(function AssistantTurnCard({
 
           {canShowActions ? (
             <div className="flex items-center gap-1">
-              {sources.length > 0 ? (
-                <SourcesPopover sources={sources} />
-              ) : null}
               {canCopyContent ? (
                 <button
                   type="button"
@@ -267,6 +264,9 @@ export const AssistantTurnCard = memo(function AssistantTurnCard({
                 >
                   <MessageSquareWarning size={14} />
                 </button>
+              ) : null}
+              {sources.length > 0 ? (
+                <SourcesPopover sources={sources} />
               ) : null}
             </div>
           ) : null}

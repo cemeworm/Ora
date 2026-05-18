@@ -101,6 +101,7 @@ export interface RunNodeRuntimeLoopDeps {
   streamProvider?: boolean;
   signal?: AbortSignal;
   inputPrompt: string;
+  turnIndex?: number;
   now: () => number;
   eventsLength: () => number;
   planList: () => readonly PlanListStep[];
@@ -729,8 +730,19 @@ export async function runNodeRuntimeLoop(
         hasPendingPlanDecisions: false,
         hasUnresolvedPlanItems: false,
         modelResponseText: currentResponse.text,
+        decisionContext: {
+          phase: "completion",
+          turnIndex: deps.turnIndex,
+          replyMessageId: `${params.runId}:assistant`,
+          agentId: params.agentId,
+          nodeId: params.nodeId,
+          iteration,
+        },
       });
-      emit("causal.decision.recorded", completionDecision.decisionRecord);
+      emit("causal.decision.recorded", completionDecision.decisionRecord, {
+        agentId: params.agentId,
+        nodeId: params.nodeId,
+      });
       return { kind: "complete", response: currentResponse };
     }
 
@@ -975,8 +987,20 @@ export async function runNodeRuntimeLoop(
       hasPendingPlanDecisions: false,
       hasUnresolvedPlanItems: false,
       modelResponseText: response.text,
+      decisionContext: {
+        phase: "tool_request",
+        turnIndex: deps.turnIndex,
+        replyMessageId: `${params.runId}:assistant`,
+        toolId: toolCall.tool,
+        iteration,
+        agentId: params.agentId,
+        nodeId: params.nodeId,
+      },
     });
-    emit("causal.decision.recorded", policyResult.decisionRecord);
+    emit("causal.decision.recorded", policyResult.decisionRecord, {
+      agentId: params.agentId,
+      nodeId: params.nodeId,
+    });
 
     const attemptDecision = registerRuntimeToolAttempt({
       completion,

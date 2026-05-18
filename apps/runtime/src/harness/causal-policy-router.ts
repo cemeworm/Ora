@@ -1,5 +1,6 @@
 import type {
   CausalDecisionRecord,
+  CausalDecisionContext,
   CausalTaskState,
   InterventionAction,
   InterventionPolicyDecision,
@@ -17,6 +18,7 @@ export interface PolicyRouterInput {
   hasPendingPlanDecisions: boolean;
   hasUnresolvedPlanItems: boolean;
   modelResponseText: string;
+  decisionContext?: CausalDecisionContext;
 }
 
 export interface PolicyRouterOutput {
@@ -130,6 +132,7 @@ export function routeIntervention(input: PolicyRouterInput): PolicyRouterOutput 
     chosenIntervention: action,
     alternativeInterventions: [],
     recordedAt: Date.now(),
+    decisionContext: input.decisionContext,
   };
 
   CausalDecisionRecordSchema.parse(decisionRecord);
@@ -174,4 +177,3 @@ export function interventionActionToLabel(action: InterventionAction): string {
     case "stop": return "Stop";
   }
 }
-

@@ -94,6 +94,7 @@ function kernelOptions(params: KernelLifecycleBaseParams & CancellableKernelLife
     customAgentContexts: params.customAgentContexts,
     forkedFrom: params.forkedFrom,
     conversationMessages: params.conversationMessages,
+    turnIndex: params.turnIndex,
     streamProvider: params.streamProvider,
     signal: params.signal,
     onEvent: params.onEvent,

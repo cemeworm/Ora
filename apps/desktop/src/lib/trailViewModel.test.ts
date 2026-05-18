@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildAgentLanes,
   buildActiveMemorySummary,
+  buildCausalDecisionSummary,
   buildEffectiveStrategySummary,
   buildSemanticTimeline,
   buildToolLedger,
@@ -49,6 +50,125 @@ describe("trail debugger view model", () => {
     expect(findings.some((finding) => finding.severity === "warning")).toBe(false);
     expect(summary.statusLabel).toBe("已完成");
     expect(summary.currentStage).toBe("已完成");
+  });
+
+  it("adds turn, event, phase, and assistant reply context to causal decisions", () => {
+    const snapshot = baseSnapshot({
+      turnIndex: 3,
+      output: { text: "已记住，QC。你在本对话中我将直接称呼你 QC。" },
+      topology: {
+        nodes: [
+          { id: "agent-1", label: "Ora", kind: "agent", agentId: "agent-1", status: "done", metadata: {} },
+        ],
+        edges: [],
+      },
+      profiles: [
+        {
+          id: "agent-1",
+          label: "Ora",
+          role: "Assistant",
+          modelRef: "local/smoke-model",
+          toolPolicyId: "policy",
+          toolIds: [],
+          skillIds: [],
+          memoryNamespaces: ["session"],
+          budget: { maxTokens: 1000, maxToolCalls: 2, maxRuntimeMs: 1000 },
+        },
+      ],
+      events: [{
+        id: "evt-causal-1",
+        runId: "run-test",
+        seq: 12,
+        type: "causal.decision.recorded",
+        createdAt: 1000,
+        agentId: "agent-1",
+        nodeId: "agent-1",
+        payload: {
+          taskState: { surfaceRequest: "叫我 QC" },
+          policyDecision: {
+            goalUncertainty: 0.7,
+            factUncertainty: 0.2,
+            contextUncertainty: 0.3,
+            actionRisk: 0.1,
+            userCost: 0.3,
+            reversibility: "high",
+            recommendedAction: "clarify",
+            reason: "clarify: high goal uncertainty",
+            wouldChangeOutcomeIfWrong: true,
+          },
+          chosenIntervention: "clarify",
+          alternativeInterventions: [],
+          recordedAt: 1000,
+          decisionContext: {
+            phase: "tool_request",
+            turnIndex: 3,
+            replyMessageId: "run-test:assistant",
+            toolId: "file.read",
+            iteration: 2,
+            agentId: "agent-1",
+            nodeId: "agent-1",
+          },
+        },
+      }],
+    });
+
+    const summary = buildCausalDecisionSummary(snapshot);
+
+    expect(summary.totalDecisions).toBe(1);
+    expect(summary.decisions[0]).toMatchObject({
+      eventId: "evt-causal-1",
+      eventSeq: 12,
+      runId: "run-test",
+      turnIndex: 3,
+      replyMessageId: "run-test:assistant",
+      replyLabel: "#assistant",
+      phase: "tool_request",
+      phaseLabel: "工具请求 · file.read #2",
+      agentLabel: "Ora",
+      nodeLabel: "Ora",
+      assistantPreview: "已记住，QC。你在本对话中我将直接称呼你 QC。",
+    });
+  });
+
+  it("falls back to snapshot turn and event id for legacy causal decisions", () => {
+    const snapshot = baseSnapshot({
+      turnIndex: 2,
+      events: [{
+        id: "evt-legacy-causal",
+        runId: "run-test",
+        seq: 7,
+        type: "causal.decision.recorded",
+        createdAt: 1000,
+        payload: {
+          taskState: { surfaceRequest: "叫我 QC" },
+          policyDecision: {
+            goalUncertainty: 0.7,
+            factUncertainty: 0.2,
+            contextUncertainty: 0.3,
+            actionRisk: 0.1,
+            userCost: 0.3,
+            reversibility: "high",
+            recommendedAction: "clarify",
+            reason: "clarify: high goal uncertainty",
+            wouldChangeOutcomeIfWrong: true,
+          },
+          chosenIntervention: "clarify",
+          alternativeInterventions: [],
+          recordedAt: 1000,
+        },
+      }],
+    });
+
+    const decision = buildCausalDecisionSummary(snapshot).decisions[0];
+
+    expect(decision).toMatchObject({
+      eventId: "evt-legacy-causal",
+      eventSeq: 7,
+      turnIndex: 2,
+      replyMessageId: "run-test:assistant",
+      replyLabel: "#assistant",
+      phaseLabel: "决策",
+    });
   });
 
   it("prioritizes failed runs and points developers to flow evidence", () => {

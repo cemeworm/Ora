@@ -255,6 +255,11 @@ export function TrailsTabs({
     }
   }
 
+  function openTimelineEvent(eventId: string) {
+    setSelectedTab("timeline");
+    setExpandedTimelineId(eventId);
+  }
+
   return (
     <div className="w-full min-w-0">
       <div className="sticky top-0 z-10 border-b border-bench-200 bg-card/95 px-3 py-3 backdrop-blur">
@@ -303,6 +308,7 @@ export function TrailsTabs({
             memoryDetail={memoryDetail}
             onCancelRun={onCancelRun}
             onFindingClick={jumpToFinding}
+            onTimelineEventClick={openTimelineEvent}
             onForkAndResumeRun={onForkAndResumeRun}
             onForkRun={onForkRun}
             onRebuildRun={onRebuildRun}
@@ -434,6 +440,7 @@ function TrailOverview({
   todoProgress,
   onCancelRun,
   onFindingClick,
+  onTimelineEventClick,
   onForkAndResumeRun,
   onForkRun,
   onReplaySelection,
@@ -465,6 +472,7 @@ function TrailOverview({
   todoProgress?: TodoProgressSummary;
   onCancelRun: () => void;
   onFindingClick: (finding: TrailFinding) => void;
+  onTimelineEventClick: (eventId: string) => void;
   onForkAndResumeRun: () => void;
   onForkRun: () => void;
   onReplaySelection: () => void;
@@ -544,41 +552,61 @@ function TrailOverview({
       {causalDecisionSummary.totalDecisions > 0 && (
         <DockCard title="Agent 干预决策" icon={<Route size={16} />}>
           <div className="space-y-3">
-            {causalDecisionSummary.decisions.map((decision, index) => (
+            {causalDecisionSummary.decisions.map((decision) => (
               <div
-                key={index}
+                key={decision.eventId}
                 className="rounded-md bg-bench-50 px-3 py-2.5 ring-1 ring-inset ring-bench-200"
               >
-                <div className="flex items-center justify-between gap-2 mb-2">
-                  <span className="text-sm font-semibold text-bench-900">
-                    {interventionLabel(decision.intervention)}
-                  </span>
-                  <span className={`text-[11px] font-medium rounded px-1.5 py-0.5 ${
-                    decision.wouldChangeOutcomeIfWrong
-                      ? "bg-amber-100 text-amber-800"
-                      : "bg-emerald-100 text-emerald-800"
-                  }`}>
-                    {decision.wouldChangeOutcomeIfWrong ? "可能改变结果" : "影响有限"}
-                  </span>
+                <div className="mb-2 flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <span className="text-sm font-semibold text-bench-900">
+                      {interventionLabel(decision.intervention)}
+                    </span>
+                    <p className="mt-0.5 text-[11px] leading-5 text-bench-600">
+                      第 {decision.turnIndex} 轮 · 回复 {decision.replyLabel} · 事件 #{decision.eventSeq} · {decision.phaseLabel}
+                    </p>
+                    {(decision.agentLabel || decision.nodeLabel) && (
+                      <p className="text-[11px] leading-5 text-bench-500">
+                        {[decision.agentLabel, decision.nodeLabel].filter(Boolean).join(" / ")}
+                      </p>
+                    )}
+                  </div>
+                  <div className="flex shrink-0 flex-col items-end gap-1">
+                    <span className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${
+                      decision.wouldChangeOutcomeIfWrong
+                        ? "bg-amber-100 text-amber-800"
+                        : "bg-emerald-100 text-emerald-800"
+                    }`}>
+                      {decision.wouldChangeOutcomeIfWrong ? "可能改变结果" : "影响有限"}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => onTimelineEventClick(decision.eventId)}
+                      className="rounded px-1.5 py-0.5 text-[11px] font-semibold text-bench-700 underline-offset-2 hover:bg-white hover:text-bench-900 hover:underline focus:outline-none focus:ring-2 focus:ring-bench-300"
+                    >
+                      查看时间线
+                    </button>
+                  </div>
                 </div>
 
-                {/* Uncertainty bars */}
-                <div className="space-y-1 mb-2">
+                <p className="mb-2 line-clamp-2 rounded bg-white/70 px-2 py-1.5 text-[11px] leading-5 text-bench-700 ring-1 ring-inset ring-bench-200">
+                  {decision.assistantPreview}
+                </p>
+
+                <div className="mb-2 space-y-1">
                   <UncertaintyBar label="目标不确定性" value={decision.goalUncertainty} />
                   <UncertaintyBar label="事实不确定性" value={decision.factUncertainty} />
                   <UncertaintyBar label="上下文不确定性" value={decision.contextUncertainty} />
                   <UncertaintyBar label="行动风险" value={decision.actionRisk} warn />
                 </div>
 
-                {/* Cost and reversibility */}
-                <div className="flex items-center gap-3 text-[11px] text-bench-700 mb-2">
+                <div className="mb-2 flex items-center gap-3 text-[11px] text-bench-700">
                   <span>用户成本: <span className="font-semibold text-bench-900">{formatPct(decision.userCost)}</span></span>
                   <span>可逆性: <span className="font-semibold text-bench-900">{reversibilityLabel(decision.reversibility)}</span></span>
                 </div>
 
-                {/* Reason */}
                 {decision.reason && (
-                  <p className="text-[11px] leading-5 text-bench-600 border-t border-bench-200 pt-1.5 mt-1.5">
+                  <p className="mt-1.5 border-t border-bench-200 pt-1.5 text-[11px] leading-5 text-bench-600">
                     {decision.reason}
                   </p>
                 )}

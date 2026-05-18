@@ -76,6 +76,7 @@ type KernelTodoStatusStore = Pick<TodoService, "list" | "setStatus">;
 type KernelActionReader = Pick<ActionLedger, "list">;
 
 interface KernelRuntimeContextForRunner {
+  readonly runId: string;
   readonly topology: StateSnapshot["topology"];
   readonly busStats: StateSnapshot["busStats"];
   latestEventSeq(): number;
@@ -91,6 +92,7 @@ export interface KernelRunnerDeps {
     config: RunConfig;
     options: {
       forkedFrom?: { runId: string; checkpointId: string; eventSeq: number };
+      turnIndex?: number;
       resumeContext?: { clarifications?: Record<string, unknown> };
       resumeState?: Pick<StateSnapshot, "conversation" | "toolResults" | "continuation">;
     };
@@ -252,8 +254,18 @@ export class KernelRunner {
       hasPendingPlanDecisions: false,
       hasUnresolvedPlanItems: false,
       modelResponseText: "",
+      decisionContext: {
+        phase: "run_start",
+        turnIndex: options.turnIndex,
+        replyMessageId: `${kernelRuntimeContext.runId}:assistant`,
+        agentId: ORA_ROOT_AGENT_ID,
+        nodeId: "run",
+      },
     });
-    emit("causal.decision.recorded", initialDecision.decisionRecord);
+    emit("causal.decision.recorded", initialDecision.decisionRecord, {
+      agentId: ORA_ROOT_AGENT_ID,
+      nodeId: "run",
+    });
   }
 
   private async executeMode(): Promise<void> {
@@ -359,8 +371,18 @@ export class KernelRunner {
         hasPendingPlanDecisions: false,
         hasUnresolvedPlanItems: false,
         modelResponseText: "",
+        decisionContext: {
+          phase: "clarification_resume",
+          turnIndex: options.turnIndex,
+          replyMessageId: `${kernelRuntimeContext.runId}:assistant`,
+          agentId: ORA_ROOT_AGENT_ID,
+          nodeId: INTENT_CLARIFICATION_NODE_ID,
+        },
       });
-      emit("causal.decision.recorded", resumeDecision.decisionRecord);
+      emit("causal.decision.recorded", resumeDecision.decisionRecord, {
+        agentId: ORA_ROOT_AGENT_ID,
+        nodeId: INTENT_CLARIFICATION_NODE_ID,
+      });
     }
     const intentClarificationResult = shouldRunClarificationPreflight
       ? await requestIntentClarificationQuestion(input.prompt, config)

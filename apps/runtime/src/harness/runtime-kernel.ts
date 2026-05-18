@@ -156,6 +156,7 @@ export interface RuntimeKernelOptions {
   automationRegistry?: import("./runtime-tool-executor.js").AutomationRegistryTools;
   forkedFrom?: { runId: string; checkpointId: string; eventSeq: number };
   conversationMessages?: ModelMessage[];
+  turnIndex?: number;
   customAgentOverlay?: string;
   customAgentOverlays?: Record<string, string>;
   systemAgentOverlays?: Record<string, string>;
@@ -216,6 +217,10 @@ class KernelRuntimeContext {
 
   get events(): OraEventEnvelope[] {
     return this.eventsValue;
+  }
+
+  get runId(): string {
+    return this.params.runId;
   }
 
   get planList(): PlanListStep[] {
@@ -1408,6 +1413,7 @@ export async function executeRuntimeKernel(
     streamProvider: options.streamProvider,
     signal: options.signal,
     inputPrompt: input.prompt,
+    turnIndex: options.turnIndex,
     now,
     eventsLength: () => kernelRuntimeContext.eventCount(),
     planList: () => kernelRuntimeContext.planList,

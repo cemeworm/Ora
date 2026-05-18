@@ -297,6 +297,40 @@ describe("causal policy router", () => {
       expect(result.decisionRecord.taskState.surfaceRequest).toBe("帮我优化一下那个东西的性能");
     });
 
+    it("preserves decision context for trail attribution", () => {
+      const result = routeIntervention({
+        surfaceRequest: "读取文件后回答",
+        taskState: { selectedLatentGoal: "读取指定文件并回答", confidence: 0.9 },
+        proposedToolId: "file.read",
+        proposedToolRisk: "low",
+        toolCallCount: 1,
+        clarificationCount: 0,
+        hasPendingApprovals: false,
+        hasPendingPlanDecisions: false,
+        hasUnresolvedPlanItems: false,
+        modelResponseText: "",
+        decisionContext: {
+          phase: "tool_request",
+          turnIndex: 2,
+          replyMessageId: "run-1:assistant",
+          toolId: "file.read",
+          iteration: 1,
+          agentId: "agent-1",
+          nodeId: "node-1",
+        },
+      });
+
+      expect(result.decisionRecord.decisionContext).toEqual({
+        phase: "tool_request",
+        turnIndex: 2,
+        replyMessageId: "run-1:assistant",
+        toolId: "file.read",
+        iteration: 1,
+        agentId: "agent-1",
+        nodeId: "node-1",
+      });
+    });
+
     it("recommends stop when sufficient work done and no further action needed", () => {
       const result = routeIntervention({
         surfaceRequest: "帮我重构auth模块",
@@ -477,4 +511,3 @@ describe("causal eval smoke", () => {
     }
   });
 });
-

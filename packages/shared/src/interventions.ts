@@ -41,12 +41,23 @@ export const InterventionPolicyDecisionSchema = z.object({
 });
 export type InterventionPolicyDecision = z.infer<typeof InterventionPolicyDecisionSchema>;
 
+export const CausalDecisionContextSchema = z.object({
+  phase: z.string().min(1).optional(),
+  turnIndex: z.number().int().positive().optional(),
+  replyMessageId: z.string().min(1).optional(),
+  toolId: z.string().min(1).optional(),
+  iteration: z.number().int().nonnegative().optional(),
+  agentId: z.string().min(1).optional(),
+  nodeId: z.string().min(1).optional(),
+});
+export type CausalDecisionContext = z.infer<typeof CausalDecisionContextSchema>;
+
 export const CausalDecisionRecordSchema = z.object({
   taskState: CausalTaskStateSchema,
   policyDecision: InterventionPolicyDecisionSchema,
   chosenIntervention: InterventionActionSchema,
   alternativeInterventions: z.array(InterventionActionSchema).default([]),
   recordedAt: z.number().int().nonnegative(),
+  decisionContext: CausalDecisionContextSchema.optional(),
 });
 export type CausalDecisionRecord = z.infer<typeof CausalDecisionRecordSchema>;
-
