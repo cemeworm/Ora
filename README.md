@@ -6,46 +6,79 @@
 
 简体中文 | [English](README.en.md)
 
-Ora 是一个桌面端 AI 工作台。它把模式、智能体、技能和模型提供商放在同一个界面里，让你先选怎么跑，再交给对应的智能体。
+**Ora 是一个可解释的 Agent 工作台。**
 
-当前项目仍在早期开发阶段，面向想在本地组织 AI 工作流、调试多智能体协作，或接入不同模型服务和消息渠道的用户与开发者。
+大多数 AI 工具对 Agent 的决策过程是不透明的——你知道它做了什么，但不知道它为什么选择追问而不是搜索、为什么调用这个工具而不是那个、为什么在某个时刻选择停止。
 
-![Ora 对话页面](docs/ora%20对话页面.jpg)
+Ora 选择了一条不同的路：**Agent 的每一次关键决策都经过结构化因果判断**——目标是否明确、事实是否缺失、上下文是否足够、行动风险有多高、用户成本有多大、操作是否可逆——而不是靠模型的语言倾向。决策记录、反事实推演和量化评估构成完整的可解释链路。你可以对比不同策略的净提升，把"这个 agent 好不好"从直觉降维到可追溯的数值。
 
-![Ora 配置页面](docs/ora%20配置页面.jpg)
+同时，Ora 把运行事实耐久化为事件溯源模型（Ledger），把工作模式建模为可编辑的有向图（Graph Framework），把对话成果沉淀为跨 Session 存在的长期组件（Widget Dashboard）。
 
-## Ora 解决什么问题
+## 三个核心差异
 
-大多数 AI 工具只有一个聊天入口，简单问答、代码生成、多步骤研究、团队协作全用同一种方式处理。但实际工作中，不同任务需要不同的协作深度和决策路径。
+### 决策可解释，不是黑箱
 
-Ora 把它做成一个工作台：先选怎么跑，再交给对应的智能体。同一个任务可以用单智能体快速处理、生成-验证、编排调度或团队协作，每种模式搭配不同的智能体、技能和权限。简单的事不用绕远路，复杂的事不会塞进一个对话框。
+Agent 的每次干预——直接回答、追问澄清、搜索、读上下文、调用工具、规划、请求审批或停止——都经过六维不确定性评估：`goalUncertainty` / `factUncertainty` / `contextUncertainty` / `actionRisk` / `userCost` / `reversibility`。
 
-对普通用户，Ora 减少了在聊天工具、代码编辑器、模型控制台之间来回切窗口的麻烦。对开发者，它把多智能体工作流从 prompt 工程变成一个可观测、可调优、可回放的运行时。
+- 目标不确定性高时主动追问，事实风险高时主动搜索，上下文缺失会改变结果时主动读文件
+- 低风险操作直接执行，高风险操作走审批门控，边际收益低时主动停止
+- 每次决策附带反事实记录：如果不做这个动作，结果会差在哪里
+- 因果 A/B 评估用有效干预率、过度行动率、反事实提升等五项指标量化决策质量
 
-## 核心能力
+详见 [因果决策系统](docs/ora-causal-decision.md)。
 
-- 组合式工作流：按任务选择协调模式，再搭配智能体和技能。
-- 可视化编排：支持生成-验证、编排调度、团队协作等拓扑，也可以自己设计节点和连线。
-- 多模型提供方：内置 OpenAI、Anthropic、OpenRouter，也支持 OpenAI-compatible 和 Anthropic-compatible 服务。
-- 运行记录与复盘：保留 run state、events、checkpoints、trails，方便查看任务如何推进。
-- 权限与审批：把工具调用按风险分层，支持默认策略、只读策略和完全信任策略。
-- 自我迭代：分析运行记录和项目线索，提出可审阅的改进建议。
-- 多渠道入口：运行时包含 HTTP webhook、Slack、飞书、微信、企业微信、Telegram、Discord、钉钉等 channel adapter。
-- 本地优先的桌面体验：Tauri 桌面壳负责应用窗口和 sidecar，React 前端负责工作台界面，TypeScript runtime 负责执行。
+### 事实可溯源，不会掉电丢失
 
-## Agent 干预决策层
+不是日志——是 append-only 事件溯源模型。16 种 entry 类型（运行启动/停止、gate 开闭、工具结果、计划交接、上下文压缩等）按序写入 Ledger。
 
-Ora 不只是展示 Agent 做了什么，还记录和评估 Agent 为什么选择追问、搜索、读上下文、调用工具、规划、确认或停止。
+- 投影系统从 Ledger 重建所有 read model：Session 摘要、Turn 列表、Gate 状态、Attention
+- 掉电、重启、切换客户端后，UI 状态从 ledger-backed projection 重建，不是从内存猜测
+- 中断-恢复机制（Clarification / Approval / Plan Decision 三种 Gate + Continuation Frame）保证暂停后精确恢复到暂停点
+- 分支模型支持在同一 Session 中分叉出多个 candidate run，选择最佳结果 adopt
 
-每次关键动作都经过一条因果链路：先理解用户的真实目标，判断关键不确定性在哪，再选择干预动作，最后观察结果是否有效。Agent 的干预决策基于结构化字段做判断（目标不确定性、事实不确定性、上下文不确定性、行动风险、用户成本、可逆性），而不是靠模型的语言倾向。目标不确定性高时主动追问，事实风险高时主动搜索或要求可验证来源，上下文缺失会改变结果时主动读文件和历史。低风险动作直接执行，高风险动作走审批门控，边际收益低时主动停止。每次决策都附带反事实记录：如果不做这个动作，结果会差在哪里。
+详见 [Ledger 模型](docs/ora-ledger-model.md)、[Gate 与恢复](docs/ora-gates-and-resume.md)。
 
-harness 层的 causal-policy-router 在 runtime 主链路统一选择八种干预动作：直接回答、追问、搜索、读上下文、调用工具、规划、请求审批或停止。几个关键模块：
+### 模式即图，可编辑可观测
 
-- Causal Task State：为每个 run 维护结构化任务状态，包含表层请求、候选 latent goal 和关键不确定性。
-- Clarification Gate 2.0：把是否追问变成可解释门控，只在缺失信息会改变结果、不能用默认假设继续、用户回答成本低于错误成本时才追问。
-- Causal Trails：在 Trails 面板展示每个决策节点的 latent goal、不确定性和候选动作，不另起一套 UI 状态。
-- Causal Evaluation：用意图识别率、追问精准度、有效干预率、过度行动率、反事实提升五个指标评估决策质量，支持不同策略对照。
-- Outcome Feedback Loop：把评估失败和用户反馈沉淀为可行动 insight，复用现有 feedback-loop-store 的 signal / insight 机制。
+不依赖 LangGraph、Dagre 等外部图库——整个图框架自研。每个工作模式是一张可编辑的有向图。
+
+- **5 种协调模式**：Orchestrator-Subagent（层级委派）、Generator-Verifier（循环验证）、Agent Teams（团队协作）、Message Bus（事件路由）、Shared State（共享黑板）
+- **17 种节点模板**：decompose、research、review、synthesize、build、check 等，可绑定不同 Agent
+- **15 种可插拔 Runtime Atom**：memory_capture、subagent_delegate、clarification_interrupt、dynamic_delegation 等，按需注入
+- Mode Studio 可视化编辑节点和连线，保存前自动校验拓扑合法性
+- Driver Capability Manifest 声明每种 family 的执行能力边界，五层语义严格区分
+
+详见 [图框架](docs/ora-graph-framework.md)、[Mode 创作与 Studio](docs/ora-mode-authoring-and-studio.md)。
+
+## 产品形态
+
+**桌面应用**：Tauri + React + Vite，本地优先，API key 留在本地。TypeScript runtime sidecar 负责模型调用、工具执行、持久化和评估。两者通过 shared 包的 JSON-RPC 合约通信。
+
+**Widget Dashboard**：对话成果不只是聊天记录。Ora 把对话沉淀为三种结构化组件：
+
+| 组件 | 用途 | 特点 |
+| --- | --- | --- |
+| **Artifact** | 文章、摘要、Prompt、研究结果 | 可编辑、可导出、可版本回滚 |
+| **Todo** | 待办事项、截止日期、提醒 | 勾选不触发版本快照，可关联 Automation |
+| **Feed** | 定时刷新外部信息（热点、GitHub、关键词） | 按 cron/interval 调度刷新 |
+
+组件跨 Session 存在，关闭对话后继续存活。可通过 Builder Session 继续用自然语言修改。
+
+详见 [Widget 系统](docs/ora-widget-system.md)。
+
+## 关键技术能力
+
+**工具治理链**：50 个已实现工具，每个调用经过 `policy → approval → action → execution → ledger → snapshot → projection` 完整治理链。三层风险体系 + Permission Profile 三态矩阵 + 审批中断恢复。详见 [工具系统](docs/ora-tool-system.md)。
+
+**Memory 系统**：五个子系统——Long-Term Memory（持久事实）、Active Memory（注入检索）、Short-Term Journal（信号存储）、Memory Wiki（知识编译）、Memory Dreaming（信号聚类晋升）。支持确定性准入和 Provider 驱动准入两种模式。详见 [Memory 系统](docs/ora-memory-system.md)。
+
+**多模型提供方**：内置 OpenAI、Anthropic、OpenRouter，也支持 OpenAI-compatible 和 Anthropic-compatible 服务。
+
+**多渠道入口**：HTTP webhook、Slack、飞书、微信、企业微信、Telegram、Discord、钉钉 8 种 Channel Adapter，统一转换为内部 session/run。详见 [Channel 连接器](docs/ora-channel-connectors.md)。
+
+**Self-Iteration 闭环**：五条信号→候选派生路径（feedback → evaluation、recovery failure → prompt、insight cluster → mode 等），评测门控，三级自治策略，支持自动应用和人工确认。详见 [Self-Iteration](docs/ora-self-iteration-loop.md)。
+
+**可观测性**：Trails 面板提供七个标签页（总览、流程、智能体、工具、延迟、证据、对比），消费 snapshot → projection → trailViewModel 三层加工链。详见 [Snapshot 与 Trails](docs/ora-snapshot-projection-trails.md)。
 
 ## 技术结构
 
@@ -55,232 +88,35 @@ harness 层的 causal-policy-router 在 runtime 主链路统一选择八种干�
 │   ├── desktop          # Tauri + React + Vite 桌面端
 │   └── runtime          # TypeScript runtime sidecar
 ├── packages
-│   └── shared           # 跨端共享的类型、schema、模式、能力和 RPC 定义
+│   └── shared           # 跨端共享类型、schema、模式定义、RPC 合约
 ├── scripts              # 本地开发、构建和版本同步脚本
 └── skills               # Ora 技能目录
 ```
 
-桌面端通过 Tauri 启动 runtime sidecar。前端和 sidecar 之间使用 shared 包里的 JSON-RPC 合约通信，运行时负责模型调用、工具执行、channel 事件、存储、评测和 trace。
+## 安装
 
-## 图数据模型
+### macOS（Apple Silicon）
 
-Ora 将智能体和工作流统一建模为**有向图**，整个框架自研，不依赖 LangGraph、Dagre 等外部图库。
+从 [GitHub Releases](https://github.com/cemeworm/Ora/releases) 下载最新 DMG 安装包：
 
-### 拓扑节点与边
+[下载 Ora](https://github.com/cemeworm/Ora/releases/latest)
 
-图由两种基础元素构成（`packages/shared/src/topology.ts`）：
+打开 `Ora_*.dmg`，将 Ora 拖入 Applications 文件夹即可。首次打开时，macOS 可能提示"无法验证开发者"，在**系统设置 → 隐私与安全性**中点击"仍要打开"即可。
 
-**节点（TopologyNode）** 是图中的执行单元，有五种类型：
+### 从源码构建
 
-| kind | 含义 |
-| --- | --- |
-| `run` | 运行入口节点 |
-| `agent` | 智能体节点，通过 `agentId` 绑定 AgentProfile |
-| `capability` | 运行时能力节点（共享黑板、事件主题、检查点等） |
-| `checkpoint` | 快照检查点 |
-| `artifact` | 产物节点 |
-
-每个节点有独立的状态机：`idle` → `running` → `done` / `blocked` / `failed`。
-
-**边（TopologyEdge）** 定义节点间关系，有五种类型：
-
-| kind | 含义 |
-| --- | --- |
-| `control` | 控制流，表示执行顺序 |
-| `delegation` | 委派，任务分发 |
-| `verification` | 验证，检查 / 评审关系 |
-| `memory` | 记忆读写 |
-| `artifact` | 产物传递 |
-
-### 模式即图
-
-每个工作模式（ModeSpec）本质是一个可编辑的有向图：
-
-- **节点（ModeNodeSpec）**：从 17 种模板（draft、verify、research、build、check、handoff 等）中选择，绑定到具体的 AgentProfile
-- **边（ModeEdgeSpec）**：定义节点间的执行顺序和数据流向
-- **运行时原子（Runtime Atoms）**：15 种可插拔的运行时能力（memory_capture、subagent_delegate、clarification_interrupt 等），按需注入为 capability 节点
-
-用户可以在 Mode Studio 中可视化编辑节点和连线，自定义工作流拓扑。
-
-### 五大协调模式
-
-Ora 内置五种协调模式（CoordinationPattern），每种都是一个预定义的拓扑蓝图（PatternDefinition），包含完整的节点、边、AgentProfile 列表和执行模板：
-
-| 模式 | 协调方式 | 状态模型 | 默认智能体 | 适用场景 |
-| --- | --- | --- | --- | --- |
-| Orchestrator-Subagent | 层级委派 | 临时 | orchestrator, researcher, reviewer | 可分解任务，需可审查的委派链路 |
-| Generator-Verifier | 循环验证 | 临时 | generator, verifier | 有明确验收标准的任务 |
-| Agent Teams | 团队协作 | 持久 Worker | team_lead, builder, reviewer | Worker 需跨任务保持身份和记忆 |
-| Message Bus | 事件路由 | 事件驱动 | router, researcher, responder | 事件驱动的可扩展管线 |
-| Shared State | 共享黑板 | 共享状态 | orchestrator, researcher, reviewer | 智能体需近实时基于彼此发现协作 |
-
-运行时内核根据选定模式实例化拓扑图，按节点顺序驱动智能体执行。完整说明见 [docs/ora-graph-framework.md](docs/ora-graph-framework.md)。
-
-## Runtime loop 结构
-
-Ora 的 runtime loop 由三层嵌套组成。外层负责 run 生命周期和持久投影，`LocalRunStore` 保持兼容 facade；中层 mode 编排按节点和阶段推进 agent 调用；内层 node loop 处理模型调用、工具调用、审批、澄清和恢复。
-
-### 外层 run lifecycle
-
-```mermaid
-flowchart TD
-  A["User / Channel / Automation input"] --> A1["flows.* / runs.* RPC"]
-  A1 --> A2["FlowRun projection (flowRunId = runId for now)"]
-  A2 --> B["LocalRunStore compatibility facade"]
-  B --> B1["Lifecycle / resume / streaming services"]
-  B --> B2["Gate / ledger / projection services"]
-  B1 --> C["resolveModeSelection"]
-  C --> C1{"modeSelection = auto?"}
-  C1 -->|yes| C2["Auto mode router selects modeId + taskIntent"]
-  C1 -->|no| C3["Use requested/manual mode"]
-  C2 --> D["Resolve ModeSpec + PatternDefinition"]
-  C3 --> D
-  D --> E["withMemoryPrompt + conversation context"]
-  E --> F["RunKernelExecutionService"]
-  F --> G["executeRuntimeKernel"]
-
-  G --> H{"clarification preflight?"}
-  H -->|needs clarification| I["gate.opened + clarification.required"]
-  I --> J["run.interrupted + continuation frame"]
-  J --> K["User answers clarification / approves action"]
-  K --> L["flows.resume / runs.resume with patch"]
-  L --> L1["RunContinuationDispatcher"]
-  L1 -->|owner-backed frame| L2["resume suspended node"]
-  L1 -->|approved deterministic tool| L3["replay tool, then resume owner"]
-  L1 -->|legacy fallback| L4["resume whole mode"]
-  L1 -->|missing owner| L5["diagnostic failure"]
-  L2 --> L6["gate.resolved + resume finalization"]
-  L3 --> L6
-  L4 --> B1
-
-  H -->|no / already answered| M["executeModeSpec"]
-  M --> N{"mode output"}
-  N -->|success| O["Ora root finalizer if needed"]
-  O --> P["run.done + ledger snapshot projection"]
-  N -->|provider/tool failure unrecovered| Q["run.failed"]
-  N -->|approval required| R["gate.opened + approval_required"]
-  R --> J
-
-  P --> S{"taskIntent = plan and output has proposed_plan?"}
-  S -->|yes| T["FlowGate: plan decision pending"]
-  T --> U["User accepts / declines"]
-  U -->|accepted| V["accepted plan handoff"]
-  V --> W["Next implement run consumes accepted plan"]
-  U -->|declined| X["Decision resolved, no handoff"]
-  S -->|no| Y["Session idle"]
-```
-
-### Mode 编排层
-
-```mermaid
-flowchart TD
-  A["executeModeSpec"] --> A1["ModeDriverRegistry selects driver"]
-  A1 --> B["orderedEnabledModeNodes(modeSpec)"]
-  B --> C["initializeQueueSummary"]
-  C --> D["For each mode node / stage"]
-
-  D --> E{"node has clarificationQuestion + clarification_interrupt atom?"}
-  E -->|yes, unanswered| F["ensureClarification"]
-  F --> G["node blocked + run interrupted"]
-  E -->|no / answered| H["setPlanStatus: running"]
-
-  H --> I{"node atom: subagent_delegate?"}
-  I -->|yes| J["runDelegatedTask"]
-  I -->|no| K["direct node execution"]
-  J --> L["callAgent"]
-  K --> L
-
-  L --> M["runNodeRuntimeLoop"]
-  M --> N{"node result"}
-  N -->|completed| O["memory_capture / artifact_publish if enabled"]
-  O --> P["setPlanStatus: done"]
-  P --> Q["queue.updated + topology.updated"]
-  Q --> D
-
-  N -->|skipped via recovery| R["setPlanStatus: skipped"]
-  R --> Q
-  N -->|interrupt| G
-  N -->|failed| S["recovery policy or run.failed"]
-
-  D --> T["mode output"]
-  T --> U{"plan mode and contains proposed_plan?"}
-  U -->|yes| V["skip remaining nodes, finish plan mode"]
-  U -->|no| W["kernel finalization"]
-```
-
-### 单个 node 的 model-tool loop
-
-```mermaid
-stateDiagram-v2
-  [*] --> pending
-  pending --> running_model: tools allowed
-  pending --> finalizing: tool budget exhausted
-
-  running_model --> tool_requested: native/fallback tool call detected
-  running_model --> plan_lifecycle: no tool + completion candidate
-  plan_lifecycle --> completed: plan lifecycle + guards pass
-  plan_lifecycle --> running_model: guard follow-up
-  plan_lifecycle --> failed: unchanged guard cycle bound
-
-  tool_requested --> finalizing: attempt denied by completion policy
-  tool_requested --> failed: code-development boundary violation
-  tool_requested --> approval_required: definition/policy requires approval
-  approval_required --> interrupted: ApprovalInterruptError
-  interrupted --> running_model: resume approved action
-
-  tool_requested --> tool_running: approval not required / resumed approval
-  tool_running --> clarification_required: tool/middleware asks clarification
-  clarification_required --> interrupted: ClarificationInterruptError
-  interrupted --> tool_running: resume with clarification answer
-
-  tool_running --> tool_result_observed: tool succeeded
-  tool_result_observed --> running_model: append tool result as context
-
-  tool_running --> degraded: tool execution failure
-  degraded --> tool_running: recovery retry / alternate tool
-  degraded --> repairing: fallback artifact
-  repairing --> running_model: follow-up with degraded result
-  degraded --> failed: recovery exhausted
-  running_model --> running_model: provider transient retry
-
-  running_model --> finalizing: max tool calls / repeat / loop limit
-  finalizing --> completed: forced final provider call
-  completed --> [*]
-  failed --> [*]
-```
-
-## 快速开始
-
-先准备这些工具：
-
-- Node.js
-- pnpm 10.11.0
-- Rust 和 Cargo，Tauri 本地构建需要
-
-安装依赖：
+需要 Node.js、pnpm 10.11.0、Rust 和 Cargo。
 
 ```bash
 pnpm install
-```
-
-启动桌面开发环境：
-
-```bash
 pnpm dev:desktop
 ```
 
-这个脚本会清理旧的 Ora 开发进程，按需安装依赖，打包 runtime sidecar，然后启动 Tauri dev。
-
-只启动 Vite 前端：
+仅启动前端或 runtime：
 
 ```bash
-pnpm dev
-```
-
-只启动 runtime：
-
-```bash
-pnpm dev:runtime
+pnpm dev           # Vite 前端
+pnpm dev:runtime   # Runtime sidecar
 ```
 
 运行 runtime smoke：
@@ -289,54 +125,29 @@ pnpm dev:runtime
 pnpm --filter @ora/runtime smoke
 ```
 
-## 配置模型
+### 配置模型
 
-第一次打开 Ora 时，onboarding 会引导你选择模型提供商。你可以从 OpenRouter 等免费模型入口开始，也可以填入自己的 OpenAI、Anthropic 或兼容服务 API key。
+首次打开 Ora 时，onboarding 会引导选择模型提供商。可以从 OpenRouter 等免费入口开始，也可以填入自己的 OpenAI、Anthropic 或兼容服务 API key。
 
-API key 可以在应用内配置。搜索和 Langfuse trace 这类可选能力可以参考 `.env.example`，按需在 shell 环境里设置：
+可选能力参考 `.env.example`：
 
 ```bash
 ORA_LANGFUSE_ENABLED=false
 ORA_SEARCH_PROVIDER=brave
 BRAVE_SEARCH_API_KEY=...
-```
-
-如果要使用自定义 provider base URL，runtime 会要求显式设置：
-
-```bash
 ORA_ALLOW_CUSTOM_PROVIDER_BASE_URLS=true
 ```
 
-## 常用命令
+常用命令：
 
 ```bash
-pnpm test
-pnpm typecheck
-pnpm build
-pnpm lint
-pnpm version:check
+pnpm test && pnpm typecheck && pnpm build && pnpm lint
 ```
-
-构建桌面应用：
-
-```bash
-./scripts/build-desktop.sh
-```
-
-构建完成后，产物会出现在 `apps/desktop/src-tauri/target/release/bundle` 下。
-
-## 开发说明
-
-- `apps/desktop` 负责界面、设置、onboarding、工作台状态展示和 Tauri 命令调用。
-- `apps/runtime` 负责 run orchestration、provider registry、channel service、search providers、evaluation、memory、feedback loop 和 persistence。
-- `packages/shared` 是前端与 runtime 的协议边界。新增跨端数据结构时，优先从这里定义 schema 和类型。
-- `scripts/dev-desktop.sh` 会打包 runtime sidecar，并检查 Langfuse 资源是否存在。
-- `.ora/runtime.db` 是默认的本地 runtime 存储路径，可通过 `ORA_RUNTIME_STORE_DIR` 覆盖。
 
 ## 项目状态
 
-Ora 目前更适合本地开发和内部试用。渠道接入、搜索、Langfuse trace 等功能需要额外配置密钥或外部服务。
+Ora 当前面向本地开发和内部试用。渠道接入、搜索、Langfuse trace 等功能需要额外配置密钥或外部服务。
 
 ## 许可证
 
-本项目使用 MIT License，见 [LICENSE](LICENSE)。
+MIT License，见 [LICENSE](LICENSE)。
