@@ -64,11 +64,15 @@ export function MessageBubble({ role, content, children, className }: MessageBub
           <div
             className={cn(
               isUser
-                ? "rounded-2xl rounded-br-md bg-card px-3.5 py-2.5 text-foreground shadow-xs ring-1 ring-inset ring-border"
+                ? "flex items-center rounded-2xl rounded-br-md bg-card px-3.5 py-2.5 text-foreground shadow-xs ring-1 ring-inset ring-border"
                 : "rounded-[22px] border border-transparent bg-transparent text-foreground",
             )}
           >
-            {content ? <MarkdownContent content={content} /> : null}
+            {content ? (
+              isUser
+                ? <span className="block whitespace-pre-wrap break-words leading-5 [overflow-wrap:anywhere]">{content}</span>
+                : <MarkdownContent content={content} />
+            ) : null}
           </div>
           {children}
           {canCopyContent ? (

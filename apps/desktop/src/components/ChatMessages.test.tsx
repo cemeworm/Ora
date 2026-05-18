@@ -60,7 +60,9 @@ describe("ChatMessages bottom inset", () => {
       />,
     );
 
-    expect(html).toContain("rounded-2xl rounded-br-md bg-card px-3.5 py-2.5");
+    expect(html).toContain("flex items-center rounded-2xl rounded-br-md bg-card px-3.5 py-2.5");
+    expect(html).toContain("whitespace-pre-wrap break-words leading-5");
+    expect(html).not.toContain("<p class=\"my-2");
     expect(html).toContain("h-6 w-6");
   });
 
