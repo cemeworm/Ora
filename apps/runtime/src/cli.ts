@@ -252,10 +252,12 @@ async function runEvalCommand(args: string[]) {
     case "compare": {
       const runAId = requiredFlag(flags, "--run-a");
       const runBId = requiredFlag(flags, "--run-b");
-      const [runA, runB] = await Promise.all([
+      const [detailA, detailB] = await Promise.all([
         handle({ jsonrpc: "2.0", id: 1, method: "evaluation.runs.get", params: { evaluationRunId: runAId } }),
         handle({ jsonrpc: "2.0", id: 2, method: "evaluation.runs.get", params: { evaluationRunId: runBId } }),
       ]);
+      const runA = (detailA as any)?.run ?? detailA;
+      const runB = (detailB as any)?.run ?? detailB;
       const report = compareEvaluationRuns(
         runA as EvaluationRun,
         runB as EvaluationRun,
