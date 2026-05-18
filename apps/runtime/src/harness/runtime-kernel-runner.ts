@@ -1,5 +1,6 @@
 import {
   type CheckpointMeta,
+  type CausalTaskState,
   type ModeSpec,
   type OraEventEnvelope,
   ORA_ROOT_AGENT_ID,
@@ -33,6 +34,10 @@ import {
   INTENT_CLARIFICATION_NODE_LABEL,
   type IntentClarificationResult,
 } from "./runtime-clarifications.js";
+import {
+  latestCausalTaskState,
+  type ExtractCausalTaskStateParams,
+} from "./causal-task-state-extractor.js";
 import { routeIntervention } from "./causal-policy-router.js";
 import type { KernelPatternExecutionContextAdapter } from "./runtime-pattern-context.js";
 import {
@@ -80,6 +85,7 @@ interface KernelRuntimeContextForRunner {
   readonly topology: StateSnapshot["topology"];
   readonly busStats: StateSnapshot["busStats"];
   latestEventSeq(): number;
+  readonly events: readonly OraEventEnvelope[];
   updateQueueSummary(patch: Partial<StateSnapshot["queueSummary"]>): StateSnapshot["queueSummary"];
   eventCount(): number;
   latestNodeCheckpoint(params?: { agentId?: string; nodeId?: string }): StateSnapshot["continuation"]["frames"][number]["nodeCheckpoint"] | undefined;
@@ -126,6 +132,7 @@ export interface KernelRunnerDeps {
   preflight: {
     clarificationAnswer: (key: string, fallbackId: string) => unknown;
     requestIntentClarificationQuestion: (prompt: string, config: RunConfig) => Promise<IntentClarificationResult | undefined>;
+    extractCausalTaskState: (params: ExtractCausalTaskStateParams) => Promise<Partial<CausalTaskState>>;
     ensureClarification: (params: {
       id: string;
       key: string;
@@ -187,7 +194,7 @@ export class KernelRunner {
 
   async run(): Promise<StateSnapshot> {
     try {
-      this.emitStartEvents();
+      await this.emitStartEvents();
       await this.executeMode();
       this.flushMemory();
       return this.checkpoint();
@@ -203,7 +210,7 @@ export class KernelRunner {
     }
   }
 
-  private emitStartEvents(): void {
+  private async emitStartEvents(): Promise<void> {
     const {
       input,
       config,
@@ -222,6 +229,7 @@ export class KernelRunner {
       emitPlanUpdated,
       emitTodoUpdated,
     } = this.deps.progress;
+    const { extractCausalTaskState } = this.deps.preflight;
 
     emit("run.started", {
       input,
@@ -251,9 +259,18 @@ export class KernelRunner {
     emitTodoUpdated();
 
     // Record initial causal decision at run start
+    const initialTaskState = await extractCausalTaskState({
+      prompt: input.prompt,
+      config,
+      phase: "run_start",
+      clarificationCount: 0,
+      toolCallCount: 0,
+      hasUnresolvedPlanItems: false,
+      allowLlmExtraction: true,
+    });
     const initialDecision = routeIntervention({
       surfaceRequest: input.prompt,
-      taskState: undefined,
+      taskState: initialTaskState,
       proposedToolId: undefined,
       proposedToolRisk: "low",
       toolCallCount: 0,
@@ -317,6 +334,7 @@ export class KernelRunner {
       clarificationAnswer,
       requestIntentClarificationQuestion,
       ensureClarification,
+      extractCausalTaskState,
       rootTopology,
       emitOraObservation,
       agentLabel,
@@ -363,14 +381,20 @@ export class KernelRunner {
         { nodeId: INTENT_CLARIFICATION_NODE_ID },
       );
       // Record causal decision after clarification resume
+      const resumeTaskState = await extractCausalTaskState({
+        prompt: input.prompt,
+        config,
+        phase: "clarification_resume",
+        currentTaskState: latestCausalTaskState(kernelRuntimeContext.events),
+        clarificationCount: 1,
+        toolCallCount: 0,
+        hasUnresolvedPlanItems: false,
+        clarificationAnswer: intentClarificationAnswer,
+        allowLlmExtraction: true,
+      });
       const resumeDecision = routeIntervention({
         surfaceRequest: input.prompt,
-        taskState: {
-          surfaceRequest: input.prompt,
-          selectedLatentGoal: "",
-          keyUncertainties: [],
-          confidence: 0.6,
-        },
+        taskState: resumeTaskState,
         proposedToolId: undefined,
         proposedToolRisk: "low",
         toolCallCount: 0,

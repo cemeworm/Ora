@@ -2,6 +2,7 @@ import {
   ORA_ROOT_AGENT_ID,
   ORA_ROOT_AGENT_LABEL,
   CausalDecisionRecordSchema,
+  type CausalTaskState,
   type OraEventEnvelope,
   type PendingClarification,
   type PendingClarificationOption,
@@ -10,6 +11,7 @@ import {
 } from "@cemeworm/shared";
 import { invokeRunProvider } from "../providers/index.js";
 import { ClarificationInterruptError } from "./runtime-interrupts.js";
+import { mergeCausalTaskState } from "./causal-task-state-extractor.js";
 
 export const INTENT_CLARIFICATION_ID = "clarification:intent_guard";
 export const INTENT_CLARIFICATION_KEY = "intent_guard";
@@ -124,6 +126,7 @@ export async function ensureRuntimeClarification(
     pendingClarifications: PendingClarification[];
     now: () => number;
     emit: RuntimeClarificationEmit;
+    currentTaskState?: () => Partial<CausalTaskState> | undefined;
     resumeClarifications?: Record<string, unknown>;
   },
 ): Promise<unknown> {
@@ -159,25 +162,19 @@ export async function ensureRuntimeClarification(
     requestedAt: deps.now(),
   });
   deps.pendingClarifications.push(clarification);
+  const inheritedTaskState = deps.currentTaskState?.();
   // Record causal decision for clarification gate
   deps.emit("causal.decision.recorded", CausalDecisionRecordSchema.parse({
     decisionId: `${params.nodeId}:clarification:${clarification.id}`,
     source: "runtime_followup",
     decisionKind: "clarification_triggered",
-    taskState: {
-      surfaceRequest: params.question,
-      latentGoalHypotheses: [],
-      selectedLatentGoal: "",
+    taskState: mergeCausalTaskState(inheritedTaskState, {
+      surfaceRequest: inheritedTaskState?.surfaceRequest ?? params.question,
       keyUncertainties: ["用户目标不明确"],
-      constraints: [],
-      candidateInterventions: [],
       chosenIntervention: "clarify",
-      alternativeInterventions: [],
-      counterfactualRiskIfSkipped: params.counterfactualRiskIfSkipped ?? "",
-      expectedOutcomeLift: "",
+      counterfactualRiskIfSkipped: params.counterfactualRiskIfSkipped ?? inheritedTaskState?.counterfactualRiskIfSkipped,
       confidence: 0.3,
-      stopCondition: "",
-    },
+    }),
     policyDecision: {
       goalUncertainty: 0.7,
       factUncertainty: 0.2,
@@ -227,6 +224,7 @@ export async function ensureRuntimeClarifications(
     pendingClarifications: PendingClarification[];
     now: () => number;
     emit: RuntimeClarificationEmit;
+    currentTaskState?: () => Partial<CausalTaskState> | undefined;
     resumeClarifications?: Record<string, unknown>;
   },
 ): Promise<unknown[]> {
@@ -282,24 +280,18 @@ export async function ensureRuntimeClarifications(
 
   // Record one causal decision for the batch clarification gate
   const firstClarification = newClarifications[0]!;
+  const inheritedTaskState = deps.currentTaskState?.();
   deps.emit("causal.decision.recorded", CausalDecisionRecordSchema.parse({
     decisionId: `${firstClarification.nodeId}:clarification:${firstClarification.id}`,
     source: "runtime_followup",
     decisionKind: "clarification_triggered",
-    taskState: {
-      surfaceRequest: firstClarification.question,
-      latentGoalHypotheses: [],
-      selectedLatentGoal: "",
+    taskState: mergeCausalTaskState(inheritedTaskState, {
+      surfaceRequest: inheritedTaskState?.surfaceRequest ?? firstClarification.question,
       keyUncertainties: ["用户目标不明确"],
-      constraints: [],
-      candidateInterventions: [],
       chosenIntervention: "clarify",
-      alternativeInterventions: [],
-      counterfactualRiskIfSkipped: firstClarification.counterfactualRiskIfSkipped ?? "",
-      expectedOutcomeLift: "",
+      counterfactualRiskIfSkipped: firstClarification.counterfactualRiskIfSkipped ?? inheritedTaskState?.counterfactualRiskIfSkipped,
       confidence: 0.3,
-      stopCondition: "",
-    },
+    }),
     policyDecision: {
       goalUncertainty: 0.7,
       factUncertainty: 0.2,

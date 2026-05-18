@@ -130,6 +130,31 @@ function withApprovedTool(snapshot = baseSnapshot()): StateSnapshot {
   });
 }
 
+function withPlanDecision(snapshot = baseSnapshot()): StateSnapshot {
+  return StateSnapshotSchema.parse({
+    ...snapshot,
+    status: "succeeded",
+    planDecisions: [{
+      id: "decision-plan",
+      runId: snapshot.runId,
+      sessionId: snapshot.sessionId,
+      status: "pending",
+      planContent: "## Runtime status plan\n1. Add shared attention projection.\n2. Persist plan decision gates.",
+      createdAt: 1_100,
+    }],
+    attention: {
+      kind: "needs_plan_decision",
+      blocking: true,
+      sourceRunId: snapshot.runId,
+      reason: "plan_decision_required",
+      planDecisionId: "decision-plan",
+      pendingActionIds: [],
+      pendingToolCallIds: [],
+      pendingClarificationIds: [],
+    },
+  });
+}
+
 function mutationDeps() {
   return {
     appendEvent: (
@@ -199,6 +224,17 @@ describe("RunResumeService", () => {
     });
   });
 
+  it("classifies plan-decision resolutions as kernel resume work on the same run", () => {
+    expect(classifyRunResumeStrategy({
+      snapshot: withPlanDecision(),
+      approvedActionIds: [],
+      planDecisionResolutions: [{ decisionId: "decision-plan", status: "accepted" }],
+    })).toEqual({
+      kind: "kernel",
+      approvedActionIds: [],
+    });
+  });
+
   it("returns the strategy from preparation beside existing resume inputs", () => {
     const snapshot = withApprovedTool();
     const service = new RunResumeService({
@@ -218,6 +254,33 @@ describe("RunResumeService", () => {
     expect(preparation.hasKernelWork).toBe(true);
     expect(preparation.strategy.kind).toBe("approved_tool_continuation");
     expect(preparation.strategy.approvedActionIds).toEqual(preparation.approvedActionIds);
+  });
+
+  it("prepares plan-decision resolutions as kernel resume work", () => {
+    const snapshot = withPlanDecision();
+    const service = new RunResumeService({
+      getRunOrThrow: (runId) => {
+        expect(runId).toBe(snapshot.runId);
+        return snapshot;
+      },
+    });
+
+    const preparation = service.prepare({
+      runId: snapshot.runId,
+      reason: "Plan accepted.",
+      patch: {
+        planDecisionResolutions: [{ decisionId: "decision-plan", status: "accepted" }],
+      },
+    });
+
+    expect(preparation.planDecisionResolutions).toEqual([
+      { decisionId: "decision-plan", status: "accepted" },
+    ]);
+    expect(preparation.hasKernelWork).toBe(true);
+    expect(preparation.strategy).toEqual({
+      kind: "kernel",
+      approvedActionIds: [],
+    });
   });
 
   it("executes non-kernel resume mutation without taking ledger or persistence authority", () => {

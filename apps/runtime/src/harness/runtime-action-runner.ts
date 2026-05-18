@@ -1,5 +1,6 @@
 import {
   CausalDecisionRecordSchema,
+  type CausalTaskState,
   type ActionRecord,
   type OraEventEnvelope,
   type OraToolCallEnvelope,
@@ -9,6 +10,7 @@ import {
 } from "@cemeworm/shared";
 import type { ActionLedger, PolicyService } from "../capabilities.js";
 import { ApprovalInterruptError } from "./runtime-interrupts.js";
+import { mergeCausalTaskState } from "./causal-task-state-extractor.js";
 import type { RuntimeFileChangeMetadata, RuntimeToolCall } from "./runtime-tool-executor.js";
 import type { AppendRuntimeToolCallParams } from "./runtime-tool-ledger.js";
 
@@ -38,6 +40,7 @@ export interface RuntimeActionDeps {
   emit: RuntimeActionEmit;
   appendToolCallStatus?: AppendToolCallStatus;
   appendToolCall?: AppendToolCall;
+  currentCausalTaskState?: () => Partial<CausalTaskState> | undefined;
   /** 当 auto_review 模式自动批准 action 时调用。
       调用方应在此回调中写入 gate.resolved ledger entries，
       防止 ledger replay 时出现 terminal_run_with_open_gates。 */
@@ -141,25 +144,18 @@ export async function resolveRuntimeActionApproval({
     if (toolCallRecord) {
       deps.appendToolCallStatus?.(toolCallRecord, "approval_required");
     }
+    const inheritedTaskState = deps.currentCausalTaskState?.();
     // Record causal decision for approval gate
     deps.emit("causal.decision.recorded", CausalDecisionRecordSchema.parse({
       decisionId: `${context.agentId}:approval:${action.id}`,
       source: "runtime_followup",
       decisionKind: "approval_triggered",
-      taskState: {
-        surfaceRequest: action.type,
-        latentGoalHypotheses: [],
-        selectedLatentGoal: "",
+      taskState: mergeCausalTaskState(inheritedTaskState, {
+        surfaceRequest: inheritedTaskState?.surfaceRequest ?? action.type,
         keyUncertainties: ["行动风险较高"],
-        constraints: [],
-        candidateInterventions: [],
         chosenIntervention: "request_approval",
-        alternativeInterventions: [],
-        counterfactualRiskIfSkipped: "",
-        expectedOutcomeLift: "",
         confidence: 0.4,
-        stopCondition: "",
-      },
+      }),
       policyDecision: {
         goalUncertainty: 0.4,
         factUncertainty: 0.2,

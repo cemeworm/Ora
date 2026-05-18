@@ -188,6 +188,54 @@ function toolCalledEvent(actionId = "run-debate:action:tool-1", seq = 5): OraEve
 }
 
 describe("streaming run snapshot projection", () => {
+  it("projects child-session and parent coordination updates into the live snapshot", () => {
+    const childEvent: OraEventEnvelope = {
+      id: "run-debate:evt-child",
+      runId: "run-debate",
+      seq: 0,
+      type: "child_session.updated",
+      createdAt: 1_714_000_000_001,
+      pattern: "orchestrator_subagent",
+      agentId: "ora-sub-1",
+      nodeId: "ora-sub-1",
+      payload: {
+        childSession: {
+          id: "run-debate:ora-sub-1",
+          agentId: "ora-sub-1",
+          label: "Researcher",
+          sessionClass: "temporary_spawn",
+          status: "running",
+          startedAt: 1_714_000_000_001,
+          updatedAt: 1_714_000_000_001,
+        },
+      },
+    };
+    const coordinationEvent: OraEventEnvelope = {
+      id: "run-debate:evt-parent",
+      runId: "run-debate",
+      seq: 1,
+      type: "parent_coordination.updated",
+      createdAt: 1_714_000_000_002,
+      pattern: "orchestrator_subagent",
+      agentId: "ora",
+      nodeId: "ora",
+      payload: {
+        coordination: {
+          phase: "waiting_on_required_children",
+          activeChildIds: ["run-debate:ora-sub-1"],
+          waitingChildIds: ["run-debate:ora-sub-1"],
+          updatedAt: 1_714_000_000_002,
+        },
+      },
+    };
+
+    const afterChild = applyStreamingRunEvent(snapshot(), childEvent);
+    const afterCoordination = applyStreamingRunEvent(afterChild, coordinationEvent);
+
+    expect(afterCoordination.childSessions).toMatchObject([{ agentId: "ora-sub-1", status: "running" }]);
+    expect(afterCoordination.parentCoordination).toMatchObject({ phase: "waiting_on_required_children" });
+  });
+
   it("projects agent.message events into live snapshot agentMessages", () => {
     const message = agentMessage("run-debate:agent-message:0");
 

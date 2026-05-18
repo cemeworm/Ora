@@ -54,6 +54,7 @@ function createRunner(params?: {
         topology: { nodes: [], edges: [] },
         busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
         latestEventSeq: () => emitted.length - 1,
+        events: emitted,
         updateQueueSummary: () => ({ mode: "dag", pending: 0, inProgress: 0, completed: 0, topics: [] }),
         eventCount: () => emitted.length,
         latestNodeCheckpoint: () => undefined,
@@ -93,6 +94,12 @@ function createRunner(params?: {
     preflight: {
       clarificationAnswer: () => undefined,
       requestIntentClarificationQuestion: async () => undefined,
+      extractCausalTaskState: async ({ prompt, phase, currentTaskState, counterfactualRiskIfSkipped }) => ({
+        surfaceRequest: prompt,
+        selectedLatentGoal: phase === "run_start" ? "Resume runner event test." : String(currentTaskState?.selectedLatentGoal ?? ""),
+        counterfactualRiskIfSkipped: counterfactualRiskIfSkipped ?? "",
+        confidence: phase === "clarification_resume" ? 0.6 : 0.4,
+      }),
       ensureClarification: async () => undefined,
       rootTopology: {},
       emitOraObservation: () => undefined,
@@ -181,5 +188,20 @@ describe("KernelRunner resume events", () => {
       "run.done",
       "checkpoint.created",
     ]);
+  });
+
+  it("records enriched semantic state at run start", async () => {
+    const { runner, emitted } = createRunner();
+
+    await runner.run();
+
+    const decision = emitted.find((event) => event.type === "causal.decision.recorded");
+    expect(decision?.payload).toMatchObject({
+      decisionContext: { phase: "run_start" },
+      taskState: {
+        surfaceRequest: "Resume runner event test.",
+        selectedLatentGoal: "Resume runner event test.",
+      },
+    });
   });
 });

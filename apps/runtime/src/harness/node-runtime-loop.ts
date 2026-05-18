@@ -1,5 +1,6 @@
 import type {
   ArtifactRef,
+  CausalTaskState,
   CompletionStopReason,
   ModeSpec,
   OraEventEnvelope,
@@ -22,6 +23,7 @@ import { RUNTIME_TOOL_LOOP_SAFETY_LIMIT, type RuntimeCompletionController } from
 import { evaluateRuntimeCompletionGuards, finalOutputGuard } from "./runtime-completion-guards.js";
 import { forcedFinalSystemPrompt } from "./runtime-output.js";
 import type { RuntimeActionDeps } from "./runtime-action-runner.js";
+import { buildModelRequestCacheDiagnostics } from "../providers/provider-utils.js";
 import {
   providerSupportsNativeTools,
   cacheKeyForRuntimeTool,
@@ -48,6 +50,12 @@ import {
 } from "./node-loop-transitions.js";
 import { routeIntervention, applyCausalPolicyGate, interventionActionToLabel } from "./causal-policy-router.js";
 import { classifyToolRisk } from "@cemeworm/shared";
+import {
+  extractCausalTaskState as defaultExtractCausalTaskState,
+  hasPrimaryCausalDecisionInPhase,
+  latestCausalTaskState,
+  type ExtractCausalTaskStateParams,
+} from "./causal-task-state-extractor.js";
 import { registerRuntimeToolAttempt } from "./runtime-tool-attempt.js";
 import { codeDevelopmentToolBoundaryError } from "./runtime-tool-boundary.js";
 import { RuntimeToolCallService } from "./runtime-tool-call-service.js";
@@ -104,6 +112,7 @@ export interface RunNodeRuntimeLoopDeps {
   inputPrompt: string;
   turnIndex?: number;
   now: () => number;
+  events: () => readonly OraEventEnvelope[];
   eventsLength: () => number;
   planList: () => readonly PlanListStep[];
   activePlanStepId: () => string | undefined;
@@ -141,6 +150,7 @@ export interface RunNodeRuntimeLoopDeps {
     call: RuntimeToolCall,
     reason: CompletionStopReason,
   ) => void;
+  extractCausalTaskState?: (params: ExtractCausalTaskStateParams) => Promise<Partial<CausalTaskState>>;
   /** Count of clarification.required events emitted so far in this run. */
   clarificationCount: () => number;
   clarificationAnswer: (key: string, id: string) => unknown;
@@ -235,6 +245,38 @@ export function stripInternalAssistantText(text: string): string {
     .trim();
 }
 
+function cacheDiagnosticDelta(
+  previous: ReturnType<typeof buildModelRequestCacheDiagnostics> | undefined,
+  current: ReturnType<typeof buildModelRequestCacheDiagnostics>,
+): { changed: string[]; stablePrefixUnchanged: boolean } {
+  if (!previous) {
+    return {
+      changed: ["initial_request"],
+      stablePrefixUnchanged: true,
+    };
+  }
+  const changed: string[] = [];
+  if (previous.stableSystemPrefixHash !== current.stableSystemPrefixHash) {
+    changed.push("stable_system_prefix");
+  }
+  if (previous.volatileSystemSuffixHash !== current.volatileSystemSuffixHash) {
+    changed.push("volatile_system_suffix");
+  }
+  if (previous.toolsHash !== current.toolsHash) {
+    changed.push("tools");
+  }
+  if (previous.latestTurnMetadataHash !== current.latestTurnMetadataHash) {
+    changed.push("turn_local_metadata");
+  }
+  if (previous.fullSystemHash !== current.fullSystemHash && !changed.includes("volatile_system_suffix") && !changed.includes("stable_system_prefix")) {
+    changed.push("system_other");
+  }
+  return {
+    changed,
+    stablePrefixUnchanged: previous.stableSystemPrefixHash === current.stableSystemPrefixHash,
+  };
+}
+
 function emitRuntimeStatusProgress(
   emit: RuntimeLoopEmit,
   params: RunNodeRuntimeLoopParams,
@@ -283,6 +325,7 @@ export async function runNodeRuntimeLoop(
   params: RunNodeRuntimeLoopParams,
   deps: RunNodeRuntimeLoopDeps,
 ): Promise<ModelResponse> {
+  const extractCausalTaskState = deps.extractCausalTaskState ?? defaultExtractCausalTaskState;
   const {
     config,
     modeSpec,
@@ -370,6 +413,7 @@ export async function runNodeRuntimeLoop(
     ? invokeRunProviderStream
     : invokeRunProvider;
   let lastProviderRequestMessages: ModelMessage[] = [];
+  let lastRequestCacheDiagnostics: ReturnType<typeof buildModelRequestCacheDiagnostics> | undefined;
   let modelInvocationIndex = 0;
   let activeAssistantMessageId = `${params.runId}:assistant:${params.agentId}:${params.nodeId}:0`;
   let emittedProviderStreamFrameForInvocation = false;
@@ -456,8 +500,25 @@ export async function runNodeRuntimeLoop(
     let retryCount = 0;
     while (true) {
       try {
+        const cacheDiagnostics = buildModelRequestCacheDiagnostics(request);
+        const cacheDelta = cacheDiagnosticDelta(lastRequestCacheDiagnostics, cacheDiagnostics);
+        emit(
+          "node.updated",
+          {
+            state: "cache_diagnostics",
+            title: params.title,
+            providerCache: request.providerCache,
+            cacheDiagnostics: {
+              ...cacheDiagnostics,
+              changedSincePreviousRequest: cacheDelta.changed,
+              stablePrefixUnchanged: cacheDelta.stablePrefixUnchanged,
+            },
+          },
+          { agentId: params.agentId, nodeId: params.agentId },
+        );
         const response = await invokeProvider(config, request, streamCallbacks);
         lastProviderRequestMessages = [...(request.messages ?? [])];
+        lastRequestCacheDiagnostics = cacheDiagnostics;
         return response;
       } catch (error) {
         retryCount += 1;
@@ -757,9 +818,21 @@ export async function runNodeRuntimeLoop(
       });
       const planList = deps.planList();
       const hasUnresolvedPlanItems = planList.some(s => s.status !== "completed");
+      const currentTaskState = latestCausalTaskState(deps.events());
+      const completionTaskState = await extractCausalTaskState({
+        prompt: input.prompt,
+        config,
+        phase: "completion",
+        currentTaskState,
+        modelResponseText: currentResponse.text,
+        toolCallCount: completion.toolAttempts,
+        clarificationCount: deps.clarificationCount(),
+        hasUnresolvedPlanItems,
+        allowLlmExtraction: false,
+      });
       const completionDecision = routeIntervention({
         surfaceRequest: input.prompt,
-        taskState: undefined,
+        taskState: completionTaskState,
         proposedToolId: undefined,
         proposedToolRisk: "low",
         toolCallCount: completion.toolAttempts,
@@ -1016,9 +1089,24 @@ export async function runNodeRuntimeLoop(
     const toolRisk = classifyToolRisk(toolCall.tool);
     const planList = deps.planList();
     const hasUnresolvedPlanItems = planList.some(s => s.status !== "completed");
+    const currentTaskState = latestCausalTaskState(deps.events());
+    const shouldExtractSemanticState = !hasPrimaryCausalDecisionInPhase(deps.events(), "tool_request") &&
+      String(currentTaskState?.selectedLatentGoal ?? "").trim().length === 0;
+    const policyTaskState = await extractCausalTaskState({
+      prompt: input.prompt,
+      config,
+      phase: "tool_request",
+      currentTaskState,
+      modelResponseText: response.text,
+      proposedToolId: toolCall.tool,
+      toolCallCount: completion.toolAttempts + 1,
+      clarificationCount: deps.clarificationCount(),
+      hasUnresolvedPlanItems,
+      allowLlmExtraction: shouldExtractSemanticState,
+    });
     const policyResult = routeIntervention({
       surfaceRequest: input.prompt,
-      taskState: undefined,
+      taskState: policyTaskState,
       proposedToolId: toolCall.tool,
       proposedToolRisk: toolRisk,
       toolCallCount: completion.toolAttempts + 1,

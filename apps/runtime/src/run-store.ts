@@ -181,6 +181,7 @@ import {
 } from "./project-workspace.js";
 import { runtimeConversationToModelMessages } from "./runtime-conversation.js";
 import { OraRuntimeError } from "./runtime-errors.js";
+import { promptWithTurnLocalMetadata, turnLocalMetadataPrompt } from "./harness/runtime-prompts.js";
 import { generateCustomAgentDraft } from "./agent-draft.js";
 import { modeCreateParamsFromSpec } from "./mode-studio-draft.js";
 import {
@@ -254,6 +255,7 @@ import { ShortTermMemoryJournal } from "./memory-journal.js";
 import { MemoryDreamingService } from "./memory-dreaming.js";
 import { MemoryDreamingScheduler } from "./memory-dreaming-scheduler.js";
 import { MemoryIndexStore, type EmbeddingProvider } from "./memory-index.js";
+import { ScenarioStore } from "./memory-scenarios.js";
 import {
   migrateLegacyOraMvpProjectPlaceholder,
   migrateLegacyRunsIntoSessions
@@ -370,11 +372,13 @@ export class LocalRunStore {
   private readonly systemAgentOverrideStore: SystemAgentOverrideFileStore;
   private readonly modeStore: ModeSpecFileStore;
   private readonly skillRegistry: RuntimeSkillRegistry;
+  private readonly memoryDataDir: string;
   private readonly longTermMemory: LongTermMemoryManager;
   private readonly longTermMemoryQueue: LongTermMemoryUpdateQueue;
   private readonly journal: ShortTermMemoryJournal;
   private readonly dreamingScheduler: MemoryDreamingScheduler;
   private readonly memoryIndexStore: MemoryIndexStore;
+  private readonly scenarioStore: ScenarioStore;
   private cachedEmbeddingProvider: EmbeddingProvider | undefined | null = null;
   private readonly channelService: ChannelService;
   private readonly automationService: AutomationService;
@@ -450,15 +454,17 @@ export class LocalRunStore {
     );
     this.feedbackLoopStore = new LocalFeedbackLoopStore(defaultFeedbackLoopStoreDir(dataDir), this.clock);
     this.selfIterationStore = new LocalSelfIterationStore(defaultSelfIterationStoreDir(dataDir), this.clock);
+    this.memoryDataDir = defaultMemoryDir(dataDir);
     this.longTermMemory = new LongTermMemoryManager(
-      new FileLongTermMemoryStore(defaultMemoryDir(dataDir)),
+      new FileLongTermMemoryStore(this.memoryDataDir),
       this.clock,
     );
     this.longTermMemoryQueue = new LongTermMemoryUpdateQueue((task) =>
       processLongTermMemoryUpdate(task, this.memoryUpdateDeps())
     );
-    this.journal = new ShortTermMemoryJournal(defaultMemoryDir(dataDir));
-    this.memoryIndexStore = new MemoryIndexStore(defaultMemoryDir(dataDir));
+    this.journal = new ShortTermMemoryJournal(this.memoryDataDir);
+    this.memoryIndexStore = new MemoryIndexStore(this.memoryDataDir);
+    this.scenarioStore = new ScenarioStore(this.memoryDataDir);
     this.dreamingScheduler = new MemoryDreamingScheduler({
       journal: this.journal,
       dreaming: new MemoryDreamingService(this.journal),
@@ -496,6 +502,7 @@ export class LocalRunStore {
       customAgentContextsForMode: (modeSpec) => this.customAgentContextsForMode(modeSpec),
       buildConversationMessages: (sessionId, currentPrompt, excludeRunId) =>
         this.buildConversationMessages(sessionId, currentPrompt, excludeRunId),
+      taskMemoryPersistenceDir: this.memoryDataDir,
     });
     this.planDecisionService = new PlanDecisionService({
       now: () => this.now(),
@@ -1540,6 +1547,8 @@ export class LocalRunStore {
       fullConfig,
       turnIndex,
       runId,
+      input.createdAt,
+      input.context,
       extractImageBlocksFromContext(input.context),
       selectedWidgetContextFromInput(input.context),
     );
@@ -1642,6 +1651,8 @@ export class LocalRunStore {
     markRuntimeLatency("memoryPrompt.done", {
       hasMemoryPromptOverlay: typeof fullConfig.metadata.memoryPromptOverlay === "string",
       activeMemoryDecision: isRecord(fullConfig.metadata.activeMemory) ? fullConfig.metadata.activeMemory.decision : undefined,
+      activeMemoryTrace: isRecord(fullConfig.metadata.activeMemoryTrace) ? fullConfig.metadata.activeMemoryTrace : undefined,
+      memoryHealthSnapshot: isRecord(fullConfig.metadata.memoryHealthSnapshot) ? fullConfig.metadata.memoryHealthSnapshot : undefined,
     });
     if (turnIndex === 1 && fullConfig.metadata.branchRole !== "candidate") {
       generateSessionTitleFromPrompt(input.prompt, fullConfig, session.title).then((earlyTitle) => {
@@ -1654,6 +1665,8 @@ export class LocalRunStore {
       fullConfig,
       turnIndex,
       runId,
+      input.createdAt,
+      input.context,
       extractImageBlocksFromContext(input.context),
       selectedWidgetContextFromInput(input.context),
     );
@@ -1865,6 +1878,7 @@ export class LocalRunStore {
       snapshot,
       clarificationPatch,
       approvedActionIds,
+      planDecisionResolutions,
       approvedActions,
       gateResolutions,
       hasKernelWork,
@@ -2002,6 +2016,7 @@ export class LocalRunStore {
       clarificationPatch,
       approvedActionIds,
       approvedActions,
+      planDecisionResolutions,
       signal: abortController.signal,
       onEvent: applyLiveEvent,
     }).then(async (nextSnapshot) => {
@@ -2071,6 +2086,8 @@ export class LocalRunStore {
       fullConfig,
       turnIndex,
       runId,
+      input.createdAt,
+      input.context,
       extractImageBlocksFromContext(input.context),
       selectedWidgetContextFromInput(input.context),
     );
@@ -2135,6 +2152,8 @@ export class LocalRunStore {
       fullConfig,
       turnIndex,
       runId,
+      input.createdAt,
+      input.context,
       extractImageBlocksFromContext(input.context),
       selectedWidgetContextFromInput(input.context),
     );
@@ -2210,6 +2229,7 @@ export class LocalRunStore {
       snapshot,
       clarificationPatch,
       approvedActionIds,
+      planDecisionResolutions,
       approvedActions,
       gateResolutions,
       hasKernelWork,
@@ -2258,6 +2278,7 @@ export class LocalRunStore {
           clarificationPatch,
           approvedActionIds,
           approvedActions,
+          planDecisionResolutions,
         });
         const tracedSnapshot = this.appendResolvedClarificationEvents(
           attachTraceMetadata(resumedSnapshot),
@@ -2889,6 +2910,9 @@ export class LocalRunStore {
         this.buildConversationMessages(sessionId, currentPrompt),
       memoryIndexStore: this.memoryIndexStore,
       embeddingProvider: this.cachedEmbeddingProvider ?? undefined,
+      journal: this.journal,
+      scenarioStore: this.scenarioStore,
+      projectScenarioStore: (projectId) => this.scenarioStoreFor(projectId),
     };
   }
 
@@ -3833,6 +3857,8 @@ export class LocalRunStore {
       longTermMemory: this.longTermMemory,
       longTermMemoryQueue: this.longTermMemoryQueue,
       journal: this.journal,
+      scenarioStore: this.scenarioStore,
+      projectScenarioStore: (projectId) => this.scenarioStoreFor(projectId),
       modeSelectionDeps: () => this.modeSelectionDeps(),
       buildConversationMessages: (sessionId, currentPrompt, excludeRunId) =>
         this.buildConversationMessages(sessionId, currentPrompt, excludeRunId),
@@ -3844,6 +3870,14 @@ export class LocalRunStore {
         this.cacheRun(projected, flush);
       },
     };
+  }
+
+  private scenarioStoreFor(projectId?: string): ScenarioStore {
+    return new ScenarioStore(
+      projectId
+        ? path.join(this.memoryDataDir, "projects", projectId)
+        : this.memoryDataDir,
+    );
   }
 
   private nextRunId(): string {
@@ -4113,19 +4147,22 @@ export class LocalRunStore {
       normalized.status === "succeeded" &&
       normalized.config.metadata.taskIntent === "plan" &&
       snapshotContainsCompleteProposedPlan(normalized) &&
-      normalized.planDecisions.length === 0
+      !normalized.planDecisions.some((decision) => decision.status === "pending")
     ) {
       const planContent = extractCompleteProposedPlanContent(normalized);
       normalized = StateSnapshotSchema.parse({
         ...normalized,
-        planDecisions: [{
-          id: `${normalized.runId}:plan-decision`,
-          runId: normalized.runId,
-          sessionId: normalized.sessionId,
-          status: "pending",
-          ...(planContent ? { planContent, planSourceRunId: normalized.runId } : {}),
-          createdAt: normalized.updatedAt,
-        }],
+        planDecisions: [
+          ...normalized.planDecisions.filter((decision) => decision.status !== "pending"),
+          {
+            id: `${normalized.runId}:plan-decision:${normalized.updatedAt}`,
+            runId: normalized.runId,
+            sessionId: normalized.sessionId,
+            status: "pending",
+            ...(planContent ? { planContent, planSourceRunId: normalized.runId } : {}),
+            createdAt: normalized.updatedAt,
+          },
+        ],
       });
     }
     return StateSnapshotSchema.parse({
@@ -4158,6 +4195,8 @@ export class LocalRunStore {
     config: RunConfig,
     turnIndex: number,
     runId: string,
+    currentTurnCreatedAt?: number,
+    currentTurnContext?: Record<string, unknown>,
     imageBlocks?: ModelImageBlock[],
     selectedWidgetContext?: unknown,
   ): Promise<ModelMessage[]> {
@@ -4176,8 +4215,15 @@ export class LocalRunStore {
     }
     const priorMessages = this.buildConversationMessages(sessionId, "", excludeRunId);
     const contextState = normalizeContextState(this.contextStateForModelContext(sessionId));
-    const currentPromptMessage = currentPrompt.trim()
-      ? [{ role: "user" as const, content: currentPrompt.trim(), ...(imageBlocks?.length ? { imageBlocks } : {}) }]
+    const currentTurnPrompt = promptWithTurnLocalMetadata(
+      currentPrompt,
+      turnLocalMetadataPrompt({
+        createdAt: currentTurnCreatedAt,
+        context: currentTurnContext,
+      }),
+    );
+    const currentPromptMessage = currentTurnPrompt.trim()
+      ? [{ role: "user" as const, content: currentTurnPrompt.trim(), ...(imageBlocks?.length ? { imageBlocks } : {}) }]
       : [];
     const handoffMessages = acceptedPlanHandoff
       ? [acceptedPlanHandoffMessage(acceptedPlanHandoff)]
@@ -4226,6 +4272,7 @@ export class LocalRunStore {
     messages = [
       ...compacted.messages,
       ...handoffMessages,
+      ...selectedWidgetContextMessages,
       ...currentPromptMessage,
     ];
     return messages;
@@ -4412,7 +4459,13 @@ export class LocalRunStore {
       if (turn.turnIndex <= contextState.compactedThroughTurnIndex) {
         continue;
       }
-      const prompt = turn.input.prompt.trim();
+      const prompt = promptWithTurnLocalMetadata(
+        turn.input.prompt,
+        turnLocalMetadataPrompt({
+          createdAt: turn.input.createdAt,
+          context: turn.input.context,
+        }),
+      );
       if (prompt) {
         messages.push({ role: "user", content: prompt });
       }
@@ -4454,7 +4507,13 @@ export class LocalRunStore {
       if (!snapshot) {
         continue;
       }
-      const prompt = snapshot.input.prompt.trim();
+      const prompt = promptWithTurnLocalMetadata(
+        snapshot.input.prompt,
+        turnLocalMetadataPrompt({
+          createdAt: snapshot.input.createdAt,
+          context: snapshot.input.context,
+        }),
+      );
       if (prompt) {
         messages.push({ role: "user", content: prompt });
       }

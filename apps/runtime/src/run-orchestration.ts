@@ -14,6 +14,10 @@ export interface ParsedResumePatch {
   patchRecord: Record<string, unknown>;
   clarificationPatch: Record<string, unknown>;
   approvedActionIds: string[];
+  planDecisionResolutions: Array<{
+    decisionId: string;
+    status: "accepted" | "declined";
+  }>;
 }
 
 export interface ApprovedResumeAction {
@@ -35,7 +39,25 @@ export function parseResumePatch(patch: unknown): ParsedResumePatch {
   const approvedActionIds = Array.isArray(patchRecord.approvedActionIds)
     ? patchRecord.approvedActionIds.filter((value): value is string => typeof value === "string" && value.length > 0)
     : [];
-  return { patchRecord, clarificationPatch, approvedActionIds };
+  const planDecisionResolutions = Array.isArray(patchRecord.planDecisionResolutions)
+    ? patchRecord.planDecisionResolutions.flatMap((value) => {
+        if (!value || typeof value !== "object") {
+          return [];
+        }
+        const candidate = value as Record<string, unknown>;
+        if (
+          typeof candidate.decisionId !== "string" ||
+          (candidate.status !== "accepted" && candidate.status !== "declined")
+        ) {
+          return [];
+        }
+        return [{
+          decisionId: candidate.decisionId,
+          status: candidate.status,
+        }] as Array<{ decisionId: string; status: "accepted" | "declined" }>;
+      })
+    : [];
+  return { patchRecord, clarificationPatch, approvedActionIds, planDecisionResolutions };
 }
 
 export function hasKernelResumeWork(snapshot: StateSnapshot): boolean {

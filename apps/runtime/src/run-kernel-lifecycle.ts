@@ -14,6 +14,7 @@ import { executeRuntimeKernel, type RuntimeKernelOptions } from "./harness/runti
 import type { ModelMessage } from "./providers/index.js";
 import { withLangfuseRunTrace } from "./telemetry/langfuse.js";
 import type { ApprovedResumeAction } from "./run-orchestration.js";
+import type { TaskMemoryStore } from "./task-memory.js";
 
 interface KernelLifecycleBaseParams {
   runId: string;
@@ -38,12 +39,14 @@ interface KernelLifecycleBaseParams {
   onEvent?: (event: OraEventEnvelope) => void;
   /** auto_review 模式自动批准时调用，实现方应写入 gate.resolved ledger entries */
   onApprovalAutoResolved?: (actionIds: string[]) => void;
+  taskMemoryStore?: TaskMemoryStore;
 }
 
 interface KernelResumeParams extends KernelLifecycleBaseParams {
   clarificationPatch: Record<string, unknown>;
   approvedActionIds: string[];
   approvedActions: ApprovedResumeAction[];
+  planDecisionResolutions?: Array<{ decisionId: string; status: "accepted" | "declined" }>;
   resumeAlreadyAnnounced?: boolean;
   resumeSnapshot?: StateSnapshot;
 }
@@ -72,6 +75,7 @@ export async function executeTracedKernelResume(params: KernelResumeParams & Can
           clarifications: params.clarificationPatch,
           approvedActionIds: params.approvedActionIds,
           approvedActions: params.approvedActions,
+          planDecisionResolutions: params.planDecisionResolutions,
           alreadyAnnounced: params.resumeAlreadyAnnounced,
         },
         resumeState: params.resumeSnapshot,
@@ -101,6 +105,7 @@ function kernelOptions(params: KernelLifecycleBaseParams & CancellableKernelLife
     signal: params.signal,
     onEvent: params.onEvent,
     onApprovalAutoResolved: params.onApprovalAutoResolved,
+    taskMemoryStore: params.taskMemoryStore,
   };
 }
 

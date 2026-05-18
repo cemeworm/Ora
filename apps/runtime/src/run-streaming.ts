@@ -1,9 +1,11 @@
 import {
   AgentConversationMessageSchema,
+  ChildSessionSummarySchema,
   DELTA_EVENT_TYPES,
   normalizeRunAttention,
   OraEventEnvelope,
   PASSIVE_EVENT_TYPES,
+  ParentCoordinationStateSchema,
   PendingClarificationSchema,
   RunEventStream,
   RunEventStreamSchema,
@@ -216,6 +218,28 @@ function projectStreamingEvent(
     };
   }
 
+  if (event.type === "child_session.updated" && isRecord(event.payload.childSession)) {
+    const parsed = ChildSessionSummarySchema.safeParse(event.payload.childSession);
+    if (!parsed.success) {
+      return snapshot;
+    }
+    return {
+      ...snapshot,
+      childSessions: upsertById(snapshot.childSessions ?? [], parsed.data),
+    };
+  }
+
+  if (event.type === "parent_coordination.updated" && isRecord(event.payload.coordination)) {
+    const parsed = ParentCoordinationStateSchema.safeParse(event.payload.coordination);
+    if (!parsed.success) {
+      return snapshot;
+    }
+    return {
+      ...snapshot,
+      parentCoordination: parsed.data,
+    };
+  }
+
   if (event.type === "topology.updated" && Array.isArray(event.payload.nodes) && Array.isArray(event.payload.edges)) {
     return {
       ...snapshot,
@@ -334,6 +358,8 @@ export function shouldFlushStreamingEvent(event: OraEventEnvelope): boolean {
 function isDurableStateBoundaryEvent(event: OraEventEnvelope): boolean {
   return event.type.startsWith("run.") ||
     event.type === "tool.called" ||
+    event.type === "child_session.updated" ||
+    event.type === "parent_coordination.updated" ||
     event.type === "approval.required" ||
     event.type === "approval.resolved" ||
     event.type === "clarification.required" ||
@@ -361,6 +387,8 @@ function shouldAttachLiveSnapshot(events: readonly OraEventEnvelope[]): boolean 
       event.type === "plan.updated" ||
       event.type === "todo.updated" ||
       event.type === "plan_list.updated" ||
+      event.type === "child_session.updated" ||
+      event.type === "parent_coordination.updated" ||
       event.type === "topology.updated" ||
       event.type === "queue.updated" ||
       event.type === "shared_state.updated" ||

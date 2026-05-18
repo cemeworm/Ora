@@ -15,6 +15,7 @@ import type {
   SelfIterationRegistryTools,
 } from "./harness/runtime-tool-executor.js";
 import type { ModelMessage } from "./providers/index.js";
+import { TaskMemoryStore } from "./task-memory.js";
 import {
   executeTracedKernelResume,
   executeTracedKernelRun,
@@ -48,6 +49,7 @@ interface RunKernelExecutionServiceDeps {
     currentPrompt: string,
     excludeRunId?: string,
   ) => ModelMessage[];
+  taskMemoryPersistenceDir: string;
 }
 
 interface ExecutePreparedRunParams {
@@ -72,7 +74,9 @@ interface ExecutePreparedResumeParams {
   clarificationPatch: Record<string, unknown>;
   approvedActionIds: string[];
   approvedActions: ApprovedResumeAction[];
+  planDecisionResolutions?: Array<{ decisionId: string; status: "accepted" | "declined" }>;
   resumeSnapshot?: StateSnapshot;
+  configOverride?: RunConfig;
   conversationMessages?: ModelMessage[];
   signal?: AbortSignal;
   onEvent?: (event: OraEventEnvelope) => void;
@@ -90,9 +94,14 @@ export class RunKernelExecutionService {
   }
 
   executePreparedRun(params: ExecutePreparedRunParams): Promise<StateSnapshot> {
+    const taskMemoryStore = this.createTaskMemoryStore();
     return this.executeRun({
       ...params,
+      taskMemoryStore,
       ...this.kernelDeps(params.config, params.modeSpec),
+    }).then((snapshot) => {
+      this.discardTaskMemoryIfTerminal(taskMemoryStore, snapshot);
+      return snapshot;
     });
   }
 
@@ -110,13 +119,15 @@ export class RunKernelExecutionService {
       });
     }
     const resumedInput = resumedInputWithClarifications(params.snapshot.input, params.clarificationPatch);
+    const config = params.configOverride ?? params.snapshot.config;
     const resumeSnapshot = params.resumeSnapshot ??
       suspendedFrameResumeSnapshot(params.snapshot) ??
       params.snapshot;
+    const taskMemoryStore = this.createTaskMemoryStore();
     return this.executeResume({
       runId: params.snapshot.runId,
       input: resumedInput,
-      config: params.snapshot.config,
+      config,
       modeSpec,
       definition: modeSpecToPatternDefinition(modeSpec),
       sessionId,
@@ -127,11 +138,16 @@ export class RunKernelExecutionService {
       clarificationPatch: params.clarificationPatch,
       approvedActionIds: params.approvedActionIds,
       approvedActions: params.approvedActions,
+      planDecisionResolutions: params.planDecisionResolutions,
       resumeAlreadyAnnounced: params.snapshot.events.some((event) => event.type === "run.resumed"),
       resumeSnapshot,
       signal: params.signal,
       onEvent: params.onEvent,
-      ...this.kernelDeps(params.snapshot.config, modeSpec),
+      taskMemoryStore,
+      ...this.kernelDeps(config, modeSpec),
+    }).then((snapshot) => {
+      this.discardTaskMemoryIfTerminal(taskMemoryStore, snapshot);
+      return snapshot;
     });
   }
 
@@ -214,18 +230,30 @@ export class RunKernelExecutionService {
     clarificationPatch: Record<string, unknown>;
     approvedActionIds: string[];
     approvedActions: ApprovedResumeAction[];
+    planDecisionResolutions?: Array<{ decisionId: string; status: "accepted" | "declined" }>;
     signal?: AbortSignal;
     onEvent?: (event: OraEventEnvelope) => void;
   }): Promise<StateSnapshot> {
+    const resumeConfig = configForPlanDecisionResume(
+      params.snapshot.config,
+      params.snapshot.planDecisions,
+      params.planDecisionResolutions ?? [],
+    );
     return this.executePreparedResume({
       snapshot: params.snapshot,
       conversationMessages: [
         ...this.resumeConversationMessages(params.snapshot, params.clarificationPatch),
+        ...planDecisionResumeMessages(
+          params.snapshot.planDecisions,
+          params.planDecisionResolutions ?? [],
+        ),
         ...runtimeConversationToModelMessages(params.snapshot.conversation),
       ],
       clarificationPatch: params.clarificationPatch,
       approvedActionIds: params.approvedActionIds,
       approvedActions: params.approvedActions,
+      planDecisionResolutions: params.planDecisionResolutions,
+      configOverride: resumeConfig,
       signal: params.signal,
       onEvent: params.onEvent,
     });
@@ -243,6 +271,17 @@ export class RunKernelExecutionService {
       systemAgentOverlays: this.deps.systemAgentOverlaysForMode(modeSpec),
       customAgentContexts: this.deps.customAgentContextsForMode(modeSpec),
     };
+  }
+
+  private createTaskMemoryStore(): TaskMemoryStore {
+    return new TaskMemoryStore(this.deps.taskMemoryPersistenceDir);
+  }
+
+  private discardTaskMemoryIfTerminal(taskMemoryStore: TaskMemoryStore, snapshot: StateSnapshot): void {
+    if (snapshot.status === "interrupted" || snapshot.status === "queued" || snapshot.status === "running") {
+      return;
+    }
+    taskMemoryStore.discardRun(snapshot.runId);
   }
 
   private mergeResumeSnapshotEvents(baseSnapshot: StateSnapshot, resumedSnapshot: StateSnapshot): StateSnapshot {
@@ -276,4 +315,70 @@ function suspendedFrameResumeSnapshot(snapshot: StateSnapshot): StateSnapshot | 
     return undefined;
   }
   return StateSnapshotSchema.parse(continuationFrameAwaitingModel(snapshot, decision.frame.id, snapshot.updatedAt));
+}
+
+function planDecisionResumeMessages(
+  decisions: StateSnapshot["planDecisions"],
+  resolutions: Array<{ decisionId: string; status: "accepted" | "declined" }>,
+): ModelMessage[] {
+  return resolutions.flatMap<ModelMessage>((resolution) => {
+    const decision = decisions.find((candidate) => candidate.id === resolution.decisionId);
+    if (!decision?.planContent?.trim()) {
+      return [];
+    }
+    if (resolution.status === "accepted") {
+      return [{
+        role: "system",
+        content: [
+          "The user accepted the implementation plan from this same run.",
+          "Continue in the current run and implement the plan below.",
+          "Use it as a handoff contract unless direct repository evidence requires a small adjustment.",
+          "",
+          `Accepted plan decision: ${decision.id}`,
+          `Accepted plan source run: ${decision.runId}`,
+          "",
+          "<accepted_plan>",
+          decision.planContent.trim(),
+          "</accepted_plan>",
+        ].join("\n"),
+      }];
+    }
+    return [{
+      role: "user",
+      content: [
+        "The user declined the previous plan from this same run.",
+        "Revise the plan instead of implementing it.",
+        "",
+        "Previous proposed plan:",
+        "<previous_plan>",
+        decision.planContent.trim(),
+        "</previous_plan>",
+      ].join("\n"),
+    }];
+  });
+}
+
+function configForPlanDecisionResume(
+  config: RunConfig,
+  decisions: StateSnapshot["planDecisions"],
+  resolutions: Array<{ decisionId: string; status: "accepted" | "declined" }>,
+): RunConfig {
+  const accepted = resolutions.some((resolution) =>
+    resolution.status === "accepted" &&
+    decisions.some((decision) => decision.id === resolution.decisionId),
+  );
+  if (!accepted) {
+    return config;
+  }
+  return {
+    ...config,
+    metadata: {
+      ...config.metadata,
+      taskIntent: "implement",
+      acceptedPlanDecisionId: resolutions.find((resolution) => resolution.status === "accepted")?.decisionId,
+      acceptedPlanRunId: decisions.find((decision) =>
+        resolutions.some((resolution) => resolution.status === "accepted" && resolution.decisionId === decision.id),
+      )?.runId,
+    },
+  };
 }

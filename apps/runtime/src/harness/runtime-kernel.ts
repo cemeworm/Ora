@@ -6,6 +6,12 @@ import {
   type ActionRecord,
   type AgentConversationMessage,
   AgentConversationMessageSchema,
+  type ChildSessionClass,
+  type ChildSessionSummary,
+  ChildSessionSummarySchema,
+  type ParentCoordinationPhase,
+  type ParentCoordinationState,
+  ParentCoordinationStateSchema,
   type ArtifactRef,
   ArtifactRefSchema,
   type CheckpointMeta,
@@ -99,16 +105,22 @@ import {
   requestIntentClarificationQuestion,
   resolveClarificationAnswer,
 } from "./runtime-clarifications.js";
-import { buildAgentPromptContext, temporalContextPrompt, userClarificationContextPrompt } from "./prompt-context.js";
+import {
+  extractCausalTaskState,
+  latestCausalTaskState,
+  mergeCausalTaskState,
+  type ExtractCausalTaskStateParams,
+} from "./causal-task-state-extractor.js";
+import { buildAgentPromptContext, temporalContextPrompt } from "./prompt-context.js";
 import { PromptSectionCache } from "./prompt-cache.js";
 import { extractSkillMentions, resolveSkillMentions } from "./skill-mention.js";
 import {
-  attachedImagesSystemPrompt,
-  attachedLocalFilesSystemPrompt,
-  attachedProjectFilesSystemPrompt,
   channelProjectGuidancePrompt,
   checkpointLabelForStatus,
+  promptWithTurnLocalMetadata,
   projectInstructionsSystemPrompt,
+  turnLocalMetadataGuidancePrompt,
+  turnLocalMetadataPrompt,
   userFacingLanguagePrompt,
   workspaceSystemPrompt,
 } from "./runtime-prompts.js";
@@ -175,6 +187,7 @@ export interface RuntimeKernelOptions {
     clarifications?: Record<string, unknown>;
     approvedActionIds?: string[];
     approvedActions?: ApprovedResumeAction[];
+    planDecisionResolutions?: Array<{ decisionId: string; status: "accepted" | "declined" }>;
     alreadyAnnounced?: boolean;
   };
   resumeState?: Pick<StateSnapshot, "plan" | "planList" | "todos" | "actions" | "toolCalls" | "toolResults" | "continuation" | "conversation" | "topology">;
@@ -190,6 +203,36 @@ export interface RuntimeKernelOptions {
   taskMemoryStore?: TaskMemoryStore;
 }
 
+function withCurrentTurnLocalMetadata(
+  messages: readonly ModelMessage[] | undefined,
+  currentPrompt: string,
+  turnLocalMetadata: string | undefined,
+): ModelMessage[] | undefined {
+  if (!messages?.length || !turnLocalMetadata?.trim()) {
+    return messages ? [...messages] : undefined;
+  }
+  const trimmedPrompt = currentPrompt.trim();
+  if (!trimmedPrompt) {
+    return [...messages];
+  }
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.role !== "user") {
+      continue;
+    }
+    if (message.content.trim() !== trimmedPrompt) {
+      continue;
+    }
+    const nextMessages = [...messages];
+    nextMessages[index] = {
+      ...message,
+      content: promptWithTurnLocalMetadata(message.content, turnLocalMetadata),
+    };
+    return nextMessages;
+  }
+  return [...messages];
+}
+
 class KernelRuntimeContext {
   private readonly eventsValue: OraEventEnvelope[] = [];
   private readonly artifactsValue: ArtifactRef[] = [];
@@ -201,6 +244,8 @@ class KernelRuntimeContext {
   private readonly toolCallLedger: RuntimeToolCallLedger;
   private readonly topologyValue: StateSnapshot["topology"];
   private readonly asyncAgentResultsValue = new Map<string, string>();
+  private readonly childSessionsValue = new Map<string, ChildSessionSummary>();
+  private parentCoordinationValue: ParentCoordinationState | undefined;
   private planListValue: PlanListStep[];
   private queueSummaryValue: QueueSummary;
   private busStatsValue: BusStats;
@@ -245,6 +290,16 @@ class KernelRuntimeContext {
 
   get agentMessages(): AgentConversationMessage[] {
     return this.agentMessagesValue;
+  }
+
+  get childSessions(): ChildSessionSummary[] {
+    return [...this.childSessionsValue.values()].sort((left, right) =>
+      left.startedAt - right.startedAt || left.id.localeCompare(right.id),
+    );
+  }
+
+  get parentCoordination(): ParentCoordinationState | undefined {
+    return this.parentCoordinationValue;
   }
 
   get toolCalls(): OraToolCallEnvelope[] {
@@ -348,6 +403,41 @@ class KernelRuntimeContext {
     return message;
   }
 
+  updateChildSession(summary: ChildSessionSummary): ChildSessionSummary {
+    const parsed = ChildSessionSummarySchema.parse(summary);
+    this.childSessionsValue.set(parsed.id, parsed);
+    this.emit(
+      "child_session.updated",
+      { childSession: parsed },
+      { agentId: parsed.agentId, nodeId: parsed.agentId },
+    );
+    return parsed;
+  }
+
+  childSession(agentId: string): ChildSessionSummary | undefined {
+    return [...this.childSessionsValue.values()].find((child) => child.agentId === agentId);
+  }
+
+  setParentCoordination(params: {
+    phase: ParentCoordinationPhase;
+    activeChildIds?: string[];
+    waitingChildIds?: string[];
+    summary?: string;
+    lastResumedAt?: number;
+  }): ParentCoordinationState {
+    const next = ParentCoordinationStateSchema.parse({
+      phase: params.phase,
+      activeChildIds: params.activeChildIds ?? this.parentCoordinationValue?.activeChildIds ?? [],
+      waitingChildIds: params.waitingChildIds ?? this.parentCoordinationValue?.waitingChildIds ?? [],
+      summary: params.summary ?? this.parentCoordinationValue?.summary,
+      lastResumedAt: params.lastResumedAt ?? this.parentCoordinationValue?.lastResumedAt,
+      updatedAt: this.params.now(),
+    });
+    this.parentCoordinationValue = next;
+    this.emit("parent_coordination.updated", { coordination: next }, { agentId: ORA_ROOT_AGENT_ID, nodeId: ORA_ROOT_AGENT_ID });
+    return next;
+  }
+
   appendArtifact(artifact: ArtifactRef): ArtifactRef {
     this.artifactsValue.push(artifact);
     return artifact;
@@ -421,9 +511,14 @@ class KernelRuntimeContext {
     const canonicalPayload = type === "plan_list.updated"
       ? planListUpdatedPayload(payload as Record<string, unknown>)
       : payload;
-    const payloadSnapshot = type === "message.delta" || type === "token.delta"
+    const basePayloadSnapshot = type === "message.delta" || type === "token.delta"
       ? this.cloneDeltaPayload(canonicalPayload)
       : this.cloneEventPayload(canonicalPayload);
+    const payloadSnapshot = this.decorateCollaborationPayload(
+      type,
+      basePayloadSnapshot,
+      typeof extra.agentId === "string" ? extra.agentId : undefined,
+    );
     const envelope = OraEventEnvelopeSchema.parse({
       id: `${this.params.runId}:evt-${this.eventsValue.length}`,
       runId: this.params.runId,
@@ -568,6 +663,8 @@ class KernelRuntimeContext {
       checkpoints: [params.checkpoint],
       events: this.events,
       agentMessages: this.agentMessages,
+      childSessions: this.childSessions,
+      parentCoordination: this.parentCoordination,
       artifacts: this.artifacts,
       activeAgents: this.activeAgents,
       queueSummary: this.queueSummary,
@@ -596,6 +693,32 @@ class KernelRuntimeContext {
     return JSON.parse(JSON.stringify(value)) as T;
   }
 
+  private decorateCollaborationPayload<T>(
+    type: OraEventEnvelope["type"],
+    payload: T,
+    agentId: string | undefined,
+  ): T {
+    if (type !== "message.delta" || !this.isCollaborationAgent(agentId)) {
+      return payload;
+    }
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+      return payload;
+    }
+    return {
+      ...(payload as Record<string, unknown>),
+      audience: "collaboration",
+      visibility: "collaboration",
+      surface: "collaboration",
+    } as T;
+  }
+
+  private isCollaborationAgent(agentId: string | undefined): boolean {
+    if (!agentId || agentId === ORA_ROOT_AGENT_ID) {
+      return false;
+    }
+    return this.childSession(agentId) !== undefined;
+  }
+
   private addQueueTopic(topic: string): void {
     if (!this.queueSummaryValue.topics.includes(topic)) {
       this.queueSummaryValue = {
@@ -604,6 +727,37 @@ class KernelRuntimeContext {
       };
     }
   }
+}
+
+export function deriveParentCoordinationUpdate(params: {
+  children: ReadonlyArray<Pick<ChildSessionSummary, "id" | "agentId" | "status">>;
+  barrierByAgentId: ReadonlyMap<string, "required" | "independent">;
+  lastChildStatus: ChildSessionSummary["status"];
+}): Pick<ParentCoordinationState, "phase" | "activeChildIds" | "waitingChildIds" | "summary"> {
+  const activeChildren = params.children
+    .filter((child) => child.status === "queued" || child.status === "running");
+  const activeChildIds = activeChildren.map((child) => child.id);
+  const waitingChildIds = activeChildren
+    .filter((child) => params.barrierByAgentId.get(child.agentId) === "required")
+    .map((child) => child.id);
+  const phase = waitingChildIds.length > 0
+    ? "waiting_on_required_children"
+    : activeChildIds.length > 0
+      ? "parallel_independent_work"
+      : params.lastChildStatus === "succeeded" || params.lastChildStatus === "failed" || params.lastChildStatus === "cancelled"
+        ? "resuming_with_child_summaries"
+        : "dispatching";
+
+  return {
+    phase,
+    activeChildIds,
+    waitingChildIds,
+    summary: waitingChildIds.length > 0
+      ? `正在等待 ${waitingChildIds.length} 个必需子任务`
+      : activeChildIds.length > 0
+        ? `正在并行处理 ${activeChildIds.length} 个后台子任务`
+        : "子 Agent 摘要已回流，父 Agent 恢复整合。",
+  };
 }
 
 function cloneRecord(value: unknown): Record<string, unknown> {
@@ -876,6 +1030,12 @@ export async function executeRuntimeKernel(
     profilesById.set(ORA_ROOT_AGENT_ID, rootProfile);
   }
   const agentLabel = (agentId: string): string => profilesById.get(agentId)?.label ?? agentId;
+  kernelRuntimeContext.setParentCoordination({
+    phase: "planning",
+    activeChildIds: [],
+    waitingChildIds: [],
+    summary: "父 Agent 正在规划与编排。",
+  });
   const suspendedFrameDispatch = options.resumeState ? classifyContinuationDispatch(options.resumeState) : undefined;
   if (suspendedFrameDispatch?.kind === "diagnostic_failure") {
     throw Object.assign(
@@ -1053,24 +1213,17 @@ export async function executeRuntimeKernel(
     // Record causal decision when plan has pending items
     const hasPending = items.some((s) => s.status !== "done" && s.status !== "failed" && s.status !== "skipped");
     if (hasPending) {
+      const inheritedTaskState = latestCausalTaskState(kernelRuntimeContext.events);
       emit("causal.decision.recorded", CausalDecisionRecordSchema.parse({
         decisionId: `${kernelRuntimeContext.runId}:plan:${Date.now()}`,
         source: "runtime_followup",
         decisionKind: "plan_updated",
-        taskState: {
-          surfaceRequest: "",
-          latentGoalHypotheses: [],
-          selectedLatentGoal: "",
+        taskState: mergeCausalTaskState(inheritedTaskState, {
+          surfaceRequest: input.prompt,
           keyUncertainties: ["上下文不足"],
-          constraints: [],
-          candidateInterventions: [],
           chosenIntervention: "plan",
-          alternativeInterventions: [],
-          counterfactualRiskIfSkipped: "",
-          expectedOutcomeLift: "",
           confidence: 0.5,
-          stopCondition: "",
-        },
+        }),
         policyDecision: {
           goalUncertainty: 0.5,
           factUncertainty: 0.2,
@@ -1109,6 +1262,7 @@ export async function executeRuntimeKernel(
       appendToolCall({ ...record, status });
     },
     appendToolCall,
+    currentCausalTaskState: () => latestCausalTaskState(kernelRuntimeContext.events),
     onApprovalAutoResolved: options.onApprovalAutoResolved,
   });
 
@@ -1398,9 +1552,6 @@ export async function executeRuntimeKernel(
   const workspaceContext = [
     workspaceSystemPrompt(input.context?.projectWorkspace),
     channelProjectGuidancePrompt(input.context, input.context?.projectWorkspace),
-    attachedProjectFilesSystemPrompt(input.context?.attachedProjectFiles),
-    attachedLocalFilesSystemPrompt(input.context?.attachedLocalFiles),
-    attachedImagesSystemPrompt(input.context?.attachedImages),
   ].filter(Boolean).join("\n\n") || undefined;
 
   const projectInstructionsContext = ((): string | undefined => {
@@ -1418,13 +1569,23 @@ export async function executeRuntimeKernel(
     }
   })();
 
-  const clarificationContext = userClarificationContextPrompt(input.context);
+  const turnLocalMetadataGuidance = turnLocalMetadataGuidancePrompt();
   const temporalContext = temporalContextPrompt({
     createdAt: input.createdAt,
     context: input.context,
     now,
   });
+  const turnLocalMetadata = turnLocalMetadataPrompt({
+    createdAt: input.createdAt,
+    context: input.context,
+    now,
+  });
   const userLanguageContext = userFacingLanguagePrompt(input.prompt);
+  const modelConversationMessages = withCurrentTurnLocalMetadata(
+    options.conversationMessages,
+    input.prompt,
+    turnLocalMetadata,
+  );
   const memoryContext =
     typeof config.metadata.memoryPromptOverlay === "string"
       ? config.metadata.memoryPromptOverlay
@@ -1513,8 +1674,8 @@ export async function executeRuntimeKernel(
       stageSystem: [userLanguageContext, system].join("\n\n"),
       workspaceContext,
       projectInstructionsContext,
+      turnLocalMetadataGuidance,
       temporalContext,
-      clarificationContext,
       memoryContext: mergedMemoryContext,
       taskIntentContext,
       availableSkills,
@@ -1528,12 +1689,13 @@ export async function executeRuntimeKernel(
   kernelRuntimeContext.setNodeLoopDepsFactory(() => ({
     config,
     modeSpec,
-    conversationMessages: options.conversationMessages,
+    conversationMessages: modelConversationMessages,
     streamProvider: options.streamProvider,
     signal: options.signal,
     inputPrompt: input.prompt,
     turnIndex: options.turnIndex,
     now,
+    events: () => kernelRuntimeContext.events,
     eventsLength: () => kernelRuntimeContext.eventCount(),
     clarificationCount: () => kernelRuntimeContext.events.filter(
       (e) => e.type === "clarification.required",
@@ -1562,6 +1724,7 @@ export async function executeRuntimeKernel(
     emitNodeRuntimeState,
     emitRecoveryDecision,
     emitRejectedFinalToolIntent,
+    extractCausalTaskState: (params: ExtractCausalTaskStateParams) => extractCausalTaskState(params, { invokeProvider: invokeRunProvider }),
     clarificationAnswer,
     ensureClarification,
     ensureClarifications,
@@ -1710,7 +1873,7 @@ export async function executeRuntimeKernel(
           agentId: params.agentId,
           nodeId: params.planItemId ?? params.agentId,
           title: params.title,
-          prompt: effectivePrompt,
+          prompt: promptWithTurnLocalMetadata(effectivePrompt, turnLocalMetadata),
           system: runtimePromptContext.system,
           providerCache: runtimePromptContext.stablePrefix
             ? { stableSystemPrefix: runtimePromptContext.stablePrefix }
@@ -1961,11 +2124,64 @@ export async function executeRuntimeKernel(
   let lastCallAgentPrompt = "";
   let lastCallAgentSystem = "";
   let lastCallAgentId = "";
+  const childCoordinationBarrier = new Map<string, "required" | "independent">();
+
+  const updateCollaborationState = (params: {
+    agentId: string;
+    label: string;
+    sessionClass: ChildSessionClass;
+    status: ChildSessionSummary["status"];
+    coordinationBarrier?: "required" | "independent";
+    summary?: string;
+    lastMessage?: string;
+    artifactIds?: string[];
+  }) => {
+    const current = kernelRuntimeContext.childSession(params.agentId);
+    if (params.coordinationBarrier) {
+      childCoordinationBarrier.set(params.agentId, params.coordinationBarrier);
+    }
+    const startedAt = current?.startedAt ?? now();
+    const next = kernelRuntimeContext.updateChildSession({
+      id: `${runId}:${params.agentId}`,
+      agentId: params.agentId,
+      label: params.label,
+      sessionClass: params.sessionClass,
+      status: params.status,
+      summary: params.summary ?? current?.summary,
+      lastMessage: params.lastMessage ?? current?.lastMessage,
+      artifactIds: params.artifactIds ?? current?.artifactIds ?? [],
+      replayRef: {
+        kind: "event_range",
+        runId,
+        fromSeq: current?.replayRef?.fromSeq ?? Math.max(0, kernelRuntimeContext.latestEventSeq()),
+        toSeq: kernelRuntimeContext.latestEventSeq(),
+      },
+      sourceRunId: runId,
+      startedAt,
+      updatedAt: now(),
+      completedAt:
+        params.status === "succeeded" || params.status === "failed" || params.status === "cancelled"
+          ? now()
+          : undefined,
+    });
+    const coordination = deriveParentCoordinationUpdate({
+      children: kernelRuntimeContext.childSessions,
+      barrierByAgentId: childCoordinationBarrier,
+      lastChildStatus: params.status,
+    });
+    kernelRuntimeContext.setParentCoordination({
+      ...coordination,
+      ...(coordination.phase === "resuming_with_child_summaries" ? { lastResumedAt: now() } : {}),
+    });
+    return next;
+  };
 
   type AsyncSpawnEntry = {
     agentId: string;
+    effectiveAgentId: string;
     description: string;
     prompt: string;
+    sessionClass: ChildSessionClass;
     inheritContext?: boolean;
     customSystemPrompt?: string;
     customToolIds?: string[];
@@ -2000,7 +2216,26 @@ export async function executeRuntimeKernel(
     }
 
     if (runInBackground) {
-      asyncSpawnQueue.push({ agentId, description, prompt, inheritContext, customSystemPrompt, customToolIds });
+      const queuedAgentId = agentType ?? `ora-sub-async-${subAgentCounter + 1}`;
+      const sessionClass = agentType ? "mode_subagent" : "temporary_spawn";
+      asyncSpawnQueue.push({
+        agentId,
+        effectiveAgentId: queuedAgentId,
+        description,
+        prompt,
+        sessionClass,
+        inheritContext,
+        customSystemPrompt,
+        customToolIds,
+      });
+      updateCollaborationState({
+        agentId: queuedAgentId,
+        label: description || agentLabel(queuedAgentId),
+        sessionClass,
+        status: "queued",
+        coordinationBarrier: "independent",
+        summary: "已进入后台协作队列。",
+      });
       return { status: "async_launched", agent_id: agentId, description };
     }
 
@@ -2032,6 +2267,14 @@ export async function executeRuntimeKernel(
         profilesById.set(effectiveAgentId, { ...existing, toolIds: customToolIds });
       }
     }
+    updateCollaborationState({
+      agentId: effectiveAgentId,
+      label: description || agentLabel(effectiveAgentId),
+      sessionClass: agentType ? "mode_subagent" : "temporary_spawn",
+      status: "running",
+      coordinationBarrier: "required",
+      summary: "子 Agent 正在执行任务。",
+    });
 
     spawnDepth += 1;
     if (spawnDepth > MAX_SPAWN_DEPTH) {
@@ -2075,13 +2318,32 @@ export async function executeRuntimeKernel(
         if (isAgentDegradedError(caught)) {
           result = caught.degradedOutput;
         } else {
+          updateCollaborationState({
+            agentId: effectiveAgentId,
+            label: description || agentLabel(effectiveAgentId),
+            sessionClass: agentType ? "mode_subagent" : "temporary_spawn",
+            status: "failed",
+            coordinationBarrier: "required",
+            summary: caught instanceof Error ? caught.message : String(caught),
+            lastMessage: caught instanceof Error ? caught.message : String(caught),
+          });
           throw caught;
         }
       }
       if (wasAlreadyActive) {
         kernelRuntimeContext.activateAgent(effectiveAgentId);
       }
-      return typeof result === "string" ? result : String(result ?? "");
+      const text = typeof result === "string" ? result : String(result ?? "");
+      updateCollaborationState({
+        agentId: effectiveAgentId,
+        label: description || agentLabel(effectiveAgentId),
+        sessionClass: agentType ? "mode_subagent" : "temporary_spawn",
+        status: "succeeded",
+        coordinationBarrier: "required",
+        summary: text.trim() || "子 Agent 已完成。",
+        lastMessage: text.trim() || undefined,
+      });
+      return text;
     } finally {
       spawnDepth -= 1;
       isNestedAgentSpawn = prevNestedSpawn;
@@ -2096,10 +2358,10 @@ export async function executeRuntimeKernel(
     try {
       while (asyncSpawnQueue.length > 0) {
         const entry = asyncSpawnQueue.shift()!;
-        subAgentCounter += 1;
-        const effectiveAgentId = entry.agentId !== ORA_ROOT_AGENT_ID
-          ? entry.agentId
-          : `ora-sub-async-${subAgentCounter}`;
+        if (entry.effectiveAgentId.startsWith("ora-sub-async-")) {
+          subAgentCounter += 1;
+        }
+        const effectiveAgentId = entry.effectiveAgentId;
         if (!profilesById.has(effectiveAgentId)) {
           const rootProfile = profilesById.get(ORA_ROOT_AGENT_ID);
           if (rootProfile) {
@@ -2118,6 +2380,14 @@ export async function executeRuntimeKernel(
           }
         }
         try {
+          updateCollaborationState({
+            agentId: effectiveAgentId,
+            label: entry.description || agentLabel(effectiveAgentId),
+            sessionClass: entry.sessionClass,
+            status: "running",
+            coordinationBarrier: "independent",
+            summary: "后台子 Agent 正在执行任务。",
+          });
           const runtimeCtx = withAgentRuntimeContext(entry.customSystemPrompt ?? "", { agentId: effectiveAgentId });
           let effectiveAsyncPrompt = entry.prompt;
           if (entry.inheritContext && lastCallAgentPrompt) {
@@ -2140,11 +2410,39 @@ export async function executeRuntimeKernel(
           });
           const text = typeof result === "string" ? result : String(result ?? "");
           kernelRuntimeContext.enqueueAsyncAgentResult(effectiveAgentId, text);
+          updateCollaborationState({
+            agentId: effectiveAgentId,
+            label: entry.description || agentLabel(effectiveAgentId),
+            sessionClass: entry.sessionClass,
+            status: "succeeded",
+            coordinationBarrier: "independent",
+            summary: text.trim() || "后台子 Agent 已完成。",
+            lastMessage: text.trim() || undefined,
+          });
         } catch (err) {
           if (isAgentDegradedError(err)) {
             kernelRuntimeContext.enqueueAsyncAgentResult(effectiveAgentId, err.degradedOutput);
+            updateCollaborationState({
+              agentId: effectiveAgentId,
+              label: entry.description || agentLabel(effectiveAgentId),
+              sessionClass: entry.sessionClass,
+              status: "succeeded",
+              coordinationBarrier: "independent",
+              summary: err.degradedOutput,
+              lastMessage: err.degradedOutput,
+            });
           } else {
-            kernelRuntimeContext.enqueueAsyncAgentResult(effectiveAgentId, `Error: ${err instanceof Error ? err.message : String(err)}`);
+            const message = `Error: ${err instanceof Error ? err.message : String(err)}`;
+            kernelRuntimeContext.enqueueAsyncAgentResult(effectiveAgentId, message);
+            updateCollaborationState({
+              agentId: effectiveAgentId,
+              label: entry.description || agentLabel(effectiveAgentId),
+              sessionClass: entry.sessionClass,
+              status: "failed",
+              coordinationBarrier: "independent",
+              summary: message,
+              lastMessage: message,
+            });
           }
         }
       }
@@ -2214,11 +2512,11 @@ export async function executeRuntimeKernel(
       agentId,
       nodeId,
       title,
-      prompt: [
+      prompt: promptWithTurnLocalMetadata([
         "Continue the suspended runtime frame.",
         "Use the conversation follow-up and runtime state to complete only the remaining work.",
         "If the plan list is incomplete, update it with plan.update before finishing.",
-      ].join("\n"),
+      ].join("\n"), turnLocalMetadata),
       system: runtimePromptContext.system,
       providerCache: runtimePromptContext.stablePrefix
         ? { stableSystemPrefix: runtimePromptContext.stablePrefix }
@@ -2852,6 +3150,7 @@ export async function executeRuntimeKernel(
     preflight: {
       clarificationAnswer,
       requestIntentClarificationQuestion,
+      extractCausalTaskState: (params: ExtractCausalTaskStateParams) => extractCausalTaskState(params, { invokeProvider: invokeRunProvider }),
       ensureClarification,
       rootTopology,
       emitOraObservation,

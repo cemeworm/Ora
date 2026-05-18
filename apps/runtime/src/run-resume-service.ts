@@ -56,6 +56,7 @@ export interface RunResumePreparation {
   patch: ParsedResumePatch;
   clarificationPatch: Record<string, unknown>;
   approvedActionIds: string[];
+  planDecisionResolutions: ParsedResumePatch["planDecisionResolutions"];
   approvedActions: ApprovedResumeAction[];
   gateResolutions: RuntimeGateResolution[];
   hasKernelWork: boolean;
@@ -81,13 +82,14 @@ export class RunResumeService {
     const parsed = RunResumeParamsSchema.parse(params);
     const snapshot = this.deps.getRunOrThrow(parsed.runId);
     const patch = parseResumePatch(parsed.patch);
-    const hasKernelWork = hasKernelResumeWork(snapshot);
+    const hasKernelWork = hasKernelResumeWork(snapshot) || patch.planDecisionResolutions.length > 0;
     return {
       parsed,
       snapshot,
       patch,
       clarificationPatch: patch.clarificationPatch,
       approvedActionIds: patch.approvedActionIds,
+      planDecisionResolutions: patch.planDecisionResolutions,
       approvedActions: approvedActionsForResume(snapshot, patch.approvedActionIds),
       gateResolutions: this.gateService.resumeResolutions({
         snapshot,
@@ -98,6 +100,7 @@ export class RunResumeService {
       strategy: this.classifyStrategy({
         snapshot,
         approvedActionIds: patch.approvedActionIds,
+        planDecisionResolutions: patch.planDecisionResolutions,
         hasKernelWork,
       }),
     };
@@ -106,9 +109,12 @@ export class RunResumeService {
   classifyStrategy(params: {
     snapshot: StateSnapshot;
     approvedActionIds: string[];
+    planDecisionResolutions?: ParsedResumePatch["planDecisionResolutions"];
     hasKernelWork?: boolean;
   }): RunResumeStrategy {
-    const hasKernelWork = params.hasKernelWork ?? hasKernelResumeWork(params.snapshot);
+    const hasKernelWork = params.hasKernelWork
+      ?? ((hasKernelResumeWork(params.snapshot))
+        || (params.planDecisionResolutions?.length ?? 0) > 0);
     const continuationActions = approvedToolContinuationActions(params.snapshot, params.approvedActionIds);
     if (continuationActions.length > 0) {
       return {
