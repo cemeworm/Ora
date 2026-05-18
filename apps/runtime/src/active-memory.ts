@@ -24,11 +24,20 @@ export interface ActiveMemoryRequest {
   nowIso?: string;
   maxCandidates?: number;
   maxChars?: number;
+  scenarioCandidates?: Array<{
+    id: string;
+    kind: "scenario";
+    category: string;
+    content: string;
+    confidence: number;
+    sourceRunIds: string[];
+  }>;
 }
 
 const DEFAULT_MAX_CANDIDATES = 12;
 const DEFAULT_MAX_CHARS = 1800;
 const MAX_SELECTED_CANDIDATES = 6;
+const MAX_SCENARIO_CARDS = 2;
 const MAX_CARD_CONTENT_CHARS = 420;
 const ADMISSION_SCORE_THRESHOLD = 0.55;
 const ADMISSION_CONFIDENCE_THRESHOLD = 0.45;
@@ -82,7 +91,19 @@ export function retrieveActiveMemoryCandidates(request: ActiveMemoryRequest): Ac
           scope: { ...candidate.scope, projectId: request.projectId },
         }))
     : [];
-  return [...globalCandidates, ...projectCandidates]
+  const scenarioCandidates = (request.scenarioCandidates ?? []).map((sc): ActiveMemoryCandidate => ({
+    id: sc.id,
+    kind: "scenario",
+    scope: { user: true, projectId: request.projectId },
+    category: sc.category,
+    content: truncate(sc.content, MAX_CARD_CONTENT_CHARS),
+    confidence: sc.confidence,
+    sourceRunId: sc.sourceRunIds[0],
+    freshness: "fresh" as const,
+    score: 0,
+    scoreReasons: [],
+  }));
+  return [...globalCandidates, ...projectCandidates, ...scenarioCandidates]
     .filter((candidate) => candidateMatchesScope(candidate, request))
     .map((candidate) => scoreCandidate(candidate, queryTokens, explicitMemoryIntent))
     .filter((candidate) => candidate.score > 0)
@@ -141,12 +162,11 @@ export function admitActiveMemoryCandidates(
   const warnings = [...new Set(candidates
     .filter((candidate) => candidate.freshness === "stale")
     .map((candidate) => `Candidate ${candidate.id} may be stale.`))];
-  const selected = candidates
-    .filter((candidate) =>
-      candidate.confidence >= ADMISSION_CONFIDENCE_THRESHOLD
-      && candidate.score >= ADMISSION_SCORE_THRESHOLD
-    )
-    .slice(0, MAX_SELECTED_CANDIDATES);
+  const qualifying = candidates.filter((candidate) =>
+    candidate.confidence >= ADMISSION_CONFIDENCE_THRESHOLD
+    && candidate.score >= ADMISSION_SCORE_THRESHOLD
+  );
+  const selected = capScenarioCards(qualifying, MAX_SELECTED_CANDIDATES, MAX_SCENARIO_CARDS);
   const cards = boundCardsByChars(selected.map((candidate) => ({
     id: candidate.id,
     kind: candidate.kind,
@@ -330,6 +350,24 @@ function candidateMatchesScope(candidate: ActiveMemoryCandidate, request: Active
     return false;
   }
   return true;
+}
+
+function capScenarioCards(
+  candidates: ActiveMemoryCandidate[],
+  maxTotal: number,
+  maxScenario: number,
+): ActiveMemoryCandidate[] {
+  const selected: ActiveMemoryCandidate[] = [];
+  let scenarioCount = 0;
+  for (const candidate of candidates) {
+    if (selected.length >= maxTotal) break;
+    if (candidate.kind === "scenario") {
+      if (scenarioCount >= maxScenario) continue;
+      scenarioCount++;
+    }
+    selected.push(candidate);
+  }
+  return selected;
 }
 
 function boundCardsByChars<T extends { content: string }>(cards: T[], maxChars: number): T[] {

@@ -4,6 +4,8 @@ import type { ShortTermMemoryJournal } from "./memory-journal.js";
 import type { PromotionPreview } from "./memory-dreaming.js";
 import type { MemoryWikiStore } from "./memory-wiki.js";
 import type { LongTermMemoryProfile } from "@cemeworm/shared";
+import type { TaskMemoryStore } from "./task-memory.js";
+import type { ScenarioStore } from "./memory-scenarios.js";
 
 // === Memory Health Snapshot ===
 
@@ -33,6 +35,18 @@ export interface MemoryHealthSnapshot {
     claimCount: number;
     contradictionCount: number;
     pageIds: string[];
+  };
+  taskMemory: {
+    activeRunCount: number;
+    totalNodeCount: number;
+    totalEvidenceCount: number;
+    runIds: string[];
+  };
+  trace: {
+    fullyTraceable: number;
+    partiallyTraceable: number;
+    untraceable: number;
+    totalItems: number;
   };
 }
 
@@ -69,14 +83,68 @@ export interface CandidateScoreEntry {
 
 // === Health Aggregation ===
 
+function computeTraceSummary(
+  profile: LongTermMemoryProfile,
+  wikiPages: WikiPage[],
+  taskMemory?: TaskMemoryStore,
+  scenarioStore?: ScenarioStore,
+): MemoryHealthSnapshot["trace"] {
+  let fully = 0;
+  let partial = 0;
+  let none = 0;
+
+  // Facts: fully traceable if sourceRunId present
+  for (const fact of profile.facts) {
+    if (fact.sourceRunId) fully++;
+    else none++;
+  }
+
+  // Wiki claims: traceable if sourceFactIds non-empty
+  for (const page of wikiPages) {
+    for (const claim of page.claims) {
+      if (claim.sourceFactIds.length > 0 && claim.sourceRunIds.length > 0) fully++;
+      else if (claim.sourceFactIds.length > 0) partial++;
+      else none++;
+    }
+  }
+
+  // Task nodes: traceable if evidenceRefIds non-empty
+  if (taskMemory) {
+    for (const runId of taskMemory.activeRunIds()) {
+      for (const node of taskMemory.getNodes(runId)) {
+        if (node.evidenceRefIds.length > 0) fully++;
+        else partial++;
+      }
+    }
+  }
+
+  // Scenarios: traceable if sourceFactIds non-empty
+  if (scenarioStore) {
+    for (const scenario of scenarioStore.list()) {
+      if (scenario.sourceFactIds.length > 0 && scenario.sourceRunIds.length > 0) fully++;
+      else if (scenario.sourceFactIds.length > 0) partial++;
+      else none++;
+    }
+  }
+
+  return {
+    fullyTraceable: fully,
+    partiallyTraceable: partial,
+    untraceable: none,
+    totalItems: fully + partial + none,
+  };
+}
+
 export function buildMemoryHealthSnapshot(params: {
   profile: LongTermMemoryProfile;
   index?: MemoryIndexStore;
   journal?: ShortTermMemoryJournal;
   preview?: PromotionPreview;
   wiki?: MemoryWikiStore;
+  taskMemory?: TaskMemoryStore;
+  scenarioStore?: ScenarioStore;
 }): MemoryHealthSnapshot {
-  const { profile, index, journal, preview, wiki } = params;
+  const { profile, index, journal, preview, wiki, taskMemory, scenarioStore } = params;
 
   const typeCounts: Record<string, number> = {};
   if (journal) {
@@ -121,6 +189,22 @@ export function buildMemoryHealthSnapshot(params: {
       contradictionCount: wikiPages.reduce((sum, p) => sum + p.contradictions.length, 0),
       pageIds: wikiPages.map((p) => p.id),
     },
+    taskMemory: (() => {
+      const runIds = taskMemory?.activeRunIds() ?? [];
+      let totalNodeCount = 0;
+      let totalEvidenceCount = 0;
+      for (const runId of runIds) {
+        totalNodeCount += taskMemory!.nodeCount(runId);
+        totalEvidenceCount += taskMemory!.evidenceCount(runId);
+      }
+      return {
+        activeRunCount: runIds.length,
+        totalNodeCount,
+        totalEvidenceCount,
+        runIds,
+      };
+    })(),
+    trace: computeTraceSummary(profile, wikiPages, taskMemory, scenarioStore),
   };
 }
 
