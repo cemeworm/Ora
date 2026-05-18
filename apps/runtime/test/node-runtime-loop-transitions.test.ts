@@ -741,6 +741,15 @@ describe("node runtime loop transition contract", () => {
       valid: true,
     });
 
+    expect(nodeLoopTransitionResult("forced_final", {
+      from: "running_model",
+      to: "finalizing",
+    })).toEqual({
+      kind: "forced_final",
+      transition: { from: "running_model", to: "finalizing" },
+      valid: true,
+    });
+
     expect(nodeLoopTransitionResult("boundary_failure", {
       from: "tool_requested",
       to: "failed",

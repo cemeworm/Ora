@@ -24,18 +24,21 @@ export class ProviderFetchError extends Error {
   }
 }
 
+const DEFAULT_PROVIDER_FETCH_TIMEOUT_MS = 3 * 60 * 1000; // 3 minutes
+
 export async function fetchProviderEndpoint(
   fetchImpl: typeof fetch,
   context: ProviderFetchContext,
   init: RequestInit,
 ): Promise<Response> {
-  const controller = context.timeoutMs ? new AbortController() : undefined;
+  const effectiveTimeoutMs = context.timeoutMs ?? DEFAULT_PROVIDER_FETCH_TIMEOUT_MS;
+  const controller = effectiveTimeoutMs ? new AbortController() : undefined;
   let timeout: ReturnType<typeof setTimeout> | undefined;
   const signal = mergeAbortSignals(init.signal, context.signal, controller?.signal);
-  if (controller && context.timeoutMs) {
+  if (controller && effectiveTimeoutMs) {
     timeout = setTimeout(() => {
-      controller.abort(new Error(`Provider request timed out after ${context.timeoutMs}ms.`));
-    }, context.timeoutMs);
+      controller.abort(new Error(`Provider request timed out after ${effectiveTimeoutMs}ms.`));
+    }, effectiveTimeoutMs);
   }
   try {
     return await fetchImpl(context.endpoint, {

@@ -278,7 +278,7 @@ export class ActionLedger {
   private readonly records: ActionRecord[];
 
   constructor(private readonly runId: string, seedRecords: ActionRecord[] = []) {
-    this.records = seedRecords.map((record) => ActionRecordSchema.parse(record));
+    this.records = dedupeActionRecords(seedRecords);
   }
 
   propose(params: {
@@ -332,4 +332,13 @@ export class ActionLedger {
   list(): ActionRecord[] {
     return this.records;
   }
+}
+
+function dedupeActionRecords(seedRecords: ActionRecord[]): ActionRecord[] {
+  const deduped = new Map<string, ActionRecord>();
+  for (const record of seedRecords) {
+    const parsed = ActionRecordSchema.parse(record);
+    deduped.set(parsed.id, parsed);
+  }
+  return [...deduped.values()];
 }

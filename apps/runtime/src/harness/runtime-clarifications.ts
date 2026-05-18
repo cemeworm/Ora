@@ -161,6 +161,9 @@ export async function ensureRuntimeClarification(
   deps.pendingClarifications.push(clarification);
   // Record causal decision for clarification gate
   deps.emit("causal.decision.recorded", CausalDecisionRecordSchema.parse({
+    decisionId: `${params.nodeId}:clarification:${clarification.id}`,
+    source: "runtime_followup",
+    decisionKind: "clarification_triggered",
     taskState: {
       surfaceRequest: params.question,
       latentGoalHypotheses: [],
@@ -191,6 +194,7 @@ export async function ensureRuntimeClarification(
     recordedAt: deps.now(),
     decisionContext: {
       phase: "clarification_triggered",
+      clarificationId: clarification.id,
       nodeId: params.nodeId,
       agentId: params.nodeId,
     },
@@ -279,6 +283,9 @@ export async function ensureRuntimeClarifications(
   // Record one causal decision for the batch clarification gate
   const firstClarification = newClarifications[0]!;
   deps.emit("causal.decision.recorded", CausalDecisionRecordSchema.parse({
+    decisionId: `${firstClarification.nodeId}:clarification:${firstClarification.id}`,
+    source: "runtime_followup",
+    decisionKind: "clarification_triggered",
     taskState: {
       surfaceRequest: firstClarification.question,
       latentGoalHypotheses: [],
@@ -309,6 +316,7 @@ export async function ensureRuntimeClarifications(
     recordedAt: deps.now(),
     decisionContext: {
       phase: "clarification_triggered",
+      clarificationId: firstClarification.id,
       nodeId: firstClarification.nodeId,
       agentId: firstClarification.nodeId,
     },

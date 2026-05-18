@@ -3,7 +3,7 @@ import type { PatternExecutionContext, PatternExecutionResult } from "./executio
 import type { ModeExecutionInput } from "./mode-driver-registry.js";
 import { asText, dispatchNodeTemplate, initializeQueueSummary, interpolate, modeUsesSingleOwner, nodeCustomAgentId, nodeInstructions, nodeSystemPrompt, primaryOwnerAgentId, promptTemplate, publicAgentMessageContent, runtimeFallbackPrompt, titleForNode } from "./driver-utils.js";
 import { runGenericModeNode, runModeLayer } from "./generic-node-executor.js";
-import { type ExecutionBag, type OrchestratorSubagentBag, DELEGATION_PLAN_INSTRUCTION, parseDelegationPlan, parseReviewGateVerdict, type DelegationPlan, writeBag } from "./mode-driver-helpers.js";
+import { containsCompleteProposedPlan, finishPlanModeAfterProposedPlan, type ExecutionBag, type OrchestratorSubagentBag, DELEGATION_PLAN_INSTRUCTION, parseDelegationPlan, parseReviewGateVerdict, type DelegationPlan, writeBag } from "./mode-driver-helpers.js";
 
 function stageTranscriptLine(entry: { speakerLabel: string; content: unknown }): string {
   return `${entry.speakerLabel}: ${asText(entry.content).trim()}`;
@@ -94,9 +94,10 @@ async function executePlainOrchestratorNode(
 }
 
 async function executeStagedTranscriptMode(input: ModeExecutionInput): Promise<PatternExecutionResult> {
-  const { context, prompt, modeSpec } = input;
+  const { context, prompt, modeSpec, config } = input;
   const nodes = orderedEnabledModeNodes(modeSpec);
   const totalActiveNodes = nodes.length;
+  const planIntent = config.metadata.taskIntent === "plan";
   initializeQueueSummary(context, modeSpec.family, totalActiveNodes);
   const stages = modeSpec.stages ?? [];
   const stagesByNode = new Map<string, ModeStageSpec[]>();
@@ -239,6 +240,22 @@ async function executeStagedTranscriptMode(input: ModeExecutionInput): Promise<P
 
   for (const node of nodes) {
     completedNodes = await runGenericModeNode(context, modeSpec, node, totalActiveNodes, completedNodes, () => executeStagedNode(node), bag);
+
+    if (planIntent) {
+      const planOutput = stageOutputs.at(-1)?.content ?? asText(bag[node.id] ?? bag[node.template]);
+      if (containsCompleteProposedPlan(planOutput)) {
+        finishPlanModeAfterProposedPlan(context, nodes, nodes.findIndex((candidate) => candidate.id === node.id), totalActiveNodes);
+        return {
+          output: {
+            text: planOutput,
+            pattern: modeSpec.family,
+            modeId: modeSpec.id,
+            stages: stageOutputs,
+            stoppedAfterProposedPlan: true,
+          },
+        };
+      }
+    }
 
     if (gatedReviewVerdict) {
       if (gatedReviewVerdict.verdict.verdict === "needs_fix") {

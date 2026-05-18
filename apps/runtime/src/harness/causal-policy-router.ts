@@ -141,6 +141,14 @@ export function routeIntervention(input: PolicyRouterInput): PolicyRouterOutput 
   const { action, goalUncertainty, factUncertainty, contextUncertainty, actionRisk } = recommendAction(input);
   const userCost = estimateUserCost(action, input.clarificationCount);
   const reversibility = determineReversibility(input.proposedToolRisk);
+  const recordedAt = Date.now();
+  const phase = input.decisionContext?.phase;
+  const decisionId = [
+    input.decisionContext?.replyMessageId ?? "decision",
+    phase ?? "decision",
+    input.decisionContext?.toolId ?? input.proposedToolId ?? "none",
+    String(recordedAt),
+  ].join(":");
 
   const policyDecision: InterventionPolicyDecision = {
     goalUncertainty,
@@ -175,11 +183,20 @@ export function routeIntervention(input: PolicyRouterInput): PolicyRouterOutput 
   const alternativeInterventions = computeAlternativeInterventions(action, input);
 
   const decisionRecord: CausalDecisionRecord = {
+    decisionId,
+    source: "router_primary",
+    decisionKind:
+      phase === "run_start" ||
+      phase === "clarification_resume" ||
+      phase === "tool_request" ||
+      phase === "completion"
+        ? phase
+        : "decision",
     taskState,
     policyDecision,
     chosenIntervention: action,
     alternativeInterventions,
-    recordedAt: Date.now(),
+    recordedAt,
     decisionContext: input.decisionContext,
   };
 

@@ -143,6 +143,9 @@ export async function resolveRuntimeActionApproval({
     }
     // Record causal decision for approval gate
     deps.emit("causal.decision.recorded", CausalDecisionRecordSchema.parse({
+      decisionId: `${context.agentId}:approval:${action.id}`,
+      source: "runtime_followup",
+      decisionKind: "approval_triggered",
       taskState: {
         surfaceRequest: action.type,
         latentGoalHypotheses: [],
@@ -173,6 +176,8 @@ export async function resolveRuntimeActionApproval({
       recordedAt: Date.now(),
       decisionContext: {
         phase: "approval_triggered",
+        actionId: action.id,
+        toolCallId: toolCallRecord?.id,
         nodeId: context.nodeId,
         agentId: context.agentId,
         toolId: action.type,

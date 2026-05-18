@@ -18,6 +18,63 @@ function executor(rootPath: string): RuntimeToolExecutor {
 }
 
 describe("runtime file tools", () => {
+  it("resolves workspace package aliases from node_modules for read-only tools", async () => {
+    const rootPath = tempWorkspace();
+    fs.writeFileSync(path.join(rootPath, "pnpm-workspace.yaml"), "packages:\n  - packages/*\n", "utf8");
+    fs.mkdirSync(path.join(rootPath, "packages", "shared", "src"), { recursive: true });
+    fs.writeFileSync(
+      path.join(rootPath, "packages", "shared", "package.json"),
+      JSON.stringify({ name: "@cemeworm/shared" }, null, 2),
+      "utf8",
+    );
+    fs.writeFileSync(
+      path.join(rootPath, "packages", "shared", "src", "example.ts"),
+      "export const agentLabelFromSnapshot = true;\n",
+      "utf8",
+    );
+
+    const result = await executor(rootPath).executeWithMetadata({
+      tool: "file.grep",
+      args: {
+        path: "node_modules/@cemeworm/shared",
+        pattern: "agentLabelFromSnapshot",
+      },
+    });
+
+    expect(result.output).toMatchObject({
+      path: "packages/shared",
+      matches: [{
+        path: "packages/shared/src/example.ts",
+        line: 1,
+        text: "export const agentLabelFromSnapshot = true;",
+      }],
+    });
+  });
+
+  it("does not rewrite third-party node_modules paths into workspace aliases", async () => {
+    const rootPath = tempWorkspace();
+    fs.writeFileSync(path.join(rootPath, "pnpm-workspace.yaml"), "packages:\n  - packages/*\n", "utf8");
+    fs.mkdirSync(path.join(rootPath, "packages", "shared"), { recursive: true });
+    fs.writeFileSync(
+      path.join(rootPath, "packages", "shared", "package.json"),
+      JSON.stringify({ name: "@cemeworm/shared" }, null, 2),
+      "utf8",
+    );
+
+    const result = await executor(rootPath).executeWithMetadata({
+      tool: "file.list",
+      args: {
+        path: "node_modules/react",
+      },
+    });
+
+    expect(result.output).toMatchObject({
+      path: "node_modules/react",
+      entries: [],
+      missing: true,
+    });
+  });
+
   it("patches multiple exact edits against the original file and returns diff metadata", async () => {
     const rootPath = tempWorkspace();
     fs.writeFileSync(path.join(rootPath, "sample.txt"), "alpha\nbeta\ngamma\n", "utf8");

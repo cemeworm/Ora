@@ -235,6 +235,9 @@ function buildDecisionRecord(
   };
 
   return {
+    decisionId: `${snapshot.runId}:adapter:${point.timestamp}:${action}`,
+    source: "adapter_inferred",
+    decisionKind: "adapter_inferred",
     taskState,
     policyDecision,
     chosenIntervention: action,
@@ -272,6 +275,9 @@ function buildFallbackDecision(snapshot: StateSnapshot): CausalDecisionRecord {
   };
 
   return {
+    decisionId: `${snapshot.runId}:adapter:fallback`,
+    source: "adapter_inferred",
+    decisionKind: "adapter_inferred",
     taskState,
     policyDecision,
     chosenIntervention: "answer_directly",
@@ -312,5 +318,4 @@ function buildKeyUncertainties(
   if (u.actionRisk >= 0.5) items.push("行动风险较高");
   return items;
 }
-
 

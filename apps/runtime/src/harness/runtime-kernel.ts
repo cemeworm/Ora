@@ -47,6 +47,7 @@ import {
   PolicyService,
   TodoService,
 } from "../capabilities.js";
+import { TaskMemoryStore } from "../task-memory.js";
 import {
   configuredProviderId,
   invokeRunProvider,
@@ -60,6 +61,7 @@ import {
   extractRuntimeToolCallFromText,
   RuntimeToolExecutor,
   type RuntimeFileChangeMetadata,
+  type RuntimePostToolPolicyHook,
   type RuntimeToolCall,
 } from "./runtime-tool-executor.js";
 import {
@@ -145,6 +147,9 @@ import {
   rootAgentProfile,
 } from "./runtime-root-agent.js";
 
+const DEFAULT_NODE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+const DEFAULT_PROVIDER_TIMEOUT_MS = 3 * 60 * 1000; // 3 minutes
+
 export interface RuntimeKernelResult {
   snapshot: StateSnapshot;
   tools: ToolRegistry;
@@ -170,6 +175,7 @@ export interface RuntimeKernelOptions {
     clarifications?: Record<string, unknown>;
     approvedActionIds?: string[];
     approvedActions?: ApprovedResumeAction[];
+    alreadyAnnounced?: boolean;
   };
   resumeState?: Pick<StateSnapshot, "plan" | "planList" | "todos" | "actions" | "toolCalls" | "toolResults" | "continuation" | "conversation" | "topology">;
   streamProvider?: boolean;
@@ -181,6 +187,7 @@ export interface RuntimeKernelOptions {
   onApprovalAutoResolved?: (actionIds: string[]) => void;
   autoGenService?: SkillAutoGenService;
   autoGenStatePath?: string;
+  taskMemoryStore?: TaskMemoryStore;
 }
 
 class KernelRuntimeContext {
@@ -693,6 +700,55 @@ function continuationForKernelSnapshot(params: {
   };
 }
 
+function createTaskMemoryCaptureHook(
+  taskMemoryStore: TaskMemoryStore,
+  runId: string,
+  sessionId?: string,
+): RuntimePostToolPolicyHook {
+  return ({ toolId, args, result, isError, error }) => {
+    // Capture evidence from tool result
+    const resultSummary = isError
+      ? `${toolId} failed: ${truncateForEvidence(String(error ?? "unknown error"))}`
+      : result?.output !== undefined
+        ? truncateForEvidence(typeof result.output === "string" ? result.output : JSON.stringify(result.output))
+        : `${toolId} completed`;
+    const resultBytes = result?.output !== undefined
+      ? typeof result.output === "string" ? Buffer.byteLength(result.output, "utf8") : Buffer.byteLength(JSON.stringify(result.output), "utf8")
+      : 0;
+
+    const evidenceRef = taskMemoryStore.captureEvidence({
+      runId,
+      sessionId,
+      sourceKind: isError ? "error_log" : "tool_output",
+      summary: resultSummary,
+      byteLength: resultBytes,
+    });
+
+    // Capture operation node
+    const argsSummary = Object.entries(args ?? {}).slice(0, 3)
+      .map(([k, v]) => `${k}=${truncateForEvidence(String(v))}`)
+      .join(", ");
+    const label = argsSummary ? `${toolId}(${argsSummary})` : toolId;
+
+    taskMemoryStore.captureNode({
+      runId,
+      sessionId,
+      kind: isError ? "failure_recovery" : "tool_operation",
+      label,
+      summary: resultSummary,
+      status: isError ? "failed" : "done",
+      evidenceRefIds: [evidenceRef.id],
+    });
+
+    return undefined; // Don't modify result
+  };
+}
+
+function truncateForEvidence(value: string, maxLen = 140): string {
+  const single = value.replace(/\s+/g, " ").trim();
+  return single.length <= maxLen ? single : single.slice(0, maxLen - 3).trim() + "...";
+}
+
 export async function executeRuntimeKernel(
   runId: string,
   input: UserTaskInput,
@@ -726,6 +782,11 @@ export async function executeRuntimeKernel(
   const taskIntent = config.metadata.taskIntent as TaskIntent | undefined;
   const permissionProfileId = config.permissionProfileId ?? modeSpec.permissionProfileId;
   const permissionProfile = permissionProfileId ? getPermissionProfile(permissionProfileId) : undefined;
+  const taskMemoryStore = options.taskMemoryStore;
+  const postToolPolicyHooks: RuntimePostToolPolicyHook[] = [];
+  if (taskMemoryStore) {
+    postToolPolicyHooks.push(createTaskMemoryCaptureHook(taskMemoryStore, runId));
+  }
   const runtimeToolExecutor = new RuntimeToolExecutor({
     workspace: input.context?.projectWorkspace,
     toolDescriptors: tools.tools,
@@ -740,6 +801,7 @@ export async function executeRuntimeKernel(
     permissionProfile,
     toolDefinitions: toolRegistry.listDefinitions(),
     signal: options.signal,
+    postToolPolicyHooks,
   });
   const skills = skillRegistry.snapshot(modeSpec.family);
   const modeProfiles = new AgentProfileRegistry(definition).list(config.profileIds);
@@ -992,6 +1054,9 @@ export async function executeRuntimeKernel(
     const hasPending = items.some((s) => s.status !== "done" && s.status !== "failed" && s.status !== "skipped");
     if (hasPending) {
       emit("causal.decision.recorded", CausalDecisionRecordSchema.parse({
+        decisionId: `${kernelRuntimeContext.runId}:plan:${Date.now()}`,
+        source: "runtime_followup",
+        decisionKind: "plan_updated",
         taskState: {
           surfaceRequest: "",
           latentGoalHypotheses: [],
@@ -1364,6 +1429,10 @@ export async function executeRuntimeKernel(
     typeof config.metadata.memoryPromptOverlay === "string"
       ? config.metadata.memoryPromptOverlay
       : undefined;
+  const taskMemoryOverlay = taskMemoryStore?.renderOverlay(runId);
+  const mergedMemoryContext = [memoryContext, taskMemoryOverlay]
+    .filter((s): s is string => typeof s === "string" && s.length > 0)
+    .join("\n\n") || undefined;
   const taskIntentContext = (() => {
     const taskIntent = config.metadata.taskIntent as TaskIntent | undefined;
     switch (taskIntent) {
@@ -1446,7 +1515,7 @@ export async function executeRuntimeKernel(
       projectInstructionsContext,
       temporalContext,
       clarificationContext,
-      memoryContext,
+      memoryContext: mergedMemoryContext,
       taskIntentContext,
       availableSkills,
       toolProtocol: toolPrompt,
@@ -1647,6 +1716,10 @@ export async function executeRuntimeKernel(
             ? { stableSystemPrefix: runtimePromptContext.stablePrefix }
             : undefined,
           toolIds: effectiveToolIds,
+          timeoutMs:
+            resolvedModeSpec.nodes.find(
+              (n) => n.id === (params.planItemId ?? params.agentId),
+            )?.config.timeoutMs ?? DEFAULT_NODE_TIMEOUT_MS,
           onForcedFinalProviderExhausted: (error) => {
             const detail = error instanceof Error ? error.message : String(error);
             const incident = classifyRecoveryError(error, {
@@ -2151,6 +2224,9 @@ export async function executeRuntimeKernel(
         ? { stableSystemPrefix: runtimePromptContext.stablePrefix }
         : undefined,
       toolIds: effectiveAgentToolIds(agentId),
+      timeoutMs:
+        resolvedModeSpec.nodes.find((n) => n.id === nodeId)?.config.timeoutMs ??
+        DEFAULT_NODE_TIMEOUT_MS,
     });
 
     emit(

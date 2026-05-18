@@ -93,7 +93,7 @@ export interface KernelRunnerDeps {
     options: {
       forkedFrom?: { runId: string; checkpointId: string; eventSeq: number };
       turnIndex?: number;
-      resumeContext?: { clarifications?: Record<string, unknown> };
+      resumeContext?: { clarifications?: Record<string, unknown>; alreadyAnnounced?: boolean };
       resumeState?: Pick<StateSnapshot, "conversation" | "toolResults" | "continuation">;
     };
   };
@@ -230,6 +230,14 @@ export class KernelRunner {
       skills: skills.skills,
       tools: tools.tools,
     });
+    if (options.resumeState && options.resumeContext?.alreadyAnnounced !== true) {
+      emit("run.resumed", {
+        reason: "resume",
+        patch: {
+          clarifications: options.resumeContext?.clarifications ?? {},
+        },
+      });
+    }
     if (options.forkedFrom) {
       emit("run.forked", {
         sourceRunId: options.forkedFrom.runId,

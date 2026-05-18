@@ -127,6 +127,7 @@ export class RunKernelExecutionService {
       clarificationPatch: params.clarificationPatch,
       approvedActionIds: params.approvedActionIds,
       approvedActions: params.approvedActions,
+      resumeAlreadyAnnounced: params.snapshot.events.some((event) => event.type === "run.resumed"),
       resumeSnapshot,
       signal: params.signal,
       onEvent: params.onEvent,

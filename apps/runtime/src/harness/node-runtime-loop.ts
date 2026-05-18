@@ -446,17 +446,21 @@ export async function runNodeRuntimeLoop(
     };
   };
 
+  const MAX_PROVIDER_RETRIES = 10;
+
   const invokeProviderWithRecovery = async (
     request: ModelRequest,
     options: { emitRetryModelState: boolean },
   ): Promise<ModelResponse> => {
     const attemptScope = nextAssistantMessageId();
+    let retryCount = 0;
     while (true) {
       try {
         const response = await invokeProvider(config, request, streamCallbacks);
         lastProviderRequestMessages = [...(request.messages ?? [])];
         return response;
       } catch (error) {
+        retryCount += 1;
         const detail = error instanceof Error ? error.message : String(error);
         const incident = classifyRecoveryError(error, {
           surface: "provider",
@@ -465,8 +469,8 @@ export async function runNodeRuntimeLoop(
           agentId: params.agentId,
         });
         const recoveryDecision = recoveryCoordinator.resolve(incident);
-        if (recoveryDecision.action !== "retry") {
-          if (recoveryDecision.action !== "fail") {
+        if (recoveryDecision.action !== "retry" || retryCount > MAX_PROVIDER_RETRIES) {
+          if (recoveryDecision.action !== "fail" && retryCount <= MAX_PROVIDER_RETRIES) {
             throw error;
           }
           emitRecoveryDecision(incident, recoveryDecision);

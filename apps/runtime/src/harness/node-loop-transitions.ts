@@ -44,6 +44,7 @@ export const CORE_NODE_RUNTIME_TRANSITIONS: readonly NodeRuntimeTransition[] = [
   { from: "pending", to: "finalizing" },
   { from: "running_model", to: "running_model" },
   { from: "running_model", to: "tool_requested" },
+  { from: "running_model", to: "finalizing" },
   { from: "running_model", to: "completed" },
   { from: "tool_requested", to: "tool_running" },
   { from: "tool_requested", to: "finalizing" },
@@ -113,6 +114,7 @@ const NODE_LOOP_TRANSITION_KIND_PATHS: Record<NodeLoopTransitionResultKind, read
   ],
   forced_final: [
     { from: "pending", to: "finalizing" },
+    { from: "running_model", to: "finalizing" },
     { from: "tool_requested", to: "finalizing" },
     { from: "tool_result_observed", to: "finalizing" },
     { from: "failed", to: "finalizing" },

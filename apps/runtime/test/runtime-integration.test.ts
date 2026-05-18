@@ -120,6 +120,43 @@ describe("ActionLedger", () => {
     expect(withArtifact.artifactIds).toEqual(["artifact-1", "artifact-2"]);
     ActionRecordSchema.parse(withArtifact);
   });
+
+  it("dedupes seeded action records by id using the latest snapshot entry", () => {
+    const ledger = new ActionLedger("run-3", [
+      {
+        id: "run-3:action:file-write",
+        runId: "run-3",
+        type: "file.write",
+        riskLevel: "high",
+        status: "proposed",
+        input: { path: "notes.md", content: "draft" },
+        artifactIds: [],
+      },
+      {
+        id: "run-3:action:file-write",
+        runId: "run-3",
+        type: "file.write",
+        riskLevel: "high",
+        status: "succeeded",
+        input: { path: "notes.md", content: "draft" },
+        output: { bytesWritten: 5 },
+        artifactIds: ["artifact-1"],
+      },
+    ]);
+
+    expect(ledger.list()).toEqual([
+      ActionRecordSchema.parse({
+        id: "run-3:action:file-write",
+        runId: "run-3",
+        type: "file.write",
+        riskLevel: "high",
+        status: "succeeded",
+        input: { path: "notes.md", content: "draft" },
+        output: { bytesWritten: 5 },
+        artifactIds: ["artifact-1"],
+      }),
+    ]);
+  });
 });
 
 // ---------------------------------------------------------------------------

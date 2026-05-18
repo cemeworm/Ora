@@ -44,6 +44,7 @@ interface KernelResumeParams extends KernelLifecycleBaseParams {
   clarificationPatch: Record<string, unknown>;
   approvedActionIds: string[];
   approvedActions: ApprovedResumeAction[];
+  resumeAlreadyAnnounced?: boolean;
   resumeSnapshot?: StateSnapshot;
 }
 
@@ -71,6 +72,7 @@ export async function executeTracedKernelResume(params: KernelResumeParams & Can
           clarifications: params.clarificationPatch,
           approvedActionIds: params.approvedActionIds,
           approvedActions: params.approvedActions,
+          alreadyAnnounced: params.resumeAlreadyAnnounced,
         },
         resumeState: params.resumeSnapshot,
       });

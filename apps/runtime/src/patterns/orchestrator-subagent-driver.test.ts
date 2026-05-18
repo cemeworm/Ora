@@ -1,4 +1,4 @@
-import { CODE_DEVELOPMENT_MODE_ID, DEEP_RESEARCH_MODE_ID, getModePreset, modeSpecToPatternDefinition, type BusStats, type QueueSummary, type RunConfig, type SharedStateSummary } from "@cemeworm/shared";
+import { CODE_DEVELOPMENT_MODE_ID, DEEP_RESEARCH_MODE_ID, REVIEW_CRITIQUE_MODE_ID, getModePreset, modeSpecToPatternDefinition, type BusStats, type QueueSummary, type RunConfig, type SharedStateSummary } from "@cemeworm/shared";
 import { describe, expect, it } from "vitest";
 import { executeOrchestratorSubagent } from "./orchestrator-subagent-driver.js";
 import type { PatternExecutionContext } from "./execution-context.js";
@@ -168,6 +168,68 @@ describe("executeOrchestratorSubagent deep research verification gate", () => {
       reviewReworkCount: 1,
     });
     expect((result.output as { verificationBlocked?: boolean }).verificationBlocked).toBeUndefined();
+  });
+});
+
+describe("executeOrchestratorSubagent staged plan intent early stop", () => {
+  it("stops review_critique after the first complete proposed plan", async () => {
+    const modeSpec = getModePreset(REVIEW_CRITIQUE_MODE_ID);
+    expect(modeSpec).toBeDefined();
+    const callLog: string[] = [];
+    const context = createContext(callLog);
+    const config: RunConfig = {
+      pattern: "orchestrator_subagent",
+      modeId: REVIEW_CRITIQUE_MODE_ID,
+      modeSelection: "manual",
+      profileIds: [],
+      skillIds: [],
+      toolIds: [],
+      approvalMode: "high_risk_only",
+      permissionMode: "auto_review",
+      patternOptions: {},
+      metadata: {
+        taskIntent: "plan",
+      },
+      causalInterventionLevel: "record_only",
+      deterministicSeed: "test-seed",
+    };
+
+    context.callAgent = async ({ agentId, title }) => {
+      callLog.push(`${agentId}:${title}`);
+      if (agentId === "ora") {
+        return [
+          "<proposed_plan>",
+          "评审方案",
+          "## 背景",
+          "先界定评审标准，再对目标做结构化审查。",
+          "## 实施步骤",
+          "1. 定义检查维度",
+          "2. 针对每个维度采样证据",
+          "3. 汇总阻塞项与非阻塞项",
+          "## 验证方式",
+          "- 检查每个维度均有明确证据",
+          "</proposed_plan>",
+        ].join("\n");
+      }
+      return `${agentId}:${title}`;
+    };
+
+    const result = await executeOrchestratorSubagent({
+      context,
+      prompt: "评估这份设计方案是否合理",
+      config,
+      modeSpec: modeSpec!,
+      definition: modeSpecToPatternDefinition(modeSpec!),
+    });
+
+    expect(callLog).toHaveLength(1);
+    expect(callLog[0]).toContain("ora:");
+    expect(callLog.some((entry) => entry.includes("reviewer"))).toBe(false);
+    expect(result.output).toMatchObject({
+      modeId: REVIEW_CRITIQUE_MODE_ID,
+      stoppedAfterProposedPlan: true,
+    });
+    expect(String((result.output as { text?: string }).text ?? "")).toContain("<proposed_plan>");
   });
 });
 
