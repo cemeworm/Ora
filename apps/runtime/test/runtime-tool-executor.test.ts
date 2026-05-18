@@ -93,6 +93,18 @@ describe("RuntimeToolExecutor", () => {
     expect(executor.enabledToolIds(IMPLEMENTED_RUNTIME_TOOL_IDS)).toEqual([...IMPLEMENTED_RUNTIME_TOOL_IDS]);
   });
 
+  it("does not enable deferred registry descriptors without executors", () => {
+    const registry = new RuntimeToolRegistry();
+    const executor = new RuntimeToolExecutor({
+      toolDescriptors: registry.snapshot().tools,
+      toolDefinitions: registry.listDefinitions(),
+    });
+
+    expect(executor.enabledToolIds(["shared_state.write" as never])).toEqual([]);
+    expect(executor.enabledToolIds(["message.publish" as never])).toEqual([]);
+    expect(executor.systemPrompt(["shared_state.write" as never])).toBeUndefined();
+  });
+
   it("keeps runtime tool execution on definition dispatch without switch fallbacks", () => {
     const source = readRuntimeToolExecutorSource();
     const executeWithMetadata = source.match(/async executeWithMetadata[\s\S]*?\n  private resolveDescriptorRiskLevel/);

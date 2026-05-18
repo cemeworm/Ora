@@ -471,11 +471,14 @@ export class RuntimeToolExecutor {
   }
 
   enabledToolIds(toolIds: readonly string[] = []): RuntimeToolId[] {
-    return toolIds.filter((toolId): toolId is RuntimeToolId =>
-      this.definitions.has(toolId) &&
-      isRuntimeToolImplemented(toolId) &&
-      this.toolAvailableForTaskIntent(toolId)
-    );
+    return toolIds.filter((toolId): toolId is RuntimeToolId => {
+      const definition = this.definitions.get(toolId);
+      return (
+        typeof definition?.execute === "function" &&
+        isRuntimeToolImplemented(toolId) &&
+        this.toolAvailableForTaskIntent(toolId)
+      );
+    });
   }
 
   private toolAvailableForTaskIntent(toolId: RuntimeToolId): boolean {
@@ -740,14 +743,17 @@ function buildRuntimeToolDefinitions(
   }
   for (const definition of dynamicDefinitions) {
     const existing = definitions.get(definition.descriptor.id);
-    definitions.set(definition.descriptor.id, {
+    const merged = {
       ...existing,
       ...definition,
       descriptor: definition.descriptor,
       execute: definition.execute ?? existing?.execute,
       riskLevel: definition.riskLevel ?? existing?.riskLevel,
-    });
-    registerImplementedToolId(definition.descriptor.id);
+    };
+    definitions.set(definition.descriptor.id, merged);
+    if (typeof merged.execute === "function") {
+      registerImplementedToolId(definition.descriptor.id);
+    }
   }
   return definitions;
 }
