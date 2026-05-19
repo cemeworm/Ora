@@ -1,9 +1,10 @@
 import { deriveSnapshotGateProjection, type ModeSelection } from "@cemeworm/shared";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Bot, GitBranchPlus } from "lucide-react";
 import { ChatHeader } from "./ChatHeader";
 import { CHAT_SURFACE_WIDTH_CLASS, ChatMessages } from "./ChatMessages";
 import { ChatInput } from "./ChatInput";
+import { PlanStepsTray } from "./PlanStepsTray";
 import { Button } from "./ui/button";
 import { Select } from "./ui/select";
 import { cn } from "../lib/utils";
@@ -38,6 +39,13 @@ export const CHAT_VIEW_MESSAGES_PANEL_CLASS =
 export const CHAT_VIEW_STABLE_CONTENT_WIDTH_CLASS =
   "w-full max-w-[54rem] pl-4 pr-4 md:pl-6 md:pr-6 xl:pl-8 xl:pr-8";
 export const CHAT_VIEW_COLLABORATION_SHIFT_CLASS = "lg:-translate-x-8";
+const DESKTOP_FLOATING_OVERLAY_MEDIA_QUERY = "(min-width: 1024px)";
+
+function matchesDesktopFloatingOverlayViewport() {
+  return typeof window !== "undefined" &&
+    typeof window.matchMedia === "function" &&
+    window.matchMedia(DESKTOP_FLOATING_OVERLAY_MEDIA_QUERY).matches;
+}
 
 interface ChatViewProps {
   activeMode: ModeCard;
@@ -242,6 +250,40 @@ export function shouldShowCollaborationOverlay(
   return deriveVisibleCollaborationChildren(snapshot).length > 0;
 }
 
+export function derivePlanStepsPresentation({
+  planSteps,
+  isDesktopViewport,
+}: {
+  planSteps: TurnPlanListStep[];
+  isDesktopViewport: boolean;
+}) {
+  if (planSteps.length === 0) {
+    return {
+      inlinePlanSteps: [] as TurnPlanListStep[],
+      floatingPlanSteps: [] as TurnPlanListStep[],
+    };
+  }
+  return isDesktopViewport
+    ? {
+        inlinePlanSteps: [] as TurnPlanListStep[],
+        floatingPlanSteps: planSteps,
+      }
+    : {
+        inlinePlanSteps: planSteps,
+        floatingPlanSteps: [] as TurnPlanListStep[],
+      };
+}
+
+export function shouldShowDesktopOverlayRail({
+  hasCollaborationOverlay,
+  hasFloatingPlanSteps,
+}: {
+  hasCollaborationOverlay: boolean;
+  hasFloatingPlanSteps: boolean;
+}) {
+  return hasCollaborationOverlay || hasFloatingPlanSteps;
+}
+
 export function deriveChatSurfaceContentWidthClassName(
   _hasCollaborationOverlay: boolean,
 ): string {
@@ -325,8 +367,29 @@ export function ChatView({
     sessionId: selectedSession.id,
   });
   const [composerOverlayHeight, setComposerOverlayHeight] = useState(0);
+  const [isDesktopViewport, setIsDesktopViewport] = useState(
+    matchesDesktopFloatingOverlayViewport,
+  );
   const handleOverlayHeightChange = useCallback((height: number) => {
     setComposerOverlayHeight((current) => current === height ? current : height);
+  }, []);
+
+  useEffect(() => {
+    if (
+      typeof window === "undefined" ||
+      typeof window.matchMedia !== "function"
+    ) {
+      return;
+    }
+    const mediaQuery = window.matchMedia(DESKTOP_FLOATING_OVERLAY_MEDIA_QUERY);
+    const handleChange = () => setIsDesktopViewport(mediaQuery.matches);
+    handleChange();
+    if (typeof mediaQuery.addEventListener === "function") {
+      mediaQuery.addEventListener("change", handleChange);
+      return () => mediaQuery.removeEventListener("change", handleChange);
+    }
+    mediaQuery.addListener(handleChange);
+    return () => mediaQuery.removeListener(handleChange);
   }, []);
 
   const gateKind = runInteractionState.gateKind;
@@ -345,13 +408,27 @@ export function ChatView({
     () => shouldShowCollaborationOverlay(activeSnapshot),
     [activeSnapshot],
   );
+  const { inlinePlanSteps, floatingPlanSteps } = useMemo(
+    () => derivePlanStepsPresentation({
+      planSteps: currentPlanSteps,
+      isDesktopViewport,
+    }),
+    [currentPlanSteps, isDesktopViewport],
+  );
+  const showDesktopOverlayRail = useMemo(
+    () => shouldShowDesktopOverlayRail({
+      hasCollaborationOverlay: showCollaborationOverlay,
+      hasFloatingPlanSteps: floatingPlanSteps.length > 0,
+    }),
+    [showCollaborationOverlay, floatingPlanSteps],
+  );
   const chatSurfaceContentWidthClassName = useMemo(
-    () => deriveChatSurfaceContentWidthClassName(showCollaborationOverlay),
-    [showCollaborationOverlay],
+    () => deriveChatSurfaceContentWidthClassName(showDesktopOverlayRail),
+    [showDesktopOverlayRail],
   );
   const chatSurfaceShiftClassName = useMemo(
-    () => deriveChatSurfaceShiftClassName(showCollaborationOverlay),
-    [showCollaborationOverlay],
+    () => deriveChatSurfaceShiftClassName(showDesktopOverlayRail),
+    [showDesktopOverlayRail],
   );
   const branchGroups = state.activeSessionDetail?.branchGroups ?? [];
   const [branchPanelOpen, setBranchPanelOpen] = useState(false);
@@ -471,7 +548,7 @@ export function ChatView({
                 hasApprovalTray={hasApprovalTray}
                 hasClarificationTray={hasClarificationTray}
                 hasPlanDecisionTray={planDecisionPending}
-                hasPlanStepsTray={currentPlanSteps.length > 0}
+                hasPlanStepsTray={inlinePlanSteps.length > 0}
                 bottomInsetPx={composerOverlayHeight}
                 contentWidthClassName={chatSurfaceContentWidthClassName}
                 projectRootPath={projectRootPath}
@@ -538,7 +615,7 @@ export function ChatView({
                 taskIntent={state.taskIntent}
                 onTaskIntentChange={(ti) => dispatch({ type: "SET_TASK_INTENT", taskIntent: ti })}
                 planDecisionPending={planDecisionPending}
-                planSteps={currentPlanSteps}
+                planSteps={inlinePlanSteps}
                 onConfirmPlanDecision={onAcceptPlanDecisionAndStartImplementation}
                 onDeclinePlanDecision={() => onResolvePlanDecision("declined")}
                 onOverlayHeightChange={handleOverlayHeightChange}
@@ -551,8 +628,9 @@ export function ChatView({
               />
             </div>
           </div>
-          <CollaborationPanel
+          <DesktopOverlayRail
             childSessions={visibleCollaborationChildren}
+            planSteps={floatingPlanSteps}
           />
         </div>
       </main>
@@ -560,55 +638,64 @@ export function ChatView({
   );
 }
 
-function CollaborationPanel({
+function DesktopOverlayRail({
   childSessions,
+  planSteps,
 }: {
   childSessions: NonNullable<OraStateSnapshot["childSessions"]>;
+  planSteps: TurnPlanListStep[];
 }) {
-  if (childSessions.length === 0) {
+  if (childSessions.length === 0 && planSteps.length === 0) {
     return null;
   }
 
   return (
     <div className="pointer-events-none absolute inset-x-0 top-6 z-20 hidden lg:block">
       <div className={`mx-auto flex justify-end ${CHAT_SURFACE_WIDTH_CLASS}`}>
-        <section className="pointer-events-auto w-full max-w-sm rounded-3xl border border-border/70 bg-background/92 p-3 shadow-lift backdrop-blur-md">
-          <div className="flex items-center gap-2 px-1 pb-2">
-            <div className="flex h-8 w-8 items-center justify-center rounded-2xl bg-muted text-foreground">
-              <Bot className="h-4 w-4" />
-            </div>
-            <div className="min-w-0">
-              <p className="text-sm font-semibold text-foreground">
-                子代理运行中
-              </p>
-              <p className="text-xs text-muted-foreground">
-                {childSessions.length} 个任务正在协作执行
-              </p>
-            </div>
-          </div>
-          <div className="space-y-2">
-            {childSessions.map((child) => (
-              <section
-                key={child.id}
-                className="rounded-2xl border border-border/70 bg-card/80 p-3"
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <p className="truncate text-sm font-semibold text-foreground">
-                      {child.label}
-                    </p>
-                    <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                      {child.summary ?? child.lastMessage ?? "正在等待子代理返回最新进展。"}
-                    </p>
-                  </div>
-                  <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-foreground">
-                    {childStatusLabel(child.status)}
-                  </span>
+        <div className="pointer-events-auto flex w-full max-w-sm flex-col gap-3">
+          {childSessions.length > 0 ? (
+            <section className="rounded-3xl border border-border/70 bg-background/92 p-3 shadow-lift backdrop-blur-md">
+              <div className="flex items-center gap-2 px-1 pb-2">
+                <div className="flex h-8 w-8 items-center justify-center rounded-2xl bg-muted text-foreground">
+                  <Bot className="h-4 w-4" />
                 </div>
-              </section>
-            ))}
-          </div>
-        </section>
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold text-foreground">
+                    子代理运行中
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    {childSessions.length} 个任务正在协作执行
+                  </p>
+                </div>
+              </div>
+              <div className="space-y-2">
+                {childSessions.map((child) => (
+                  <section
+                    key={child.id}
+                    className="rounded-2xl border border-border/70 bg-card/80 p-3"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-semibold text-foreground">
+                          {child.label}
+                        </p>
+                        <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                          {child.summary ?? child.lastMessage ?? "正在等待子代理返回最新进展。"}
+                        </p>
+                      </div>
+                      <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-foreground">
+                        {childStatusLabel(child.status)}
+                      </span>
+                    </div>
+                  </section>
+                ))}
+              </div>
+            </section>
+          ) : null}
+          {planSteps.length > 0 ? (
+            <PlanStepsTray planSteps={planSteps} variant="floating" />
+          ) : null}
+        </div>
       </div>
     </div>
   );

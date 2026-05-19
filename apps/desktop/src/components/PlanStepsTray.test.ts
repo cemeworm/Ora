@@ -1,5 +1,7 @@
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { nextPlanTrayOpenState } from "./PlanStepsTray";
+import { nextPlanTrayOpenState, PlanStepsTray, planStepsTrayRootClassName } from "./PlanStepsTray";
 import type { TurnPlanListStep } from "../types";
 
 describe("plan steps tray open state", () => {
@@ -41,6 +43,24 @@ describe("plan steps tray open state", () => {
       nextPlanIdentity: "搜索\n整理",
       previousAllCompleted: true,
     })).toBe(true);
+  });
+
+  it("uses a distinct floating shell class for the right overlay variant", () => {
+    expect(planStepsTrayRootClassName("floating")).toContain("rounded-3xl");
+    expect(planStepsTrayRootClassName("floating")).toContain("shadow-lift");
+    expect(planStepsTrayRootClassName("inline")).toContain("mb-2");
+  });
+
+  it("renders the floating variant without the inline bottom margin shell", () => {
+    const html = renderToStaticMarkup(
+      createElement(PlanStepsTray, {
+        variant: "floating",
+        planSteps: plan("in_progress", "pending"),
+      }),
+    );
+
+    expect(html).toContain("rounded-3xl");
+    expect(html).not.toContain("mb-2");
   });
 });
 

@@ -18,6 +18,7 @@ import {
   X,
 } from "lucide-react";
 import {
+  type CompositionEvent,
   Fragment,
   useEffect,
   useLayoutEffect,
@@ -172,18 +173,386 @@ export function getContextRingState({
   };
 }
 
-type ComposerTextareaMetrics = Pick<
-  HTMLTextAreaElement,
-  "scrollHeight" | "scrollTop" | "style"
+type ComposerEditableMetrics = Pick<
+  HTMLElement,
+  "scrollHeight" | "scrollLeft" | "scrollTop" | "style"
 >;
 
-function resizeComposerTextarea(target: ComposerTextareaMetrics) {
+const COMPOSER_ZWSP = "\u200b";
+
+type ComposerTextSegment = {
+  id: string;
+  kind: "text";
+  text: string;
+};
+
+type ComposerSkillChipSegment = {
+  id: string;
+  kind: "skill-chip";
+  skillId: string;
+  label: string;
+};
+
+type ComposerContextChipSegment = {
+  id: string;
+  kind: "context-chip";
+  chipId: string;
+  label: string;
+  tone?: ChatInputContextChip["tone"];
+};
+
+type ComposerSegment =
+  | ComposerTextSegment
+  | ComposerSkillChipSegment
+  | ComposerContextChipSegment;
+
+type ComposerSelectionPoint = {
+  segmentId: string;
+  offset: number;
+};
+
+type ComposerSelectionBookmark = {
+  start: ComposerSelectionPoint;
+  end: ComposerSelectionPoint;
+};
+
+type ComposerSelectionLineInfo = {
+  segmentId: string;
+  segmentIndex: number;
+  lineStart: number;
+  lineText: string;
+  caretOffset: number;
+};
+
+type ComposerChipDescriptor =
+  | {
+      key: string;
+      kind: "skill-chip";
+      skillId: string;
+      label: string;
+    }
+  | {
+      key: string;
+      kind: "context-chip";
+      chipId: string;
+      label: string;
+      tone?: ChatInputContextChip["tone"];
+    };
+
+let composerSegmentSeq = 0;
+
+function nextComposerSegmentId() {
+  composerSegmentSeq += 1;
+  return `composer-segment-${composerSegmentSeq}`;
+}
+
+function createTextSegment(
+  text = "",
+  id = nextComposerSegmentId(),
+): ComposerTextSegment {
+  return { id, kind: "text", text };
+}
+
+function sanitizeEditableText(value: string) {
+  return value.replaceAll(COMPOSER_ZWSP, "");
+}
+
+function skillChipKey(skillId: string) {
+  return `skill:${skillId}`;
+}
+
+function contextChipKey(chipId: string) {
+  return `context:${chipId}`;
+}
+
+function skillChipDescriptor(skill: SkillDescriptor): ComposerChipDescriptor {
+  return {
+    key: skillChipKey(skill.id),
+    kind: "skill-chip",
+    skillId: skill.id,
+    label: skill.name,
+  };
+}
+
+function contextChipDescriptor(
+  chip: ChatInputContextChip,
+): ComposerChipDescriptor {
+  return {
+    key: contextChipKey(chip.id),
+    kind: "context-chip",
+    chipId: chip.id,
+    label: chip.label,
+    tone: chip.tone,
+  };
+}
+
+function composerSegmentSignature(segments: ComposerSegment[]) {
+  return JSON.stringify(
+    segments.map((segment) => {
+      if (segment.kind === "text") {
+        return ["text", segment.id, segment.text];
+      }
+      if (segment.kind === "skill-chip") {
+        return ["skill", segment.id, segment.skillId, segment.label];
+      }
+      return [
+        "context",
+        segment.id,
+        segment.chipId,
+        segment.label,
+        segment.tone ?? "",
+      ];
+    }),
+  );
+}
+
+function arraysEqual<T>(left: T[], right: T[]) {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function normalizeComposerSegments(segments: ComposerSegment[]) {
+  const normalized: ComposerSegment[] = [];
+  const appendText = (text: string, id?: string) => {
+    const previous = normalized[normalized.length - 1];
+    if (previous?.kind === "text") {
+      previous.text += text;
+      return;
+    }
+    normalized.push(createTextSegment(text, id));
+  };
+
+  for (const segment of segments) {
+    if (segment.kind === "text") {
+      appendText(segment.text, segment.id);
+      continue;
+    }
+    if (normalized.length === 0 || normalized[normalized.length - 1]?.kind !== "text") {
+      normalized.push(createTextSegment(""));
+    }
+    normalized.push(segment);
+    normalized.push(createTextSegment(""));
+  }
+
+  if (normalized.length === 0) {
+    return [createTextSegment("")];
+  }
+  if (normalized[0]?.kind !== "text") {
+    normalized.unshift(createTextSegment(""));
+  }
+  if (normalized[normalized.length - 1]?.kind !== "text") {
+    normalized.push(createTextSegment(""));
+  }
+
+  return normalized.reduce<ComposerSegment[]>((acc, segment) => {
+    const previous = acc[acc.length - 1];
+    if (segment.kind === "text" && previous?.kind === "text") {
+      previous.text += segment.text;
+      return acc;
+    }
+    acc.push(
+      segment.kind === "text"
+        ? { ...segment }
+        : segment.kind === "skill-chip"
+          ? { ...segment }
+          : { ...segment },
+    );
+    return acc;
+  }, []);
+}
+
+function buildComposerSegments({
+  composerPrompt,
+  selectedSkills,
+  contextChips,
+}: {
+  composerPrompt: string;
+  selectedSkills: SkillDescriptor[];
+  contextChips: ChatInputContextChip[];
+}) {
+  return normalizeComposerSegments([
+    ...contextChips.map((chip) => ({
+      id: nextComposerSegmentId(),
+      kind: "context-chip" as const,
+      chipId: chip.id,
+      label: chip.label,
+      tone: chip.tone,
+    })),
+    ...selectedSkills.map((skill) => ({
+      id: nextComposerSegmentId(),
+      kind: "skill-chip" as const,
+      skillId: skill.id,
+      label: skill.name,
+    })),
+    createTextSegment(composerPrompt),
+  ]);
+}
+
+function setComposerPromptOnSegments(segments: ComposerSegment[], prompt: string) {
+  return normalizeComposerSegments([
+    ...segments.filter((segment) => segment.kind !== "text"),
+    createTextSegment(prompt),
+  ]);
+}
+
+function reconcileComposerSegments({
+  segments,
+  composerPrompt,
+  selectedSkills,
+  contextChips,
+}: {
+  segments: ComposerSegment[];
+  composerPrompt: string;
+  selectedSkills: SkillDescriptor[];
+  contextChips: ChatInputContextChip[];
+}) {
+  const desiredDescriptors = [
+    ...contextChips.map(contextChipDescriptor),
+    ...selectedSkills.map(skillChipDescriptor),
+  ];
+  const desiredByKey = new Map(
+    desiredDescriptors.map((descriptor) => [descriptor.key, descriptor]),
+  );
+  const seenKeys = new Set<string>();
+
+  const preserved: ComposerSegment[] = [];
+  for (const segment of segments) {
+    if (segment.kind === "text") {
+      preserved.push({ ...segment });
+      continue;
+    }
+    const key =
+      segment.kind === "skill-chip"
+        ? skillChipKey(segment.skillId)
+        : contextChipKey(segment.chipId);
+    const descriptor = desiredByKey.get(key);
+    if (!descriptor) {
+      continue;
+    }
+    seenKeys.add(key);
+    preserved.push(
+      descriptor.kind === "skill-chip"
+        ? {
+            ...segment,
+            kind: "skill-chip",
+            skillId: descriptor.skillId,
+            label: descriptor.label,
+          }
+        : {
+            ...segment,
+            kind: "context-chip",
+            chipId: descriptor.chipId,
+            label: descriptor.label,
+            tone: descriptor.tone,
+          },
+    );
+  }
+
+  const trailingText =
+    preserved[preserved.length - 1]?.kind === "text"
+      ? (preserved.pop() as ComposerTextSegment)
+      : createTextSegment("");
+  const nextSegments = [
+    ...preserved,
+    ...desiredDescriptors
+      .filter((descriptor) => !seenKeys.has(descriptor.key))
+      .map((descriptor) =>
+        descriptor.kind === "skill-chip"
+          ? ({
+              id: nextComposerSegmentId(),
+              kind: "skill-chip",
+              skillId: descriptor.skillId,
+              label: descriptor.label,
+            } as ComposerSkillChipSegment)
+          : ({
+              id: nextComposerSegmentId(),
+              kind: "context-chip",
+              chipId: descriptor.chipId,
+              label: descriptor.label,
+              tone: descriptor.tone,
+            } as ComposerContextChipSegment),
+      ),
+    trailingText,
+  ];
+  const normalized = normalizeComposerSegments(nextSegments);
+  return segmentsToPrompt(normalized) === composerPrompt
+    ? normalized
+    : setComposerPromptOnSegments(normalized, composerPrompt);
+}
+
+function segmentsToPrompt(segments: ComposerSegment[]) {
+  return segments
+    .filter((segment): segment is ComposerTextSegment => segment.kind === "text")
+    .map((segment) => segment.text)
+    .join("");
+}
+
+function skillIdsFromSegments(segments: ComposerSegment[]) {
+  return segments
+    .filter(
+      (segment): segment is ComposerSkillChipSegment =>
+        segment.kind === "skill-chip",
+    )
+    .map((segment) => segment.skillId);
+}
+
+function contextIdsFromSegments(segments: ComposerSegment[]) {
+  return segments
+    .filter(
+      (segment): segment is ComposerContextChipSegment =>
+        segment.kind === "context-chip",
+    )
+    .map((segment) => segment.chipId);
+}
+
+function isSelectionCollapsed(bookmark: ComposerSelectionBookmark | null) {
+  return Boolean(
+    bookmark &&
+      bookmark.start.segmentId === bookmark.end.segmentId &&
+      bookmark.start.offset === bookmark.end.offset,
+  );
+}
+
+function findTextSegmentIndexById(
+  segments: ComposerSegment[],
+  segmentId: string,
+) {
+  return segments.findIndex(
+    (segment) => segment.kind === "text" && segment.id === segmentId,
+  );
+}
+
+function getSelectionLineInfo(
+  segments: ComposerSegment[],
+  bookmark: ComposerSelectionBookmark | null,
+): ComposerSelectionLineInfo | null {
+  if (!bookmark || !isSelectionCollapsed(bookmark)) {
+    return null;
+  }
+  const segmentIndex = findTextSegmentIndexById(segments, bookmark.end.segmentId);
+  if (segmentIndex < 0) {
+    return null;
+  }
+  const segment = segments[segmentIndex] as ComposerTextSegment;
+  const caretOffset = Math.max(0, Math.min(bookmark.end.offset, segment.text.length));
+  const beforeCursor = segment.text.slice(0, caretOffset);
+  const lastNewline = beforeCursor.lastIndexOf("\n");
+  const lineStart = lastNewline + 1;
+  return {
+    segmentId: segment.id,
+    segmentIndex,
+    lineStart,
+    lineText: segment.text.slice(lineStart, caretOffset),
+    caretOffset,
+  };
+}
+
+function resizeComposerTextarea(target: ComposerEditableMetrics) {
   target.style.height = "auto";
   target.style.height = `${Math.min(target.scrollHeight, 220)}px`;
 }
 
 export function scrollComposerTextareaToBottom(
-  target: ComposerTextareaMetrics,
+  target: ComposerEditableMetrics,
 ) {
   target.scrollTop = target.scrollHeight;
 }
@@ -194,6 +563,209 @@ export function getCurrentLineInfo(text: string, cursor: number) {
   const lineStart = lastNewline + 1;
   const lineText = text.slice(lineStart, cursor);
   return { lineStart, lineText };
+}
+
+function findDirectComposerChild(root: HTMLElement, node: Node | null) {
+  let current = node;
+  while (current && current.parentNode !== root) {
+    current = current.parentNode;
+  }
+  return current;
+}
+
+function getTextSpanSelectionOffset(
+  textElement: HTMLElement,
+  container: Node,
+  offset: number,
+) {
+  const range = document.createRange();
+  range.selectNodeContents(textElement);
+  try {
+    range.setEnd(container, offset);
+  } catch {
+    return sanitizeEditableText(textElement.textContent ?? "").length;
+  }
+  return Math.min(
+    sanitizeEditableText(range.toString()).length,
+    sanitizeEditableText(textElement.textContent ?? "").length,
+  );
+}
+
+function findNearestTextSegmentPoint(
+  root: HTMLElement,
+  childIndex: number,
+): ComposerSelectionPoint | null {
+  for (let index = childIndex; index < root.childNodes.length; index += 1) {
+    const candidate = root.childNodes[index];
+    if (
+      candidate instanceof HTMLElement &&
+      candidate.dataset.segmentKind === "text" &&
+      candidate.dataset.segmentId
+    ) {
+      return { segmentId: candidate.dataset.segmentId, offset: 0 };
+    }
+  }
+
+  for (let index = Math.min(childIndex - 1, root.childNodes.length - 1); index >= 0; index -= 1) {
+    const candidate = root.childNodes[index];
+    if (
+      candidate instanceof HTMLElement &&
+      candidate.dataset.segmentKind === "text" &&
+      candidate.dataset.segmentId
+    ) {
+      return {
+        segmentId: candidate.dataset.segmentId,
+        offset: sanitizeEditableText(candidate.textContent ?? "").length,
+      };
+    }
+  }
+
+  return null;
+}
+
+function captureSelectionPoint(
+  root: HTMLElement,
+  container: Node,
+  offset: number,
+): ComposerSelectionPoint | null {
+  const directChild = container === root ? null : findDirectComposerChild(root, container);
+  if (container === root) {
+    return findNearestTextSegmentPoint(root, offset);
+  }
+  if (
+    directChild instanceof HTMLElement &&
+    directChild.dataset.segmentKind === "text" &&
+    directChild.dataset.segmentId
+  ) {
+    return {
+      segmentId: directChild.dataset.segmentId,
+      offset: getTextSpanSelectionOffset(directChild, container, offset),
+    };
+  }
+  if (directChild) {
+    const childIndex = Array.from(root.childNodes).indexOf(
+      directChild as ChildNode,
+    );
+    const boundaryOffset = directChild === container ? childIndex + offset : childIndex;
+    return findNearestTextSegmentPoint(root, Math.max(0, boundaryOffset));
+  }
+  return null;
+}
+
+function captureSelectionBookmark(root: HTMLElement) {
+  const selection = window.getSelection();
+  if (!selection || selection.rangeCount === 0) {
+    return null;
+  }
+  const range = selection.getRangeAt(0);
+  if (
+    !root.contains(range.startContainer) ||
+    !root.contains(range.endContainer)
+  ) {
+    return null;
+  }
+  const start = captureSelectionPoint(
+    root,
+    range.startContainer,
+    range.startOffset,
+  );
+  const end = captureSelectionPoint(root, range.endContainer, range.endOffset);
+  if (!start || !end) {
+    return null;
+  }
+  return { start, end };
+}
+
+function restoreSelectionPoint(root: HTMLElement, point: ComposerSelectionPoint) {
+  const textElement = root.querySelector<HTMLElement>(
+    `[data-segment-id="${point.segmentId}"][data-segment-kind="text"]`,
+  );
+  if (!textElement) {
+    return null;
+  }
+  const textNode = textElement.firstChild ?? textElement;
+  const rawText = textNode.textContent ?? "";
+  if (rawText === COMPOSER_ZWSP) {
+    return { node: textNode, offset: 0 };
+  }
+  return {
+    node: textNode,
+    offset: Math.max(0, Math.min(point.offset, rawText.length)),
+  };
+}
+
+function restoreSelectionBookmark(
+  root: HTMLElement,
+  bookmark: ComposerSelectionBookmark | null,
+) {
+  if (!bookmark) {
+    return;
+  }
+  const start = restoreSelectionPoint(root, bookmark.start);
+  const end = restoreSelectionPoint(root, bookmark.end);
+  if (!start || !end) {
+    return;
+  }
+  const range = document.createRange();
+  range.setStart(start.node, start.offset);
+  range.setEnd(end.node, end.offset);
+  const selection = window.getSelection();
+  selection?.removeAllRanges();
+  selection?.addRange(range);
+}
+
+function serializeEditableNode(
+  node: Node,
+  segments: ComposerSegment[],
+): ComposerSegment[] {
+  if (node.nodeType === Node.TEXT_NODE) {
+    return [createTextSegment(sanitizeEditableText(node.textContent ?? ""))];
+  }
+  if (!(node instanceof HTMLElement)) {
+    return [];
+  }
+  const kind = node.dataset.segmentKind;
+  if (kind === "text") {
+    return [
+      createTextSegment(
+        sanitizeEditableText(node.textContent ?? ""),
+        node.dataset.segmentId,
+      ),
+    ];
+  }
+  if (kind === "skill-chip") {
+    const segment = segments.find(
+      (candidate): candidate is ComposerSkillChipSegment =>
+        candidate.kind === "skill-chip" &&
+        candidate.skillId === node.dataset.skillId,
+    );
+    return segment ? [{ ...segment }] : [];
+  }
+  if (kind === "context-chip") {
+    const segment = segments.find(
+      (candidate): candidate is ComposerContextChipSegment =>
+        candidate.kind === "context-chip" &&
+        candidate.chipId === node.dataset.chipId,
+    );
+    return segment ? [{ ...segment }] : [];
+  }
+  if (node.tagName === "BR") {
+    return [createTextSegment("\n")];
+  }
+  return Array.from(node.childNodes).flatMap((child) =>
+    serializeEditableNode(child, segments),
+  );
+}
+
+function parseComposerEditorSegments(
+  root: HTMLElement,
+  currentSegments: ComposerSegment[],
+) {
+  return normalizeComposerSegments(
+    Array.from(root.childNodes).flatMap((child) =>
+      serializeEditableNode(child, currentSegments),
+    ),
+  );
 }
 
 export function ChatInput({
@@ -251,11 +823,13 @@ export function ChatInput({
   const contextWindowLabel = contextWindow?.toLocaleString() ?? "0";
 
   const overlayRef = useRef<HTMLDivElement>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const chipsRef = useRef<HTMLDivElement>(null);
+  const editorRef = useRef<HTMLDivElement>(null);
   const lastOverlayHeightRef = useRef<number | undefined>();
   const shouldScrollPastedTextRef = useRef(false);
   const skillPickerRef = useRef<HTMLDivElement>(null);
+  const pendingSelectionRef = useRef<ComposerSelectionBookmark | null>(null);
+  const sessionIdRef = useRef(sessionId);
+  const isComposingRef = useRef(false);
   const [openPicker, setOpenPicker] = useState<
     | "pattern"
     | "provider"
@@ -266,18 +840,8 @@ export function ChatInput({
   >();
   const [skillListExpanded, setSkillListExpanded] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
-  const [cursorPos, setCursorPos] = useState(0);
   const [skillPickerIndex, setSkillPickerIndex] = useState(0);
-
-  const interactivity = getComposerInteractivity({
-    composerPrompt,
-    runInteractionState,
-  });
-  const selectedSkillIdSet = useMemo(
-    () => new Set(selectedSkillIds),
-    [selectedSkillIds],
-  );
-  const selectedSkills = useMemo(
+  const externallySelectedSkills = useMemo(
     () =>
       selectedSkillIds
         .map((skillId) =>
@@ -288,15 +852,32 @@ export function ChatInput({
         .filter((skill): skill is SkillDescriptor => Boolean(skill)),
     [selectedSkillIds, skillOptions],
   );
-  const currentLineInfo = useMemo(
-    () => getCurrentLineInfo(composerPrompt, cursorPos),
-    [composerPrompt, cursorPos],
+  const [segments, setSegments] = useState<ComposerSegment[]>(() =>
+    buildComposerSegments({
+      composerPrompt,
+      selectedSkills: externallySelectedSkills,
+      contextChips,
+    }),
+  );
+  const [selectionBookmark, setSelectionBookmark] =
+    useState<ComposerSelectionBookmark | null>(null);
+  const plainTextPrompt = useMemo(() => segmentsToPrompt(segments), [segments]);
+  const selectedSkillIdSet = useMemo(
+    () => new Set(skillIdsFromSegments(segments)),
+    [segments],
+  );
+  const selectionLineInfo = useMemo(
+    () => getSelectionLineInfo(segments, selectionBookmark),
+    [segments, selectionBookmark],
   );
   const slashQuery =
-    currentLineInfo.lineText.startsWith("/") &&
-    currentLineInfo.lineStart === cursorPos - currentLineInfo.lineText.length
-      ? currentLineInfo.lineText.slice(1).trim().toLowerCase()
+    selectionLineInfo?.lineText.startsWith("/")
+      ? selectionLineInfo.lineText.slice(1).trim().toLowerCase()
       : "";
+  const interactivity = getComposerInteractivity({
+    composerPrompt: plainTextPrompt,
+    runInteractionState,
+  });
   const filteredSkillOptions = useMemo(() => {
     return skillOptions
       .filter((skill) => skill.enabled)
@@ -325,15 +906,15 @@ export function ChatInput({
     filteredSkillOptions.length - visibleSkillOptions.length;
   const showSkillPicker =
     openPicker === "skills" &&
-    currentLineInfo.lineText.startsWith("/") &&
-    currentLineInfo.lineStart === cursorPos - currentLineInfo.lineText.length &&
+    Boolean(selectionLineInfo?.lineText.startsWith("/")) &&
     filteredSkillOptions.length > 0;
   const hasFileChips =
     projectFileAttachments.length > 0 ||
     localFileAttachments.length > 0 ||
     imageAttachments.length > 0;
-  const hasInlineContextChips =
-    selectedSkills.length > 0 || contextChips.length > 0;
+  const hasInlineContextChips = segments.some(
+    (segment) => segment.kind !== "text",
+  );
   const showApprovalTray =
     approvalActions.length > 0 && Boolean(onApprove && onCancelApproval);
   const { showClarificationTray, showPlanDecisionTray, hideComposer } =
@@ -347,39 +928,50 @@ export function ChatInput({
       ),
     });
 
+  useEffect(() => {
+    if (sessionIdRef.current !== sessionId) {
+      sessionIdRef.current = sessionId;
+      pendingSelectionRef.current = null;
+      setSelectionBookmark(null);
+      setSegments(
+        buildComposerSegments({
+          composerPrompt,
+          selectedSkills: externallySelectedSkills,
+          contextChips,
+        }),
+      );
+      return;
+    }
+
+    setSegments((current) => {
+      const next = reconcileComposerSegments({
+        segments: current,
+        composerPrompt,
+        selectedSkills: externallySelectedSkills,
+        contextChips,
+      });
+      return composerSegmentSignature(next) === composerSegmentSignature(current)
+        ? current
+        : next;
+    });
+  }, [sessionId, composerPrompt, externallySelectedSkills, contextChips]);
+
   useLayoutEffect(() => {
-    const target = textareaRef.current;
+    const target = editorRef.current;
     if (!target) return;
+    if (pendingSelectionRef.current && !isComposingRef.current) {
+      restoreSelectionBookmark(target, pendingSelectionRef.current);
+      pendingSelectionRef.current = null;
+    }
     resizeComposerTextarea(target);
+    target.scrollLeft = 0;
     if (shouldScrollPastedTextRef.current) {
       shouldScrollPastedTextRef.current = false;
       scrollComposerTextareaToBottom(target);
-    }
-    if (!composerPrompt) {
-      target.scrollLeft = 0;
+    } else if (!plainTextPrompt) {
       target.scrollTop = 0;
     }
-  }, [composerPrompt]);
-
-  useLayoutEffect(() => {
-    const textarea = textareaRef.current;
-    const chips = chipsRef.current;
-    if (!textarea) return;
-    if (chips && hasInlineContextChips) {
-      const chipsWidth = chips.getBoundingClientRect().width;
-      textarea.style.textIndent = `${chipsWidth + 8}px`;
-    } else {
-      textarea.style.textIndent = "";
-    }
-  }, [composerPrompt, hasInlineContextChips, contextChips, selectedSkills]);
-
-  useLayoutEffect(() => {
-    const target = textareaRef.current;
-    if (!target) return;
-    resizeComposerTextarea(target);
-    target.scrollLeft = 0;
-    target.scrollTop = 0;
-  }, [sessionId]);
+  }, [plainTextPrompt, segments, sessionId]);
 
   useLayoutEffect(() => {
     const target = overlayRef.current;
@@ -407,7 +999,7 @@ export function ChatInput({
     showPlanDecisionTray,
     hideComposer,
     hasFileChips,
-    composerPrompt,
+    plainTextPrompt,
     clarificationQuestions,
     approvalActions,
     planDecisionPending,
@@ -419,27 +1011,214 @@ export function ChatInput({
   }, [slashQuery, showSkillPicker]);
 
   useEffect(() => {
+    const shouldShowSkills =
+      Boolean(selectionLineInfo?.lineText.startsWith("/")) &&
+      filteredSkillOptions.length > 0;
+    if (shouldShowSkills) {
+      setOpenPicker((current) =>
+        current && current !== "skills" ? current : "skills",
+      );
+      return;
+    }
+    if (openPicker === "skills") {
+      setOpenPicker(undefined);
+      setSkillListExpanded(false);
+    }
+  }, [filteredSkillOptions.length, openPicker, selectionLineInfo]);
+
+  useEffect(() => {
     if (!showSkillPicker) return;
     const container = skillPickerRef.current;
     if (!container) return;
     const target = container.children[skillPickerIndex] as
       | HTMLElement
       | undefined;
-    if (target) {
+    if (target && typeof target.scrollIntoView === "function") {
       target.scrollIntoView({ block: "nearest" });
     }
   }, [skillPickerIndex, showSkillPicker]);
 
-  function handleKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
-    if (e.key === "Backspace" && textareaRef.current?.selectionStart === 0) {
-      if (selectedSkills.length > 0) {
+  function applySegmentChange(
+    nextSegments: ComposerSegment[],
+    options: { focus?: boolean; selection?: ComposerSelectionBookmark | null } = {},
+  ) {
+    const normalized = normalizeComposerSegments(nextSegments);
+    const previousPrompt = segmentsToPrompt(segments);
+    const nextPrompt = segmentsToPrompt(normalized);
+    const previousSkillIds = skillIdsFromSegments(segments);
+    const nextSkillIds = skillIdsFromSegments(normalized);
+    const nextContextIds = new Set(contextIdsFromSegments(normalized));
+
+    pendingSelectionRef.current = options.selection ?? null;
+    setSelectionBookmark(options.selection ?? null);
+    setSegments(normalized);
+
+    if (nextPrompt !== previousPrompt) {
+      onPromptChange(nextPrompt);
+    }
+    if (!arraysEqual(previousSkillIds, nextSkillIds)) {
+      onSelectedSkillIdsChange([...new Set(nextSkillIds)]);
+    }
+    for (const contextId of contextIdsFromSegments(segments)) {
+      if (!nextContextIds.has(contextId)) {
+        contextChips.find((chip) => chip.id === contextId)?.onRemove?.();
+      }
+    }
+    if (options.focus) {
+      window.requestAnimationFrame(() => editorRef.current?.focus());
+    }
+  }
+
+  function refreshSelectionState() {
+    const editor = editorRef.current;
+    if (!editor) return;
+    setSelectionBookmark(captureSelectionBookmark(editor));
+  }
+
+  function parseAndCommitEditorState() {
+    if (isComposingRef.current) {
+      return;
+    }
+    const editor = editorRef.current;
+    if (!editor) return;
+    const nextBookmark = captureSelectionBookmark(editor);
+    const nextSegments = parseComposerEditorSegments(editor, segments);
+    applySegmentChange(nextSegments, { selection: nextBookmark });
+  }
+
+  function insertTextAtSelection(text: string) {
+    const editor = editorRef.current;
+    const selection = window.getSelection();
+    if (!editor || !selection || selection.rangeCount === 0) {
+      return;
+    }
+    const range = selection.getRangeAt(0);
+    if (!editor.contains(range.commonAncestorContainer)) {
+      return;
+    }
+    range.deleteContents();
+    const textNode = document.createTextNode(text);
+    range.insertNode(textNode);
+    range.setStartAfter(textNode);
+    range.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    parseAndCommitEditorState();
+  }
+
+  function handleCompositionStart() {
+    isComposingRef.current = true;
+  }
+
+  function handleCompositionEnd(_e: CompositionEvent<HTMLDivElement>) {
+    isComposingRef.current = false;
+    window.requestAnimationFrame(() => {
+      refreshSelectionState();
+      parseAndCommitEditorState();
+    });
+  }
+
+  function removeBoundaryChip(direction: "backward" | "forward") {
+    if (!selectionLineInfo) {
+      return false;
+    }
+
+    const textSegment = segments[
+      selectionLineInfo.segmentIndex
+    ] as ComposerTextSegment;
+    if (direction === "backward") {
+      if (selectionLineInfo.caretOffset !== 0 || selectionLineInfo.segmentIndex < 2) {
+        return false;
+      }
+      const previousChip = segments[selectionLineInfo.segmentIndex - 1];
+      const previousText = segments[
+        selectionLineInfo.segmentIndex - 2
+      ] as ComposerTextSegment | undefined;
+      if (!previousChip || previousChip.kind === "text" || !previousText) {
+        return false;
+      }
+
+      const mergedText: ComposerTextSegment = {
+        ...textSegment,
+        text: previousText.text + textSegment.text,
+      };
+      applySegmentChange(
+        [
+          ...segments.slice(0, selectionLineInfo.segmentIndex - 2),
+          mergedText,
+          ...segments.slice(selectionLineInfo.segmentIndex + 1),
+        ],
+        {
+          focus: true,
+          selection: {
+            start: {
+              segmentId: mergedText.id,
+              offset: previousText.text.length,
+            },
+            end: {
+              segmentId: mergedText.id,
+              offset: previousText.text.length,
+            },
+          },
+        },
+      );
+      return true;
+    }
+
+    if (
+      selectionLineInfo.caretOffset !== textSegment.text.length ||
+      selectionLineInfo.segmentIndex > segments.length - 3
+    ) {
+      return false;
+    }
+    const nextChip = segments[selectionLineInfo.segmentIndex + 1];
+    const nextText = segments[
+      selectionLineInfo.segmentIndex + 2
+    ] as ComposerTextSegment | undefined;
+    if (!nextChip || nextChip.kind === "text" || !nextText) {
+      return false;
+    }
+
+    const mergedText: ComposerTextSegment = {
+      ...textSegment,
+      text: textSegment.text + nextText.text,
+    };
+    applySegmentChange(
+      [
+        ...segments.slice(0, selectionLineInfo.segmentIndex),
+        mergedText,
+        ...segments.slice(selectionLineInfo.segmentIndex + 3),
+      ],
+      {
+        focus: true,
+        selection: {
+          start: {
+            segmentId: mergedText.id,
+            offset: textSegment.text.length,
+          },
+          end: {
+            segmentId: mergedText.id,
+            offset: textSegment.text.length,
+          },
+        },
+      },
+    );
+    return true;
+  }
+
+  function handleKeyDown(e: KeyboardEvent<HTMLDivElement>) {
+    if (isComposingRef.current || e.nativeEvent.isComposing) {
+      return;
+    }
+    if (e.key === "Backspace" && isSelectionCollapsed(selectionBookmark)) {
+      if (removeBoundaryChip("backward")) {
         e.preventDefault();
-        removeSkill(selectedSkills[selectedSkills.length - 1].id);
         return;
       }
-      if (contextChips.length > 0) {
+    }
+    if (e.key === "Delete" && isSelectionCollapsed(selectionBookmark)) {
+      if (removeBoundaryChip("forward")) {
         e.preventDefault();
-        contextChips[contextChips.length - 1].onRemove?.();
         return;
       }
     }
@@ -481,6 +1260,11 @@ export function ChatInput({
       }
       return;
     }
+    if (e.key === "Enter" && e.shiftKey) {
+      e.preventDefault();
+      insertTextAtSelection("\n");
+      return;
+    }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       if (runInteractionState.isProcessing) {
@@ -493,62 +1277,45 @@ export function ChatInput({
     }
   }
 
-  function updatePrompt(nextPrompt: string) {
-    onPromptChange(nextPrompt);
-    const pos = textareaRef.current?.selectionStart ?? nextPrompt.length;
-    setCursorPos(pos);
-    const { lineStart, lineText } = getCurrentLineInfo(nextPrompt, pos);
-    const isAtLineStart = lineStart === pos - lineText.length;
-    const nextQuery =
-      lineText.startsWith("/") && isAtLineStart
-        ? lineText.slice(1).trim().toLowerCase()
-        : "";
-    const hasMatches =
-      lineText.startsWith("/") &&
-      isAtLineStart &&
-      skillOptions
-        .filter((skill) => skill.enabled)
-        .filter(
-          (skill) =>
-            !selectedSkillIdSet.has(skill.id) &&
-            !selectedSkillIdSet.has(skill.name),
-        )
-        .some((skill) => {
-          if (!nextQuery) return true;
-          return [skill.name, skill.description, skill.category].some((value) =>
-            value.toLowerCase().includes(nextQuery),
-          );
-        });
-
-    if (hasMatches) {
-      setOpenPicker("skills");
-    } else if (openPicker === "skills") {
-      setOpenPicker(undefined);
-      setSkillListExpanded(false);
-    }
-  }
-
   function selectSkill(skill: SkillDescriptor) {
-    const nextSkillIds = [...selectedSkillIds, skill.id];
-    onSelectedSkillIdsChange([...new Set(nextSkillIds)]);
-    const pos = textareaRef.current?.selectionStart ?? composerPrompt.length;
-    const { lineStart, lineText } = getCurrentLineInfo(composerPrompt, pos);
-    const isAtLineStart =
-      lineText.startsWith("/") && lineStart === pos - lineText.length;
-    if (isAtLineStart) {
-      const afterCursor = composerPrompt.slice(pos);
-      onPromptChange(composerPrompt.slice(0, lineStart) + afterCursor);
-    } else {
-      onPromptChange(composerPrompt);
+    if (!selectionLineInfo) {
+      return;
     }
+    const currentTextSegment = segments[
+      selectionLineInfo.segmentIndex
+    ] as ComposerTextSegment;
+    const leadingText = createTextSegment(
+      currentTextSegment.text.slice(0, selectionLineInfo.lineStart),
+      currentTextSegment.id,
+    );
+    const trailingText = createTextSegment(
+      currentTextSegment.text.slice(selectionLineInfo.caretOffset),
+    );
+    const nextSkillSegment: ComposerSkillChipSegment = {
+      id: nextComposerSegmentId(),
+      kind: "skill-chip",
+      skillId: skill.id,
+      label: skill.name,
+    };
+
+    applySegmentChange(
+      [
+        ...segments.slice(0, selectionLineInfo.segmentIndex),
+        leadingText,
+        nextSkillSegment,
+        trailingText,
+        ...segments.slice(selectionLineInfo.segmentIndex + 1),
+      ],
+      {
+        focus: true,
+        selection: {
+          start: { segmentId: trailingText.id, offset: 0 },
+          end: { segmentId: trailingText.id, offset: 0 },
+        },
+      },
+    );
     setOpenPicker(undefined);
     setSkillListExpanded(false);
-    window.requestAnimationFrame(() => textareaRef.current?.focus());
-  }
-
-  function removeSkill(skillId: string) {
-    onSelectedSkillIdsChange(selectedSkillIds.filter((id) => id !== skillId));
-    window.requestAnimationFrame(() => textareaRef.current?.focus());
   }
 
   const modeTriggerLabel =
@@ -772,67 +1539,29 @@ export function ChatInput({
                   ))}
                 </div>
               )}
-              {hasInlineContextChips && (
-                <div
-                  ref={chipsRef}
-                  className={cn(
-                    "absolute left-3 flex flex-wrap items-center gap-1",
-                    hasFileChips ? "top-12" : "top-4",
-                  )}
-                >
-                  {contextChips.map((chip) => (
-                    <span
-                      key={chip.id}
-                      className={cn(
-                        "inline-flex max-w-[220px] items-center gap-1 text-sm font-medium",
-                        chip.tone === "widget"
-                          ? "text-emerald-700"
-                          : "text-muted-foreground",
-                      )}
-                    >
-                      <PanelTop size={14} />
-                      <span className="truncate">{chip.label}</span>
-                    </span>
-                  ))}
-                  {selectedSkills.map((skill) => (
-                    <span
-                      key={skill.id}
-                      className="inline-flex max-w-[220px] items-center gap-1 text-sm font-medium text-violet-700"
-                    >
-                      <Sparkles size={14} />
-                      <span className="truncate">{skill.name}</span>
-                    </span>
-                  ))}
-                </div>
-              )}
-              <textarea
-                ref={textareaRef}
-                value={composerPrompt}
-                onChange={(e) => updatePrompt(e.target.value)}
-                onKeyDown={handleKeyDown}
-                onClick={(e) =>
-                  setCursorPos((e.target as HTMLTextAreaElement).selectionStart)
-                }
-                onKeyUp={(e) =>
-                  setCursorPos((e.target as HTMLTextAreaElement).selectionStart)
-                }
-                placeholder={
-                  runInteractionState.isProcessing ? "" : placeholder
-                }
-                disabled={!interactivity.canEditText}
-                rows={2}
+              <div
+                ref={editorRef}
+                contentEditable={interactivity.canEditText}
+                suppressContentEditableWarning
+                role="textbox"
+                aria-multiline="true"
+                data-testid="chat-input-editor"
                 className={cn(
-                  "max-h-[220px] w-full resize-none bg-transparent px-4 pb-14 text-sm leading-5 outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-60",
-                  hasFileChips
-                    ? "min-h-[116px] pt-12"
-                    : hasInlineContextChips
-                      ? "min-h-[80px] pt-4"
-                      : "min-h-[96px] pt-4",
+                  "max-h-[220px] w-full overflow-y-auto bg-transparent px-4 pb-14 text-sm leading-5 outline-none",
+                  "whitespace-pre-wrap break-words",
+                  interactivity.canEditText
+                    ? "cursor-text"
+                    : "cursor-not-allowed opacity-60",
+                  hasFileChips ? "min-h-[116px] pt-12" : "min-h-[96px] pt-4",
                 )}
-                style={{ height: "auto", overflowY: "auto" }}
-                onInput={(e) => {
-                  resizeComposerTextarea(e.target as HTMLTextAreaElement);
-                }}
+                style={{ height: "auto" }}
+                onInput={parseAndCommitEditorState}
+                onCompositionStart={handleCompositionStart}
+                onCompositionEnd={handleCompositionEnd}
+                onKeyDown={handleKeyDown}
+                onKeyUp={refreshSelectionState}
+                onMouseUp={refreshSelectionState}
+                onFocus={refreshSelectionState}
                 onPaste={(e) => {
                   const items = e.clipboardData?.items;
                   if (items) {
@@ -867,9 +1596,75 @@ export function ChatInput({
                       return;
                     }
                   }
+
+                  const text = e.clipboardData?.getData("text/plain") ?? "";
+                  if (!text) {
+                    return;
+                  }
+                  e.preventDefault();
                   shouldScrollPastedTextRef.current = true;
+                  insertTextAtSelection(text);
                 }}
-              />
+              >
+                {segments.map((segment, index) => {
+                  if (segment.kind === "text") {
+                    const placeholderText =
+                      plainTextPrompt.length === 0 &&
+                      !runInteractionState.isProcessing &&
+                      index === segments.length - 1
+                        ? placeholder
+                        : undefined;
+                    return (
+                      <span
+                        key={segment.id}
+                        data-segment-kind="text"
+                        data-segment-id={segment.id}
+                        data-placeholder={placeholderText}
+                        className={cn(
+                          "inline whitespace-pre-wrap break-words",
+                          placeholderText &&
+                            "after:pointer-events-none after:text-muted-foreground after:content-[attr(data-placeholder)]",
+                        )}
+                      >
+                        {segment.text || COMPOSER_ZWSP}
+                      </span>
+                    );
+                  }
+
+                  if (segment.kind === "context-chip") {
+                    return (
+                      <span
+                        key={segment.id}
+                        data-segment-kind="context-chip"
+                        data-chip-id={segment.chipId}
+                        contentEditable={false}
+                        className={cn(
+                          "mx-0.5 inline-flex max-w-[220px] items-center gap-1 rounded-full border px-2 py-0.5 align-baseline text-sm font-medium",
+                          segment.tone === "widget"
+                            ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                            : "border-border bg-background/80 text-muted-foreground",
+                        )}
+                      >
+                        <PanelTop size={14} />
+                        <span className="truncate">{segment.label}</span>
+                      </span>
+                    );
+                  }
+
+                  return (
+                    <span
+                      key={segment.id}
+                      data-segment-kind="skill-chip"
+                      data-skill-id={segment.skillId}
+                      contentEditable={false}
+                      className="mx-0.5 inline-flex max-w-[220px] items-center gap-1 rounded-full border border-violet-200 bg-violet-50 px-2 py-0.5 align-baseline text-sm font-medium text-violet-700"
+                    >
+                      <Sparkles size={14} />
+                      <span className="truncate">{segment.label}</span>
+                    </span>
+                  );
+                })}
+              </div>
               <div className="absolute bottom-2 left-2 right-2 flex items-center justify-between gap-2">
                 <div className="flex min-w-0 items-center gap-1">
                   <Button

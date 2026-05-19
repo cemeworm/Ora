@@ -9,14 +9,16 @@ import {
   deriveChildReplaySelection,
   deriveChatSurfaceContentWidthClassName,
   deriveChatSurfaceShiftClassName,
-  deriveVisibleCollaborationChildren,
   deriveComposerPlanDecisionState,
   deriveCurrentComposerPlanSteps,
+  derivePlanStepsPresentation,
   deriveProjectedGateTrays,
+  deriveVisibleCollaborationChildren,
   getActiveChatProvider,
   getChatInputContextState,
   resolveComposerGateSnapshot,
   shouldShowCollaborationOverlay,
+  shouldShowDesktopOverlayRail,
 } from "./ChatView";
 
 describe("chat view provider selection", () => {
@@ -305,6 +307,33 @@ describe("chat view composer plan steps", () => {
   });
 });
 
+describe("chat view plan steps presentation", () => {
+  const plan = [
+    { step: "搜索网页", status: "in_progress" },
+    { step: "整理结果", status: "pending" },
+  ] as const;
+
+  it("keeps plan steps inline on small viewports", () => {
+    expect(derivePlanStepsPresentation({
+      planSteps: [...plan],
+      isDesktopViewport: false,
+    })).toEqual({
+      inlinePlanSteps: [...plan],
+      floatingPlanSteps: [],
+    });
+  });
+
+  it("moves plan steps into the floating rail on desktop viewports", () => {
+    expect(derivePlanStepsPresentation({
+      planSteps: [...plan],
+      isDesktopViewport: true,
+    })).toEqual({
+      inlinePlanSteps: [],
+      floatingPlanSteps: [...plan],
+    });
+  });
+});
+
 describe("chat view collaboration panel replay selection", () => {
   it("maps child replayRef to the first matching beat in the active snapshot", () => {
     expect(deriveChildReplaySelection({
@@ -397,6 +426,20 @@ describe("chat view collaboration overlay visibility", () => {
         childSession("running-child", "running"),
       ],
     } as any)).toBe(true);
+  });
+
+  it("shows the desktop overlay rail when plan steps are floating even without child sessions", () => {
+    expect(shouldShowDesktopOverlayRail({
+      hasCollaborationOverlay: false,
+      hasFloatingPlanSteps: true,
+    })).toBe(true);
+  });
+
+  it("keeps the desktop overlay rail hidden when neither collaboration nor floating plan steps exist", () => {
+    expect(shouldShowDesktopOverlayRail({
+      hasCollaborationOverlay: false,
+      hasFloatingPlanSteps: false,
+    })).toBe(false);
   });
 
   it("keeps a stable overlay-aware content width even when the overlay is visible", () => {

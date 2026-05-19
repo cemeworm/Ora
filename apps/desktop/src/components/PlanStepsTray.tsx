@@ -18,9 +18,21 @@ import {
 
 interface PlanStepsTrayProps {
   planSteps: TurnPlanListStep[];
+  variant?: "inline" | "floating";
 }
 
-export function PlanStepsTray({ planSteps }: PlanStepsTrayProps) {
+export function planStepsTrayRootClassName(
+  variant: "inline" | "floating",
+) {
+  return variant === "floating"
+    ? "rounded-3xl border border-border/70 bg-background/92 p-3 shadow-lift backdrop-blur-md"
+    : "mb-2 rounded-2xl border border-border bg-muted/40 backdrop-blur-sm";
+}
+
+export function PlanStepsTray({
+  planSteps,
+  variant = "inline",
+}: PlanStepsTrayProps) {
   const [open, setOpen] = useState(true);
   const planIdentity = useMemo(() => planStepsIdentity(planSteps), [planSteps]);
   const previousPlanIdentity = useRef<string>("");
@@ -50,7 +62,7 @@ export function PlanStepsTray({ planSteps }: PlanStepsTrayProps) {
   const title = `计划 ${done}/${planSteps.length}`;
 
   return (
-    <div className="mb-2 rounded-2xl border border-border bg-muted/40 backdrop-blur-sm">
+    <div className={planStepsTrayRootClassName(variant)}>
       <TaskList className="border-0 bg-transparent shadow-none">
         <button
           type="button"
