@@ -32,6 +32,7 @@ CREATE_UPDATER=$(node -e "const c=require('$ROOT_DIR/apps/desktop/src-tauri/taur
 
 if [ "$CREATE_UPDATER" = "true" ] && [ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ] && [ -z "${TAURI_SIGNING_PRIVATE_KEY_PATH:-}" ] && [ -f "$DEFAULT_TAURI_SIGNING_PRIVATE_KEY_PATH" ]; then
   export TAURI_SIGNING_PRIVATE_KEY="$(cat "$DEFAULT_TAURI_SIGNING_PRIVATE_KEY_PATH")"
+  export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
   echo "Using default Tauri updater signing key: $DEFAULT_TAURI_SIGNING_PRIVATE_KEY_PATH"
 fi
 
