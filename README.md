@@ -8,45 +8,45 @@
 
 **Ora 是一个可解释的 Agent 工作台。**
 
-大多数 AI 工具对 Agent 的决策过程是不透明的——你知道它做了什么，但不知道它为什么选择追问而不是搜索、为什么调用这个工具而不是那个、为什么在某个时刻选择停止。
+大多数 AI 工具能给出结果，但过程常常散在模型回复、工具日志和临时状态里。你能看到 Agent 回了什么，却很难追清它为什么先追问、为什么去搜索、为什么调用这个工具、为什么在那个时刻停下。
 
-Ora 选择了一条不同的路：**Agent 的每一次关键决策都经过结构化因果判断**——目标是否明确、事实是否缺失、上下文是否足够、行动风险有多高、用户成本有多大、操作是否可逆——而不是靠模型的语言倾向。决策记录、反事实推演和量化评估构成完整的可解释链路。你可以对比不同策略的净提升，把"这个 agent 好不好"从直觉降维到可追溯的数值。
+在 Ora 里，Agent 的决策、工具调用、暂停恢复、协作过程和最终结果会落在同一条可追踪链路里。你可以看答案，也可以回看它怎么形成、哪里做过取舍、哪一步需要你确认。
 
-同时，Ora 把运行事实耐久化为事件溯源模型（Ledger），把工作模式建模为可编辑的有向图（Graph Framework），把对话成果沉淀为跨 Session 存在的长期组件（Widget Dashboard）。
+实现上，Ora 用因果决策约束 Agent 的下一步，用事件溯源模型保存运行事实，用可编辑的模式图组织多 Agent 协作，再把对话结果沉淀成能继续修改的组件。想看具体实现，可以从 [因果决策系统](docs/ora-causal-decision.md)、[Gate 与恢复](docs/ora-gates-and-resume.md)、[工具系统](docs/ora-tool-system.md) 和 [Snapshot 与 Trails](docs/ora-snapshot-projection-trails.md) 开始。
 
 ## 三个核心差异
 
-### 决策可解释，不是黑箱
+### 决策过程能回放
 
-Agent 的每次干预——直接回答、追问澄清、搜索、读上下文、调用工具、规划、请求审批或停止——都经过六维不确定性评估：`goalUncertainty` / `factUncertainty` / `contextUncertainty` / `actionRisk` / `userCost` / `reversibility`。
+Agent 在直接回答、追问澄清、搜索、读上下文、调用工具、规划和请求审批之间切换时，会先经过结构化的因果判断。这个判断会结合目标清晰度、事实风险、上下文缺口和行动风险，决定下一步更适合做什么。
 
-- 目标不确定性高时主动追问，事实风险高时主动搜索，上下文缺失会改变结果时主动读文件
-- 低风险操作直接执行，高风险操作走审批门控，边际收益低时主动停止
-- 每次决策附带反事实记录：如果不做这个动作，结果会差在哪里
-- 因果 A/B 评估用有效干预率、过度行动率、反事实提升等五项指标量化决策质量
+- 目标不清时会先追问，事实风险高时会先搜索，上下文不足时会先读文件
+- 低风险操作可以直接执行，高风险操作会进入审批门控
+- 每次关键决策都能回放，能看到它选择这条路径的依据
+- 评估层以任务结果为先，再结合干预质量和成本，支持 `record_only`、`advisory`、`enforcing` 三档策略的 three-way comparison，并把失败归因为语义状态问题或干预选择问题
 
 详见 [因果决策系统](docs/ora-causal-decision.md)。
 
-### 事实可溯源，不会掉电丢失
+### 运行事实可追溯
 
-不是日志——是 append-only 事件溯源模型。16 种 entry 类型（运行启动/停止、gate 开闭、工具结果、计划交接、上下文压缩等）按序写入 Ledger。
+Ora 用 Ledger 按顺序记录运行事实：运行启动、工具结果、gate 开闭、计划决议、handoff 消费、上下文压缩都会进入同一条事件链。掉电、重启或切换客户端后，界面可以从这条链路重建到正确状态。
 
-- 投影系统从 Ledger 重建所有 read model：Session 摘要、Turn 列表、Gate 状态、Attention
-- 掉电、重启、切换客户端后，UI 状态从 ledger-backed projection 重建，不是从内存猜测
-- 中断-恢复机制（Clarification / Approval / Plan Decision 三种 Gate + Continuation Frame）保证暂停后精确恢复到暂停点
+- 投影系统从 Ledger 重建 Session 摘要、Turn 列表、Gate 状态和 Attention
+- 掉电、重启、切换客户端后，UI 状态从持久投影恢复，不依赖内存猜测
+- Clarification、Approval 和 Plan Decision 都有明确的 gate 语义，暂停后能回到正确的恢复点
+- accepted plan 现在可以直接回到原 run 继续执行，兼容路径里仍然保留 handoff 给下一次 implement run 消费
 - 分支模型支持在同一 Session 中分叉出多个 candidate run，选择最佳结果 adopt
 
 详见 [Ledger 模型](docs/ora-ledger-model.md)、[Gate 与恢复](docs/ora-gates-and-resume.md)。
 
-### 模式即图，可编辑可观测
+### 模式是可编辑的图
 
-不依赖 LangGraph、Dagre 等外部图库——整个图框架自研。每个工作模式是一张可编辑的有向图。
+每个 Ora 模式都是一张可编辑的有向图。你可以决定这次任务是单 Agent、委派、验证循环，还是团队协作。
 
-- **5 种协调模式**：Orchestrator-Subagent（层级委派）、Generator-Verifier（循环验证）、Agent Teams（团队协作）、Message Bus（事件路由）、Shared State（共享黑板）
-- **17 种节点模板**：decompose、research、review、synthesize、build、check 等，可绑定不同 Agent
-- **15 种可插拔 Runtime Atom**：memory_capture、subagent_delegate、clarification_interrupt、dynamic_delegation 等，按需注入
+- 内置模式覆盖单 Agent、orchestrator + subagent、generator-verifier、agent team、message bus、shared state 这些常见协作结构
+- 节点可以挂不同 Agent、工具面和运行时能力，不用为每种模式重写一套执行器
 - Mode Studio 可视化编辑节点和连线，保存前自动校验拓扑合法性
-- Driver Capability Manifest 声明每种 family 的执行能力边界，五层语义严格区分
+- 每种模式 family 都有明确能力边界，运行时会按边界选择合适的执行方式
 
 详见 [图框架](docs/ora-graph-framework.md)、[Mode 创作与 Studio](docs/ora-mode-authoring-and-studio.md)。
 
@@ -62,23 +62,23 @@ Agent 的每次干预——直接回答、追问澄清、搜索、读上下文�
 | **Todo** | 待办事项、截止日期、提醒 | 勾选不触发版本快照，可关联 Automation |
 | **Feed** | 定时刷新外部信息（热点、GitHub、关键词） | 按 cron/interval 调度刷新 |
 
-组件跨 Session 存在，关闭对话后继续存活。可通过 Builder Session 继续用自然语言修改。
+组件跨 Session 存在，关闭对话后继续存活。可通过 Builder Session 继续用自然语言修改。当前选中 Todo widget 后，普通对话已经可以真实写入待办项，不再只是提示词里“看起来知道”目标。
 
 详见 [Widget 系统](docs/ora-widget-system.md)。
 
 ## 关键技术能力
 
-**工具治理链**：50 个已实现工具，每个调用经过 `policy → approval → action → execution → ledger → snapshot → projection` 完整治理链。三层风险体系 + Permission Profile 三态矩阵 + 审批中断恢复。详见 [工具系统](docs/ora-tool-system.md)。
+**工具治理链**：每次工具调用都会经过 `policy → approval → action → execution → ledger → snapshot → projection` 这条治理链。现在 `agent.spawn` 已支持职责型工具面，`agent.wait` 可以显式做 fan-in，选中 widget 后也能走真实 runtime tool，不再只靠 prompt 假装成功。详见 [工具系统](docs/ora-tool-system.md)。
 
-**Memory 系统**：五个子系统——Long-Term Memory（持久事实）、Active Memory（注入检索）、Short-Term Journal（信号存储）、Memory Wiki（知识编译）、Memory Dreaming（信号聚类晋升）。支持确定性准入和 Provider 驱动准入两种模式。详见 [Memory 系统](docs/ora-memory-system.md)。
+**Memory 系统**：围绕持久事实、检索注入、短期信号、知识编译和信号晋升组织记忆链路。支持确定性准入和 Provider 驱动准入两种模式。详见 [Memory 系统](docs/ora-memory-system.md)。
 
 **多模型提供方**：内置 OpenAI、Anthropic、OpenRouter，也支持 OpenAI-compatible 和 Anthropic-compatible 服务。
 
-**多渠道入口**：HTTP webhook、Slack、飞书、微信、企业微信、Telegram、Discord、钉钉 8 种 Channel Adapter，统一转换为内部 session/run。详见 [Channel 连接器](docs/ora-channel-connectors.md)。
+**多渠道入口**：HTTP webhook、Slack、飞书、微信、企业微信、Telegram、Discord、钉钉等外部消息入口都会先统一转换成内部 session/run，再进入同一套 runtime 主链。详见 [Channel 连接器](docs/ora-channel-connectors.md)。
 
-**Self-Iteration 闭环**：五条信号→候选派生路径（feedback → evaluation、recovery failure → prompt、insight cluster → mode 等），评测门控，三级自治策略，支持自动应用和人工确认。详见 [Self-Iteration](docs/ora-self-iteration-loop.md)。
+**Self-Iteration 闭环**：运行信号、评估结果和失败归因会继续回流到 prompt、mode、skill 和策略迭代里，形成持续收敛的改进链路。详见 [Self-Iteration](docs/ora-self-iteration-loop.md)。
 
-**可观测性**：Trails 面板提供七个标签页（总览、流程、智能体、工具、延迟、证据、对比），消费 snapshot → projection → trailViewModel 三层加工链。详见 [Snapshot 与 Trails](docs/ora-snapshot-projection-trails.md)。
+**可观测性**：Trails 面板把运行快照、持久投影和时间线串起来。正文区只显示父 Agent 的最终叙事，协作区单独展示子 Agent 的生命周期、结果回流和卡住状态。切换 session 时，desktop 会保留每个活跃会话的最新运行状态，避免切回去再整块补内容。详见 [Snapshot 与 Trails](docs/ora-snapshot-projection-trails.md)。
 
 ## 技术结构
 
@@ -123,19 +123,6 @@ pnpm dev:runtime   # Runtime sidecar
 
 ```bash
 pnpm --filter @ora/runtime smoke
-```
-
-### 配置模型
-
-首次打开 Ora 时，onboarding 会引导选择模型提供商。可以从 OpenRouter 等免费入口开始，也可以填入自己的 OpenAI、Anthropic 或兼容服务 API key。
-
-可选能力参考 `.env.example`：
-
-```bash
-ORA_LANGFUSE_ENABLED=false
-ORA_SEARCH_PROVIDER=brave
-BRAVE_SEARCH_API_KEY=...
-ORA_ALLOW_CUSTOM_PROVIDER_BASE_URLS=true
 ```
 
 常用命令：

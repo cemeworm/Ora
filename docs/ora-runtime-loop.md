@@ -2,7 +2,7 @@
 
 本文描述当前 Ora runtime loop 的主结构：Task Flow 兼容层、run 外层生命周期、continuation dispatcher、mode 编排层、单个 node 内部的 model-tool loop，以及 plan list、gate、streaming finalization 如何进入持久 projection。
 
-> **最近更新 (2026-05-19)**：新增父/子协作状态投影（`childSessions` / `parentCoordination`）、child delta 协作面隔离、`replayRef` 事件范围引用；同时把 DeepSeek 相关的高波动上下文从 system prompt 迁移到 `<turn_local_metadata>`，并补上 stable prefix / drift diagnostics。
+> **最近更新 (2026-05-19)**：新增父/子协作状态投影（`childSessions` / `parentCoordination`）、background child lifecycle authority（`produced_output` / `awaiting_pickup` / `stalled`）、`agent.spawn` 的 tool bundle / result contract / `agent.wait`、child delta 协作面隔离，以及 `project_instructions` / 响应语言等 turn-local prompt 约束。
 
 ## 阅读地图
 
@@ -153,9 +153,9 @@ flowchart TD
   P --> S{"taskIntent = plan and output has proposed_plan?"}
   S -->|yes| T["FlowGate: plan decision pending"]
   T --> U["User accepts / declines"]
-  U -->|accepted| V["accepted plan handoff"]
-  V --> W["Next implement run consumes accepted plan"]
-  U -->|declined| X["Decision resolved, no handoff"]
+  U -->|accepted| V["same-run plan resume 或 accepted-plan handoff"]
+  V --> W["继续原 run implement，或由下一个 implement run 消费 handoff"]
+  U -->|declined| X["Decision resolved；desktop 默认恢复 composer，等待真实下一条 user turn"]
   S -->|no| Y["Session idle"]
 ```
 
@@ -171,7 +171,7 @@ flowchart TD
 - kernel 捕获 `ClarificationInterruptError` 和 `ApprovalInterruptError` 后，把 run 标记为 `interrupted`，写入 `continuation` frame，并通过 gate ledger 写入 durable gate facts。
 - resume 不再默认等同于 broad mode restart。`RunContinuationDispatcher` 只处理 continuation ownership：owner-backed frame 优先恢复记录的 agent/node；legacy approval/clarification frame 可以 whole-mode fallback；缺少 owner metadata 的危险 frame 会进入 diagnostic failure。
 - approved tool continuation 不由 dispatcher 执行。当前路径是 `RunResumeService.classifyRunResumeStrategy` 识别 approved continuation action，`executeApprovedToolContinuationStrategy` replay action/tool，必要时再由 `RunKernelExecutionService.continueAfterApprovedTool` 继续恢复 owner node。
-- plan 模式输出完整 `<proposed_plan>` 后，run 本身可以是 `succeeded`，但 session attention 会变成 `needs_plan_decision`，等待用户接受或拒绝计划。
+- plan 模式输出完整 `<proposed_plan>` 后，run 本身可以先是 `succeeded`，但 session attention 会变成 `needs_plan_decision`。accepted plan 现在可通过 `planDecisionResolutions` 回到原 run same-run resume；accepted-plan handoff 仍保留为兼容路径。
 
 ## 1.1 Resume strategy 和 continuation dispatcher
 
@@ -532,7 +532,7 @@ orchestrator 负责计划和协调，实际代码修改必须落到 builder 阶�
 动态 spawn 的真实调用链是：
 
 1. 父 agent 在 model-tool loop 中产出 `agent.spawn` tool call。
-2. `runtime-tool-executor` 解析 `description`、`prompt`、`agent_type`、`run_in_background`、`inherit_context`、`system_prompt`、`tool_ids`。
+2. `runtime-tool-executor` 解析 `description`、`prompt`、`agent_type`、`run_in_background`、`inherit_context`、`system_prompt`、`tool_ids`、`tool_bundle`、`result_contract`。
 3. `runtime-kernel.setSpawnAgent()` 校验 profile、分配 `effectiveAgentId`，并写入 `child_session.updated` / `parent_coordination.updated`。
 4. 无论是 mode driver 固定 subagent，还是 `agent.spawn` 动态 subagent，最终都统一进入 `callAgent() -> runNodeRuntimeLoop()`。
 
@@ -542,7 +542,9 @@ orchestrator 负责计划和协调，实际代码修改必须落到 builder 阶�
 - `prompt`：子任务主体，必须是自包含描述。
 - `agent_type`：可选，指定复用现有 agent profile；未提供时会走 root profile 的 synthetic subagent。
 - `system_prompt`：可选，覆盖默认 profile system prompt。
-- `tool_ids`：可选，收窄子 agent 可用工具。
+- `tool_ids`：可选，高级覆盖用；会收窄子 agent 可用工具。
+- `tool_bundle`：首选的职责型工具面，映射到维护好的只读研究 / 取证 / review / builder 工具集合。
+- `result_contract`：子结果契约，决定 runtime 如何验证 child 输出是否真的可消费。
 
 上下文继承的当前实现也需要精确理解：
 
@@ -550,10 +552,11 @@ orchestrator 负责计划和协调，实际代码修改必须落到 builder 阶�
 - `inherit_context: true` 时，当前实现只会把父 agent 最近一次 `lastCallAgentPrompt` 包进 `<inherited-context>` 后再拼接到子任务 prompt 前面。
 - `lastCallAgentSystem` 当前虽然会被记录，但不会一起注入子 agent；因此 `inherit_context` 的实际能力弱于字面文案。
 
-回传路径分成三条：
+回传路径现在分成四条：
 
 - **同步回传**：子 agent 输出文本直接作为本次 `agent.spawn` 的 tool result 返回给父 agent。
-- **异步回传**：`run_in_background: true` 时，后台结果先写入 async result 队列，后续任一 agent 再进入 `callAgent()` 时会被注入 `<async-results>`。
+- **异步回传**：`run_in_background: true` 时，后台结果先写入 async result 队列，并把 child session 投影到 `awaiting_pickup`。
+- **显式 fan-in**：父 agent 可以后续调用 `agent.wait`，按全部 active child 或指定 child ids 收集结构化结果 envelope。
 - **消息回传**：`message.send` 和 `emitAgentMessage` 都会把内容写入目标 agent 的消息队列，目标 agent 下次执行时注入 `<agent-messages>`。
 
 ```mermaid
@@ -592,7 +595,12 @@ sequenceDiagram
         Kernel->>Sub: drainAsyncSpawnQueue() later
         Sub-->>Kernel: text result
         Kernel->>AsyncQ: enqueueAsyncAgentResult()
-        Note over AsyncQ,Parent: On next callAgent(), runtime injects<br/>results into &lt;async-results&gt;
+        Kernel->>Snap: child_session.updated(awaiting_pickup)
+        Parent->>Loop: agent.wait(...) later
+        Loop->>Exec: agent.wait(args)
+        Exec->>Kernel: collect async child results
+        Kernel->>Snap: child_session.updated(consumed)
+        Exec-->>Loop: structured child result envelope
     end
 
     opt Message delivery path
@@ -609,6 +617,31 @@ sequenceDiagram
 
 - `agent.spawn` 动态 subagent 和 mode driver 固定 subagent 最终复用同一个 `callAgent() -> runNodeRuntimeLoop()` 执行通道。
 - runtime 内部虽然保留 `MAX_SPAWN_DEPTH` 计数，但当前 nested spawn 还会被 `isNestedAgentSpawn` 工具边界拦住，因此 subagent 默认不能继续调用 `agent.spawn`。
+
+### Background child lifecycle
+
+后台 child 现在不再只靠 `queued/running/succeeded` 这种粗粒度状态描述。`ChildSessionSummary` 已经显式区分：
+
+- `queued`
+- `running`
+- `produced_output`
+- `awaiting_pickup`
+- `picked_up`
+- `succeeded`
+- `failed`
+- `cancelled`
+- `stalled`
+
+这里有两个容易混淆的边界：
+
+- **`produced_output` 不等于完成**：child 已经有用户可见内容，但仍可能处在 recovery、follow-up 或 guard 阶段。
+- **`awaiting_pickup` 不等于 running**：child 的有效结果已经回流，只是父 agent 还没通过 `agent.wait` 或等价 fan-in 路径消费。
+
+当前 completion guard 也已经按 owner 收口：
+
+- child 自己的完成条件只看本 agent 的 pending action / tool call / stalled 状态
+- 不再允许一个 background child 因为别的 child 的 pending runtime work 而永远卡在 running
+- stalled child 会进入显式恢复/升级路径，而不是继续伪装成普通 running
 
 ### 消息架构统一
 
@@ -648,8 +681,10 @@ plan run 输出 `<proposed_plan>` 后：
 
 1. snapshot 归一化时生成 pending `PlanDecisionGate`。
 2. 用户 accept 后，session ledger 记录 `handoff.accepted_plan`。
-3. 下一次 `taskIntent: "implement"` 的 run 会把 accepted plan 注入 conversation context。
-4. implement run 启动后会把 handoff 标记为 consumed，避免重复消费。
+3. accepted plan 现在有两条路径：
+   - 主路径：通过 `planDecisionResolutions` 回到原 run，切成 implement 语义继续执行
+   - 兼容路径：下一次 `taskIntent: "implement"` 的 run 把 accepted plan 注入 conversation context
+4. 兼容 handoff 路径下，implement run 启动后会把 handoff 标记为 consumed，避免重复消费。
 
 ### Resume continuation
 

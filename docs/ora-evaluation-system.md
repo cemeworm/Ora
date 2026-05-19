@@ -1,8 +1,8 @@
 # Ora Evaluation System：评测与 A/B 对比
 
-本文描述 Ora 的 Evaluation 系统 —— 包括评测数据集管理、Evaluation Compare（A/B 对比分析）、Net Lift 评估，以及评估结果的结构化报告。读完本文，应能理解如何比较两个 evaluation run（如 causal mainline vs legacy baseline），以及 verdict 如何从多维度指标中推导。
+本文描述 Ora 的 Evaluation 系统 —— 包括评测数据集管理、Evaluation Compare（A/B 与多配置对比）、结果导向 Net Lift、failure taxonomy，以及评估结果的结构化报告。读完本文，应能理解如何比较两个或多个 evaluation config（如 `record_only` / `advisory` / `enforcing`），以及 verdict 如何从 outcome、过程信号与成本共同推导。
 
-> **最近更新 (2026-05-18)**：初始版本。覆盖 evaluation-compare.ts、evaluation/ 目录结构（specs + datasets）、A/B 对比报告、Net Lift 模型、verdict 判定逻辑。
+> **最近更新 (2026-05-19)**：three-way comparison、结果优先的 Net Lift、causal outcome metrics、semantic-state / intervention failure taxonomy、multi-config 报告。
 
 ## 阅读地图
 
@@ -12,17 +12,18 @@
 | 数据集与 specs 目录结构 | [2. 评估资源组织](#2-评估资源组织) |
 | CaseComparison 与 MetricAggregate | [3. 对比核心类型](#3-对比核心类型) |
 | 两个 run 的逐 case 对比 | [4. compareEvaluationRuns：对比引擎](#4-compareevaluationruns对比引擎) |
-| Net Lift 计算模型 | [5. Net Lift：净提升评估](#5-net-lift净提升评估) |
-| Verdict 判定逻辑 | [6. Verdict：六条件判定](#6-verdict六条件判定) |
+| Net Lift 与 outcome metrics | [5. Net Lift：结果优先的净提升](#5-net-lift结果优先的净提升) |
+| Verdict 与 multi-config 对比 | [6. Verdict：A/B 与 Three-way 判定](#6-verdictab-与-three-way-判定) |
 | 报告格式化 | [7. 报告输出](#7-报告输出) |
-| 容易误解的点 | [8. 常见误解与边界](#8-常见误解与边界) |
+| failure taxonomy 与常见边界 | [8. Failure Taxonomy 与常见边界](#8-failure-taxonomy-与常见边界) |
 
 核心源码文件：
 
 | 文件 | 职责 |
 | --- | --- |
-| `apps/runtime/src/evaluation-compare.ts` | A/B 对比核心：compareEvaluationRuns、Net Lift、verdict |
-| `apps/runtime/src/evaluation-store.ts` | Evaluation run 存储管理 |
+| `apps/runtime/src/evaluation-compare.ts` | A/B / multi-config 对比核心：`compareEvaluationRuns()`、`compareEvaluationConfigs()`、Net Lift、verdict |
+| `apps/runtime/src/evaluation-store.ts` | Evaluation run 存储、causal observation、outcome metrics、failure tags |
+| `apps/runtime/src/feedback-loop-store.ts` | 从 failure tags 聚合 semantic/intervention insight |
 | `evaluation/specs/` | 评估规范定义（JSON spec 文件） |
 | `evaluation/datasets/` | 评估数据集（19 个 JSON 数据集文件） |
 | `evaluation/scripts/` | 评估执行脚本 |
@@ -43,7 +44,9 @@
 ```
 evaluation/
 ├── specs/
-│   └── causal-ab-comparison.spec.json   # A/B 对比评估规范
+│   ├── causal-ab-comparison.spec.json   # A/B 对比评估规范
+│   ├── causal-smoke-three-way.json      # record_only / advisory / enforcing 冒烟比较
+│   └── causal-full-three-way.json       # 三配置完整比较
 ├── datasets/
 │   ├── causal-intervention-decision-dataset.json  # 因果干预决策
 │   ├── output-quality-dataset.json                # 输出质量
@@ -129,6 +132,20 @@ NetLift {
 type ComparisonVerdict = "causal_wins" | "legacy_wins" | "mixed" | "inconclusive";
 ```
 
+### 3.5 MultiConfigComparison（多配置比较）
+
+当前 evaluation compare 不再只支持 A/B。对于同一 spec，它还可以直接比较多组 config：
+
+```typescript
+MultiConfigComparison {
+  configs: ["record_only", "advisory", "enforcing"];
+  caseComparisons: CaseComparison[];
+  metricAggregates: MetricAggregate[];
+  netLiftByConfig: Record<string, number>;
+  verdictByConfig: Record<string, ComparisonVerdict>;
+}
+```
+
 ## 4. compareEvaluationRuns：对比引擎
 
 ### 4.1 对比流程
@@ -154,59 +171,89 @@ runA (Legacy/Baseline) + runB (Causal Mainline)
 
 仅对比两个 run 中 `caseId` 相同的 case。只在 A 或只在 B 的 case 被跳过。
 
-## 5. Net Lift：净提升评估
+### 4.4 Three-way comparison
 
-### 5.1 计算公式
+当前 causal 评估的主用法已经不是只有 “legacy vs causal” 两组，而是同一 spec 下比较：
 
-```typescript
-outcomeLift =
-  effective_intervention * 0.4 +
-  intent_resolution * 0.2 +
-  counterfactual_lift * 0.2;
+- `record_only`
+- `advisory`
+- `enforcing`
 
-decisionLift = clarification_precision * 0.2;
+对应入口：
 
-costPenalty =
-  |min(0, over_action)| * 0.1 +
-  max(0, costRatio) * 0.1;
-  // costRatio = (avgCostB - avgCostA) / avgCostA
+- `compareEvaluationRuns()`：双 run / 双 config 对比
+- `compareEvaluationConfigs()`：同一 evaluation run 内多 config 对比
+- `formatComparisonReport()`：A/B 报告
+- `formatMultiConfigReport()`：three-way / multi-config 报告
 
-netLift = outcomeLift + decisionLift - costPenalty;
-```
+## 5. Net Lift：结果优先的净提升
 
-### 5.2 指标权重解释
+当前 Net Lift 已经从“主要看过程启发式”改成 **结果优先**。
 
-| 指标 | 权重 | 含义 |
+### 5.1 当前主指标
+
+causal 评估现在同时看结果、过程和成本三层信号：
+
+| 类别 | 指标 | 含义 |
 | --- | --- | --- |
-| `effective_intervention` | 0.4 | 干预是否有效解决了用户问题 |
-| `intent_resolution` | 0.2 | 用户意图是否被正确理解并完成 |
-| `counterfactual_lift` | 0.2 | 反事实推理的质量提升 |
-| `clarification_precision` | 0.2 | 澄清问题的准确性 |
-| `over_action` | 0.1（惩罚） | 是否有不必要的过度操作 |
-| costRatio | 0.1（惩罚） | 成本相对增长 |
+| 结果 | `task_success_rate` | 任务是否按 success criteria 真正完成 |
+| 结果 | `llm_judge_score` | 最终答案质量评分 |
+| 结果 | `counterfactual_lift` | 干预是否带来可观察的结果提升 |
+| 过程 | `effective_intervention` | 干预是否起到了正确作用 |
+| 过程 | `intent_resolution` | 是否理解并完成了用户真实意图 |
+| 过程 | `clarification_precision` | 澄清是否精准而非噪音 |
+| 风险 | `over_action` | 是否出现不必要的动作或过度干预 |
+| 成本 | token / latency / tool cost | 提升是否以不可接受的成本换来 |
 
-## 6. Verdict：六条件判定
+### 5.2 Net Lift 的当前口径
 
-### 6.1 判定条件
+`computeNetLift()` 的主导思想是：
 
-| # | 条件 | 阈值 | 不通过的含义 |
-| --- | --- | --- | --- |
-| 1 | effective_intervention 明显提升 | Δ ≥ +10% | 干预有效性无明显改善 |
-| 2 | intent_resolution 不下降 | Δ ≥ -5% | 意图理解退化 |
-| 3 | over_action 不明显恶化 | Δ ≥ -10% | 过度操作增加 |
-| 4 | 最终答案质量不下降 | improved ≥ degraded | 更多 case 退化而非改善 |
-| 5 | 成本增长可接受 | token_efficiency Δ ≥ -30% | 成本超出可接受范围 |
-| 6 | 无 missing_causal_data 类 failure | 零出现 | 对比不公平（缺少 causal data） |
+1. **先看 outcome**
+   `task_success_rate`、`llm_judge_score`、`counterfactual_lift` 现在比单纯过程信号更重要。
+2. **再看 intervention quality**
+   `effective_intervention`、`intent_resolution`、`clarification_precision` 用来解释“为什么好/不好”。
+3. **最后扣掉风险和成本**
+   过度操作、明显的 token / latency / tool cost 增长会被当成 penalty。
 
-### 6.2 判定逻辑
+因此 Net Lift 现在更像“结果优先的综合净收益”，而不是一条固定权重永不变化的线性打分公式。
+
+## 6. Verdict：A/B 与 Three-way 判定
+
+### 6.1 A/B verdict
+
+双配置比较仍会给出：
 
 ```typescript
-overall =
-  passedCount === 6  → "causal_wins"    // ✅ Causal Mainline 胜出
-  passedCount >= 4   → "mixed"          // ⚠️ 互有胜负
-  netLift > 0        → "mixed"          // 净提升为正但未到全通过
-  否则               → "legacy_wins"    // ❌ Legacy 更优
+type ComparisonVerdict =
+  | "causal_wins"
+  | "legacy_wins"
+  | "mixed"
+  | "inconclusive";
 ```
+
+当前 verdict 不是死板地看单一公式，而是综合三件事：
+
+1. outcome 是否更好
+2. 风险/成本是否可接受
+3. 数据是否足够公平和完整
+
+`missing_causal_data` 这类 failure 仍然会把 verdict 往 `inconclusive` 推，因为那代表对比基础不完整。
+
+### 6.2 Three-way 判定
+
+当同一 spec 下同时跑 `record_only` / `advisory` / `enforcing` 时，系统更关注：
+
+- 哪个 config 的 outcome 最稳
+- 哪个 config 带来的 over-action / cost penalty 最小
+- 哪个 config 的 failure tags 最集中暴露 semantic gap，哪个更像 intervention gap
+
+three-way 不会强行产出一个“永远唯一正确”的模式，而是输出：
+
+- config 之间的 pairwise compare
+- 每个 config 的 net lift
+- 每个 config 的 failure profile
+- 最终推荐或 `mixed` 结论
 
 ## 7. 报告输出
 
@@ -216,28 +263,58 @@ overall =
 
 1. **Overview**：总体得分、通过率、平均耗时、平均成本对比
 2. **Metric Deltas**：所有指标的名称、均值差异、中位差异、win/loss rate
-3. **Net Lift**：三项分量的数值
-4. **Verdict**：六条件清单（checkbox）+ 总体判定
-5. **Case-Level Summary**：improved/degraded/unchanged 计数 + Top 10 退化 case
+3. **Net Lift**：outcome / intervention / cost 的综合结果
+4. **Verdict**：总体结论 + fairness / missing-data 提示
+5. **Case-Level Summary**：improved/degraded/unchanged 计数 + Top 退化 case
 
-### 7.2 JSON 输出
+### 7.2 Multi-config 报告
+
+`formatMultiConfigReport()` 在 A/B 之外还会补出：
+
+- config 排名
+- pairwise outcome / cost 对照
+- 每个 config 的主要 failure tags
+- 对 `record_only` / `advisory` / `enforcing` 的推荐结论
+
+### 7.3 JSON 输出
 
 `formatComparisonReport(report, "json")` 输出完整的 JSON 序列化结果，包含所有原始数据和计算中间值。
 
-## 8. 常见误解与边界
+## 8. Failure Taxonomy 与常见边界
+
+### 8.1 当前 failure taxonomy
+
+causal 相关 failure tags 现在已经不只是一堆平铺的错误名，而是开始分成两大类：
+
+- **semantic-state gap**
+  - `latent_goal_missing`
+  - `latent_goal_mismatch`
+  - `under_clarification`
+- **intervention / outcome gap**
+  - `wrong_intervention`
+  - `over_clarification`
+  - `over_action`
+  - `low_counterfactual_lift`
+  - `poor_outcome_quality`
+
+这样做的目的，是把“没理解任务”与“理解了但动作做错/结果不够好”分开。后续 feedback loop 也正是沿这条边界聚合 insight。
+
+### 8.2 常见误解与边界
 
 1. **Evaluation Compare 不执行评测**。`compareEvaluationRuns` 对比已完成的评测 run 的结果，它本身不运行模型或工具。评测执行由外部 scheduler 或 CLI 触发。
 
 2. **Case 按 caseId 精确匹配**。两个 run 必须使用相同的 dataset 才能对比。如果 run B 有 run A 不存在的 case，这些 case 会被忽略。
 
-3. **Net Lift 是加权线性模型**。权重（0.4/0.2/0.2/0.1）是初始值，可随因果策略的迭代调整。这不是统计显著性检验，而是一个实用的决策辅助工具。
+3. **Net Lift 不再只是旧版固定线性权重**。当前更强调 outcome 优先，具体实现会随评估目标演进。这不是统计显著性检验，而是一个工程决策辅助工具。
 
 4. **Verdict 不是绝对的"好坏"判断**。`mixed` 意味着在某些维度有改善、某些有退化，需要人工审查具体哪些 case 退化来判断是否可接受。
 
-5. **missing_causal_data 条件保证对比公平性**。如果任何一个 case 缺少 causal data，整个 verdict 条件 6 不通过 —— 此时对比结果不可信，因为数据不完整。
+5. **Three-way 不是强行选一个冠军**。它经常用于回答“哪档 gate 更适合当前 workload”，而不是宣布一种模式永久胜出。
 
-6. **评估数据集独立于 runtime 代码**。`evaluation/datasets/` 中的 JSON 文件是评估的输入数据，不参与 runtime 构建。修改数据集不需要重新编译。
+6. **failure taxonomy 不是纯展示标签**。这些 tags 会继续流入 feedback loop，用来区分 semantic-state gap 和 intervention gap。
+
+7. **评估数据集独立于 runtime 代码**。`evaluation/datasets/` 中的 JSON 文件是评估的输入数据，不参与 runtime 构建。修改数据集不需要重新编译。
 
 ---
 
-> **核心判断**：Evaluation 系统是 Ora 质量保障的量化基础。compareEvaluationRuns 提供了一条结构化的 A/B 对比管线：逐 case 对比 → 多 metric 聚合 → 加权 Net Lift → 六条件 verdict。它不替代人工判断，但将"好"和"坏"的讨论从直觉降维到可追溯的数值。
+> **核心判断**：Evaluation 系统现在不只是“做一份 causal vs legacy 的比分表”，而是 Ora 用来比较多档 gate 配置、追踪结果质量、定位 semantic/intervention failure，并把这些结论继续回流给 feedback loop 的量化基础设施。

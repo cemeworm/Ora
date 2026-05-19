@@ -2,7 +2,7 @@
 
 本文档是 Ora runtime 工具系统的权威参考，覆盖架构设计、治理链机制、执行管道、基础设施和当前状态。Ora 的工具系统不是一个简单的"函数调用列表"，而是一个以 **runtime governance** 为中心的产品级 agent 工具平台。
 
-> **最近更新 (2026-05-16)**：合并 ora-tool-design.md 与 ora-tool-action-governance.md；缓存键完整性规则、写工具内容键、重复工具决策统一、Symbol.for() 中断识别、Image 内容块、skills.patch 工具。
+> **最近更新 (2026-05-19)**：`agent.spawn` 的 `tool_bundle` / `result_contract`、`agent.wait` fan-in、selected widget runtime tools、child result 有效性校验、审批文案统一跟随当前回合语言。
 
 ## 1. 设计理念与架构概览
 
@@ -1009,7 +1009,8 @@ internal:    user.clarify, plan.update, agent.spawn, message.send
 - `AbortSignal` 贯通（shell/web/MCP/document，shell abort 时 kill process tree）
 
 **扩展与呈现**：
-- `agent.spawn` 工具（同步/异步子 agent，runtime 内部保留最大深度计数；`inherit_context` 当前只注入父 prompt）
+- `agent.spawn` / `agent.wait` 协作工具（职责型 tool bundle、显式 fan-out / fan-in、子结果有效性校验）
+- widget runtime tools（`widgets.getSelectedContext`、`widgets.get`、`widgets.todo.addItem`）
 - `skills.patch` 工具（分层模糊匹配、动态 approval、并行批量审批）
 - Image 内容块支持（粘贴截图 → base64 data URL → provider 图像内容块）
 - Middleware 管道（context compaction, tool recovery, clarification batching, dangling repair）
@@ -1018,29 +1019,47 @@ internal:    user.clarify, plan.update, agent.spawn, message.send
 - 审批文案中英文自动切换
 - `RuntimeToolDefinitionV2` 内部形状（resultPreview、prepareArguments、continuationHandler）
 
-### 17.3 `agent.spawn` / `message.send` 的运行时语义
+### 17.3 `agent.spawn` / `agent.wait` / `message.send` / widget tools 的运行时语义
 
-这两个工具都属于 agent coordination 语义，但它们的回传方式不同：
+这些工具都属于 agent coordination / turn-local execution 语义，但它们的回传方式和权威目标解析并不相同：
 
 - `agent.spawn`
   - `prompt` 是子任务主体，必须自包含；它不是“自动共享父对话”的开关。
   - `agent_type` 提供时会复用现有 agent profile；未提供时，runtime 会基于 root profile 注册一个 synthetic subagent。
   - `system_prompt` 会覆盖默认 profile system prompt。
-  - `tool_ids` 会把子 agent 的可用工具收窄到给定集合，再经过 runtime boundary 过滤。
+  - `tool_bundle` 是首选的职责分配方式，当前维护的 bundle 包括 `research_readonly`、`repo_forensics`、`review_readonly`、`builder_write`。
+  - `tool_ids` 仍可用，但更适合高级覆盖；runtime 会先把 bundle 解析成维护好的工具集合，再与当前 run allowed tools 求交。
+  - `result_contract` 用来声明子 agent 产出期望，比如 `final_answer`、`evidence_report`、`diff_report`、`plan_only`。runtime 会据此做结果有效性校验。
 - `message.send`
   - 不会立刻驱动目标 agent 执行。
   - 它会同时做两件事：发出 `agent.message` 事件供 UI / snapshot 可见，以及把消息写入目标 agent 的消息队列，供后续 prompt 注入。
+- `agent.wait`
+  - 是父 agent 的显式 fan-in 原语。
+  - 支持等待全部 active background children，或等待指定 child ids。
+  - 返回结构化结果 envelope，包括 `child_session_id`、`tool_bundle`、`result_contract`、`status`、`result_text`、`used_tool_count`、`artifact_ids`、`duration_ms`。
+- widget runtime tools
+  - `widgets.getSelectedContext` 读取当前回合的 `selectedWidgetContext`。
+  - `widgets.get` 读取指定 widget。
+  - `widgets.todo.addItem` 是当前已落地的最小真实写操作：在选中 Todo widget 或显式给定 `widgetId` 时，真实写入 `WidgetStore`。
 
 `agent.spawn` 的返回语义也要和 UI 文案区分开：
 
 - 默认同步模式：subagent 输出文本会直接作为本次 `agent.spawn` tool result 返回给父 agent。
-- `run_in_background: true`：当前 tool result 只会返回 `async_launched`；真正的 subagent 结果不会回填到当前 tool result。
-- 异步结果会先进入 async result 队列，后续任一 agent 再进入 `callAgent()` 时，由 runtime 注入到 `<async-results>`。
+- `run_in_background: true`：当前 tool result 只会返回 `async_launched`；真正的 subagent 结果会先进入 background result 队列，并在 child session 上投影为 `awaiting_pickup`。
+- 父 agent 可以后续显式调用 `agent.wait` 做 fan-in；被消费后的 child delivery status 会变成 `consumed`。
+
+子结果不是“只要 loop 结束就算成功”。当前 runtime 还会做一层有效性收口：
+
+- 输出仍是 `<tool_calls>` / `<tool_call>` 等内部工具协议文本时，不记为有效成功结果
+- `result_contract !== "plan_only"` 时，纯 `<proposed_plan>` 不能冒充最终结果
+- 要求 repo / shell / forensics 取证的 bundle，如果 child 没有任何真实工具证据，也不能靠空口回答通过
 
 当前实现边界：
 
 - `inherit_context` 的实现弱于字面文案：当前只会把父 agent 最近一次任务 prompt 注入 `<inherited-context>`，不会自动继承完整 conversation，也不会把 `lastCallAgentSystem` 一起继承。
 - runtime 内部确实保留 `MAX_SPAWN_DEPTH` 计数，但 nested subagent 当前还受 `isNestedAgentSpawn` 工具边界约束，默认拿不到 `agent.spawn` 工具，因此不能把“可继续 spawn 到 3 层”当成当前已开放能力。
+- background child 结果当前以内存队列 + snapshot 投影为主，`awaiting_pickup` / `consumed` 提供的是当前 run 期语义，不是跨重启持久消息总线。
+- widget 对话写操作当前只开放 Todo 的 `addItem`；其他 widget kind 还没有对称的写工具。
 - 需要完整时序、child session 与 UI 投影细节时，参见 [ora-runtime-loop.md](/Users/quintenchen/developer/ora/docs/ora-runtime-loop.md) 中的“动态 subagent 调用链路”。
 
 ### 17.4 当前实现的保守边界
@@ -1054,8 +1073,10 @@ internal:    user.clarify, plan.update, agent.spawn, message.send
 7. **WorkspaceOperations 尚未全面替换旧实现**：executor context 已携带 adapter，部分 file tool 仍直接使用本地 fs/path helper
 8. **Renderer registry 只是描述层**：desktop 已有 tool renderer registry 和 approval preview shape，但具体 Trails/ApprovalCard 的富 UI 渲染仍需接线
 9. **Recovery policy 仅基于 mode 的 runtime atom**：`recovery_policy` 和 `tool_error_boundary` 是两个独立的 atom
-10. **`agent.spawn` 的递归边界**：runtime 内部保留最大深度 3 层计数，但 nested subagent 当前还会被 `isNestedAgentSpawn` 工具边界阻止再次调用 `agent.spawn`；异步 spawn 队列无持久化，进程重启会丢失
-11. **搜索路径作用域语义**：`file.grep`/`file.glob` 的 bare glob/include 已做 scoped 匹配，但 `workspace-operations.ts` 尚未同步同语义
+10. **`agent.spawn` 的递归边界**：runtime 内部保留最大深度 3 层计数，但 nested subagent 当前还会被 `isNestedAgentSpawn` 工具边界阻止再次调用 `agent.spawn`
+11. **后台 child 队列无跨重启保证**：`awaiting_pickup` / `consumed` 当前服务于单次 run 内 fan-in；进程重启不会把内存态 async queue 恢复成完整消息总线
+12. **widget tool 能力面仍很窄**：当前只有 `widgets.todo.addItem` 是真实写工具；不能把“selected widget 已进入 prompt”误解成“所有 widget 都可执行修改”
+13. **搜索路径作用域语义**：`file.grep`/`file.glob` 的 bare glob/include 已做 scoped 匹配，但 `workspace-operations.ts` 尚未同步同语义
 
 ## 18. 未来迭代方向
 

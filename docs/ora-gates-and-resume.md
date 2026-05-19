@@ -2,7 +2,7 @@
 
 本文描述 Ora 的中断-恢复机制：gate 如何打开与解决、continuation frame 如何记录暂停点、resume 如何分类与派发。读完本文，应能理解三种 gate 的本质区别、resume 的三条策略路径、GateProjection 如何统一 UI 状态消费，以及为什么 approved tool continuation 不由 dispatcher 直接执行。
 
-> **最近更新 (2026-05-16)**：Symbol.for() 中断识别、GateProjection 共享层、SessionSummary gate、Gate 重开支持、工具失败上下文保留。
+> **最近更新 (2026-05-19)**：plan decision same-run resume、accepted/declined 双路径交互语义、UI synthetic user turn 投影、accepted-plan handoff 兼容路径、GateProjection 与 session-level interaction 对齐。
 
 ## 阅读地图
 
@@ -67,9 +67,11 @@ flowchart TD
 
     E --> E1["plan run 产出 <proposed_plan>"]
     E1 --> E2["run.done 但 PlanDecisionGate pending"]
-    E2 --> E3["不中断当前 run，是 session-level gate"]
+    E2 --> E3["session-level gate，可继续影响原 run 交互态"]
     E3 --> E4["用户 accept/decline"]
-    E4 --> E5["accept → handoff.accepted_plan → 下一个 implement run 消费"]
+    E4 --> E5["accept → same-run kernel resume（当前主路径）"]
+    E4 --> E6["兼容路径：handoff.accepted_plan → implement run 消费"]
+    E4 --> E7["decline → resolve gate；desktop 默认恢复 composer，等待真实下一条 user turn"]
 
     F --> F1["用户手动取消/中断"]
     F1 --> F2["run.interrupted 或 run.cancelled"]
@@ -81,11 +83,11 @@ flowchart TD
 | 维度 | Clarification | Approval | Plan Decision | Cancellation |
 | --- | --- | --- | --- | --- |
 | **中断 run？** | 是，抛 `ClarificationInterruptError` | 是，抛 `ApprovalInterruptError` | 否，run 可以是 `succeeded` | 是，直接标记状态 |
-| **需要 resume？** | 是，同一 kernel loop 恢复 | 是，同一 kernel loop 恢复 | 否，是下一个 implement run 消费 | 取决于取消后是否恢复 |
+| **需要 resume？** | 是，同一 kernel loop 恢复 | 是，同一 kernel loop 恢复 | 现在 accept 可 same-run resume；compat 下仍支持跨 run handoff | 取决于取消后是否恢复 |
 | **Gate 类型** | `gate.opened` (clarification) | `gate.opened` (approval) | `gate.opened` (plan_decision) | 无 gate |
 | **触发时机** | 工具/middleware 调用 `ensureClarification` | 工具 action 进入审批 gate | plan mode 产出完整 `<proposed_plan>` | 用户或系统主动发起 |
-| **Resume 方式** | `flows.resume` + clarifications patch | `flows.resume` + approvedActionIds | 不需要 resume；新 run 消费 handoff | 可选 `flows.resume` |
-| **Kernel 参与？** | 是，kernel resume | 是，kernel resume 或 approved tool continuation | 否 | 取决于恢复策略 |
+| **Resume 方式** | `flows.resume` + clarifications patch | `flows.resume` + approvedActionIds | `flows.resume` + `planDecisionResolutions`；compat 下也可走 accepted-plan handoff | 可选 `flows.resume` |
+| **Kernel 参与？** | 是，kernel resume | 是，kernel resume 或 approved tool continuation | accept 时可进入 kernel resume；decline 取决于调用侧是否继续同 run 修订 | 取决于恢复策略 |
 
 ### 1.1 中断错误的跨 Realm 健壮性：Symbol.for()
 
@@ -144,9 +146,10 @@ export function isAnyInterruptError(error: unknown): error is ApprovalInterruptE
 
 Plan decision 与其他两类 gate 有三个本质差异：
 
-1. **不中断 run**：plan run 在输出 `<proposed_plan>` 后自然结束（`status: "succeeded"`），同时存在一个 pending `PlanDecisionGate`。run 不需要 resume，下一个 implement run 直接消费 handoff。
-2. **跨 run 交接**：clarification/approval 在同一个 run 内 resolve，plan decision 的决议传递给 **下一个 run**。
-3. **session-level gate**：它是 session attention 层的阻塞状态 (`needs_plan_decision`)，不是 kernel loop 内的阻塞。
+1. **run 可先成功结束，但 gate 仍未解决**：plan run 产出 `<proposed_plan>` 后通常先以 `succeeded` 收束，同时留下 pending `PlanDecisionGate`。
+2. **accept 现在可以回到原 run**：当前主路径里，accepted plan 会通过 `planDecisionResolutions` 进入 same-run kernel resume，把原 plan run 切到 implement 语义继续执行。
+3. **兼容的跨 run handoff 仍保留**：`handoff.accepted_plan` 和 `consumedByRunId` 仍是有效契约，用于旧数据、兼容消费和某些 implement run 入口。
+4. **它仍是 session-level gate**：交互态上的 `needs_plan_decision` 仍由 shared gate truth 驱动，不要求 UI 自己猜测“这是新 turn 还是 inline 子环节”。
 
 ## 2. Gate 生命周期：从快照到 ledger
 
@@ -649,7 +652,7 @@ flowchart TD
 
 ## 9. Plan Decision 的特殊性
 
-Plan decision 是最特殊的 gate 类型，它与 clarification/approval 的 resume 机制完全不同。
+Plan decision 仍然是最特殊的 gate，但它现在不是“完全不同、永不 resume”的一条旁路，而是一个 **hybrid gate**：runtime 允许 accepted plan 回到原 run，compat 层仍保留 accepted-plan handoff。
 
 ### 9.1 Plan run 的正常流程
 
@@ -668,36 +671,45 @@ sequenceDiagram
 
     Note over Ledger: Session attention → needs_plan_decision
 
-    User->>Ledger: 用户 accept 计划
-    Ledger->>Ledger: gate.resolved (plan_decision, accepted)
-    User->>Ledger: handoff.accepted_plan
+    User->>Ledger: 用户 accept / decline
+    Ledger->>Ledger: gate.resolved (plan_decision)
 
-    User->>ImplRun: 启动 implement mode run
-    ImplRun->>Ledger: 检查未消费的 acceptedPlanHandoff
-    ImplRun->>ImplRun: 将 plan 注入 conversation context
-    ImplRun->>Ledger: 标记 handoff.consumedByRunId
+    alt accepted，走当前主路径
+        User->>PlanRun: flows.resume(planDecisionResolutions)
+        PlanRun->>PlanRun: inject accepted-plan context
+        PlanRun->>PlanRun: taskIntent 切到 implement
+        PlanRun->>PlanRun: 继续同一 run 执行
+    else accepted，走兼容 handoff
+        User->>Ledger: handoff.accepted_plan
+        User->>ImplRun: 启动 implement mode run
+        ImplRun->>Ledger: 检查未消费的 acceptedPlanHandoff
+        ImplRun->>ImplRun: 将 plan 注入 conversation context
+        ImplRun->>Ledger: 标记 handoff.consumedByRunId
+    else declined
+        Note over User,PlanRun: desktop 当前默认只关闭 gate 并恢复 composer<br/>等待真实下一条 user message
+    end
 ```
 
-### 9.2 为什么不用 resume
+### 9.2 为什么它现在是 hybrid
 
-Plan run 在产出 `<proposed_plan>` 后 **已完成**（`status: "succeeded"`）。它不需要 resume 因为：
+Plan run 在产出 `<proposed_plan>` 后通常已经 `succeeded`，但这不再等价于“绝不 resume”。当前实现把 plan decision 分成两层：
 
-1. 没有 continuation frame 需要恢复
-2. plan run 的全部工作就是「产出计划」，现在已经完成了
-3. 计划执行是 **下一个 run** 的工作，不是当前 run 的延续
+1. **gate 层**：pending `PlanDecisionGate` 继续以 session interaction truth 存在。
+2. **runtime 层**：若用户 accept，`RunResumeService` 会把 `planDecisionResolutions` 识别为 kernel work，并把原 run 切到 implement 语义继续执行。
+3. **compat 层**：accepted-plan handoff 仍保留，供旧链路和明确的新 implement run 消费。
 
-这与 clarification/approval 的「中断-继续同一 run」模式完全不同。
+因此它和 clarification/approval 仍不同，但差异变成了“起点常常是已成功结束的 run”，而不是“永远跨 run、永远不 resume”。
 
-### 9.3 Plan handoff 的跨 run 交接
+### 9.3 accepted-plan handoff 的兼容交接
 
-Plan handoff 是 plan run 和 implement run 之间的契约：
+accepted-plan handoff 现在更像兼容层和显式跨 run 契约，而不是唯一主路径：
 
-1. Snapshot 归一化时生成 pending `PlanDecisionGate`
-2. 用户 accept → `gate.resolved` + `handoff.accepted_plan` 写入 ledger
-3. 下一个 `taskIntent: "implement"` 的 run 启动时，检查 `acceptedPlanHandoffs` 中未被消费的记录
+1. Snapshot 归一化时仍会生成 pending `PlanDecisionGate`
+2. 用户 accept 后，runtime 可以直接 same-run resume；如果调用方选择跨 run 实现，仍可写入 `handoff.accepted_plan`
+3. 下一个 `taskIntent: "implement"` 的 run 启动时，继续检查 `acceptedPlanHandoffs` 中未被消费的记录
 4. 将 plan content 注入 implement run 的 conversation context
 5. 标记 `consumedByRunId` 防止重复消费
-6. 如果没有未消费的 handoff，implement run 使用默认的 plan-stub
+6. 这条路径的价值主要在兼容旧数据、显式“计划交给新 run 执行”的入口，以及计划修订链路的持久审计
 
 ## 10. Gate 与 Session Attention
 
@@ -734,8 +746,8 @@ Terminal state invariant 位于 gate 检查之前，防止 auto_review 权限模
 
 - Clarification gate resolved → attention 从 `needs_clarification` 变为 `running`（如果 run 恢复）或 `idle`
 - Approval gate resolved → attention 从 `needs_approval` 变为 `running`（如果工具执行后继续）或 `idle`
-- Plan decision gate resolved（accepted）→ attention 从 `needs_plan_decision` 变为 `idle`，等待下一个 run
-- Plan decision gate resolved（declined）→ attention 变为 `idle`，没有 handoff
+- Plan decision gate resolved（accepted）→ attention 从 `needs_plan_decision` 变为 `running`（若原 run same-run resume）或 `idle`（若只完成 gate 解决、等待后续 implement run）
+- Plan decision gate resolved（declined）→ attention 变为 `idle`；desktop 当前默认不自动续跑，而是恢复 composer 等用户输入下一条真实消息
 
 ### 10.4 GateProjection：统一的 UI 状态消费
 
@@ -796,9 +808,9 @@ Desktop 所有 UI 表面统一消费 `deriveSnapshotGateProjection(snapshot)` �
 
 **不是。** Dispatcher 只处理 model continuation（决定恢复到哪个 agent/node）。Approved tool continuation 是 **action execution** 路径，由 `executeApprovedToolContinuationStrategy` 处理。这两条路径是平行的，不是从属关系。
 
-### 11.3 "Plan decision 是 run interrupt"
+### 11.3 "Plan decision 一定不是 resume"
 
-**不是。** Plan decision 不中断 run。Plan run 在产出 `<proposed_plan>` 后自然结束（succeeded），plan decision gate 是 session-level 的阻塞状态。下一个 implement run 是新 run，不是 resume。
+**也不是。** 它仍然不是 clarification/approval 那种“run 中途被打断”的 interrupt，但 accepted plan 现在可以通过 `planDecisionResolutions` 回到原 run 做 same-run resume。跨 run accepted-plan handoff 依旧存在，只是不再是唯一语义。
 
 ### 11.4 "Gate 在内存中管理，只是 UI 概念"
 
@@ -828,7 +840,7 @@ Desktop 所有 UI 表面统一消费 `deriveSnapshotGateProjection(snapshot)` �
 | Approved tool continuation | 通过 `ApprovedToolContinuationHandler` registry 查找可 replay 工具 | file.write/file.patch 有 artifact handler；shell/skills/mcp/package 有通用 replay handler；新工具类型仍需注册 handler 才能走 approved continuation |
 | Whole-mode fallback | 安全的降级策略 | 会重新执行已完成的 node，依赖 node 实现的幂等性 |
 | Diagnostic failure | 可见的错误状态 | 用户无法自我修复，需要手动介入 |
-| Plan handoff | 单次消费，`consumedByRunId` 标记 | 不支持 revise plan（重新生成计划后再次交接） |
+| Plan handoff | 兼容的跨 run accepted-plan 契约，`consumedByRunId` 标记 | same-run accepted plan 已是主路径；revised plan 的版本链仍待继续整理 |
 | Attention 推导 | 严格优先级序 | 不支持同时存在多种 blocking attention（如同时需要 clarification 和 approval） |
 | 中断错误识别 | `Symbol.for()` + `instanceof` 双重检查，3 个 helper 函数 | 跨 realm 健壮性依赖 Symbol.for() 的全局性 |
 | GateProjection 共享层 | `GateProjection` 类型 + `deriveSnapshotGateProjection()` 为所有 UI 表面的单一真相源 | staleRisk 标记依赖 attention 与 raw pending 的一致性 |

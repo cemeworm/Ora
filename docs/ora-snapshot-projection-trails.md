@@ -2,7 +2,7 @@
 
 本文解释 runtime 产生的执行事实如何经过 snapshot、projection、trails 三层加工，最终变成 desktop UI 可消费的七个标签页。它把 `StateSnapshot` → `toFlowRunDetail` / `toSessionTurn` → `synthesizeLocalTrail` → `trailViewModel` → `TrailsTabs` 串成一条完整的消费链。
 
-> **最近更新 (2026-05-19)**：新增 `childSessions` / `parentCoordination` snapshot 字段，child delta 与正文分流，desktop 右侧协作区消费共享投影。
+> **最近更新 (2026-05-19)**：新增 `childSessions` / `parentCoordination` snapshot 字段、background child lifecycle 字段、desktop `sessionLiveSnapshotsById` 会话级 live authority，以及 accepted-plan 的 UI-only synthetic user turn projection。
 
 ## 阅读地图
 
@@ -103,6 +103,21 @@ desktop UI 在 run 运行期间消费 live snapshot（路径 A），run 完成�
 | events 完整性 | 包含流式 delta | 可能被 slim |
 | 用途 | 流式 UI 更新 | session detail、Trails、sidebar |
 
+desktop 侧在这两条来源之上又补了一层 **session 级 live authority**：
+
+- `sessionLiveSnapshotsById` 保存每个活跃 session 最近一次完整 live snapshot
+- 它是 desktop reducer 的本地 authority，不是新的 durable truth
+- 作用是解决“切走再切回运行中 session 时，正文先空一块、几秒后再补齐”的问题
+
+因此当前 desktop 的消费顺序更准确地说是：
+
+```text
+live stream
+  -> sessionLiveSnapshotsById（每个 session 的本地 live authority）
+  -> 当前选中 session 的 active snapshot / interaction state
+  -> 终态后再逐步收敛到 ledger-backed snapshot
+```
+
 ## 2. 从事件到 Snapshot 再到 Ledger
 
 ### 2.1 事件产生
@@ -174,6 +189,22 @@ StateSnapshot
 #### 3.1.3 Snapshot 缓存指纹含 turnIndex
 
 `snapshotCacheFingerprint` 现在在缓存键中包含 `turnIndex`，确保不同 turn 的 snapshot 不会错误命中同一缓存。这修复了审批后 assistant 消息流式输出位置错乱的 bug（流式输出出现在历史消息上方而非底部）。
+
+#### 3.1.4 desktop 的 UI-only transcript projection
+
+并不是所有 desktop 可见内容都来自 runtime transcript。当前还有一层 **UI-only projection**，专门承载“交互语义需要显示，但不应回写成真实 runtime message”的场景。
+
+当前最典型的是 accepted plan decision：
+
+- runtime 侧仍保持 same-run resume 语义
+- desktop 侧通过 `acceptedPlanDecisionTurnProjections` 在 transcript 中插入一条 synthetic user turn：`请按照上述计划开始执行`
+- 这条气泡不等于真实 pending run，也不会变成 runtime transcript 的 durable message
+
+这层投影的边界很明确：
+
+- 它只影响 desktop 的 renderable transcript
+- 不参与 `deriveRunAttention` / `deriveSnapshotGateProjection()` 的权威判断
+- 应被视为“交互解释层”，不是新的状态真相源
 
 ### 3.2 toRunHandle / toFlowRunHandle
 
@@ -255,6 +286,8 @@ Activity 构建逻辑：
 
 **关键差异**：`deriveRunInteraction` 直接消费 live snapshot 的 `pendingClarifications`、`pendingApprovals`、`continuation.frames`。而 ledger 投影层的 `deriveLedgerRunAttention` 消费的是 gate projection（从 ledger entry fold 出来的 open gates）。两者在大部分情况下一致，但 ledger 版本是最终权威——因为它考虑了 gate.resolved entry 和幂等性。
 
+同样需要注意：accepted-plan 的 synthetic user turn projection 不会改变这里的 runtime interaction truth。它只解释“用户在 UI 上看起来像发出了一条确认”，不表示 reducer 真的创建了新的 pending run。
+
 ### 3.6 buildRunTrailMetrics
 
 从 snapshot + trace 计算运行指标：
@@ -316,6 +349,7 @@ projectAssistantTextFromSnapshot(snapshot)
 - 正文区只消费父 Agent 的最终叙事文本
 - child agent 若被标记为 `collaboration`，其 delta 只进入协作区、Trails 和按需回放
 - `childSessions` / `parentCoordination` 是协作区和历史语义视图的共享权威字段
+- `childSessions` 现在还会携带 `lifecyclePhase`、`deliveryStatus`、`resultAvailability`、`stallReason` 等背景协作语义，不再只靠正文长度推测 child 状态
 
 这不是 ledger 的替代层。ledger 负责保存和重建 `output`、event batch、tool/gate facts；assistant text projection 只负责在读取时解释这些事实。
 
