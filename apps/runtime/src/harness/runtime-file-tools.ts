@@ -9,7 +9,7 @@ import {
   requireWorkspaceRoot,
   resolveWorkspacePath,
 } from "./runtime-tool-utils.js";
-import { prefersChinese, stringArg } from "./runtime-tool-approval.js";
+import { approvalRequestLanguage, stringArg } from "./runtime-tool-approval.js";
 import { withWorkspaceFileMutationQueue } from "./runtime-file-mutation-queue.js";
 import { applyPatchToolRuntimeFields } from "./runtime-patch-tool.js";
 
@@ -83,7 +83,7 @@ export function fileToolRuntimeFields(toolId: string): Partial<RuntimeToolDefini
 }
 
 function fileWriteApprovalRequest(args: Record<string, unknown>, context: { userPrompt?: string }) {
-  const zh = prefersChinese(context.userPrompt);
+  const zh = approvalRequestLanguage({ userPrompt: context.userPrompt }) === "zh";
   const target = stringArg(args, "path", zh ? "目标文件" : "the target file");
   return zh
     ? {
@@ -105,7 +105,7 @@ function fileWriteApprovalRequest(args: Record<string, unknown>, context: { user
 }
 
 function filePatchApprovalRequest(args: Record<string, unknown>, context: { userPrompt?: string }) {
-  const zh = prefersChinese(context.userPrompt);
+  const zh = approvalRequestLanguage({ userPrompt: context.userPrompt }) === "zh";
   const target = stringArg(args, "path", zh ? "目标文件" : "the target file");
   return zh
     ? {

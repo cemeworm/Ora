@@ -169,11 +169,19 @@ function providerFetchCauseCode(cause: unknown): string | undefined {
 }
 
 export function normalizeMessages(request: ModelRequest): ModelMessage[] {
+  const prompt = request.prompt?.trim();
   if (request.messages && request.messages.length > 0) {
-    return [...request.messages];
+    const normalizedMessages = [...request.messages];
+    if (prompt) {
+      const lastMessage = normalizedMessages[normalizedMessages.length - 1];
+      const lastContent = typeof lastMessage?.content === "string" ? lastMessage.content.trim() : "";
+      if (lastMessage?.role !== "user" || lastContent !== prompt) {
+        normalizedMessages.push({ role: "user", content: prompt });
+      }
+    }
+    return normalizedMessages;
   }
 
-  const prompt = request.prompt?.trim();
   if (prompt) {
     return [{ role: "user", content: prompt }];
   }

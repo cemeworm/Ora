@@ -7,7 +7,7 @@ import type { RuntimeToolExecutionContext } from "./runtime-tool-executor.js";
 import type { ResolvedToolLimits } from "./runtime-tool-executor.js";
 import type { RuntimeToolResultPreview } from "./runtime-tool-definition-v2.js";
 import { readPositiveInt, requireWorkspaceRoot } from "./runtime-tool-utils.js";
-import { prefersChinese, stringArg } from "./runtime-tool-approval.js";
+import { approvalRequestLanguage, stringArg } from "./runtime-tool-approval.js";
 import { getShellExecutionContext } from "./shell-snapshot.js";
 
 export function shellToolRuntimeFields(toolId: string): Partial<RuntimeToolDefinition<RuntimeToolExecutionContext>> {
@@ -25,7 +25,7 @@ export function shellToolRuntimeFields(toolId: string): Partial<RuntimeToolDefin
 }
 
 function shellApprovalRequest(args: Record<string, unknown>, context: { userPrompt?: string }) {
-  const zh = prefersChinese(context.userPrompt);
+  const zh = approvalRequestLanguage({ userPrompt: context.userPrompt }) === "zh";
   const command = stringArg(args, "command", zh ? "这条命令" : "this command");
   return zh
     ? {

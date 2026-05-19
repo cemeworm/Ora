@@ -103,6 +103,24 @@ export interface RunNodeRuntimeLoopParams {
   onForcedFinalProviderExhausted?: (error: unknown) => ModelResponse | undefined;
 }
 
+export interface PendingAsyncAgentResult {
+  sourceAgentId: string;
+  childSessionId: string;
+  result: string;
+  completedAt: number;
+  toolBundleId?: string;
+  resolvedToolIds?: string[];
+  resultContract?: string;
+  usedToolCount?: number;
+  artifactIds?: string[];
+  durationMs?: number;
+}
+
+export interface PendingExternalInputs {
+  messages: string[];
+  asyncResults: PendingAsyncAgentResult[];
+}
+
 export interface RunNodeRuntimeLoopDeps {
   config: RunConfig;
   modeSpec: ModeSpec;
@@ -154,6 +172,10 @@ export interface RunNodeRuntimeLoopDeps {
   /** Count of clarification.required events emitted so far in this run. */
   clarificationCount: () => number;
   clarificationAnswer: (key: string, id: string) => unknown;
+  drainPendingExternalInputs?: (agentId: string) => PendingExternalInputs;
+  activeBackgroundChildCount?: (agentId: string) => number;
+  pendingAsyncResultCount?: (agentId: string) => number;
+  waitForBackgroundProgress?: (agentId: string) => Promise<void>;
   ensureClarification: (params: {
     id: string;
     key: string;
@@ -556,7 +578,7 @@ export async function runNodeRuntimeLoop(
     options: { emitRetryModelState?: boolean } = {},
   ) =>
     invokeRuntimeModelCall({
-      request: withAbortSignal(withStablePrefixCacheMetadata(request)),
+      request: withAbortSignal(withStablePrefixCacheMetadata(requestWithPendingExternalInputs(request))),
       context: middlewareContext,
       middlewares: runtimeMiddlewares,
       terminal: (nextRequest) => invokeProviderWithRecovery(nextRequest, {
@@ -569,7 +591,7 @@ export async function runNodeRuntimeLoop(
     reason: string,
   ) =>
     invokeRuntimeModelCall({
-      request: withAbortSignal(withFollowUpCacheMetadata(request, latestResponse, lastProviderRequestMessages)),
+      request: withAbortSignal(withFollowUpCacheMetadata(requestWithPendingExternalInputs(request), latestResponse, lastProviderRequestMessages)),
       context: middlewareContext,
       middlewares: runtimeMiddlewares,
       terminal: (nextRequest) => invokeProviderWithRecovery(nextRequest, {
@@ -579,6 +601,65 @@ export async function runNodeRuntimeLoop(
         compaction: { latestResponse, reason },
       },
     });
+  const formatExternalInputMessage = (inputs: PendingExternalInputs): string | undefined => {
+    const sections: string[] = [];
+    if (inputs.messages.length > 0) {
+      const messageContext = inputs.messages.map((message, index) =>
+        `<agent-message seq="${index + 1}">\n${message}\n</agent-message>`
+      ).join("\n\n");
+      sections.push([
+        "<agent-messages>",
+        "The following messages were sent to you:",
+        "",
+        messageContext,
+        "</agent-messages>",
+      ].join("\n"));
+    }
+    if (inputs.asyncResults.length > 0) {
+      const resultContext = inputs.asyncResults.map((result) =>
+        [
+          `<async-agent-result agent="${result.sourceAgentId}" child_session="${result.childSessionId}" completed_at="${result.completedAt}"`,
+          typeof result.toolBundleId === "string" ? ` tool_bundle="${result.toolBundleId}"` : "",
+          typeof result.resultContract === "string" ? ` result_contract="${result.resultContract}"` : "",
+          typeof result.usedToolCount === "number" ? ` used_tool_count="${result.usedToolCount}"` : "",
+          typeof result.durationMs === "number" ? ` duration_ms="${result.durationMs}"` : "",
+          ">",
+          Array.isArray(result.resolvedToolIds) && result.resolvedToolIds.length > 0
+            ? `<resolved-tools>${result.resolvedToolIds.join(", ")}</resolved-tools>\n`
+            : "",
+          result.result,
+          "\n</async-agent-result>",
+        ].join("")
+      ).join("\n\n");
+      sections.push([
+        "<async-results>",
+        "The following async sub-agent results are now available:",
+        "",
+        resultContext,
+        "</async-results>",
+      ].join("\n"));
+    }
+    return sections.length > 0 ? sections.join("\n\n") : undefined;
+  };
+  const requestWithPendingExternalInputs = (request: ModelRequest): ModelRequest => {
+    const pendingInputs = deps.drainPendingExternalInputs?.(params.agentId);
+    const externalInputMessage = pendingInputs
+      ? formatExternalInputMessage(pendingInputs)
+      : undefined;
+    if (!externalInputMessage) {
+      return request;
+    }
+    if (typeof request.prompt === "string" && request.prompt.trim().length > 0) {
+      return {
+        ...request,
+        prompt: `${request.prompt}\n\n${externalInputMessage}`,
+      };
+    }
+    return {
+      ...request,
+      messages: [...(request.messages ?? []), { role: "user", content: externalInputMessage }],
+    };
+  };
   const emitForcedFinalProviderState: RunNodeRuntimeLoopDeps["emitNodeRuntimeState"] = (state, emitParams) => {
     if (state === "completed" || state === "failed") {
       nodeLoopController.emitForcedFinalProviderState(state, emitParams);
@@ -614,6 +695,8 @@ export async function runNodeRuntimeLoop(
           ? { output: runtimeToolResultCache.get(cacheKey) }
           : await runtimeToolExecutor.executeWithMetadata(toolCall, {
               allowRisky,
+              currentAgentId: params.agentId,
+              currentNodeId: params.nodeId,
             });
         if (cacheKey && !cacheHit) {
           runtimeToolResultCache.set(cacheKey, execution.output);
@@ -637,6 +720,8 @@ export async function runNodeRuntimeLoop(
         };
       },
     });
+  const backgroundChildCount = () => deps.activeBackgroundChildCount?.(params.agentId) ?? 0;
+  const pendingAsyncResultCount = () => deps.pendingAsyncResultCount?.(params.agentId) ?? 0;
   const toolRecoveryService = new RuntimeToolRecoveryService({
     agentId: params.agentId,
     nodeId: params.nodeId,
@@ -773,6 +858,8 @@ export async function runNodeRuntimeLoop(
       planList: deps.planList(),
       toolCalls: deps.toolCalls(),
       agentId: params.agentId,
+      activeBackgroundChildCount: backgroundChildCount(),
+      pendingAsyncResultCount: pendingAsyncResultCount(),
     });
     if (guardResult.allowComplete) {
       // Final-output guard: refuse to complete when the candidate answer is empty.
@@ -844,7 +931,7 @@ export async function runNodeRuntimeLoop(
         decisionContext: {
           phase: "completion",
           turnIndex: deps.turnIndex,
-          replyMessageId: `${params.runId}:assistant`,
+          replyMessageId: activeAssistantMessageId,
           agentId: params.agentId,
           nodeId: params.nodeId,
           iteration,
@@ -879,6 +966,13 @@ export async function runNodeRuntimeLoop(
       guardResult.progressSummary,
       Math.max(0, events.length - 1),
     );
+    if (
+      (guardResult.reason === "pending_background_children" || guardResult.reason === "pending_background_results") &&
+      pendingAsyncResultCount() === 0 &&
+      backgroundChildCount() > 0
+    ) {
+      await deps.waitForBackgroundProgress?.(params.agentId);
+    }
     nodeLoopController.emitTransitionResult("model_request", "running_model", {
       agentId: params.agentId,
       title: params.title,
@@ -895,10 +989,15 @@ export async function runNodeRuntimeLoop(
       kind: "continue",
       response: await invokeFollowUpModel({
         messages,
-        system: params.system,
+        system: completion.toolsAllowed(completionScope)
+          ? params.system
+          : forcedFinalSystemPrompt(
+              params.system,
+              completion.stopReasonForScope(completionScope) ?? "forced_final_answer",
+            ),
         maxTokens: config.budget?.maxTokens,
         tools: nativeTools,
-        toolChoice: nativeTools.length > 0 ? "auto" : undefined,
+        toolChoice: completion.toolsAllowed(completionScope) && nativeTools.length > 0 ? "auto" : "none",
       }, currentResponse, guardResult.followUpReason),
     };
   };
@@ -970,11 +1069,11 @@ export async function runNodeRuntimeLoop(
       response,
       completion.stopReasonForScope(completionScope) ?? "tool_budget_exhausted",
     );
-    nodeLoopController.emitTransitionResult("complete", "completed", {
-      agentId: params.agentId,
-      title: params.title,
-    });
-    return finalResponse;
+    const completionResult = await continueOrCompleteNaturally(finalResponse, 0);
+    if (completionResult.kind === "complete") {
+      return completionResult.response;
+    }
+    response = completionResult.response;
   }
 
   if (enabledTools.length === 0) {
@@ -996,21 +1095,21 @@ export async function runNodeRuntimeLoop(
   let hasExecutedTool = false;
   for (let iteration = 0; iteration < toolLoopLimit; iteration += 1) {
     if (!completion.toolsAllowed(completionScope)) {
-      return runForcedFinalProviderCall({
-        invokeProvider,
-        config,
-        messages,
-        system: params.system,
-        providerCache: params.providerCache,
-        nativeTools,
-        streamCallbacks,
-        reason: completion.stopReasonForScope(completionScope) ?? "tool_budget_exhausted",
-        agentId: params.agentId,
-        nodeId: params.nodeId,
-        title: params.title,
-        emitNodeRuntimeState: emitForcedFinalProviderState,
-        onProviderExhausted: params.onForcedFinalProviderExhausted,
-      });
+      const forcedFinalResponse = coerceNoToolResponse(
+        response,
+        completion.stopReasonForScope(completionScope) ?? "tool_budget_exhausted",
+        { emitRejectedToolIntent: true },
+      );
+      const completionResult = await continueOrCompleteNaturally(
+        forcedFinalResponse,
+        iteration,
+        hasExecutedTool,
+      );
+      if (completionResult.kind === "continue") {
+        response = completionResult.response;
+        continue;
+      }
+      return completionResult.response;
     }
 
     const toolCall = selectRuntimeToolAttempt({
@@ -1118,8 +1217,9 @@ export async function runNodeRuntimeLoop(
       decisionContext: {
         phase: "tool_request",
         turnIndex: deps.turnIndex,
-        replyMessageId: `${params.runId}:assistant`,
+        replyMessageId: activeAssistantMessageId,
         toolId: toolCall.tool,
+        providerCallId: toolCall.providerCallId,
         iteration,
         agentId: params.agentId,
         nodeId: params.nodeId,

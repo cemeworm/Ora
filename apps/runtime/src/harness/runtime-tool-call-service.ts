@@ -7,6 +7,7 @@ import { invokeRunProvider, invokeRunProviderStream } from "../providers/index.j
 import type { ModelMessage, ModelRequest, ModelResponse } from "../providers/index.js";
 import type { RuntimeCompletionController, RuntimeToolScope } from "./runtime-completion.js";
 import type { RuntimeActionDeps } from "./runtime-action-runner.js";
+import { forcedFinalSystemPrompt } from "./runtime-output.js";
 import {
   recordRuntimeToolActionSucceeded,
   resolveRuntimeActionApproval,
@@ -289,8 +290,14 @@ export class RuntimeToolCallService {
         iteration,
       });
       return {
-        kind: "return",
-        response: await this.runForcedFinal(stopReason),
+        kind: "continue",
+        response: await this.deps.invokeFollowUpModel({
+          messages: this.deps.getMessages(),
+          system: forcedFinalSystemPrompt(this.deps.system, stopReason),
+          maxTokens: this.deps.config.budget?.maxTokens,
+          tools: this.deps.nativeTools,
+          toolChoice: "none",
+        }, response, "forced_final_tool_follow_up"),
       };
     }
     this.deps.nodeLoopController.emitTransitionResult("model_request", "running_model", {
@@ -310,19 +317,4 @@ export class RuntimeToolCallService {
     };
   }
 
-  private runForcedFinal(reason: Parameters<RuntimeCompletionController["forceFinalAnswer"]>[0]) {
-    return this.deps.runForcedFinalProviderCall({
-      invokeProvider: this.deps.invokeProvider,
-      config: this.deps.config,
-      messages: this.deps.getMessages(),
-      system: this.deps.system,
-      nativeTools: this.deps.nativeTools,
-      streamCallbacks: this.deps.streamCallbacks,
-      reason,
-      agentId: this.deps.agentId,
-      nodeId: this.deps.nodeId,
-      title: this.deps.title,
-      emitNodeRuntimeState: this.deps.emitForcedFinalProviderState,
-    });
-  }
 }

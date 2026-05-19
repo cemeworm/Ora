@@ -1,10 +1,38 @@
 import { describe, expect, it } from "vitest";
 import {
   buildModelRequestCacheDiagnostics,
+  normalizeMessages,
   splitStableSystemPrompt,
 } from "../../src/providers/provider-utils.js";
 
 describe("provider cache diagnostics", () => {
+  it("appends the current prompt after prior conversation messages", () => {
+    expect(normalizeMessages({
+      messages: [
+        { role: "user", content: "Original user request." },
+        { role: "assistant", content: "Prior assistant reply." },
+      ],
+      prompt: "Current delegated subtask.",
+    })).toEqual([
+      { role: "user", content: "Original user request." },
+      { role: "assistant", content: "Prior assistant reply." },
+      { role: "user", content: "Current delegated subtask." },
+    ]);
+  });
+
+  it("does not duplicate the prompt when it already matches the latest user message", () => {
+    expect(normalizeMessages({
+      messages: [
+        { role: "assistant", content: "Prior assistant reply." },
+        { role: "user", content: "Current delegated subtask." },
+      ],
+      prompt: "Current delegated subtask.",
+    })).toEqual([
+      { role: "assistant", content: "Prior assistant reply." },
+      { role: "user", content: "Current delegated subtask." },
+    ]);
+  });
+
   it("splits the stable system prefix from the volatile suffix", () => {
     expect(splitStableSystemPrompt(
       [

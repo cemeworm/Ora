@@ -1,6 +1,6 @@
 import type { RuntimeToolDefinition } from "./capability-registries.js";
 import type { ModeRegistryTools, RuntimeToolExecutionContext } from "./runtime-tool-executor.js";
-import { prefersChinese } from "./runtime-tool-approval.js";
+import { approvalRequestLanguage } from "./runtime-tool-approval.js";
 
 export function modeToolRuntimeFields(toolId: string): Partial<RuntimeToolDefinition<RuntimeToolExecutionContext>> {
   switch (toolId) {
@@ -38,7 +38,7 @@ export function modeToolRuntimeFields(toolId: string): Partial<RuntimeToolDefini
 }
 
 function modeApplyApprovalRequest(_args: Record<string, unknown>, context: { userPrompt?: string }) {
-  const zh = prefersChinese(context.userPrompt);
+  const zh = approvalRequestLanguage({ userPrompt: context.userPrompt }) === "zh";
   const draftLabel = zh ? "这个协调模式" : "this coordination mode";
   return zh
     ? {

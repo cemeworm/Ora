@@ -1,6 +1,6 @@
 import type { RuntimeToolDefinition } from "./capability-registries.js";
 import type { RuntimeToolExecutionContext, SelfIterationRegistryTools } from "./runtime-tool-executor.js";
-import { prefersChinese, stringArg } from "./runtime-tool-approval.js";
+import { approvalRequestLanguage, stringArg } from "./runtime-tool-approval.js";
 
 export function selfIterationToolRuntimeFields(toolId: string): Partial<RuntimeToolDefinition<RuntimeToolExecutionContext>> {
   switch (toolId) {
@@ -42,7 +42,7 @@ export function selfIterationToolRuntimeFields(toolId: string): Partial<RuntimeT
 }
 
 function selfIterationApplyApprovalRequest(args: Record<string, unknown>, context: { userPrompt?: string }) {
-  const zh = prefersChinese(context.userPrompt);
+  const zh = approvalRequestLanguage({ userPrompt: context.userPrompt }) === "zh";
   const candidateId = stringArg(args, "candidateId", zh ? "这个候选方案" : "this candidate");
   return zh
     ? {

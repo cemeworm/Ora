@@ -4,9 +4,12 @@ import * as path from "node:path";
 import {
   type ActionRiskLevel,
   type ActionRecord,
+  type AgentResultContract,
   type AgentConversationMessage,
   AgentConversationMessageSchema,
+  type AgentToolBundleId,
   type ChildSessionClass,
+  type ChildSessionDeliveryStatus,
   type ChildSessionSummary,
   ChildSessionSummarySchema,
   type ParentCoordinationPhase,
@@ -126,6 +129,7 @@ import {
   userFacingLanguagePrompt,
   workspaceSystemPrompt,
 } from "./runtime-prompts.js";
+import { resolveRuntimeResponseLanguage } from "./runtime-language.js";
 import {
   RuntimeToolCallLedger,
   type AppendRuntimeToolCallParams,
@@ -236,6 +240,24 @@ function withCurrentTurnLocalMetadata(
   return [...messages];
 }
 
+type AsyncAgentResultEnvelope = {
+  sourceAgentId: string;
+  childSessionId: string;
+  result: string;
+  completedAt: number;
+  toolBundleId?: AgentToolBundleId;
+  resolvedToolIds: string[];
+  resultContract?: AgentResultContract;
+  usedToolCount: number;
+  artifactIds: string[];
+  durationMs?: number;
+};
+
+type ChildToolBundleDefinition = {
+  toolIds: string[];
+  requiredToolIds?: string[];
+};
+
 class KernelRuntimeContext {
   private readonly eventsValue: OraEventEnvelope[] = [];
   private readonly artifactsValue: ArtifactRef[] = [];
@@ -246,8 +268,11 @@ class KernelRuntimeContext {
   private readonly sharedEntriesValue: SharedStateSummary["entries"] = [];
   private readonly toolCallLedger: RuntimeToolCallLedger;
   private readonly topologyValue: StateSnapshot["topology"];
-  private readonly asyncAgentResultsValue = new Map<string, string>();
+  private readonly asyncAgentResultsValue = new Map<string, AsyncAgentResultEnvelope[]>();
   private readonly childSessionsValue = new Map<string, ChildSessionSummary>();
+  private readonly agentMessagesQueueValue = new Map<string, string[]>();
+  private readonly activeBackgroundChildrenByParentValue = new Map<string, Set<string>>();
+  private readonly backgroundProgressWaitersValue = new Map<string, Array<() => void>>();
   private parentCoordinationValue: ParentCoordinationState | undefined;
   private planListValue: PlanListStep[];
   private queueSummaryValue: QueueSummary;
@@ -361,32 +386,163 @@ class KernelRuntimeContext {
     this.activeAgentsValue.delete(agentId);
   }
 
-  enqueueAsyncAgentResult(agentId: string, result: string): void {
-    this.asyncAgentResultsValue.set(agentId, result);
+  enqueueAsyncAgentResult(params: {
+    targetAgentId: string;
+    sourceAgentId: string;
+    childSessionId: string;
+    result: string;
+    completedAt?: number;
+    toolBundleId?: AgentToolBundleId;
+    resolvedToolIds?: string[];
+    resultContract?: AgentResultContract;
+    usedToolCount?: number;
+    artifactIds?: string[];
+    durationMs?: number;
+  }): void {
+    const results = this.asyncAgentResultsValue.get(params.targetAgentId) ?? [];
+    results.push({
+      sourceAgentId: params.sourceAgentId,
+      childSessionId: params.childSessionId,
+      result: params.result,
+      completedAt: params.completedAt ?? this.params.now(),
+      toolBundleId: params.toolBundleId,
+      resolvedToolIds: params.resolvedToolIds ?? [],
+      resultContract: params.resultContract,
+      usedToolCount: params.usedToolCount ?? 0,
+      artifactIds: params.artifactIds ?? [],
+      durationMs: params.durationMs,
+    });
+    this.asyncAgentResultsValue.set(params.targetAgentId, results);
+    this.notifyBackgroundProgress(params.targetAgentId);
   }
 
-  drainAsyncAgentResults(): Array<{ agentId: string; result: string }> {
-    const results = [...this.asyncAgentResultsValue.entries()].map(([agentId, result]) => ({ agentId, result }));
-    this.asyncAgentResultsValue.clear();
-    return results;
+  drainAsyncAgentResults(
+    agentId: string,
+    filter?: { agentIds?: string[]; childSessionIds?: string[] },
+  ): AsyncAgentResultEnvelope[] {
+    const results = this.asyncAgentResultsValue.get(agentId) ?? [];
+    if (results.length === 0) {
+      return [];
+    }
+    const agentIds = filter?.agentIds?.length ? new Set(filter.agentIds) : undefined;
+    const childSessionIds = filter?.childSessionIds?.length ? new Set(filter.childSessionIds) : undefined;
+    const drained = results.filter((result) =>
+      (!agentIds || agentIds.has(result.sourceAgentId)) &&
+      (!childSessionIds || childSessionIds.has(result.childSessionId))
+    );
+    const remaining = results.filter((result) => !drained.includes(result));
+    if (remaining.length > 0) {
+      this.asyncAgentResultsValue.set(agentId, remaining);
+    } else {
+      this.asyncAgentResultsValue.delete(agentId);
+    }
+    for (const result of drained) {
+      this.updateChildSessionDeliveryStatus(result.childSessionId, "consumed");
+    }
+    return drained;
   }
 
-  hasAsyncAgentResults(): boolean {
-    return this.asyncAgentResultsValue.size > 0;
+  hasAsyncAgentResults(agentId: string): boolean {
+    return (this.asyncAgentResultsValue.get(agentId)?.length ?? 0) > 0;
   }
 
-  private readonly agentMessagesQueueValue = new Map<string, string[]>();
+  pendingAsyncAgentResultCount(agentId: string): number {
+    return this.asyncAgentResultsValue.get(agentId)?.length ?? 0;
+  }
+
+  pendingAsyncAgentResults(
+    agentId: string,
+    filter?: { agentIds?: string[]; childSessionIds?: string[] },
+  ): AsyncAgentResultEnvelope[] {
+    const results = this.asyncAgentResultsValue.get(agentId) ?? [];
+    if (!filter?.agentIds?.length && !filter?.childSessionIds?.length) {
+      return [...results];
+    }
+    const agentIds = filter.agentIds?.length ? new Set(filter.agentIds) : undefined;
+    const childSessionIds = filter.childSessionIds?.length ? new Set(filter.childSessionIds) : undefined;
+    return results.filter((result) =>
+      (!agentIds || agentIds.has(result.sourceAgentId)) &&
+      (!childSessionIds || childSessionIds.has(result.childSessionId))
+    );
+  }
 
   enqueueAgentMessage(toAgentId: string, message: string): void {
     const messages = this.agentMessagesQueueValue.get(toAgentId) ?? [];
     messages.push(message);
     this.agentMessagesQueueValue.set(toAgentId, messages);
+    this.notifyBackgroundProgress(toAgentId);
   }
 
   drainAgentMessages(toAgentId: string): string[] {
     const messages = this.agentMessagesQueueValue.get(toAgentId) ?? [];
     this.agentMessagesQueueValue.delete(toAgentId);
     return messages;
+  }
+
+  registerBackgroundChild(parentAgentId: string, childAgentId: string): void {
+    const children = this.activeBackgroundChildrenByParentValue.get(parentAgentId) ?? new Set<string>();
+    children.add(childAgentId);
+    this.activeBackgroundChildrenByParentValue.set(parentAgentId, children);
+    this.notifyBackgroundProgress(parentAgentId);
+  }
+
+  completeBackgroundChild(parentAgentId: string, childAgentId: string): void {
+    const children = this.activeBackgroundChildrenByParentValue.get(parentAgentId);
+    if (!children) return;
+    children.delete(childAgentId);
+    if (children.size === 0) {
+      this.activeBackgroundChildrenByParentValue.delete(parentAgentId);
+    } else {
+      this.activeBackgroundChildrenByParentValue.set(parentAgentId, children);
+    }
+    this.notifyBackgroundProgress(parentAgentId);
+  }
+
+  activeBackgroundChildCount(parentAgentId: string): number {
+    return this.activeBackgroundChildrenByParentValue.get(parentAgentId)?.size ?? 0;
+  }
+
+  activeBackgroundChildIds(parentAgentId: string): string[] {
+    return [...(this.activeBackgroundChildrenByParentValue.get(parentAgentId) ?? new Set<string>())];
+  }
+
+  async waitForBackgroundProgress(agentId: string): Promise<void> {
+    if (
+      this.activeBackgroundChildCount(agentId) === 0 &&
+      this.pendingAsyncAgentResultCount(agentId) === 0 &&
+      (this.agentMessagesQueueValue.get(agentId)?.length ?? 0) === 0
+    ) {
+      return;
+    }
+    await new Promise<void>((resolve) => {
+      const waiters = this.backgroundProgressWaitersValue.get(agentId) ?? [];
+      waiters.push(resolve);
+      this.backgroundProgressWaitersValue.set(agentId, waiters);
+    });
+  }
+
+  private notifyBackgroundProgress(agentId: string): void {
+    const waiters = this.backgroundProgressWaitersValue.get(agentId) ?? [];
+    if (waiters.length === 0) return;
+    this.backgroundProgressWaitersValue.delete(agentId);
+    for (const waiter of waiters) {
+      waiter();
+    }
+  }
+
+  updateChildSessionDeliveryStatus(
+    childSessionId: string,
+    deliveryStatus: ChildSessionDeliveryStatus,
+  ): ChildSessionSummary | undefined {
+    const current = this.childSessionsValue.get(childSessionId);
+    if (!current || current.deliveryStatus === deliveryStatus) {
+      return current;
+    }
+    return this.updateChildSession({
+      ...current,
+      deliveryStatus,
+      updatedAt: this.params.now(),
+    });
   }
 
   setTopologyStatus(
@@ -1603,9 +1759,14 @@ export async function executeRuntimeKernel(
     context: input.context,
     now,
   });
+  const resolvedRuntimeLanguage = resolveRuntimeResponseLanguage({
+    userPrompt: input.prompt,
+    context: input.context,
+  });
   const turnLocalMetadata = turnLocalMetadataPrompt({
     createdAt: input.createdAt,
     context: input.context,
+    userPrompt: input.prompt,
     now,
   });
   const userLanguageContext = userFacingLanguagePrompt(input.prompt);
@@ -1761,6 +1922,13 @@ export async function executeRuntimeKernel(
     emitRejectedFinalToolIntent,
     extractCausalTaskState: (params: ExtractCausalTaskStateParams) => extractCausalTaskState(params, { invokeProvider: invokeRunProvider }),
     clarificationAnswer,
+    drainPendingExternalInputs: (agentId) => ({
+      messages: kernelRuntimeContext.drainAgentMessages(agentId),
+      asyncResults: kernelRuntimeContext.drainAsyncAgentResults(agentId),
+    }),
+    activeBackgroundChildCount: (agentId) => kernelRuntimeContext.activeBackgroundChildCount(agentId),
+    pendingAsyncResultCount: (agentId) => kernelRuntimeContext.pendingAsyncAgentResultCount(agentId),
+    waitForBackgroundProgress: (agentId) => kernelRuntimeContext.waitForBackgroundProgress(agentId),
     ensureClarification,
     ensureClarifications,
     coerceNoToolResponse,
@@ -1773,6 +1941,7 @@ export async function executeRuntimeKernel(
 
   const runNodeRuntimeLoopForAgent = async (params: RunNodeRuntimeLoopParams): Promise<ModelResponse> =>
     runNodeRuntimeLoop(params, kernelRuntimeContext.nodeLoopDeps);
+  const latestAgentInvocationContext = new Map<string, { prompt: string; system: string }>();
   const assistantMessageId = (params: {
     agentId: string;
     nodeId: string;
@@ -1794,25 +1963,10 @@ export async function executeRuntimeKernel(
     riskLevel?: ActionRiskLevel;
     toolIds?: string[];
   }) => {
-    lastCallAgentId = params.agentId;
-    lastCallAgentPrompt = params.prompt;
-    lastCallAgentSystem = params.system;
-
-    let effectivePrompt = params.prompt;
-    const pendingMessages = kernelRuntimeContext.drainAgentMessages(params.agentId);
-    if (pendingMessages.length > 0) {
-      const messageContext = pendingMessages.map((m, i) =>
-        `<agent-message seq="${i + 1}">\n${m}\n</agent-message>`
-      ).join("\n\n");
-      effectivePrompt = `${effectivePrompt}\n\n<agent-messages>\nThe following messages were sent to you:\n\n${messageContext}\n</agent-messages>`;
-    }
-    if (kernelRuntimeContext.hasAsyncAgentResults()) {
-      const results = kernelRuntimeContext.drainAsyncAgentResults();
-      const resultContext = results.map((r) =>
-        `<async-agent-result agent="${r.agentId}">\n${r.result}\n</async-agent-result>`
-      ).join("\n\n");
-      effectivePrompt = `${effectivePrompt}\n\n<async-results>\nThe following async sub-agent results are now available:\n\n${resultContext}\n</async-results>`;
-    }
+    latestAgentInvocationContext.set(params.agentId, {
+      prompt: params.prompt,
+      system: params.system,
+    });
 
     kernelRuntimeContext.activateAgent(params.agentId);
     setTopologyStatus(params.agentId, "running");
@@ -1908,7 +2062,7 @@ export async function executeRuntimeKernel(
           agentId: params.agentId,
           nodeId: params.planItemId ?? params.agentId,
           title: params.title,
-          prompt: promptWithTurnLocalMetadata(effectivePrompt, turnLocalMetadata),
+          prompt: promptWithTurnLocalMetadata(params.prompt, turnLocalMetadata),
           system: runtimePromptContext.system,
           providerCache: runtimePromptContext.stablePrefix
             ? { stableSystemPrefix: runtimePromptContext.stablePrefix }
@@ -2015,9 +2169,6 @@ export async function executeRuntimeKernel(
         );
         kernelRuntimeContext.deactivateAgent(params.agentId);
         setTopologyStatus(params.agentId, "done");
-        if (!drainingAsync) {
-          await drainAsyncSpawnQueue();
-        }
         return response.text;
       } catch (error) {
         if (isRecoveryExhaustedError(error)) {
@@ -2140,9 +2291,6 @@ export async function executeRuntimeKernel(
         });
         kernelRuntimeContext.deactivateAgent(params.agentId);
         setTopologyStatus(params.agentId, "done");
-        if (!drainingAsync) {
-          await drainAsyncSpawnQueue();
-        }
         throw new AgentDegradedError(visibleFallback, {
           recoveryArtifactId: recoveryArtifact.id,
           errorType: incident.errorType,
@@ -2156,10 +2304,31 @@ export async function executeRuntimeKernel(
   const MAX_SPAWN_DEPTH = 3;
   let isNestedAgentSpawn = false;
   let subAgentCounter = 0;
-  let lastCallAgentPrompt = "";
-  let lastCallAgentSystem = "";
-  let lastCallAgentId = "";
   const childCoordinationBarrier = new Map<string, "required" | "independent">();
+  const CHILD_TOOL_BUNDLES: Record<AgentToolBundleId, ChildToolBundleDefinition> = {
+    research_readonly: {
+      toolIds: ["file.read", "file.list", "file.glob", "file.grep", "web.fetch", "web.search"],
+      requiredToolIds: ["file.read", "file.grep"],
+    },
+    repo_forensics: {
+      toolIds: ["file.read", "file.list", "file.glob", "file.grep", "shell.execute", "web.fetch", "web.search"],
+      requiredToolIds: ["file.read", "shell.execute"],
+    },
+    review_readonly: {
+      toolIds: ["file.read", "file.list", "file.glob", "file.grep"],
+      requiredToolIds: ["file.read", "file.grep"],
+    },
+    builder_write: {
+      toolIds: ["file.read", "file.list", "file.glob", "file.grep", "file.write", "file.patch", "file.apply_patch", "shell.execute"],
+      requiredToolIds: ["file.read", "file.apply_patch"],
+    },
+  };
+  const DEFAULT_RESULT_CONTRACT_BY_BUNDLE: Record<AgentToolBundleId, AgentResultContract> = {
+    research_readonly: "final_answer",
+    repo_forensics: "evidence_report",
+    review_readonly: "evidence_report",
+    builder_write: "diff_report",
+  };
 
   const updateCollaborationState = (params: {
     agentId: string;
@@ -2170,6 +2339,12 @@ export async function executeRuntimeKernel(
     summary?: string;
     lastMessage?: string;
     artifactIds?: string[];
+    toolBundleId?: AgentToolBundleId;
+    resolvedToolIds?: string[];
+    resultContract?: AgentResultContract;
+    deliveryStatus?: ChildSessionSummary["deliveryStatus"];
+    usedToolCount?: number;
+    durationMs?: number;
   }) => {
     const current = kernelRuntimeContext.childSession(params.agentId);
     if (params.coordinationBarrier) {
@@ -2182,9 +2357,15 @@ export async function executeRuntimeKernel(
       label: params.label,
       sessionClass: params.sessionClass,
       status: params.status,
+      deliveryStatus: params.deliveryStatus ?? current?.deliveryStatus,
       summary: params.summary ?? current?.summary,
       lastMessage: params.lastMessage ?? current?.lastMessage,
       artifactIds: params.artifactIds ?? current?.artifactIds ?? [],
+      toolBundleId: params.toolBundleId ?? current?.toolBundleId,
+      resolvedToolIds: params.resolvedToolIds ?? current?.resolvedToolIds ?? [],
+      resultContract: params.resultContract ?? current?.resultContract,
+      usedToolCount: params.usedToolCount ?? current?.usedToolCount,
+      durationMs: params.durationMs ?? current?.durationMs,
       replayRef: {
         kind: "event_range",
         runId,
@@ -2211,26 +2392,389 @@ export async function executeRuntimeKernel(
     return next;
   };
 
-  type AsyncSpawnEntry = {
+  const resolvedSpawnTooling = (params: {
     agentId: string;
+    toolBundle?: AgentToolBundleId;
+    toolIds?: string[];
+    resultContract?: AgentResultContract;
+  }): {
+    toolBundleId?: AgentToolBundleId;
+    resolvedToolIds?: string[];
+    resultContract: AgentResultContract;
+  } => {
+    if (!params.toolBundle && !params.toolIds?.length) {
+      return {
+        resultContract: params.resultContract ?? "final_answer",
+      };
+    }
+    if (!params.toolBundle) {
+      const resolvedToolIds = restrictToolsForAgentBoundary(
+        params.agentId,
+        config.toolIds.filter((toolId) => params.toolIds?.includes(toolId)),
+      );
+      if (params.toolIds?.length && resolvedToolIds.length === 0) {
+        throw new Error("agent.spawn custom tool_ids resolved to no executable tools in the current run.");
+      }
+      return {
+        resolvedToolIds,
+        resultContract: params.resultContract ?? "final_answer",
+      };
+    }
+    const bundle = CHILD_TOOL_BUNDLES[params.toolBundle];
+    const bundleToolIds = restrictToolsForAgentBoundary(
+      params.agentId,
+      config.toolIds.filter((toolId) => bundle.toolIds.includes(toolId)),
+    );
+    const missingRequired = (bundle.requiredToolIds ?? []).filter((toolId) => !bundleToolIds.includes(toolId));
+    if (missingRequired.length > 0) {
+      throw new Error(`agent.spawn tool bundle "${params.toolBundle}" requires unavailable tools: ${missingRequired.join(", ")}`);
+    }
+    const requestedToolIds = params.toolIds?.length
+      ? bundleToolIds.filter((toolId) => params.toolIds?.includes(toolId))
+      : bundleToolIds;
+    if (requestedToolIds.length === 0) {
+      throw new Error(`agent.spawn tool bundle "${params.toolBundle}" resolved to no executable tools in the current run.`);
+    }
+    return {
+      toolBundleId: params.toolBundle,
+      resolvedToolIds: requestedToolIds,
+      resultContract: params.resultContract ?? DEFAULT_RESULT_CONTRACT_BY_BUNDLE[params.toolBundle],
+    };
+  };
+
+  const collectChildExecutionStats = (agentId: string): {
+    usedToolCount: number;
+    artifactIds: string[];
+  } => {
+    const childSession = kernelRuntimeContext.childSession(agentId);
+    const startedAt = childSession?.startedAt;
+    const completedAt = now();
+    const toolCalls = kernelRuntimeContext.toolCalls.filter((call) =>
+      call.agentId === agentId &&
+      call.toolId !== "agent.spawn" &&
+      call.toolId !== "agent.wait" &&
+      call.toolId !== "message.send" &&
+      call.status !== "proposed" &&
+      (typeof startedAt !== "number" || call.requestedAt >= startedAt) &&
+      call.requestedAt <= completedAt
+    );
+    const artifactIds = childSession?.artifactIds ?? [];
+    return {
+      usedToolCount: toolCalls.length,
+      artifactIds: [...artifactIds],
+    };
+  };
+
+  const validateChildResult = (params: {
+    agentId: string;
+    description: string;
+    resultText: string;
+    resultContract: AgentResultContract;
+    toolBundleId?: AgentToolBundleId;
+    resolvedToolIds?: string[];
+    usedToolCount: number;
+  }): string => {
+    const trimmed = stripInternalAssistantText(params.resultText).trim();
+    if (!trimmed || isInternalProviderAssistantText(params.resultText)) {
+      throw new Error(`Sub-agent "${params.description || params.agentId}" produced only internal tool protocol text and no consumable answer.`);
+    }
+    if (
+      params.resultContract !== "plan_only" &&
+      /<proposed_plan>\s*[\s\S]+?\s*<\/proposed_plan>/i.test(params.resultText)
+    ) {
+      throw new Error(`Sub-agent "${params.description || params.agentId}" returned a proposed plan where an executable result was required.`);
+    }
+    if (
+      (params.toolBundleId === "research_readonly" ||
+        params.toolBundleId === "repo_forensics" ||
+        params.toolBundleId === "review_readonly") &&
+      params.usedToolCount === 0
+    ) {
+      throw new Error(`Sub-agent "${params.description || params.agentId}" did not execute any real tools for bundle "${params.toolBundleId}".`);
+    }
+    if (
+      params.toolBundleId === "repo_forensics" &&
+      params.resolvedToolIds?.includes("shell.execute") &&
+      params.usedToolCount === 0
+    ) {
+      throw new Error(`Sub-agent "${params.description || params.agentId}" did not perform the expected repository forensics tool execution.`);
+    }
+    return trimmed;
+  };
+
+  type BackgroundSpawnEntry = {
     effectiveAgentId: string;
+    parentAgentId: string;
     description: string;
     prompt: string;
     sessionClass: ChildSessionClass;
-    inheritContext?: boolean;
+    toolBundleId?: AgentToolBundleId;
+    resultContract: AgentResultContract;
+    resolvedToolIds?: string[];
     customSystemPrompt?: string;
     customToolIds?: string[];
   };
-  const asyncSpawnQueue: AsyncSpawnEntry[] = [];
-  let drainingAsync = false;
+  const backgroundSpawnTasks = new Map<string, Promise<void>>();
 
-  runtimeToolExecutor.setEnqueueMessage(({ to, message }) => {
+  const ensureSpawnProfile = (params: {
+    effectiveAgentId: string;
+    sourceAgentId: string;
+    description: string;
+    customToolIds?: string[];
+    defaultLabelPrefix: string;
+  }) => {
+    if (!profilesById.has(params.effectiveAgentId)) {
+      const baseProfile = profilesById.get(params.sourceAgentId) ?? profilesById.get(ORA_ROOT_AGENT_ID);
+      if (baseProfile) {
+        const customLabel = params.description.length > 30 ? params.description.slice(0, 30) : params.description;
+        profilesById.set(params.effectiveAgentId, {
+          ...baseProfile,
+          id: params.effectiveAgentId,
+          label: customLabel || `${params.defaultLabelPrefix} ${subAgentCounter}`,
+          ...(params.customToolIds ? { toolIds: params.customToolIds } : {}),
+        });
+      }
+      return;
+    }
+    if (params.customToolIds) {
+      const existing = profilesById.get(params.effectiveAgentId);
+      if (existing) {
+        profilesById.set(params.effectiveAgentId, { ...existing, toolIds: params.customToolIds });
+      }
+    }
+  };
+
+  const buildInheritedPrompt = (params: {
+    prompt: string;
+    parentAgentId: string;
+    inheritContext?: boolean;
+  }): string => {
+    if (!params.inheritContext) {
+      return params.prompt;
+    }
+    const invocationContext = latestAgentInvocationContext.get(params.parentAgentId);
+    if (!invocationContext?.prompt) {
+      return params.prompt;
+    }
+    return [
+      `<inherited-context>`,
+      `The parent agent was working on this task:`,
+      invocationContext.prompt,
+      `</inherited-context>`,
+      ``,
+      `Your specific subtask:`,
+      params.prompt,
+    ].join("\n");
+  };
+
+  const launchBackgroundSpawn = (entry: BackgroundSpawnEntry): void => {
+    const task = (async () => {
+      const prevNestedSpawn = isNestedAgentSpawn;
+      isNestedAgentSpawn = true;
+      const MAX_TITLE_LENGTH = 200;
+      const safeTitle = entry.description.length > MAX_TITLE_LENGTH
+        ? entry.description.slice(0, MAX_TITLE_LENGTH)
+        : entry.description;
+      const startedAt = now();
+      try {
+        updateCollaborationState({
+          agentId: entry.effectiveAgentId,
+          label: entry.description || agentLabel(entry.effectiveAgentId),
+          sessionClass: entry.sessionClass,
+          status: "running",
+          coordinationBarrier: "independent",
+          summary: "后台子 Agent 正在执行任务。",
+          toolBundleId: entry.toolBundleId,
+          resolvedToolIds: entry.resolvedToolIds,
+          resultContract: entry.resultContract,
+        });
+        const runtimeCtx = withAgentRuntimeContext(entry.customSystemPrompt ?? "", { agentId: entry.effectiveAgentId });
+        const result = await callAgent({
+          agentId: entry.effectiveAgentId,
+          title: safeTitle,
+          prompt: entry.prompt,
+          system: entry.customSystemPrompt || runtimeCtx.system,
+          riskLevel: "low",
+          toolIds: entry.customToolIds,
+        });
+        const rawText = typeof result === "string" ? result : String(result ?? "");
+        const stats = collectChildExecutionStats(entry.effectiveAgentId);
+        const durationMs = Math.max(0, now() - startedAt);
+        const text = validateChildResult({
+          agentId: entry.effectiveAgentId,
+          description: entry.description,
+          resultText: rawText,
+          resultContract: entry.resultContract,
+          toolBundleId: entry.toolBundleId,
+          resolvedToolIds: entry.resolvedToolIds,
+          usedToolCount: stats.usedToolCount,
+        });
+        kernelRuntimeContext.enqueueAsyncAgentResult({
+          targetAgentId: entry.parentAgentId,
+          sourceAgentId: entry.effectiveAgentId,
+          childSessionId: `${runId}:${entry.effectiveAgentId}`,
+          result: text,
+          toolBundleId: entry.toolBundleId,
+          resolvedToolIds: entry.resolvedToolIds,
+          resultContract: entry.resultContract,
+          usedToolCount: stats.usedToolCount,
+          artifactIds: stats.artifactIds,
+          durationMs,
+        });
+        updateCollaborationState({
+          agentId: entry.effectiveAgentId,
+          label: entry.description || agentLabel(entry.effectiveAgentId),
+          sessionClass: entry.sessionClass,
+          status: "succeeded",
+          coordinationBarrier: "independent",
+          summary: text.trim() || "后台子 Agent 已完成。",
+          lastMessage: text.trim() || undefined,
+          toolBundleId: entry.toolBundleId,
+          resolvedToolIds: entry.resolvedToolIds,
+          resultContract: entry.resultContract,
+          deliveryStatus: "awaiting_pickup",
+          usedToolCount: stats.usedToolCount,
+          artifactIds: stats.artifactIds,
+          durationMs,
+        });
+      } catch (err) {
+        if (isAgentDegradedError(err)) {
+          const stats = collectChildExecutionStats(entry.effectiveAgentId);
+          const durationMs = Math.max(0, now() - startedAt);
+          const text = stripInternalAssistantText(err.degradedOutput).trim() || err.degradedOutput;
+          kernelRuntimeContext.enqueueAsyncAgentResult({
+            targetAgentId: entry.parentAgentId,
+            sourceAgentId: entry.effectiveAgentId,
+            childSessionId: `${runId}:${entry.effectiveAgentId}`,
+            result: text,
+            toolBundleId: entry.toolBundleId,
+            resolvedToolIds: entry.resolvedToolIds,
+            resultContract: entry.resultContract,
+            usedToolCount: stats.usedToolCount,
+            artifactIds: stats.artifactIds,
+            durationMs,
+          });
+          updateCollaborationState({
+            agentId: entry.effectiveAgentId,
+            label: entry.description || agentLabel(entry.effectiveAgentId),
+            sessionClass: entry.sessionClass,
+            status: "succeeded",
+            coordinationBarrier: "independent",
+            summary: text,
+            lastMessage: text,
+            toolBundleId: entry.toolBundleId,
+            resolvedToolIds: entry.resolvedToolIds,
+            resultContract: entry.resultContract,
+            deliveryStatus: "awaiting_pickup",
+            usedToolCount: stats.usedToolCount,
+            artifactIds: stats.artifactIds,
+            durationMs,
+          });
+        } else {
+          const message = `Error: ${err instanceof Error ? err.message : String(err)}`;
+          const stats = collectChildExecutionStats(entry.effectiveAgentId);
+          const durationMs = Math.max(0, now() - startedAt);
+          kernelRuntimeContext.enqueueAsyncAgentResult({
+            targetAgentId: entry.parentAgentId,
+            sourceAgentId: entry.effectiveAgentId,
+            childSessionId: `${runId}:${entry.effectiveAgentId}`,
+            result: message,
+            toolBundleId: entry.toolBundleId,
+            resolvedToolIds: entry.resolvedToolIds,
+            resultContract: entry.resultContract,
+            usedToolCount: stats.usedToolCount,
+            artifactIds: stats.artifactIds,
+            durationMs,
+          });
+          updateCollaborationState({
+            agentId: entry.effectiveAgentId,
+            label: entry.description || agentLabel(entry.effectiveAgentId),
+            sessionClass: entry.sessionClass,
+            status: options.signal?.aborted ? "cancelled" : "failed",
+            coordinationBarrier: "independent",
+            summary: message,
+            lastMessage: message,
+            toolBundleId: entry.toolBundleId,
+            resolvedToolIds: entry.resolvedToolIds,
+            resultContract: entry.resultContract,
+            deliveryStatus: "awaiting_pickup",
+            usedToolCount: stats.usedToolCount,
+            artifactIds: stats.artifactIds,
+            durationMs,
+          });
+        }
+      } finally {
+        kernelRuntimeContext.completeBackgroundChild(entry.parentAgentId, entry.effectiveAgentId);
+        backgroundSpawnTasks.delete(entry.effectiveAgentId);
+        isNestedAgentSpawn = prevNestedSpawn;
+      }
+    })();
+    backgroundSpawnTasks.set(entry.effectiveAgentId, task);
+  };
+
+  const waitForSelectedBackgroundChildren = async (params: {
+    parentAgentId: string;
+    agentIds?: string[];
+    childSessionIds?: string[];
+    requireAll?: boolean;
+  }) => {
+    const requireAll = params.requireAll !== false;
+    const filter = {
+      agentIds: params.agentIds?.length ? params.agentIds : undefined,
+      childSessionIds: params.childSessionIds?.length ? params.childSessionIds : undefined,
+    };
+    const isSelectedActiveChild = (agentId: string) =>
+      (!filter.agentIds || filter.agentIds.includes(agentId)) &&
+      (!filter.childSessionIds || filter.childSessionIds.includes(`${runId}:${agentId}`));
+
+    while (true) {
+      const pendingResults = kernelRuntimeContext.pendingAsyncAgentResults(params.parentAgentId, filter);
+      const activeChildren = kernelRuntimeContext
+        .activeBackgroundChildIds(params.parentAgentId)
+        .filter((agentId) => isSelectedActiveChild(agentId));
+      if (requireAll) {
+        if (activeChildren.length === 0) {
+          break;
+        }
+      } else if (pendingResults.length > 0 || activeChildren.length === 0) {
+        break;
+      }
+      await kernelRuntimeContext.waitForBackgroundProgress(params.parentAgentId);
+    }
+
+    const results = kernelRuntimeContext.drainAsyncAgentResults(params.parentAgentId, filter);
+    return {
+      status: results.length > 0 ? "completed" : "idle",
+      require_all: requireAll,
+      waited_for: {
+        agent_ids: filter.agentIds ?? [],
+        child_session_ids: filter.childSessionIds ?? [],
+      },
+      results: results.map((result) => ({
+        child_session_id: result.childSessionId,
+        agent_id: result.sourceAgentId,
+        title: kernelRuntimeContext.childSession(result.sourceAgentId)?.label ?? result.sourceAgentId,
+        tool_bundle: result.toolBundleId,
+        resolved_tool_ids: result.resolvedToolIds,
+        result_contract: result.resultContract,
+        status: kernelRuntimeContext.childSession(result.sourceAgentId)?.status ?? "succeeded",
+        delivery_status: "consumed",
+        result_text: result.result,
+        used_tool_count: result.usedToolCount,
+        artifact_ids: result.artifactIds,
+        duration_ms: result.durationMs,
+        completed_at: result.completedAt,
+      })),
+    };
+  };
+
+  runtimeToolExecutor.setEnqueueMessage(({ to, message, invokingAgentId }) => {
     kernelRuntimeContext.enqueueAgentMessage(to, message);
     const agentMsg = AgentConversationMessageSchema.parse({
       id: `${runId}:agent-message:${kernelRuntimeContext.agentMessageCount()}`,
       runId,
       createdAt: now(),
-      fromAgentId: lastCallAgentId || "agent",
+      fromAgentId: invokingAgentId || "agent",
       toAgentIds: [to],
       kind: "mention",
       status: "sent",
@@ -2244,24 +2788,49 @@ export async function executeRuntimeKernel(
     );
   });
 
-  runtimeToolExecutor.setSpawnAgent(async ({ description, prompt, agentType, runInBackground, inheritContext, systemPrompt: customSystemPrompt, toolIds: customToolIds }) => {
+  runtimeToolExecutor.setWaitForAgents(async ({ agentIds, childSessionIds, requireAll, invokingAgentId }) =>
+    waitForSelectedBackgroundChildren({
+      parentAgentId: invokingAgentId || ORA_ROOT_AGENT_ID,
+      agentIds,
+      childSessionIds,
+      requireAll,
+    })
+  );
+
+  runtimeToolExecutor.setSpawnAgent(async ({ description, prompt, agentType, runInBackground, inheritContext, systemPrompt: customSystemPrompt, toolBundle, toolIds: requestedToolIds, resultContract, invokingAgentId }) => {
     const agentId = agentType ?? ORA_ROOT_AGENT_ID;
     if (agentId !== ORA_ROOT_AGENT_ID && !profilesById.has(agentId)) {
       throw new Error(`agent.spawn: unknown agent profile "${agentId}". Available: ${[...profilesById.keys()].join(", ")}`);
     }
+    const parentAgentId = invokingAgentId || ORA_ROOT_AGENT_ID;
+    const spawnTooling = resolvedSpawnTooling({
+      agentId,
+      toolBundle,
+      toolIds: requestedToolIds,
+      resultContract,
+    });
+    const customToolIds = spawnTooling.resolvedToolIds;
 
     if (runInBackground) {
-      const queuedAgentId = agentType ?? `ora-sub-async-${subAgentCounter + 1}`;
+      if (spawnDepth + 1 > MAX_SPAWN_DEPTH) {
+        throw new Error(`agent.spawn depth limit (${MAX_SPAWN_DEPTH}) exceeded.`);
+      }
+      subAgentCounter += 1;
+      const queuedAgentId = agentType
+        ? `${agentId}#bg-${subAgentCounter}`
+        : `ora-sub-async-${subAgentCounter}`;
       const sessionClass = agentType ? "mode_subagent" : "temporary_spawn";
-      asyncSpawnQueue.push({
-        agentId,
+      ensureSpawnProfile({
         effectiveAgentId: queuedAgentId,
+        sourceAgentId: agentId,
         description,
-        prompt,
-        sessionClass,
-        inheritContext,
-        customSystemPrompt,
         customToolIds,
+        defaultLabelPrefix: "Async sub-agent",
+      });
+      const effectiveAsyncPrompt = buildInheritedPrompt({
+        prompt,
+        parentAgentId,
+        inheritContext,
       });
       updateCollaborationState({
         agentId: queuedAgentId,
@@ -2270,38 +2839,51 @@ export async function executeRuntimeKernel(
         status: "queued",
         coordinationBarrier: "independent",
         summary: "已进入后台协作队列。",
+        toolBundleId: spawnTooling.toolBundleId,
+        resolvedToolIds: customToolIds,
+        resultContract: spawnTooling.resultContract,
       });
-      return { status: "async_launched", agent_id: agentId, description };
+      kernelRuntimeContext.registerBackgroundChild(parentAgentId, queuedAgentId);
+      launchBackgroundSpawn({
+        effectiveAgentId: queuedAgentId,
+        parentAgentId,
+        description,
+        prompt: effectiveAsyncPrompt,
+        sessionClass,
+        toolBundleId: spawnTooling.toolBundleId,
+        resultContract: spawnTooling.resultContract,
+        resolvedToolIds: customToolIds,
+        customSystemPrompt,
+        customToolIds,
+      });
+      return {
+        status: "async_launched",
+        agent_id: agentId,
+        child_agent_id: queuedAgentId,
+        child_session_id: `${runId}:${queuedAgentId}`,
+        description,
+        tool_bundle: spawnTooling.toolBundleId,
+        resolved_tool_ids: customToolIds ?? [],
+        result_contract: spawnTooling.resultContract,
+      };
     }
 
     // Assign a unique agent ID so the sub-agent's guard doesn't see the
     // parent's in-progress agent.spawn tool call as pending work.
     subAgentCounter += 1;
     const effectiveAgentId = agentType
-      ? agentId
+      ? `${agentId}#sync-${subAgentCounter}`
       : `ora-sub-${subAgentCounter}`;
     if (agentType && agentId !== ORA_ROOT_AGENT_ID && !profilesById.has(agentId)) {
       throw new Error(`agent.spawn: unknown agent profile "${agentId}". Available: ${[...profilesById.keys()].join(", ")}`);
     }
-    // Register synthetic sub-agent profile so profile lookups succeed
-    if (!profilesById.has(effectiveAgentId)) {
-      const rootProfile = profilesById.get(ORA_ROOT_AGENT_ID);
-      if (rootProfile) {
-        const customLabel = description.length > 30 ? description.slice(0, 30) : description;
-        profilesById.set(effectiveAgentId, {
-          ...rootProfile,
-          id: effectiveAgentId,
-          label: customLabel || `Sub-agent ${subAgentCounter}`,
-          ...(customToolIds ? { toolIds: customToolIds } : {}),
-        });
-      }
-    } else if (customToolIds) {
-      // Override tool IDs on an existing profile
-      const existing = profilesById.get(effectiveAgentId);
-      if (existing) {
-        profilesById.set(effectiveAgentId, { ...existing, toolIds: customToolIds });
-      }
-    }
+    ensureSpawnProfile({
+      effectiveAgentId,
+      sourceAgentId: agentId,
+      description,
+      customToolIds,
+      defaultLabelPrefix: "Sub-agent",
+    });
     updateCollaborationState({
       agentId: effectiveAgentId,
       label: description || agentLabel(effectiveAgentId),
@@ -2309,6 +2891,9 @@ export async function executeRuntimeKernel(
       status: "running",
       coordinationBarrier: "required",
       summary: "子 Agent 正在执行任务。",
+      toolBundleId: spawnTooling.toolBundleId,
+      resolvedToolIds: customToolIds,
+      resultContract: spawnTooling.resultContract,
     });
 
     spawnDepth += 1;
@@ -2318,6 +2903,7 @@ export async function executeRuntimeKernel(
     }
     const prevNestedSpawn = isNestedAgentSpawn;
     isNestedAgentSpawn = true;
+    const startedAt = now();
     try {
       const wasAlreadyActive = kernelRuntimeContext.activeAgents.includes(effectiveAgentId);
       const runtimeCtx = withAgentRuntimeContext(customSystemPrompt ?? "", { agentId: effectiveAgentId });
@@ -2326,19 +2912,11 @@ export async function executeRuntimeKernel(
         ? description.slice(0, MAX_TITLE_LENGTH)
         : description;
 
-      // Context inheritance: prepend parent's task context to sub-agent prompt
-      let effectiveSubPrompt = prompt;
-      if (inheritContext && lastCallAgentPrompt) {
-        effectiveSubPrompt = [
-          `<inherited-context>`,
-          `The parent agent was working on this task:`,
-          lastCallAgentPrompt,
-          `</inherited-context>`,
-          ``,
-          `Your specific subtask:`,
-          prompt,
-        ].join("\n");
-      }
+      const effectiveSubPrompt = buildInheritedPrompt({
+        prompt,
+        parentAgentId,
+        inheritContext,
+      });
 
       let result: unknown;
       try {
@@ -2348,6 +2926,7 @@ export async function executeRuntimeKernel(
           prompt: effectiveSubPrompt,
           system: customSystemPrompt || runtimeCtx.system,
           riskLevel: "low",
+          toolIds: customToolIds,
         });
       } catch (caught) {
         if (isAgentDegradedError(caught)) {
@@ -2361,6 +2940,11 @@ export async function executeRuntimeKernel(
             coordinationBarrier: "required",
             summary: caught instanceof Error ? caught.message : String(caught),
             lastMessage: caught instanceof Error ? caught.message : String(caught),
+            toolBundleId: spawnTooling.toolBundleId,
+            resolvedToolIds: customToolIds,
+            resultContract: spawnTooling.resultContract,
+            usedToolCount: collectChildExecutionStats(effectiveAgentId).usedToolCount,
+            durationMs: Math.max(0, now() - startedAt),
           });
           throw caught;
         }
@@ -2368,7 +2952,18 @@ export async function executeRuntimeKernel(
       if (wasAlreadyActive) {
         kernelRuntimeContext.activateAgent(effectiveAgentId);
       }
-      const text = typeof result === "string" ? result : String(result ?? "");
+      const rawText = typeof result === "string" ? result : String(result ?? "");
+      const stats = collectChildExecutionStats(effectiveAgentId);
+      const durationMs = Math.max(0, now() - startedAt);
+      const text = validateChildResult({
+        agentId: effectiveAgentId,
+        description,
+        resultText: rawText,
+        resultContract: spawnTooling.resultContract,
+        toolBundleId: spawnTooling.toolBundleId,
+        resolvedToolIds: customToolIds,
+        usedToolCount: stats.usedToolCount,
+      });
       updateCollaborationState({
         agentId: effectiveAgentId,
         label: description || agentLabel(effectiveAgentId),
@@ -2377,6 +2972,12 @@ export async function executeRuntimeKernel(
         coordinationBarrier: "required",
         summary: text.trim() || "子 Agent 已完成。",
         lastMessage: text.trim() || undefined,
+        toolBundleId: spawnTooling.toolBundleId,
+        resolvedToolIds: customToolIds,
+        resultContract: spawnTooling.resultContract,
+        usedToolCount: stats.usedToolCount,
+        artifactIds: stats.artifactIds,
+        durationMs,
       });
       return text;
     } finally {
@@ -2384,108 +2985,6 @@ export async function executeRuntimeKernel(
       isNestedAgentSpawn = prevNestedSpawn;
     }
   });
-
-  async function drainAsyncSpawnQueue(): Promise<void> {
-    if (drainingAsync || asyncSpawnQueue.length === 0) return;
-    drainingAsync = true;
-    const prevNestedSpawn = isNestedAgentSpawn;
-    isNestedAgentSpawn = true;
-    try {
-      while (asyncSpawnQueue.length > 0) {
-        const entry = asyncSpawnQueue.shift()!;
-        if (entry.effectiveAgentId.startsWith("ora-sub-async-")) {
-          subAgentCounter += 1;
-        }
-        const effectiveAgentId = entry.effectiveAgentId;
-        if (!profilesById.has(effectiveAgentId)) {
-          const rootProfile = profilesById.get(ORA_ROOT_AGENT_ID);
-          if (rootProfile) {
-            const customLabel = entry.description.length > 30 ? entry.description.slice(0, 30) : entry.description;
-            profilesById.set(effectiveAgentId, {
-              ...rootProfile,
-              id: effectiveAgentId,
-              label: customLabel || `Async sub-agent ${subAgentCounter}`,
-              ...(entry.customToolIds ? { toolIds: entry.customToolIds } : {}),
-            });
-          }
-        } else if (entry.customToolIds) {
-          const existing = profilesById.get(effectiveAgentId);
-          if (existing) {
-            profilesById.set(effectiveAgentId, { ...existing, toolIds: entry.customToolIds });
-          }
-        }
-        try {
-          updateCollaborationState({
-            agentId: effectiveAgentId,
-            label: entry.description || agentLabel(effectiveAgentId),
-            sessionClass: entry.sessionClass,
-            status: "running",
-            coordinationBarrier: "independent",
-            summary: "后台子 Agent 正在执行任务。",
-          });
-          const runtimeCtx = withAgentRuntimeContext(entry.customSystemPrompt ?? "", { agentId: effectiveAgentId });
-          let effectiveAsyncPrompt = entry.prompt;
-          if (entry.inheritContext && lastCallAgentPrompt) {
-            effectiveAsyncPrompt = [
-              `<inherited-context>`,
-              `The parent agent was working on this task:`,
-              lastCallAgentPrompt,
-              `</inherited-context>`,
-              ``,
-              `Your specific subtask:`,
-              entry.prompt,
-            ].join("\n");
-          }
-          const result = await callAgent({
-            agentId: effectiveAgentId,
-            title: entry.description,
-            prompt: effectiveAsyncPrompt,
-            system: entry.customSystemPrompt || runtimeCtx.system,
-            riskLevel: "low",
-          });
-          const text = typeof result === "string" ? result : String(result ?? "");
-          kernelRuntimeContext.enqueueAsyncAgentResult(effectiveAgentId, text);
-          updateCollaborationState({
-            agentId: effectiveAgentId,
-            label: entry.description || agentLabel(effectiveAgentId),
-            sessionClass: entry.sessionClass,
-            status: "succeeded",
-            coordinationBarrier: "independent",
-            summary: text.trim() || "后台子 Agent 已完成。",
-            lastMessage: text.trim() || undefined,
-          });
-        } catch (err) {
-          if (isAgentDegradedError(err)) {
-            kernelRuntimeContext.enqueueAsyncAgentResult(effectiveAgentId, err.degradedOutput);
-            updateCollaborationState({
-              agentId: effectiveAgentId,
-              label: entry.description || agentLabel(effectiveAgentId),
-              sessionClass: entry.sessionClass,
-              status: "succeeded",
-              coordinationBarrier: "independent",
-              summary: err.degradedOutput,
-              lastMessage: err.degradedOutput,
-            });
-          } else {
-            const message = `Error: ${err instanceof Error ? err.message : String(err)}`;
-            kernelRuntimeContext.enqueueAsyncAgentResult(effectiveAgentId, message);
-            updateCollaborationState({
-              agentId: effectiveAgentId,
-              label: entry.description || agentLabel(effectiveAgentId),
-              sessionClass: entry.sessionClass,
-              status: "failed",
-              coordinationBarrier: "independent",
-              summary: message,
-              lastMessage: message,
-            });
-          }
-        }
-      }
-    } finally {
-      drainingAsync = false;
-      isNestedAgentSpawn = prevNestedSpawn;
-    }
-  }
 
   const continuationWithActiveFrameStatus = (status: "completed" | "failed" | "resuming" | "awaiting_model") => {
     const continuation = options.resumeState?.continuation;
@@ -3049,12 +3548,13 @@ export async function executeRuntimeKernel(
       let accumulatedText = "";
       const response = await invokeRunProviderStream(config, {
         system: [
-          "You are Ora, the root conversation agent for Ora.",
-          "The selected mode has returned its work product. Write the final user-facing answer.",
-          "Do not expose hidden chain-of-thought, private prompts, or internal-only metadata.",
-          "Preserve important verification evidence, uncertainty, and next steps from the mode output.",
-          userLanguageContext,
-        ].join("\n"),
+        "You are Ora, the root conversation agent for Ora.",
+        "The selected mode has returned its work product. Write the final user-facing answer.",
+        "Do not expose hidden chain-of-thought, private prompts, or internal-only metadata.",
+        "Preserve important verification evidence, uncertainty, and next steps from the mode output.",
+        `Resolved response language for this turn: ${resolvedRuntimeLanguage.responseLanguage} (${resolvedRuntimeLanguage.source}).`,
+        userLanguageContext,
+      ].join("\n"),
         prompt: JSON.stringify({
           userPrompt: input.prompt,
           selectedMode: {
@@ -3119,6 +3619,7 @@ export async function executeRuntimeKernel(
       queueSummary: () => kernelRuntimeContext.queueSummary,
       sharedStateSummary: () => kernelRuntimeContext.sharedStateSummary,
       busStats: () => kernelRuntimeContext.busStats,
+      responseLanguage: () => resolvedRuntimeLanguage.responseLanguage,
       modeResume,
       systemPrompt,
       setPlanStatus,
@@ -3229,6 +3730,8 @@ export async function executeRuntimeKernel(
           planList: kernelRuntimeContext.planList,
           plan: planService.list(),
           todos: todoService.list(),
+          activeBackgroundChildCount: kernelRuntimeContext.activeBackgroundChildCount(ORA_ROOT_AGENT_ID),
+          pendingAsyncResultCount: kernelRuntimeContext.pendingAsyncAgentResultCount(ORA_ROOT_AGENT_ID),
           gates: gateRecords,
         };
       },

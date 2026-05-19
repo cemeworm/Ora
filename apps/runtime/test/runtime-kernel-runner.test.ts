@@ -204,4 +204,16 @@ describe("KernelRunner resume events", () => {
       },
     });
   });
+
+  it("does not attach a synthetic replyMessageId before any assistant reply exists", async () => {
+    const { runner, emitted } = createRunner();
+
+    await runner.run();
+
+    const decision = emitted.find((event) => event.type === "causal.decision.recorded");
+    const payload = decision?.payload as { decisionContext?: { replyMessageId?: string; phase?: string } } | undefined;
+
+    expect(payload?.decisionContext?.phase).toBe("run_start");
+    expect(payload?.decisionContext?.replyMessageId).toBeUndefined();
+  });
 });

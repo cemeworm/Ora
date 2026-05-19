@@ -70,6 +70,10 @@ function nodeReworkTargets(node: ModeNodeSpec): string[] {
 
 const MAX_STAGED_REWORK_ROUNDS = 2;
 
+function isChinese(context: PatternExecutionContext): boolean {
+  return context.responseLanguage() === "zh";
+}
+
 async function executePlainOrchestratorNode(
   context: PatternExecutionContext,
   modeSpec: ModeSpec,
@@ -95,6 +99,7 @@ async function executePlainOrchestratorNode(
 
 async function executeStagedTranscriptMode(input: ModeExecutionInput): Promise<PatternExecutionResult> {
   const { context, prompt, modeSpec, config } = input;
+  const zh = isChinese(context);
   const nodes = orderedEnabledModeNodes(modeSpec);
   const totalActiveNodes = nodes.length;
   const planIntent = config.metadata.taskIntent === "plan";
@@ -188,7 +193,7 @@ async function executeStagedTranscriptMode(input: ModeExecutionInput): Promise<P
         planItemId: node.id,
         kind: "reply",
         status: "done",
-        content: publicAgentMessageContent("", output, `${speakerLabel} 阶段输出不可用`),
+        content: publicAgentMessageContent("", output, `${speakerLabel} 阶段输出不可用`, zh ? "zh" : "en"),
         transcript: {
           kind: "stage_transcript",
           groupId,
@@ -279,7 +284,9 @@ async function executeStagedTranscriptMode(input: ModeExecutionInput): Promise<P
             planItemId: node.id,
             kind: "status",
             status: "running",
-            content: `研究核查未通过，正在启动第 ${reworkRound} 轮补充研究与复核。`,
+            content: zh
+              ? `研究核查未通过，正在启动第 ${reworkRound} 轮补充研究与复核。`
+              : `Research verification did not pass. Starting supplemental research and re-review round ${reworkRound}.`,
           });
           for (const targetNode of reworkTargets) {
             await executeStagedNode(targetNode, {
@@ -320,9 +327,15 @@ async function executeStagedTranscriptMode(input: ModeExecutionInput): Promise<P
       if (finalNode) {
         const degradedReason =
           gatedReviewVerdict.verdict.verdict === "needs_fix"
-            ? `核查未通过：${(bag.reviewReworkCount ?? 0)} 轮返工后仍未解决所有阻塞问题。`
-            : "核查阻塞：缺少关键信息或外部条件不满足。";
-        bag.degradedDelivery = `${degradedReason} 以下输出为降级交付。必须明确标注所有未经核查的推断、低置信度来源和未解决的阻塞问题。不要假装验证已通过。`;
+            ? zh
+              ? `核查未通过：${(bag.reviewReworkCount ?? 0)} 轮返工后仍未解决所有阻塞问题。`
+              : `Verification failed: blocking issues remain after ${bag.reviewReworkCount ?? 0} rework rounds.`
+            : zh
+              ? "核查阻塞：缺少关键信息或外部条件不满足。"
+              : "Verification blocked: key information is missing or external conditions are not met.";
+        bag.degradedDelivery = zh
+          ? `${degradedReason} 以下输出为降级交付。必须明确标注所有未经核查的推断、低置信度来源和未解决的阻塞问题。不要假装验证已通过。`
+          : `${degradedReason} The output below is a degraded delivery. Clearly label every unverified inference, low-confidence source, and unresolved blocker. Do not pretend verification passed.`;
         context.setPlanStatus(finalNode.id, "running");
         const finalReworkRound = typeof bag.reviewReworkCount === "number" ? bag.reviewReworkCount : 0;
         await executeStagedNode(finalNode, {

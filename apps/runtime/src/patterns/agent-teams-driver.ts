@@ -14,8 +14,13 @@ function nodeToolIds(node: ModeNodeSpec): string[] | undefined {
 
 const MAX_REWORK_ROUNDS = 2;
 
+function isChinese(context: ModeExecutionInput["context"]): boolean {
+  return context.responseLanguage() === "zh";
+}
+
 export async function executeAgentTeams(input: ModeExecutionInput): Promise<PatternExecutionResult> {
   const { context, prompt, config, modeSpec } = input;
+  const zh = isChinese(context);
   const layers = orderedEnabledModeLayers(modeSpec);
   const allNodes = layers.flat();
   const totalActiveNodes = allNodes.length;
@@ -76,10 +81,17 @@ export async function executeAgentTeams(input: ModeExecutionInput): Promise<Patt
         status: "done",
         content: publicAgentMessageContent(
           options?.reworkRound
-            ? `已完成第 ${options.reworkRound} 轮返工，交回 ${context.agentLabel(targetAgentId)} 复审。\n\n`
-            : `接下来交给 ${context.agentLabel(targetAgentId)}。\n\n`,
+            ? zh
+              ? `已完成第 ${options.reworkRound} 轮返工，交回 ${context.agentLabel(targetAgentId)} 复审。\n\n`
+              : `Rework round ${options.reworkRound} is complete. Handing back to ${context.agentLabel(targetAgentId)} for review.\n\n`
+            : zh
+              ? `接下来交给 ${context.agentLabel(targetAgentId)}。\n\n`
+              : `Handing off to ${context.agentLabel(targetAgentId)} next.\n\n`,
           bag.build,
-          "实现阶段没有产出可公开展示的正文，已继续交接。",
+          zh
+            ? "实现阶段没有产出可公开展示的正文，已继续交接。"
+            : "The implementation stage did not produce public-facing text, so the handoff continues.",
+          zh ? "zh" : "en",
         ),
       }).id;
       context.remember({
@@ -140,10 +152,17 @@ export async function executeAgentTeams(input: ModeExecutionInput): Promise<Patt
         status: "done",
         content: publicAgentMessageContent(
           options?.reworkRound
-            ? `第 ${options.reworkRound} 轮复审已完成，结果如下。\n\n`
-            : `接下来交给 ${context.agentLabel(targetAgentId)}。\n\n`,
+            ? zh
+              ? `第 ${options.reworkRound} 轮复审已完成，结果如下。\n\n`
+              : `Re-review round ${options.reworkRound} is complete. Results below.\n\n`
+            : zh
+              ? `接下来交给 ${context.agentLabel(targetAgentId)}。\n\n`
+              : `Handing off to ${context.agentLabel(targetAgentId)} next.\n\n`,
           bag.check,
-          "复核阶段没有产出可公开展示的正文，已继续交接。",
+          zh
+            ? "复核阶段没有产出可公开展示的正文，已继续交接。"
+            : "The review stage did not produce public-facing text, so the handoff continues.",
+          zh ? "zh" : "en",
         ),
       }).id;
       const verdict = parseAgentTeamReviewVerdict(bag.check);
@@ -209,9 +228,14 @@ export async function executeAgentTeams(input: ModeExecutionInput): Promise<Patt
           kind: "mention",
           status: "done",
           content: publicAgentMessageContent(
-            `接下来交给 ${context.agentLabel(targetAgentId)}。\n\n`,
+            zh
+              ? `接下来交给 ${context.agentLabel(targetAgentId)}。\n\n`
+              : `Handing off to ${context.agentLabel(targetAgentId)} next.\n\n`,
             bag.triage,
-            "前一阶段没有产出可公开展示的正文，已继续交接。",
+            zh
+              ? "前一阶段没有产出可公开展示的正文，已继续交接。"
+              : "The previous stage did not produce public-facing text, so the handoff continues.",
+            zh ? "zh" : "en",
           ),
         }).id;
       }
@@ -239,7 +263,9 @@ export async function executeAgentTeams(input: ModeExecutionInput): Promise<Patt
             planItemId: node.id,
             kind: "status",
             status: "running",
-            content: `验收要求返工，正在启动第 ${reworkRound} 轮修复。`,
+            content: zh
+              ? `验收要求返工，正在启动第 ${reworkRound} 轮修复。`
+              : `Review requested changes. Starting rework round ${reworkRound}.`,
           });
           await runBuildPass(buildNode, checkNode.ownerAgentId ?? reviewerId, {
             reworkRound,
@@ -263,10 +289,17 @@ export async function executeAgentTeams(input: ModeExecutionInput): Promise<Patt
           status: verdict.verdict === "blocked" ? "failed" : "done",
           content: publicAgentMessageContent(
             verdict.verdict === "needs_fix"
-              ? `返工 ${bag.reworkCount ?? 0} 轮后仍未通过，已阻止最终交付。\n\n`
-              : "验收被阻塞，已阻止最终交付。\n\n",
+              ? zh
+                ? `返工 ${bag.reworkCount ?? 0} 轮后仍未通过，已阻止最终交付。\n\n`
+                : `The work still did not pass after ${bag.reworkCount ?? 0} rework rounds, so final delivery is blocked.\n\n`
+              : zh
+                ? "验收被阻塞，已阻止最终交付。\n\n"
+                : "Review is blocked, so final delivery is blocked.\n\n",
             bag.check,
-            "审查阶段未给出可公开展示的 verdict。",
+            zh
+              ? "审查阶段未给出可公开展示的 verdict。"
+              : "The review stage did not produce a public-facing verdict.",
+            zh ? "zh" : "en",
           ),
         });
       }
@@ -299,9 +332,12 @@ export async function executeAgentTeams(input: ModeExecutionInput): Promise<Patt
         kind: "handoff",
         status: "done",
         content: publicAgentMessageContent(
-          "最终交付已整理。\n\n",
+          zh ? "最终交付已整理。\n\n" : "Final delivery has been prepared.\n\n",
           bag.handoff,
-          "最终阶段没有产出可公开展示的正文。",
+          zh
+            ? "最终阶段没有产出可公开展示的正文。"
+            : "The final stage did not produce public-facing text.",
+          zh ? "zh" : "en",
         ),
       });
       return bag.handoff;

@@ -1120,6 +1120,7 @@ describe("Ora runtime smoke path", () => {
       expect(blocked.pendingClarifications[0]?.question).toContain("角色是清算通道方、收单机构还是跨境商户");
       expect(blocked.pendingClarifications[0]?.question).toContain("月交易额、日单量、商户数、牌照/地区范围");
       expect(blocked.pendingClarifications[0]?.question).not.toContain("交易量不大");
+      expect(blocked.pendingClarifications[0]?.question).not.toMatch(/[A-Za-z]{4,}/);
       expect(blocked.events.some((event) => event.type === "clarification.required")).toBe(true);
       expect(blocked.events.some((event) =>
         event.type === "tool.called" &&
@@ -1149,6 +1150,84 @@ describe("Ora runtime smoke path", () => {
       expect(providerBodies.some((body) => body.includes("User-supplied clarification context"))).toBe(true);
       expect(providerBodies.some((body) => body.includes("跨境收单机构"))).toBe(true);
       expect(resumed.output?.text).toContain("已根据你补充的角色和规模继续判断");
+    } finally {
+      globalThis.fetch = previousFetch;
+      if (previousKey === undefined) {
+        delete process.env.INTENT_CLARIFICATION_KEY;
+      } else {
+        process.env.INTENT_CLARIFICATION_KEY = previousKey;
+      }
+    }
+  });
+
+  it("keeps intent clarification questions in English for English prompts", async () => {
+    const handle = createRuntimeMethodHandler(createTempStore());
+    const previousFetch = globalThis.fetch;
+    const previousKey = process.env.INTENT_CLARIFICATION_KEY;
+    process.env.INTENT_CLARIFICATION_KEY = "test";
+    let intentClarificationIssued = false;
+
+    globalThis.fetch = (async (_input, init) => {
+      const body = String(init?.body ?? "");
+      if (!intentClarificationIssued && body.includes("needsClarification")) {
+        intentClarificationIssued = true;
+        return new Response(JSON.stringify({
+          choices: [{
+            message: {
+              content: JSON.stringify({
+                needsClarification: true,
+                question: "Before I continue, which role best describes your team here: acquiring bank, PSP, or cross-border merchant? Also, what scale should I use: monthly GMV, daily order volume, merchant count, or regions? Those details change the settlement answer.",
+              }),
+            },
+          }],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: "Proceeding after clarification." } }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    try {
+      const run = await handle({
+        jsonrpc: "2.0",
+        id: "english-clarification-start",
+        method: "runs.start",
+        params: {
+          input: {
+            prompt: "Research the latest settlement timeline for cross-border QR payments for a business like ours. Has T+N improved recently?",
+          },
+          config: {
+            modeId: SINGLE_AGENT_MODE_ID,
+            providerId: "intent-clarification",
+            modelRef: "intent-clarification-model",
+            providerConfig: {
+              id: "intent-clarification",
+              label: "Intent Clarification",
+              type: "openai_compatible",
+              modelId: "intent-clarification-model",
+              baseUrl: "https://intent-clarification.test/v1",
+              apiKeyEnv: "INTENT_CLARIFICATION_KEY",
+              capabilities: ["chat", "tool_use"],
+              headers: {},
+            },
+            toolIds: ["web.search"],
+            metadata: { clarificationPreflight: true, progressNarration: true },
+          },
+        },
+      }) as { runId: string; status: string };
+
+      const blocked = StateSnapshotSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: "english-clarification-state",
+        method: "runs.state",
+        params: { runId: run.runId },
+      }));
+
+      expect(run.status).toBe("interrupted");
+      expect(blocked.pendingClarifications).toHaveLength(1);
+      expect(blocked.pendingClarifications[0]?.question).toContain("which role best describes your team");
+      expect(blocked.pendingClarifications[0]?.question).toContain("what scale should I use");
+      expect(blocked.pendingClarifications[0]?.question).not.toMatch(/[\u3400-\u9fff]/u);
     } finally {
       globalThis.fetch = previousFetch;
       if (previousKey === undefined) {
@@ -1246,6 +1325,7 @@ describe("Ora runtime smoke path", () => {
           { id: "production", label: "生产环境", value: "production" },
         ],
       });
+      expect(blocked.pendingClarifications[0]?.question).not.toMatch(/[A-Za-z]{4,}/);
       expect(blocked.events.some((event) => event.type === "clarification.required")).toBe(true);
       expect(blocked.toolCalls.find((call) => call.toolId === "user.clarify")).toMatchObject({ status: "succeeded" });
 
@@ -1372,6 +1452,10 @@ describe("Ora runtime smoke path", () => {
       expect(blocked.pendingClarifications.map((c) => c.key)).toEqual([
         "target_environment",
         "time_window",
+      ]);
+      expect(blocked.pendingClarifications.map((c) => c.question)).toEqual([
+        "你希望我在哪个环境执行这一步？",
+        "计划覆盖哪个时间范围？",
       ]);
       expect(blocked.events.filter((event) => event.type === "clarification.required")).toHaveLength(2);
 
@@ -1666,11 +1750,15 @@ describe("Ora runtime smoke path", () => {
       );
 
       const finalizerBodies = providerBodies.filter((body) =>
-        body.includes("The selected mode has returned its work product")
+        body.includes("selectedMode")
+        && body.includes("modeOutput")
       );
-      expect(finalizerBodies.length).toBeGreaterThan(0);
-      expect(finalizerBodies.some((body) =>
+      const languageAwareBodies = finalizerBodies.length > 0 ? finalizerBodies : providerBodies;
+      expect(languageAwareBodies.some((body) =>
         body.includes("User-facing output follows current user message language")
+      )).toBe(true);
+      expect(languageAwareBodies.some((body) =>
+        body.includes("Resolved response language for this turn: zh")
       )).toBe(true);
     } finally {
       globalThis.fetch = previousFetch;

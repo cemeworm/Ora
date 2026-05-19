@@ -8,6 +8,8 @@ export interface RuntimeCompletionGuardState {
   replayedActionIds?: readonly string[];
   toolCalls: readonly OraToolCallEnvelope[];
   agentId?: string;
+  activeBackgroundChildCount?: number;
+  pendingAsyncResultCount?: number;
 }
 
 /**
@@ -23,6 +25,8 @@ export interface TerminalStateAssertionInput {
   planList: readonly PlanListStep[];
   plan?: StateSnapshot["plan"];
   todos?: StateSnapshot["todos"];
+  activeBackgroundChildCount?: number;
+  pendingAsyncResultCount?: number;
   gates?: readonly {
     gateId: string;
     kind: "clarification" | "approval" | "plan_decision";
@@ -124,7 +128,44 @@ export const DEFAULT_RUNTIME_COMPLETION_GUARDS: readonly RuntimeCompletionGuard[
   planListCompletionGuard,
   legacyProgressCompletionGuard,
   pendingRuntimeWorkGuard,
+  pendingBackgroundWorkGuard,
 ];
+
+export function pendingBackgroundWorkGuard(
+  state: RuntimeCompletionGuardState,
+): RuntimeCompletionGuardResult {
+  if ((state.pendingAsyncResultCount ?? 0) > 0) {
+    return {
+      allowComplete: false,
+      reason: "pending_background_results",
+      progressTrigger: "background_results.pending",
+      progressSummary: "Background child results are available but not yet incorporated; continuing the run.",
+      detail: `There are ${state.pendingAsyncResultCount ?? 0} async child result(s) waiting to be incorporated for agent ${state.agentId ?? "unknown"}.`,
+      followUpReason: "pending_background_results_follow_up",
+      followUpContent: [
+        "Background child results are now available.",
+        "Read the async child updates injected into context and continue the task using them before concluding.",
+        "Do not ignore newly completed child work.",
+      ].join(" "),
+    };
+  }
+  if ((state.activeBackgroundChildCount ?? 0) > 0) {
+    return {
+      allowComplete: false,
+      reason: "pending_background_children",
+      progressTrigger: "background_children.pending",
+      progressSummary: "Background child work is still running; waiting for progress before concluding.",
+      detail: `There are ${state.activeBackgroundChildCount ?? 0} active background child(ren) still running for agent ${state.agentId ?? "unknown"}.`,
+      followUpReason: "pending_background_children_follow_up",
+      followUpContent: [
+        "Background child work has progressed.",
+        "Use any newly injected child updates and continue only after accounting for that work.",
+        "If child work is still incomplete, wait for it rather than concluding early.",
+      ].join(" "),
+    };
+  }
+  return { allowComplete: true };
+}
 
 export function planListCompletionGuard(
   state: RuntimeCompletionGuardState,

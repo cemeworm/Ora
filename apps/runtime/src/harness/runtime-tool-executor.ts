@@ -1,6 +1,6 @@
 import { ActionApprovalRequestCopySchema } from "@cemeworm/shared";
 import { resolveToolPermission } from "@cemeworm/shared";
-import type { ActionApprovalRequestCopy, ActionRiskLevel, ModeToolLimits, PermissionProfile, RuntimeToolResultPreview, SearchProviderConfig, SkillDescriptor, SkillDetail, SkillListParams, TaskIntent, ToolDescriptor, ToolPermission } from "@cemeworm/shared";
+import type { ActionApprovalRequestCopy, ActionRiskLevel, AgentResultContract, AgentToolBundleId, ModeToolLimits, PermissionProfile, RuntimeToolResultPreview, SearchProviderConfig, SkillDescriptor, SkillDetail, SkillListParams, TaskIntent, ToolDescriptor, ToolPermission } from "@cemeworm/shared";
 import type { PackageManager } from "../package-manager.js";
 import type { ModelToolDefinition } from "../providers/index.js";
 import type { RuntimeToolDefinition } from "./capability-registries.js";
@@ -77,6 +77,7 @@ export const IMPLEMENTED_RUNTIME_TOOL_IDS = [
   "widgets.todo.addItem",
   "plan.update",
   "agent.spawn",
+  "agent.wait",
   "message.send",
   "computer.permissionStatus",
   "computer.observe",
@@ -118,6 +119,8 @@ export interface RuntimeToolExecutionResult {
 }
 
 export interface RuntimeToolExecutionContext {
+  currentAgentId?: string;
+  currentNodeId?: string;
   workspace: unknown;
   fetchImpl: typeof fetch;
   skillRegistry?: SkillRegistryTools;
@@ -146,10 +149,20 @@ export interface RuntimeToolExecutionContext {
     runInBackground?: boolean;
     inheritContext?: boolean;
     systemPrompt?: string;
+    toolBundle?: AgentToolBundleId;
     toolIds?: string[];
+    resultContract?: AgentResultContract;
+    invokingAgentId?: string;
+  }) => Promise<unknown>;
+  /** Wait for background sub-agents and collect their structured results. */
+  waitForAgents?: (params: {
+    agentIds?: string[];
+    childSessionIds?: string[];
+    requireAll?: boolean;
+    invokingAgentId?: string;
   }) => Promise<unknown>;
   /** Enqueue a message to be delivered to an agent on its next invocation. */
-  enqueueMessage?: (params: { to: string; message: string }) => void;
+  enqueueMessage?: (params: { to: string; message: string; invokingAgentId?: string }) => void;
   /** Computer use backend manager for GUI automation tools. */
   computerBackendManager?: ComputerBackendManager;
 }
@@ -438,6 +451,7 @@ export class RuntimeToolExecutor {
   private readonly workspaceOperations: WorkspaceOperations;
   private readonly computerBackendManager?: ComputerBackendManager;
   private spawnAgentCallback?: RuntimeToolExecutionContext["spawnAgent"];
+  private waitForAgentsCallback?: RuntimeToolExecutionContext["waitForAgents"];
   private enqueueMessageCallback?: RuntimeToolExecutionContext["enqueueMessage"];
 
   constructor(options: RuntimeToolExecutorOptions = {}) {
@@ -481,6 +495,11 @@ export class RuntimeToolExecutor {
   setSpawnAgent(callback: RuntimeToolExecutionContext["spawnAgent"]): void {
     if (this.spawnAgentCallback) return;
     this.spawnAgentCallback = callback;
+  }
+
+  setWaitForAgents(callback: RuntimeToolExecutionContext["waitForAgents"]): void {
+    if (this.waitForAgentsCallback) return;
+    this.waitForAgentsCallback = callback;
   }
 
   setEnqueueMessage(callback: RuntimeToolExecutionContext["enqueueMessage"]): void {
@@ -589,11 +608,11 @@ export class RuntimeToolExecutor {
       ?? genericApprovalRequest(userPrompt);
   }
 
-  async execute(call: RuntimeToolCall, options: { allowRisky?: boolean } = {}): Promise<unknown> {
+  async execute(call: RuntimeToolCall, options: { allowRisky?: boolean; currentAgentId?: string; currentNodeId?: string } = {}): Promise<unknown> {
     return (await this.executeWithMetadata(call, options)).output;
   }
 
-  async executeWithMetadata(call: RuntimeToolCall, options: { allowRisky?: boolean } = {}): Promise<RuntimeToolExecutionResult> {
+  async executeWithMetadata(call: RuntimeToolCall, options: { allowRisky?: boolean; currentAgentId?: string; currentNodeId?: string } = {}): Promise<RuntimeToolExecutionResult> {
     if (this.signal?.aborted) {
       throw new Error(`Tool '${call.tool}' execution cancelled: run was aborted.`);
     }
@@ -631,7 +650,7 @@ export class RuntimeToolExecutor {
 
   private async runPreToolPolicy(
     call: RuntimeToolCall,
-    options: { allowRisky?: boolean },
+    options: { allowRisky?: boolean; currentAgentId?: string; currentNodeId?: string },
   ): Promise<{ args: Record<string, unknown>; permission: ToolPermission; riskLevel: ToolDescriptor["riskLevel"]; reason?: string }> {
     const descriptor = this.definitions.get(call.tool)?.descriptor;
     if (!descriptor) {
@@ -674,7 +693,7 @@ export class RuntimeToolExecutor {
     call: RuntimeToolCall,
     result: RuntimeToolExecutionResult | undefined,
     isError: boolean,
-    options: { allowRisky?: boolean },
+    options: { allowRisky?: boolean; currentAgentId?: string; currentNodeId?: string },
     error?: unknown,
   ): Promise<RuntimeToolExecutionResult> {
     const descriptor = this.definitions.get(call.tool)?.descriptor;
@@ -697,8 +716,10 @@ export class RuntimeToolExecutor {
     return nextResult;
   }
 
-  private executionContext(options: { allowRisky?: boolean } = {}): RuntimeToolExecutionContext {
+  private executionContext(options: { allowRisky?: boolean; currentAgentId?: string; currentNodeId?: string } = {}): RuntimeToolExecutionContext {
     return {
+      currentAgentId: options.currentAgentId,
+      currentNodeId: options.currentNodeId,
       workspace: this.workspace,
       fetchImpl: this.fetchImpl,
       skillRegistry: this.skillRegistry,
@@ -717,6 +738,7 @@ export class RuntimeToolExecutor {
       turnContext: this.turnContext,
       operations: this.workspaceOperations,
       spawnAgent: this.spawnAgentCallback,
+      waitForAgents: this.waitForAgentsCallback,
       enqueueMessage: this.enqueueMessageCallback,
       computerBackendManager: this.computerBackendManager,
     };
@@ -793,6 +815,7 @@ function builtInToolRuntimeFields(toolId: string): Partial<RuntimeToolDefinition
     ...widgetToolRuntimeFields(toolId),
     ...planToolRuntimeFields(toolId),
     ...agentSpawnToolRuntimeFields(toolId),
+    ...agentWaitToolRuntimeFields(toolId),
     ...messageSendToolRuntimeFields(toolId),
     ...computerToolRuntimeFields(toolId),
   };
@@ -821,7 +844,7 @@ function messageSendToolRuntimeFields(toolId: string): Partial<RuntimeToolDefini
       if (!context.enqueueMessage) {
         throw new Error("message.send is not available in this runtime context.");
       }
-      context.enqueueMessage({ to, message });
+      context.enqueueMessage({ to, message, invokingAgentId: context.currentAgentId });
       return { output: { status: "queued", to, messageLength: message.length } };
     },
   };
@@ -835,6 +858,7 @@ function agentSpawnToolRuntimeFields(toolId: string): Partial<RuntimeToolDefinit
       "Delegate only substantial, self-contained subtasks that benefit from a fresh context window.",
       "Write prompts that include all necessary context — file paths, line numbers, error messages.",
       "State what \"done\" looks like for the sub-agent.",
+      "Prefer tool_bundle over raw tool_ids so the child gets a maintained, role-appropriate tool surface.",
       "Do not spawn agents for trivial lookups that a single tool call can handle.",
     ],
     requiresApprovalCopy: false,
@@ -851,12 +875,47 @@ function agentSpawnToolRuntimeFields(toolId: string): Partial<RuntimeToolDefinit
       const runInBackground = args.run_in_background === true;
       const inheritContext = args.inherit_context === true;
       const systemPrompt = typeof args.system_prompt === "string" ? args.system_prompt : undefined;
+      const toolBundle = typeof args.tool_bundle === "string" ? args.tool_bundle as AgentToolBundleId : undefined;
       const toolIds = Array.isArray(args.tool_ids) ? args.tool_ids.filter((t: unknown) => typeof t === "string") as string[] : undefined;
+      const resultContract = typeof args.result_contract === "string" ? args.result_contract as AgentResultContract : undefined;
       if (!context.spawnAgent) {
         throw new Error("agent.spawn is not available in this runtime context.");
       }
       const result = await context.spawnAgent({
-        description, prompt, agentType, runInBackground, inheritContext, systemPrompt, toolIds,
+        description, prompt, agentType, runInBackground, inheritContext, systemPrompt, toolBundle, toolIds, resultContract, invokingAgentId: context.currentAgentId,
+      });
+      return { output: result };
+    },
+  };
+}
+
+function agentWaitToolRuntimeFields(toolId: string): Partial<RuntimeToolDefinition<RuntimeToolExecutionContext>> {
+  if (toolId !== "agent.wait") return {};
+  return {
+    promptSnippet: "Use agent.wait to explicitly gather background sub-agent results before you synthesize your final answer.",
+    promptGuidelines: [
+      "Use agent.wait after fan-out when the parent should not conclude until child evidence arrives.",
+      "Omit filters to wait on all active background children for the current parent agent.",
+      "Prefer child_session_ids when you need to join a specific spawned session.",
+    ],
+    requiresApprovalCopy: false,
+    riskLevel: () => "low_risk",
+    async execute(args, context) {
+      if (!context.waitForAgents) {
+        throw new Error("agent.wait is not available in this runtime context.");
+      }
+      const agentIds = Array.isArray(args.agent_ids)
+        ? args.agent_ids.filter((value: unknown): value is string => typeof value === "string" && value.trim().length > 0)
+        : undefined;
+      const childSessionIds = Array.isArray(args.child_session_ids)
+        ? args.child_session_ids.filter((value: unknown): value is string => typeof value === "string" && value.trim().length > 0)
+        : undefined;
+      const requireAll = args.require_all !== false;
+      const result = await context.waitForAgents({
+        agentIds,
+        childSessionIds,
+        requireAll,
+        invokingAgentId: context.currentAgentId,
       });
       return { output: result };
     },

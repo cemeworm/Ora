@@ -201,6 +201,23 @@ describe("RuntimeToolExecutor", () => {
     expect(messages).toEqual([{ to: "ora", message: "Please review the changes in src/auth.ts." }]);
   });
 
+  it("forwards invoking agent context to message.send", async () => {
+    let invokingAgentId = "";
+    const executor = new RuntimeToolExecutor({ toolDescriptors: MVP_TOOLS });
+    executor.setEnqueueMessage(({ invokingAgentId: received }) => {
+      invokingAgentId = received ?? "";
+    });
+
+    await executor.executeWithMetadata({
+      tool: "message.send" as never,
+      args: { to: "ora", message: "Please continue." },
+    }, {
+      currentAgentId: "ora-parent",
+    });
+
+    expect(invokingAgentId).toBe("ora-parent");
+  });
+
   it("executes agent.spawn with inherit_context and custom system_prompt", async () => {
     const executor = new RuntimeToolExecutor({ toolDescriptors: MVP_TOOLS });
     let receivedParams: Record<string, unknown> = {};
@@ -240,6 +257,95 @@ describe("RuntimeToolExecutor", () => {
       },
     });
     expect(result).toBe("tools: file.read,file.grep");
+  });
+
+  it("executes agent.spawn with tool_bundle and result_contract", async () => {
+    const executor = new RuntimeToolExecutor({ toolDescriptors: MVP_TOOLS });
+    let receivedParams: Record<string, unknown> = {};
+    executor.setSpawnAgent(async (params) => {
+      receivedParams = params as unknown as Record<string, unknown>;
+      return "ok";
+    });
+
+    await executor.execute({
+      tool: "agent.spawn" as never,
+      args: {
+        description: "Forensics",
+        prompt: "Inspect the repo history.",
+        tool_bundle: "repo_forensics",
+        result_contract: "evidence_report",
+      },
+    });
+    expect(receivedParams.toolBundle).toBe("repo_forensics");
+    expect(receivedParams.resultContract).toBe("evidence_report");
+  });
+
+  it("forwards invoking agent context to agent.spawn", async () => {
+    const executor = new RuntimeToolExecutor({ toolDescriptors: MVP_TOOLS });
+    let receivedParams: Record<string, unknown> = {};
+    executor.setSpawnAgent(async (params) => {
+      receivedParams = params as unknown as Record<string, unknown>;
+      return "ok";
+    });
+
+    await executor.executeWithMetadata({
+      tool: "agent.spawn" as never,
+      args: {
+        description: "Research",
+        prompt: "Inspect the codebase.",
+      },
+    }, {
+      currentAgentId: "ora-parent",
+    });
+
+    expect(receivedParams.invokingAgentId).toBe("ora-parent");
+  });
+
+  it("executes agent.wait with waitForAgents callback", async () => {
+    const executor = new RuntimeToolExecutor({ toolDescriptors: MVP_TOOLS });
+    executor.setWaitForAgents(async ({ agentIds, requireAll }) => ({
+      status: "completed",
+      require_all: requireAll,
+      waited_for: { agent_ids: agentIds ?? [], child_session_ids: [] },
+      results: [],
+    }));
+
+    const result = await executor.execute({
+      tool: "agent.wait" as never,
+      args: { agent_ids: ["ora-sub-1"], require_all: false },
+    });
+    expect(result).toEqual({
+      status: "completed",
+      require_all: false,
+      waited_for: { agent_ids: ["ora-sub-1"], child_session_ids: [] },
+      results: [],
+    });
+  });
+
+  it("forwards invoking agent context to agent.wait", async () => {
+    const executor = new RuntimeToolExecutor({ toolDescriptors: MVP_TOOLS });
+    let receivedParams: Record<string, unknown> = {};
+    executor.setWaitForAgents(async (params) => {
+      receivedParams = params as unknown as Record<string, unknown>;
+      return { status: "completed", require_all: true, waited_for: { agent_ids: [], child_session_ids: [] }, results: [] };
+    });
+
+    await executor.executeWithMetadata({
+      tool: "agent.wait" as never,
+      args: {},
+    }, {
+      currentAgentId: "ora-parent",
+    });
+
+    expect(receivedParams.invokingAgentId).toBe("ora-parent");
+  });
+
+  it("rejects agent.wait when waitForAgents callback is not set", async () => {
+    const executor = new RuntimeToolExecutor({ toolDescriptors: MVP_TOOLS });
+    await expect(executor.execute({
+      tool: "agent.wait" as never,
+      args: {},
+    })).rejects.toThrow("agent.wait is not available in this runtime context");
   });
 
   it("rejects message.send when enqueueMessage callback is not set", async () => {
@@ -793,6 +899,19 @@ describe("RuntimeToolExecutor", () => {
     expect(shellRequest.title).toBe("需要你确认运行命令");
     expect(shellRequest.summary).toContain("node --version");
     expect(skillRequest.summary).toBe("我准备安装 Waza 的 think 技能。");
+  });
+
+  it("lets explicit English override Chinese prompt detection for approval copy", () => {
+    const { workspace } = createWorkspace();
+    const executor = new RuntimeToolExecutor({ workspace, toolDescriptors: MVP_TOOLS });
+
+    const shellRequest = executor.approvalRequest({
+      tool: "shell.execute",
+      args: { command: "node --version" },
+    }, "请检查 node 版本，并 answer in English");
+
+    expect(shellRequest.title).toBe("Confirm command execution");
+    expect(shellRequest.confirmLabel).toBe("Approve and continue");
   });
 
   it("uses selected widget context as the default target for todo widget tools", async () => {

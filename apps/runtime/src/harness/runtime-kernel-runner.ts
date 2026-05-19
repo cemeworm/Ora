@@ -282,7 +282,6 @@ export class KernelRunner {
       decisionContext: {
         phase: "run_start",
         turnIndex: options.turnIndex,
-        replyMessageId: `${kernelRuntimeContext.runId}:assistant`,
         agentId: ORA_ROOT_AGENT_ID,
         nodeId: "run",
       },
@@ -406,7 +405,6 @@ export class KernelRunner {
         decisionContext: {
           phase: "clarification_resume",
           turnIndex: options.turnIndex,
-          replyMessageId: `${kernelRuntimeContext.runId}:assistant`,
           agentId: ORA_ROOT_AGENT_ID,
           nodeId: INTENT_CLARIFICATION_NODE_ID,
         },

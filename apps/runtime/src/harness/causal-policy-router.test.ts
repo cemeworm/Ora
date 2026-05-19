@@ -372,8 +372,9 @@ describe("causal policy router", () => {
         decisionContext: {
           phase: "tool_request",
           turnIndex: 2,
-          replyMessageId: "run-1:assistant",
+          replyMessageId: "run-1:assistant:agent-1:node-1:3",
           toolId: "file.read",
+          providerCallId: "provider-call-1",
           iteration: 1,
           agentId: "agent-1",
           nodeId: "node-1",
@@ -383,8 +384,9 @@ describe("causal policy router", () => {
       expect(result.decisionRecord.decisionContext).toEqual({
         phase: "tool_request",
         turnIndex: 2,
-        replyMessageId: "run-1:assistant",
+        replyMessageId: "run-1:assistant:agent-1:node-1:3",
         toolId: "file.read",
+        providerCallId: "provider-call-1",
         iteration: 1,
         agentId: "agent-1",
         nodeId: "node-1",

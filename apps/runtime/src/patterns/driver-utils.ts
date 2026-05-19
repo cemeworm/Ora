@@ -257,7 +257,8 @@ const RECOVERY_FALLBACK_PATTERNS = [
   /continued with limited context after forced-final provider recovery\.?$/i,
 ];
 
-const DEGRADED_HANDOFF_MESSAGE = "这是一次降级交接：当前阶段已基于任务文件和已读材料继续推进，但完整临时上下文未完全保留；请优先复核首个失败点、关键结论与未完成项。";
+const DEGRADED_HANDOFF_MESSAGE_ZH = "这是一次降级交接：当前阶段已基于任务文件和已读材料继续推进，但完整临时上下文未完全保留；请优先复核首个失败点、关键结论与未完成项。";
+const DEGRADED_HANDOFF_MESSAGE_EN = "This is a degraded handoff: the task moved forward using the task file and already-read material, but the full temporary context was not preserved. Review the first failure point, key conclusions, and unfinished work first.";
 
 export function isRecoveryFallbackAgentMessageText(value: unknown): boolean {
   const trimmed = asText(value).trim();
@@ -271,10 +272,11 @@ export function publicAgentMessageContent(
   prefix: string,
   value: unknown,
   fallback: string,
+  language: "zh" | "en" = "zh",
 ): string {
   const text = asText(value).trim();
   if (isRecoveryFallbackAgentMessageText(text)) {
-    return `${prefix}${DEGRADED_HANDOFF_MESSAGE}`;
+    return `${prefix}${language === "zh" ? DEGRADED_HANDOFF_MESSAGE_ZH : DEGRADED_HANDOFF_MESSAGE_EN}`;
   }
   if (!text || isInternalAgentMessageText(text)) {
     return `${prefix}${fallback}`.trimEnd();

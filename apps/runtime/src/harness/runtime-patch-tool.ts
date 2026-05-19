@@ -3,7 +3,7 @@ import path from "node:path";
 import type { RuntimeToolDefinition } from "./capability-registries.js";
 import type { ResolvedToolLimits, RuntimeFileChangeMetadata, RuntimeToolExecutionContext } from "./runtime-tool-executor.js";
 import type { RuntimeToolResultPreview } from "./runtime-tool-definition-v2.js";
-import { prefersChinese } from "./runtime-tool-approval.js";
+import { approvalRequestLanguage } from "./runtime-tool-approval.js";
 import { withWorkspaceFileMutationQueue } from "./runtime-file-mutation-queue.js";
 import {
   relativeWorkspacePath,
@@ -62,7 +62,7 @@ export function applyPatchToolRuntimeFields(): Partial<RuntimeToolDefinition<Run
 }
 
 function applyPatchApprovalRequest(args: Record<string, unknown>, context: { userPrompt?: string }) {
-  const zh = prefersChinese(context.userPrompt);
+  const zh = approvalRequestLanguage({ userPrompt: context.userPrompt }) === "zh";
   const summary = summarizePatchTargets(typeof args.patch === "string" ? args.patch : "");
   if (zh) {
     return {

@@ -1,5 +1,6 @@
 import type { ModeSpec, StateSnapshot, UserTaskInput } from "@cemeworm/shared";
 import { fetchLangfusePrompt } from "../telemetry/langfuse.js";
+import { resolveRuntimeResponseLanguage } from "./runtime-language.js";
 
 export async function resolveModeSystemPrompt(mode: ModeSpec): Promise<string | undefined> {
   const ref = mode.langfusePromptRef;
@@ -54,9 +55,10 @@ export function summarizeProgressPayload(payload: unknown): unknown {
 }
 
 export function userFacingLanguagePrompt(userPrompt: string): string {
-  void userPrompt;
+  const resolved = resolveRuntimeResponseLanguage({ userPrompt });
   return [
     "User-facing output language:",
+    `- Resolved response language for this turn: ${resolved.responseLanguage} (${resolved.source}).`,
     "- User-facing output follows current user message language.",
     "- If the current user message explicitly asks for a response language, obey that explicit request.",
     "- Keep code, commands, paths, logs, identifiers, quoted text, and proper nouns in their original language unless the user asks to translate them.",
@@ -76,6 +78,7 @@ export function turnLocalMetadataGuidancePrompt(): string {
 export function turnLocalMetadataPrompt(params: {
   createdAt?: number;
   context?: UserTaskInput["context"];
+  userPrompt?: string;
   now?: () => number;
 }): string | undefined {
   const lines: string[] = [];
@@ -101,6 +104,15 @@ export function turnLocalMetadataPrompt(params: {
   if (clarifications.length > 0) {
     lines.push("Clarifications:");
     lines.push(...clarifications.map((entry) => `- ${entry}`));
+  }
+
+  if (typeof params.userPrompt === "string" && params.userPrompt.trim()) {
+    const resolvedLanguage = resolveRuntimeResponseLanguage({
+      userPrompt: params.userPrompt,
+      context: params.context,
+    });
+    lines.push(`Resolved response language: ${resolvedLanguage.responseLanguage}`);
+    lines.push(`Response language source: ${resolvedLanguage.source}`);
   }
 
   const attachedProjectFiles = attachedProjectFilesTurnMetadata(params.context?.attachedProjectFiles);

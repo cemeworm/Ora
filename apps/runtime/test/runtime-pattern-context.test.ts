@@ -16,6 +16,7 @@ function baseContext(overrides: {
     queueSummary: overrides.queueSummary,
     sharedStateSummary: overrides.sharedStateSummary,
     busStats: overrides.busStats,
+    responseLanguage: () => "zh",
     systemPrompt: (extra) => extra,
     setPlanStatus: () => undefined,
     setQueueSummary: () => undefined,

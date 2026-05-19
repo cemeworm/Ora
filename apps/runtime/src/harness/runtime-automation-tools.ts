@@ -1,6 +1,6 @@
 import type { RuntimeToolDefinition } from "./capability-registries.js";
 import type { AutomationRegistryTools, RuntimeToolExecutionContext } from "./runtime-tool-executor.js";
-import { prefersChinese, stringArg } from "./runtime-tool-approval.js";
+import { approvalRequestLanguage, stringArg } from "./runtime-tool-approval.js";
 
 export function automationToolRuntimeFields(toolId: string): Partial<RuntimeToolDefinition<RuntimeToolExecutionContext>> {
   switch (toolId) {
@@ -50,7 +50,7 @@ function riskyAutomationTool(
 }
 
 function automationApprovalRequest(args: Record<string, unknown>, context: { toolId: string; userPrompt?: string }) {
-  const zh = prefersChinese(context.userPrompt);
+  const zh = approvalRequestLanguage({ userPrompt: context.userPrompt }) === "zh";
   const action = automationActionLabel(context.toolId, zh);
   const title = stringArg(args, "title", zh ? "这个定时任务" : "this scheduled task");
   return zh

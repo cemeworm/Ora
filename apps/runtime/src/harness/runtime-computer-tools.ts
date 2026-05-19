@@ -1,6 +1,6 @@
 import type { RuntimeToolDefinition } from "./capability-registries.js";
 import type { RuntimeToolExecutionContext } from "./runtime-tool-executor.js";
-import { prefersChinese, stringArg } from "./runtime-tool-approval.js";
+import { approvalRequestLanguage, stringArg } from "./runtime-tool-approval.js";
 import type { ComputerTargetKind } from "@cemeworm/shared";
 
 // ---------------------------------------------------------------------------
@@ -37,7 +37,7 @@ function observeApprovalRequest(
   args: Record<string, unknown>,
   context: { toolId: string; userPrompt?: string },
 ) {
-  const zh = prefersChinese(context.userPrompt);
+  const zh = approvalRequestLanguage({ userPrompt: context.userPrompt }) === "zh";
   const target = stringArg(args, "target", "屏幕");
   return zh
     ? {
@@ -62,7 +62,7 @@ function clickApprovalRequest(
   args: Record<string, unknown>,
   context: { toolId: string; userPrompt?: string },
 ) {
-  const zh = prefersChinese(context.userPrompt);
+  const zh = approvalRequestLanguage({ userPrompt: context.userPrompt }) === "zh";
   const target = stringArg(args, "target", "指定元素");
   return zh
     ? {
@@ -87,7 +87,7 @@ function typeApprovalRequest(
   args: Record<string, unknown>,
   context: { toolId: string; userPrompt?: string },
 ) {
-  const zh = prefersChinese(context.userPrompt);
+  const zh = approvalRequestLanguage({ userPrompt: context.userPrompt }) === "zh";
   const rawText = stringArg(args, "text", "");
   const preview = rawText.length > 80 ? rawText.slice(0, 80) + "..." : rawText;
   const target = stringArg(args, "target", "当前焦点元素");
@@ -114,7 +114,7 @@ function pressApprovalRequest(
   args: Record<string, unknown>,
   context: { toolId: string; userPrompt?: string },
 ) {
-  const zh = prefersChinese(context.userPrompt);
+  const zh = approvalRequestLanguage({ userPrompt: context.userPrompt }) === "zh";
   const keys = stringArg(args, "keys", "指定按键");
   return zh
     ? {
@@ -139,7 +139,7 @@ function scrollApprovalRequest(
   args: Record<string, unknown>,
   context: { toolId: string; userPrompt?: string },
 ) {
-  const zh = prefersChinese(context.userPrompt);
+  const zh = approvalRequestLanguage({ userPrompt: context.userPrompt }) === "zh";
   const direction = stringArg(args, "direction", "向下");
   return zh
     ? {
@@ -164,7 +164,7 @@ function windowApprovalRequest(
   args: Record<string, unknown>,
   context: { toolId: string; userPrompt?: string },
 ) {
-  const zh = prefersChinese(context.userPrompt);
+  const zh = approvalRequestLanguage({ userPrompt: context.userPrompt }) === "zh";
   const action = stringArg(args, "action", "操作");
   const app = stringArg(args, "app", "");
   return zh

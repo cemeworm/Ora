@@ -1,7 +1,16 @@
 import type { ActionApprovalRequestCopy } from "@cemeworm/shared";
+import { prefersChineseResponse, type RuntimeResponseLanguage } from "./runtime-language.js";
 
 export function prefersChinese(text: string | undefined): boolean {
   return typeof text === "string" && /[\u3400-\u9fff]/.test(text);
+}
+
+export function approvalRequestLanguage(params: {
+  userPrompt?: string;
+  context?: Record<string, unknown>;
+  language?: RuntimeResponseLanguage;
+}): RuntimeResponseLanguage {
+  return prefersChineseResponse(params) ? "zh" : "en";
 }
 
 export function stringArg(args: Record<string, unknown>, key: string, fallback: string): string {
@@ -10,7 +19,7 @@ export function stringArg(args: Record<string, unknown>, key: string, fallback: 
 }
 
 export function genericApprovalRequest(userPrompt?: string): ActionApprovalRequestCopy {
-  const zh = prefersChinese(userPrompt);
+  const zh = approvalRequestLanguage({ userPrompt }) === "zh";
   return zh
     ? {
         title: "需要你确认后继续",

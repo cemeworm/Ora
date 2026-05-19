@@ -3,7 +3,7 @@ import type { SkillListParams } from "@cemeworm/shared";
 import type { RuntimeToolDefinition } from "./capability-registries.js";
 import type { RuntimeToolExecutionContext, SkillRegistryTools } from "./runtime-tool-executor.js";
 import { readPositiveInt } from "./runtime-tool-utils.js";
-import { prefersChinese, stringArg } from "./runtime-tool-approval.js";
+import { approvalRequestLanguage, stringArg } from "./runtime-tool-approval.js";
 
 const SKILL_FIRST_GUIDELINE = "Skill-first rule: when the user's request matches an available skill, inspect that skill before answering or acting. Use skills.get to read the full instructions for a matching skill when they are not already present in the prompt; use skills.list only when you need to rediscover enabled skills. Do not use skills for unrelated or trivial requests.";
 
@@ -74,7 +74,7 @@ export function skillToolRuntimeFields(toolId: string): Partial<RuntimeToolDefin
 }
 
 function skillCreateApprovalRequest(args: Record<string, unknown>, context: { userPrompt?: string }) {
-  const zh = prefersChinese(context.userPrompt);
+  const zh = approvalRequestLanguage({ userPrompt: context.userPrompt }) === "zh";
   const name = stringArg(args, "name", zh ? "这个技能" : "this skill");
   return zh
     ? {
@@ -96,7 +96,7 @@ function skillCreateApprovalRequest(args: Record<string, unknown>, context: { us
 }
 
 function skillUpdateApprovalRequest(args: Record<string, unknown>, context: { userPrompt?: string }) {
-  const zh = prefersChinese(context.userPrompt);
+  const zh = approvalRequestLanguage({ userPrompt: context.userPrompt }) === "zh";
   const name = stringArg(args, "name", zh ? "这个技能" : "this skill");
   return zh
     ? {
@@ -118,7 +118,7 @@ function skillUpdateApprovalRequest(args: Record<string, unknown>, context: { us
 }
 
 function skillSetEnabledApprovalRequest(args: Record<string, unknown>, context: { userPrompt?: string }) {
-  const zh = prefersChinese(context.userPrompt);
+  const zh = approvalRequestLanguage({ userPrompt: context.userPrompt }) === "zh";
   const name = stringArg(args, "name", zh ? "这个技能" : "this skill");
   const enabled = args.enabled === false ? (zh ? "停用" : "disable") : (zh ? "启用" : "enable");
   return zh
@@ -248,7 +248,7 @@ function patchRuntimeSkill(skillRegistry: SkillRegistryTools | undefined, args: 
 }
 
 function skillPatchApprovalRequest(args: Record<string, unknown>, context: { userPrompt?: string }) {
-  const zh = prefersChinese(context.userPrompt);
+  const zh = approvalRequestLanguage({ userPrompt: context.userPrompt }) === "zh";
   const name = stringArg(args, "name", zh ? "这个技能" : "this skill");
   return zh
     ? {

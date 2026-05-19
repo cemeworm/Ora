@@ -3,6 +3,7 @@ import {
   evaluateRuntimeCompletionGuards,
   finalOutputGuard,
   legacyProgressCompletionGuard,
+  pendingBackgroundWorkGuard,
   pendingRuntimeWorkGuard,
   planListCompletionGuard,
 } from "../src/harness/runtime-completion-guards.js";
@@ -216,6 +217,40 @@ describe("runtime completion guards", () => {
     if (!result.allowComplete) {
       expect(result.detail).toContain("[proposed] file.read");
     }
+  });
+
+  it("blocks completion while background children are still active", () => {
+    const result = pendingBackgroundWorkGuard({
+      actions: [],
+      planList: [],
+      toolCalls: [],
+      agentId: "ora",
+      activeBackgroundChildCount: 1,
+      pendingAsyncResultCount: 0,
+    });
+
+    expect(result).toMatchObject({
+      allowComplete: false,
+      reason: "pending_background_children",
+      progressTrigger: "background_children.pending",
+    });
+  });
+
+  it("blocks completion while async child results are still pending incorporation", () => {
+    const result = pendingBackgroundWorkGuard({
+      actions: [],
+      planList: [],
+      toolCalls: [],
+      agentId: "ora",
+      activeBackgroundChildCount: 0,
+      pendingAsyncResultCount: 2,
+    });
+
+    expect(result).toMatchObject({
+      allowComplete: false,
+      reason: "pending_background_results",
+      progressTrigger: "background_results.pending",
+    });
   });
 });
 

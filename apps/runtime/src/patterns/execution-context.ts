@@ -20,6 +20,7 @@ export interface PatternExecutionContext {
   queueSummary: QueueSummary;
   sharedStateSummary: SharedStateSummary;
   busStats: BusStats;
+  responseLanguage(): "zh" | "en";
   modeResume?: PatternModeResumeState;
   systemPrompt(extra: string): string;
   setPlanStatus(templateId: string, status: "planned" | "ready" | "running" | "blocked" | "done" | "failed" | "skipped"): void;
