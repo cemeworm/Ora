@@ -1,8 +1,9 @@
 import { deriveSnapshotGateProjection, type ModeSelection } from "@cemeworm/shared";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Bot, GitBranchPlus } from "lucide-react";
+import { Bot, ChevronDown, GitBranchPlus } from "lucide-react";
+import { AssistantTurnCard } from "./AssistantTurnCard";
 import { ChatHeader } from "./ChatHeader";
-import { CHAT_SURFACE_WIDTH_CLASS, ChatMessages } from "./ChatMessages";
+import { ChatMessages } from "./ChatMessages";
 import { ChatInput } from "./ChatInput";
 import { PlanStepsTray } from "./PlanStepsTray";
 import { Button } from "./ui/button";
@@ -23,6 +24,7 @@ import type {
 import type { OraRunConfig, OraSessionBranchGroupCreateParams, OraStateSnapshot } from "../lib/runtimeClient";
 import { runnableProviderOptions } from "../lib/providerOptions";
 import { useWorkbench, type ComposerImageAttachment, type ComposerLocalFileAttachment } from "../lib/state";
+import { derivePresentedAssistantTurnFromSnapshot } from "../lib/viewModel";
 import { getWelcomeGreeting } from "../lib/welcomeGreeting";
 import { translateCopy, type AppLanguage } from "../lib/i18n";
 import type { DesktopRunInteractionState } from "../lib/runInteractionState";
@@ -39,6 +41,10 @@ export const CHAT_VIEW_MESSAGES_PANEL_CLASS =
 export const CHAT_VIEW_STABLE_CONTENT_WIDTH_CLASS =
   "w-full max-w-[54rem] pl-4 pr-4 md:pl-6 md:pr-6 xl:pl-8 xl:pr-8";
 export const CHAT_VIEW_COLLABORATION_SHIFT_CLASS = "lg:-translate-x-8";
+export const CHAT_VIEW_DESKTOP_OVERLAY_RAIL_CLASS =
+  "pointer-events-none absolute right-4 top-3 z-20 hidden lg:block xl:right-6 xl:top-4";
+export const CHAT_VIEW_DESKTOP_OVERLAY_STACK_CLASS =
+  "pointer-events-auto flex w-[min(24rem,calc(100vw-6rem))] flex-col gap-3";
 const DESKTOP_FLOATING_OVERLAY_MEDIA_QUERY = "(min-width: 1024px)";
 
 function matchesDesktopFloatingOverlayViewport() {
@@ -240,7 +246,9 @@ export function deriveVisibleCollaborationChildren(
   snapshot?: Pick<OraStateSnapshot, "childSessions">,
 ): NonNullable<OraStateSnapshot["childSessions"]> {
   return (snapshot?.childSessions ?? []).filter((child) =>
-    child.status === "queued" || child.status === "running"
+    child.status === "queued" ||
+    child.status === "running" ||
+    child.deliveryStatus === "awaiting_pickup"
   );
 }
 
@@ -248,6 +256,274 @@ export function shouldShowCollaborationOverlay(
   snapshot?: Pick<OraStateSnapshot, "childSessions">,
 ): boolean {
   return deriveVisibleCollaborationChildren(snapshot).length > 0;
+}
+
+export function toggleExpandedOverlayChildId(
+  expandedChildId: string | undefined,
+  childId: string,
+): string | undefined {
+  return expandedChildId === childId ? undefined : childId;
+}
+
+export function resolveOverlayChildSnapshot(
+  child: NonNullable<OraStateSnapshot["childSessions"]>[number],
+  turnSnapshots: Record<string, OraStateSnapshot | undefined>,
+): OraStateSnapshot | undefined {
+  const childSnapshot = turnSnapshots[child.id];
+  if (childSnapshot?.runId === child.id) {
+    return childSnapshot;
+  }
+  return deriveOverlayReplayChildSnapshot(child, turnSnapshots);
+}
+
+export function deriveOverlayChildTurnView(
+  child: NonNullable<OraStateSnapshot["childSessions"]>[number],
+  turnSnapshots: Record<string, OraStateSnapshot | undefined>,
+) {
+  const snapshot = resolveOverlayChildSnapshot(child, turnSnapshots);
+  return snapshot ? derivePresentedAssistantTurnFromSnapshot(snapshot) : undefined;
+}
+
+function deriveOverlayReplayChildSnapshot(
+  child: NonNullable<OraStateSnapshot["childSessions"]>[number],
+  turnSnapshots: Record<string, OraStateSnapshot | undefined>,
+): OraStateSnapshot | undefined {
+  const replayRef = child.replayRef;
+  if (!replayRef || replayRef.kind !== "event_range") {
+    return undefined;
+  }
+  const parentSnapshot = turnSnapshots[replayRef.runId];
+  if (!parentSnapshot || parentSnapshot.runId !== replayRef.runId) {
+    return undefined;
+  }
+  return deriveOverlayChildSnapshotFromParentReplay({
+    parentSnapshot,
+    child,
+  });
+}
+
+function deriveOverlayChildSnapshotFromParentReplay({
+  parentSnapshot,
+  child,
+}: {
+  parentSnapshot: OraStateSnapshot;
+  child: NonNullable<OraStateSnapshot["childSessions"]>[number];
+}): OraStateSnapshot | undefined {
+  const replayRef = child.replayRef;
+  if (!replayRef || replayRef.kind !== "event_range") {
+    return undefined;
+  }
+  const fromSeq = typeof replayRef.fromSeq === "number" ? replayRef.fromSeq : 0;
+  const toSeq = typeof replayRef.toSeq === "number"
+    ? replayRef.toSeq
+    : Number.MAX_SAFE_INTEGER;
+  const childEvents = parentSnapshot.events
+    .filter((event) =>
+      event.runId === parentSnapshot.runId &&
+      event.seq >= fromSeq &&
+      event.seq <= toSeq &&
+      isOverlayReplayChildEvent(event, child)
+    )
+    .map((event) => sanitizeOverlayReplayChildEvent(event, child.id));
+  const childAgentMessages = (parentSnapshot.agentMessages ?? [])
+    .filter((message) => isOverlayReplayChildAgentMessage(message, child))
+    .map((message) => ({
+      ...message,
+      toAgentIds: [...message.toAgentIds],
+      artifactIds: [...message.artifactIds],
+    }));
+  const artifactIds = collectOverlayReplayArtifactIds({
+    child,
+    events: childEvents,
+    agentMessages: childAgentMessages,
+  });
+  const fallbackOutputText = deriveOverlayReplayFallbackOutput({
+    child,
+    events: childEvents,
+  });
+  const hasReplayMaterial =
+    childEvents.length > 0 ||
+    childAgentMessages.length > 0 ||
+    artifactIds.size > 0 ||
+    Boolean(fallbackOutputText);
+  if (!hasReplayMaterial) {
+    return undefined;
+  }
+
+  return {
+    ...parentSnapshot,
+    runId: child.id,
+    sessionId: child.sourceSessionId ?? parentSnapshot.sessionId,
+    status: child.status,
+    profiles: deriveOverlayReplayProfiles(parentSnapshot, child, childEvents, childAgentMessages),
+    events: childEvents,
+    agentMessages: childAgentMessages,
+    childSessions: [],
+    parentCoordination: undefined,
+    artifacts: parentSnapshot.artifacts.filter((artifact) => artifactIds.has(artifact.id)),
+    activeAgents:
+      child.status === "queued" || child.status === "running" || child.deliveryStatus === "awaiting_pickup"
+        ? [child.agentId]
+        : [],
+    pendingClarifications: [],
+    pendingApprovals: [],
+    output: fallbackOutputText ? { text: fallbackOutputText } : undefined,
+    updatedAt: child.updatedAt,
+  };
+}
+
+function isOverlayReplayChildEvent(
+  event: OraStateSnapshot["events"][number],
+  child: NonNullable<OraStateSnapshot["childSessions"]>[number],
+): boolean {
+  if (event.agentId === child.agentId || event.nodeId === child.agentId) {
+    return true;
+  }
+  if (
+    event.type === "child_session.updated" &&
+    isRecord(event.payload) &&
+    isRecord(event.payload.childSession)
+  ) {
+    return event.payload.childSession.id === child.id ||
+      event.payload.childSession.agentId === child.agentId;
+  }
+  if (
+    event.type === "agent.message" &&
+    isRecord(event.payload) &&
+    isRecord(event.payload.message)
+  ) {
+    const fromAgentId = event.payload.message.fromAgentId;
+    const toAgentIds = Array.isArray(event.payload.message.toAgentIds)
+      ? event.payload.message.toAgentIds
+      : [];
+    return fromAgentId === child.agentId ||
+      toAgentIds.some((agentId) => agentId === child.agentId);
+  }
+  return false;
+}
+
+function sanitizeOverlayReplayChildEvent(
+  event: OraStateSnapshot["events"][number],
+  childRunId: string,
+): OraStateSnapshot["events"][number] {
+  if (event.type !== "message.delta" || !isRecord(event.payload)) {
+    return {
+      ...event,
+      runId: childRunId,
+      payload: clonePayload(event.payload),
+    };
+  }
+  const payload = { ...event.payload };
+  delete payload.visibility;
+  delete payload.audience;
+  delete payload.surface;
+  delete payload.public;
+  return {
+    ...event,
+    runId: childRunId,
+    payload,
+  };
+}
+
+function isOverlayReplayChildAgentMessage(
+  message: OraStateSnapshot["agentMessages"][number],
+  child: NonNullable<OraStateSnapshot["childSessions"]>[number],
+): boolean {
+  return message.fromAgentId === child.agentId;
+}
+
+function collectOverlayReplayArtifactIds({
+  child,
+  events,
+  agentMessages,
+}: {
+  child: NonNullable<OraStateSnapshot["childSessions"]>[number];
+  events: OraStateSnapshot["events"];
+  agentMessages: OraStateSnapshot["agentMessages"];
+}): Set<string> {
+  const artifactIds = new Set(child.artifactIds);
+  for (const message of agentMessages) {
+    for (const artifactId of message.artifactIds) {
+      artifactIds.add(artifactId);
+    }
+  }
+  for (const event of events) {
+    if (!isRecord(event.payload)) {
+      continue;
+    }
+    const payloadArtifactId = event.payload.artifactId;
+    if (typeof payloadArtifactId === "string" && payloadArtifactId.trim()) {
+      artifactIds.add(payloadArtifactId);
+    }
+    const payloadArtifactIds = event.payload.artifactIds;
+    if (Array.isArray(payloadArtifactIds)) {
+      for (const artifactId of payloadArtifactIds) {
+        if (typeof artifactId === "string" && artifactId.trim()) {
+          artifactIds.add(artifactId);
+        }
+      }
+    }
+  }
+  return artifactIds;
+}
+
+function deriveOverlayReplayFallbackOutput({
+  child,
+  events,
+}: {
+  child: NonNullable<OraStateSnapshot["childSessions"]>[number];
+  events: OraStateSnapshot["events"];
+}): string | undefined {
+  const hasAssistantDelta = events.some((event) =>
+    event.type === "message.delta" &&
+    event.agentId === child.agentId &&
+    isRecord(event.payload) &&
+    event.payload.role === "assistant" &&
+    typeof event.payload.content === "string" &&
+    event.payload.content.trim().length > 0
+  );
+  if (hasAssistantDelta) {
+    return undefined;
+  }
+  return child.lastMessage?.trim() || child.summary?.trim() || undefined;
+}
+
+function deriveOverlayReplayProfiles(
+  parentSnapshot: OraStateSnapshot,
+  child: NonNullable<OraStateSnapshot["childSessions"]>[number],
+  events: OraStateSnapshot["events"],
+  agentMessages: OraStateSnapshot["agentMessages"],
+): OraStateSnapshot["profiles"] {
+  const referencedAgentIds = new Set<string>([child.agentId]);
+  for (const event of events) {
+    if (typeof event.agentId === "string" && event.agentId.trim()) {
+      referencedAgentIds.add(event.agentId);
+    }
+    if (typeof event.nodeId === "string" && event.nodeId.trim()) {
+      referencedAgentIds.add(event.nodeId);
+    }
+  }
+  for (const message of agentMessages) {
+    referencedAgentIds.add(message.fromAgentId);
+    for (const agentId of message.toAgentIds) {
+      referencedAgentIds.add(agentId);
+    }
+  }
+  const filteredProfiles = parentSnapshot.profiles.filter((profile) =>
+    referencedAgentIds.has(profile.id)
+  );
+  return filteredProfiles.length > 0 ? filteredProfiles : parentSnapshot.profiles;
+}
+
+function clonePayload<T>(payload: T): T {
+  if (!isRecord(payload) && !Array.isArray(payload)) {
+    return payload;
+  }
+  return JSON.parse(JSON.stringify(payload)) as T;
+}
+
+function isRecord(value: unknown): value is Record<string, any> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 export function derivePlanStepsPresentation({
@@ -631,6 +907,9 @@ export function ChatView({
           <DesktopOverlayRail
             childSessions={visibleCollaborationChildren}
             planSteps={floatingPlanSteps}
+            turnSnapshots={turnSnapshots}
+            projectRootPath={projectRootPath}
+            onOpenArtifact={onOpenArtifact}
           />
         </div>
       </main>
@@ -638,64 +917,113 @@ export function ChatView({
   );
 }
 
-function DesktopOverlayRail({
+export function DesktopOverlayRail({
   childSessions,
   planSteps,
+  turnSnapshots,
+  projectRootPath,
+  onOpenArtifact,
 }: {
   childSessions: NonNullable<OraStateSnapshot["childSessions"]>;
   planSteps: TurnPlanListStep[];
+  turnSnapshots: Record<string, OraStateSnapshot | undefined>;
+  projectRootPath?: string;
+  onOpenArtifact?: (artifactId: string) => void;
 }) {
+  const [expandedChildId, setExpandedChildId] = useState<string | undefined>(
+    undefined,
+  );
+
   if (childSessions.length === 0 && planSteps.length === 0) {
     return null;
   }
 
   return (
-    <div className="pointer-events-none absolute inset-x-0 top-6 z-20 hidden lg:block">
-      <div className={`mx-auto flex justify-end ${CHAT_SURFACE_WIDTH_CLASS}`}>
-        <div className="pointer-events-auto flex w-full max-w-sm flex-col gap-3">
-          {childSessions.length > 0 ? (
-            <section className="rounded-3xl border border-border/70 bg-background/92 p-3 shadow-lift backdrop-blur-md">
-              <div className="flex items-center gap-2 px-1 pb-2">
-                <div className="flex h-8 w-8 items-center justify-center rounded-2xl bg-muted text-foreground">
-                  <Bot className="h-4 w-4" />
-                </div>
-                <div className="min-w-0">
-                  <p className="text-sm font-semibold text-foreground">
-                    子代理运行中
-                  </p>
-                  <p className="text-xs text-muted-foreground">
-                    {childSessions.length} 个任务正在协作执行
-                  </p>
-                </div>
+    <div className={CHAT_VIEW_DESKTOP_OVERLAY_RAIL_CLASS}>
+      <div className={CHAT_VIEW_DESKTOP_OVERLAY_STACK_CLASS}>
+        {childSessions.length > 0 ? (
+          <section className="rounded-3xl border border-border/70 bg-background/92 p-3 shadow-lift backdrop-blur-md">
+            <div className="flex items-center gap-2 px-1 pb-2">
+              <div className="flex h-8 w-8 items-center justify-center rounded-2xl bg-muted text-foreground">
+                <Bot className="h-4 w-4" />
               </div>
-              <div className="space-y-2">
-                {childSessions.map((child) => (
+              <div className="min-w-0">
+                <p className="text-sm font-semibold text-foreground">
+                  子代理协作中
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {childSessions.length} 个任务仍在协作流程中
+                </p>
+              </div>
+            </div>
+            <div className="space-y-2">
+              {childSessions.map((child) => {
+                const expanded = expandedChildId === child.id;
+                const childTurnView = deriveOverlayChildTurnView(child, turnSnapshots);
+                return (
                   <section
                     key={child.id}
-                    className="rounded-2xl border border-border/70 bg-card/80 p-3"
+                    className="rounded-2xl border border-border/70 bg-card/80 p-2.5"
                   >
-                    <div className="flex items-start justify-between gap-3">
+                    <button
+                      type="button"
+                      aria-expanded={expanded}
+                      onClick={() => setExpandedChildId((current) =>
+                        toggleExpandedOverlayChildId(current, child.id)
+                      )}
+                      className="flex w-full items-start justify-between gap-3 text-left"
+                    >
                       <div className="min-w-0">
                         <p className="truncate text-sm font-semibold text-foreground">
                           {child.label}
                         </p>
-                        <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                        <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
                           {child.summary ?? child.lastMessage ?? "正在等待子代理返回最新进展。"}
                         </p>
                       </div>
-                      <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-foreground">
-                        {childStatusLabel(child.status)}
-                      </span>
-                    </div>
+                      <div className="flex items-center gap-2">
+                        <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-foreground">
+                          {childStatusLabel(child.status, child.deliveryStatus)}
+                        </span>
+                        <ChevronDown
+                          className={cn(
+                            "h-4 w-4 shrink-0 text-muted-foreground transition-transform",
+                            expanded && "rotate-180",
+                          )}
+                        />
+                      </div>
+                    </button>
+                    {expanded ? (
+                      <div className="mt-2 rounded-[1rem] border border-border/70 bg-background/82 p-2 max-h-[min(72vh,42rem)] overflow-y-auto overscroll-contain">
+                        {childTurnView ? (
+                          <AssistantTurnCard
+                            content={childTurnView.content}
+                            turn={childTurnView.turn}
+                            density="compact"
+                            onOpenArtifact={onOpenArtifact}
+                            projectRootPath={projectRootPath}
+                          />
+                        ) : (
+                          <div className="space-y-1">
+                            <p className="text-sm font-medium text-foreground">
+                              等待子代理内容同步
+                            </p>
+                            <p className="text-xs leading-5 text-muted-foreground">
+                              当前只拿到了子代理摘要；待对应 session snapshot 进入本地状态后，这里会自动显示完整 timeline / process / body 内容。
+                            </p>
+                          </div>
+                        )}
+                      </div>
+                    ) : null}
                   </section>
-                ))}
-              </div>
-            </section>
-          ) : null}
-          {planSteps.length > 0 ? (
-            <PlanStepsTray planSteps={planSteps} variant="floating" />
-          ) : null}
-        </div>
+                );
+              })}
+            </div>
+          </section>
+        ) : null}
+        {planSteps.length > 0 ? (
+          <PlanStepsTray planSteps={planSteps} variant="floating" />
+        ) : null}
       </div>
     </div>
   );
@@ -703,7 +1031,11 @@ function DesktopOverlayRail({
 
 function childStatusLabel(
   status: NonNullable<OraStateSnapshot["childSessions"]>[number]["status"],
+  deliveryStatus?: NonNullable<OraStateSnapshot["childSessions"]>[number]["deliveryStatus"],
 ): string {
+  if (status === "succeeded" && deliveryStatus === "awaiting_pickup") {
+    return "待接收";
+  }
   switch (status) {
     case "queued":
       return "排队中";

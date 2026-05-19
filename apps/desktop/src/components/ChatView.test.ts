@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   CHAT_VIEW_COLLABORATION_SHIFT_CLASS,
   CHAT_VIEW_CONTENT_ROW_CLASS,
+  CHAT_VIEW_DESKTOP_OVERLAY_RAIL_CLASS,
+  CHAT_VIEW_DESKTOP_OVERLAY_STACK_CLASS,
   CHAT_VIEW_MAIN_CLASS,
   CHAT_VIEW_MESSAGES_PANEL_CLASS,
   CHAT_VIEW_ROOT_CLASS,
@@ -10,6 +12,7 @@ import {
   deriveChatSurfaceContentWidthClassName,
   deriveChatSurfaceShiftClassName,
   deriveComposerPlanDecisionState,
+  deriveOverlayChildTurnView,
   deriveCurrentComposerPlanSteps,
   derivePlanStepsPresentation,
   deriveProjectedGateTrays,
@@ -17,8 +20,10 @@ import {
   getActiveChatProvider,
   getChatInputContextState,
   resolveComposerGateSnapshot,
+  resolveOverlayChildSnapshot,
   shouldShowCollaborationOverlay,
   shouldShowDesktopOverlayRail,
+  toggleExpandedOverlayChildId,
 } from "./ChatView";
 
 describe("chat view provider selection", () => {
@@ -396,12 +401,14 @@ describe("chat view collaboration overlay visibility", () => {
       childSessions: [
         childSession("queued-child", "queued"),
         childSession("running-child", "running"),
+        childSession("awaiting-child", "succeeded", "awaiting_pickup"),
         childSession("done-child", "succeeded"),
         childSession("failed-child", "failed"),
       ],
     } as any)).toMatchObject([
       { id: "queued-child", status: "queued" },
       { id: "running-child", status: "running" },
+      { id: "awaiting-child", status: "succeeded", deliveryStatus: "awaiting_pickup" },
     ]);
   });
 
@@ -468,6 +475,109 @@ describe("chat view collaboration overlay visibility", () => {
       CHAT_VIEW_COLLABORATION_SHIFT_CLASS,
     );
   });
+
+  it("anchors the desktop overlay rail near the content area's top-right edge", () => {
+    expect(CHAT_VIEW_DESKTOP_OVERLAY_RAIL_CLASS).toContain("absolute");
+    expect(CHAT_VIEW_DESKTOP_OVERLAY_RAIL_CLASS).toContain("right-4");
+    expect(CHAT_VIEW_DESKTOP_OVERLAY_RAIL_CLASS).toContain("top-3");
+    expect(CHAT_VIEW_DESKTOP_OVERLAY_RAIL_CLASS).toContain("hidden");
+    expect(CHAT_VIEW_DESKTOP_OVERLAY_RAIL_CLASS).toContain("lg:block");
+    expect(CHAT_VIEW_DESKTOP_OVERLAY_RAIL_CLASS).toContain("xl:right-6");
+    expect(CHAT_VIEW_DESKTOP_OVERLAY_RAIL_CLASS).toContain("xl:top-4");
+  });
+
+  it("keeps the desktop overlay stack interactive with a bounded floating width", () => {
+    expect(CHAT_VIEW_DESKTOP_OVERLAY_STACK_CLASS).toContain("pointer-events-auto");
+    expect(CHAT_VIEW_DESKTOP_OVERLAY_STACK_CLASS).toContain("flex");
+    expect(CHAT_VIEW_DESKTOP_OVERLAY_STACK_CLASS).toContain("gap-3");
+    expect(CHAT_VIEW_DESKTOP_OVERLAY_STACK_CLASS).toContain("w-[min(24rem,calc(100vw-6rem))]");
+  });
+
+  it("toggles overlay child expansion as a single-open accordion", () => {
+    expect(toggleExpandedOverlayChildId(undefined, "child-a")).toBe("child-a");
+    expect(toggleExpandedOverlayChildId("child-a", "child-a")).toBeUndefined();
+    expect(toggleExpandedOverlayChildId("child-a", "child-b")).toBe("child-b");
+  });
+
+  it("prefers a real child snapshot keyed by child.id", () => {
+    const snapshot = { runId: "run-child-1" } as any;
+    expect(resolveOverlayChildSnapshot({
+      ...childSession("run-child-1", "running"),
+      sourceRunId: "run-parent-1",
+    } as any, {
+      "run-child-1": snapshot,
+      "run-parent-1": { runId: "run-parent-1" } as any,
+    })).toBe(snapshot);
+  });
+
+  it("derives a child session turn view from replay data instead of mirroring the parent snapshot", () => {
+    const turnView = deriveOverlayChildTurnView({
+      ...childSession("run-parent-1:ora-sub-1", "running"),
+      agentId: "ora-sub-1",
+      label: "Research subagent",
+      summary: "正在整理调研结论",
+      sourceRunId: "run-parent-1",
+      replayRef: {
+        kind: "event_range",
+        runId: "run-parent-1",
+        fromSeq: 0,
+        toSeq: 2,
+      },
+    } as any, {
+      "run-parent-1": parentOverlaySnapshot(),
+    });
+
+    expect(turnView?.content).toBe("子代理最终结论。");
+    expect(turnView?.turn.currentAgentLabel).toBe("Research subagent");
+    const firstTimelineItem = turnView?.turn.timelineItems?.[0];
+    expect(firstTimelineItem).toMatchObject({
+      kind: "status_group",
+    });
+    expect(
+      firstTimelineItem && "summary" in firstTimelineItem
+        ? firstTimelineItem.summary
+        : "",
+    ).toContain("AssistantTurnCard.tsx");
+  });
+
+  it("does not return the raw parent snapshot when sourceRunId points at the parent run", () => {
+    const parentSnapshot = parentOverlaySnapshot();
+    const resolved = resolveOverlayChildSnapshot({
+      ...childSession("run-parent-1:ora-sub-1", "running"),
+      agentId: "ora-sub-1",
+      sourceRunId: "run-parent-1",
+      replayRef: {
+        kind: "event_range",
+        runId: "run-parent-1",
+        fromSeq: 0,
+        toSeq: 2,
+      },
+    } as any, {
+      "run-parent-1": parentSnapshot,
+    });
+
+    expect(resolved).not.toBe(parentSnapshot);
+    expect(resolved?.runId).toBe("run-parent-1:ora-sub-1");
+    expect(resolved?.output).toBeUndefined();
+  });
+
+  it("returns no child turn view when the snapshot is not available yet", () => {
+    expect(deriveOverlayChildTurnView({
+      ...childSession("child-a", "running"),
+      label: "Research subagent",
+      sourceRunId: "run-parent-missing",
+    } as any, {})).toBeUndefined();
+  });
+
+  it("returns no child snapshot when only the parent sourceRunId is available without replay data", () => {
+    expect(resolveOverlayChildSnapshot({
+      ...childSession("run-parent-1:ora-sub-1", "running"),
+      agentId: "ora-sub-1",
+      sourceRunId: "run-parent-1",
+    } as any, {
+      "run-parent-1": parentOverlaySnapshot(),
+    })).toBeUndefined();
+  });
 });
 
 describe("chat view layout classes", () => {
@@ -518,6 +628,7 @@ function contextState(totalTokens: number) {
 function childSession(
   id: string,
   status: "queued" | "running" | "succeeded" | "failed",
+  deliveryStatus?: "awaiting_pickup" | "consumed",
 ) {
   return {
     id,
@@ -525,10 +636,211 @@ function childSession(
     label: id,
     sessionClass: "temporary_spawn" as const,
     status,
+    deliveryStatus,
     startedAt: 1,
     updatedAt: 1,
     artifactIds: [],
   };
+}
+
+function childOverlaySnapshot() {
+  return {
+    runId: "run-child-1",
+    sessionId: "session-child-1",
+    turnIndex: 1,
+    status: "succeeded",
+    pattern: "orchestrator_subagent",
+    modeId: "research",
+    input: { prompt: "调研相关组件", createdAt: 1, context: {} },
+    config: {
+      modeId: "research",
+      pattern: "orchestrator_subagent",
+      modeSelection: "manual",
+      profileIds: ["ora-sub-1"],
+      providerId: "local-smoke",
+      modelRef: "local/smoke-model",
+      approvalMode: "high_risk_only",
+      patternOptions: {},
+      metadata: {},
+      deterministicSeed: "chat-view-overlay-child-snapshot-test",
+      skillIds: [],
+      toolIds: ["file.read"],
+    },
+    topology: { nodes: [], edges: [] },
+    profiles: [{ id: "ora-sub-1", label: "Research subagent", role: "research", model: "local/smoke-model", tools: [], budget: "", memoryScopes: [] }],
+    memory: [],
+    plan: [],
+    planList: [],
+    todos: [],
+    actions: [],
+    toolCalls: [],
+    continuation: { frames: [] },
+    planDecisions: [],
+    conversation: [],
+    toolResults: [],
+    policyDecisions: [],
+    checkpoints: [],
+    events: [{
+      id: "run-child-1:evt-0",
+      runId: "run-child-1",
+      seq: 0,
+      type: "tool.called",
+      agentId: "ora-sub-1",
+      createdAt: 1,
+      pattern: "orchestrator_subagent",
+      payload: {
+        toolId: "file.read",
+        status: "succeeded",
+        input: { path: "apps/desktop/src/components/AssistantTurnCard.tsx" },
+        output: { path: "apps/desktop/src/components/AssistantTurnCard.tsx", sizeBytes: 128 },
+      },
+    }],
+    agentMessages: [],
+    childSessions: [],
+    artifacts: [],
+    activeAgents: [],
+    queueSummary: { mode: "dag", pending: 0, inProgress: 0, completed: 1, topics: [] },
+    sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+    busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+    pendingClarifications: [],
+    pendingApprovals: [],
+    output: { text: "子代理最终结论。" },
+    updatedAt: 2,
+  } as any;
+}
+
+function parentOverlaySnapshot() {
+  return {
+    runId: "run-parent-1",
+    sessionId: "session-parent-1",
+    turnIndex: 1,
+    status: "running",
+    pattern: "orchestrator_subagent",
+    modeId: "orchestrator_subagent",
+    input: { prompt: "总结子代理结果", createdAt: 1, context: {} },
+    config: {
+      modeId: "orchestrator_subagent",
+      pattern: "orchestrator_subagent",
+      modeSelection: "manual",
+      profileIds: ["ora", "ora-sub-1"],
+      providerId: "local-smoke",
+      modelRef: "local/smoke-model",
+      approvalMode: "high_risk_only",
+      patternOptions: {},
+      metadata: {},
+      deterministicSeed: "chat-view-overlay-parent-replay-test",
+      skillIds: [],
+      toolIds: ["file.read"],
+    },
+    topology: { nodes: [], edges: [] },
+    profiles: [
+      { id: "ora", label: "Orchestrator", role: "orchestrator", model: "local/smoke-model", tools: [], budget: "", memoryScopes: [] },
+      { id: "ora-sub-1", label: "Research subagent", role: "research", model: "local/smoke-model", tools: [], budget: "", memoryScopes: [] },
+    ],
+    memory: [],
+    plan: [],
+    planList: [],
+    todos: [],
+    actions: [],
+    toolCalls: [],
+    continuation: { frames: [] },
+    planDecisions: [],
+    conversation: [],
+    toolResults: [],
+    policyDecisions: [],
+    checkpoints: [],
+    events: [
+      {
+        id: "run-parent-1:evt-0",
+        runId: "run-parent-1",
+        seq: 0,
+        type: "child_session.updated",
+        agentId: "ora-sub-1",
+        nodeId: "ora-sub-1",
+        createdAt: 1,
+        pattern: "orchestrator_subagent",
+        payload: {
+          childSession: {
+            ...childSession("run-parent-1:ora-sub-1", "running"),
+            agentId: "ora-sub-1",
+            label: "Research subagent",
+          },
+        },
+      },
+      {
+        id: "run-parent-1:evt-1",
+        runId: "run-parent-1",
+        seq: 1,
+        type: "tool.called",
+        agentId: "ora-sub-1",
+        nodeId: "ora-sub-1",
+        createdAt: 2,
+        pattern: "orchestrator_subagent",
+        payload: {
+          toolId: "file.read",
+          status: "succeeded",
+          input: { path: "apps/desktop/src/components/AssistantTurnCard.tsx" },
+          output: { path: "apps/desktop/src/components/AssistantTurnCard.tsx", sizeBytes: 128 },
+        },
+      },
+      {
+        id: "run-parent-1:evt-2",
+        runId: "run-parent-1",
+        seq: 2,
+        type: "message.delta",
+        agentId: "ora-sub-1",
+        nodeId: "ora-sub-1",
+        createdAt: 3,
+        pattern: "orchestrator_subagent",
+        payload: {
+          role: "assistant",
+          messageId: "run-parent-1:ora-sub-1:message-1",
+          content: "子代理最终结论。",
+          audience: "collaboration",
+          visibility: "collaboration",
+          surface: "collaboration",
+        },
+      },
+      {
+        id: "run-parent-1:evt-3",
+        runId: "run-parent-1",
+        seq: 3,
+        type: "message.delta",
+        agentId: "ora",
+        nodeId: "ora",
+        createdAt: 4,
+        pattern: "orchestrator_subagent",
+        payload: {
+          role: "assistant",
+          messageId: "run-parent-1:parent-message-1",
+          content: "父 Agent 综合结论",
+        },
+      },
+    ],
+    agentMessages: [],
+    childSessions: [{
+      ...childSession("run-parent-1:ora-sub-1", "running"),
+      agentId: "ora-sub-1",
+      label: "Research subagent",
+      summary: "正在整理调研结论",
+      sourceRunId: "run-parent-1",
+      replayRef: {
+        kind: "event_range",
+        runId: "run-parent-1",
+        fromSeq: 0,
+        toSeq: 2,
+      },
+    }],
+    artifacts: [],
+    activeAgents: ["ora", "ora-sub-1"],
+    queueSummary: { mode: "dag", pending: 0, inProgress: 1, completed: 0, topics: [] },
+    sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+    busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+    pendingClarifications: [],
+    pendingApprovals: [],
+    output: { text: "父 Agent 综合结论" },
+    updatedAt: 4,
+  } as any;
 }
 
 function runInteractionState(

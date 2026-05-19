@@ -554,7 +554,7 @@ function TrailOverview({
           <div className="space-y-3">
             {causalDecisionSummary.hiddenDecisionCount > 0 && (
               <p className="text-[11px] leading-5 text-bench-600">
-                默认仅展示真正改变执行路径的有效决策；已过滤 {causalDecisionSummary.hiddenDecisionCount} 条运行时补记或未形成独立结果的记录。
+                默认仅展示真正形成独立干预证据的有效决策；已过滤 {causalDecisionSummary.hiddenDecisionCount} 条候选但未生效的记录。
               </p>
             )}
             {causalDecisionSummary.decisions.map((decision) => (

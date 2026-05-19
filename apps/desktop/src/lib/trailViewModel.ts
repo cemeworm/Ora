@@ -10,6 +10,7 @@ import type { DebuggerTrailTab } from "./debuggerSurface";
 import { deriveSnapshotInteractionProjection, snapshotPendingPlanDecision, type SnapshotInteractionProjection } from "./runInteractionState";
 import {
   deriveCausalInterventionEpisodes,
+  projectAssistantTextFromEvents,
   deriveSnapshotGateProjection,
   projectAssistantTextFromSnapshot,
 } from "@cemeworm/shared";
@@ -2266,13 +2267,12 @@ export function buildCausalDecisionSummary(snapshot: OraStateSnapshot): CausalDe
   const decisions: CausalDecisionSummaryItem[] = [];
   const nodeLabels = new Map(snapshot.topology.nodes.map((node) => [node.id, node.label]));
   const agentLabels = buildAgentLabelMap(snapshot);
-  const assistantPreview = previewAssistantReply(snapshot);
   const episodes = deriveCausalInterventionEpisodes(snapshot);
   const visibleEpisodes = episodes.filter((episode) => episode.effective);
 
   for (const episode of visibleEpisodes) {
     const turnIndex = episode.turnIndex ?? snapshot.turnIndex ?? 1;
-    const replyMessageId = episode.replyMessageId ?? `${episode.runId}:assistant`;
+    const replyMessageId = episode.evidenceMessageId ?? episode.replyMessageId ?? `${episode.runId}:assistant`;
     const agentId = episode.agentId;
     const nodeId = episode.nodeId;
     const phase = episode.phase ?? inferCausalDecisionPhase({}, undefined);
@@ -2300,7 +2300,7 @@ export function buildCausalDecisionSummary(snapshot: OraStateSnapshot): CausalDe
       nodeLabel: nodeId ? nodeLabels.get(nodeId) ?? nodeId : undefined,
       toolId,
       iteration,
-      assistantPreview,
+      assistantPreview: previewAssistantReplyForEpisode(snapshot, episode),
       intervention: episode.chosenIntervention,
       reason: episode.reason,
       goalUncertainty: episode.goalUncertainty,
@@ -2322,8 +2322,46 @@ export function buildCausalDecisionSummary(snapshot: OraStateSnapshot): CausalDe
   };
 }
 
-function previewAssistantReply(snapshot: OraStateSnapshot): string {
-  const text = projectAssistantTextFromSnapshot(snapshot, { maxChars: 160 }).trim();
+function previewAssistantReplyForEpisode(
+  snapshot: OraStateSnapshot,
+  episode: {
+    evidenceMessageId?: string;
+    evidenceStartSeq?: number;
+    evidenceEndSeq?: number;
+    replyMessageId?: string;
+  },
+): string {
+  const exactMessageId = episode.evidenceMessageId ?? episode.replyMessageId;
+  if (exactMessageId) {
+    const byMessageId = projectAssistantTextFromEvents(
+      snapshot.events.filter((event) =>
+        event.type === "message.delta" &&
+        isRecord(event.payload) &&
+        typeof event.payload.messageId === "string" &&
+        event.payload.messageId === exactMessageId
+      ),
+    ).trim();
+    if (byMessageId) return truncateAssistantPreview(byMessageId);
+  }
+
+  if (episode.evidenceStartSeq !== undefined || episode.evidenceEndSeq !== undefined) {
+    const startSeq = episode.evidenceStartSeq ?? 0;
+    const endSeq = episode.evidenceEndSeq ?? Number.MAX_SAFE_INTEGER;
+    const bySeqWindow = projectAssistantTextFromEvents(
+      snapshot.events.filter((event) => event.seq >= startSeq && event.seq <= endSeq),
+    ).trim();
+    if (bySeqWindow) return truncateAssistantPreview(bySeqWindow);
+  }
+
+  const fallback = projectAssistantTextFromSnapshot(snapshot, { maxChars: 160 }).trim();
+  if (fallback && !exactMessageId && episode.evidenceStartSeq === undefined && episode.evidenceEndSeq === undefined) {
+    return truncateAssistantPreview(fallback);
+  }
+
+  return "当前未找到与该干预直接绑定的回复片段。";
+}
+
+function truncateAssistantPreview(text: string): string {
   if (!text) {
     return "当前回复尚无可预览内容。";
   }

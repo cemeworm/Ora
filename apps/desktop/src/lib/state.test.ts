@@ -43,6 +43,8 @@ function testSnapshot(params: {
   sessionId?: string;
   status?: OraStateSnapshot["status"];
   updatedAt?: number;
+  childSessions?: OraStateSnapshot["childSessions"];
+  parentCoordination?: OraStateSnapshot["parentCoordination"];
   agentMessages?: OraStateSnapshot["agentMessages"];
   events?: OraStateSnapshot["events"];
   latency?: OraStateSnapshot["latency"];
@@ -93,6 +95,8 @@ function testSnapshot(params: {
     checkpoints: [],
     events: params.events ?? [],
     agentMessages: params.agentMessages ?? [],
+    childSessions: params.childSessions ?? [],
+    parentCoordination: params.parentCoordination,
     artifacts: [],
     activeAgents: [],
     queueSummary: { mode: "backlog", pending: 0, inProgress: 1, completed: 0, topics: [] },
@@ -2182,6 +2186,166 @@ describe("desktop workbench state", () => {
     expect(merged).toBeDefined();
     expect(merged?.events.map((event) => event.seq)).toEqual([0, 1]);
     expect(merged?.status).toBe("running");
+  });
+
+  it("projects child session and parent coordination updates from no-snapshot streams", () => {
+    const snapshot = testSnapshot({
+      runId: "run-overlay-live",
+      events: [{
+        id: "run-overlay-live:event:0",
+        runId: "run-overlay-live",
+        seq: 0,
+        type: "run.started",
+        createdAt: 1_714_000_000_000,
+      } as unknown as OraStateSnapshot["events"][number]],
+    });
+    const stream: OraRunEventStream = {
+      runId: "run-overlay-live",
+      fromSeq: 1,
+      nextSeq: 3,
+      status: "running",
+      events: [
+        {
+          id: "run-overlay-live:event:1",
+          runId: "run-overlay-live",
+          seq: 1,
+          type: "child_session.updated",
+          createdAt: 1_714_000_000_001,
+          payload: {
+            childSession: {
+              id: "run-overlay-live:ora-sub-1",
+              agentId: "ora-sub-1",
+              label: "Researcher",
+              sessionClass: "temporary_spawn",
+              status: "running",
+              startedAt: 1_714_000_000_001,
+              updatedAt: 1_714_000_000_001,
+            },
+          },
+        },
+        {
+          id: "run-overlay-live:event:2",
+          runId: "run-overlay-live",
+          seq: 2,
+          type: "parent_coordination.updated",
+          createdAt: 1_714_000_000_002,
+          payload: {
+            coordination: {
+              phase: "waiting_on_required_children",
+              activeChildIds: ["run-overlay-live:ora-sub-1"],
+              waitingChildIds: ["run-overlay-live:ora-sub-1"],
+              updatedAt: 1_714_000_000_002,
+            },
+          },
+        },
+      ] as unknown as OraRunEventStream["events"],
+    };
+
+    const merged = mergeRunStreamSnapshot(snapshot, stream);
+
+    expect(merged?.childSessions).toMatchObject([
+      { agentId: "ora-sub-1", status: "running", label: "Researcher" },
+    ]);
+    expect(merged?.parentCoordination).toMatchObject({
+      phase: "waiting_on_required_children",
+      activeChildIds: ["run-overlay-live:ora-sub-1"],
+      waitingChildIds: ["run-overlay-live:ora-sub-1"],
+    });
+  });
+
+  it("keeps child session projection when an attached stream snapshot omits collaboration fields", () => {
+    const existing = testSnapshot({
+      runId: "run-overlay-snapshot",
+      childSessions: [{
+        id: "run-overlay-snapshot:ora-sub-1",
+        agentId: "ora-sub-1",
+        label: "Researcher",
+        sessionClass: "temporary_spawn",
+        status: "queued",
+        startedAt: 1_714_000_000_000,
+        updatedAt: 1_714_000_000_000,
+        artifactIds: [],
+      }],
+      parentCoordination: {
+        phase: "dispatching",
+        activeChildIds: ["run-overlay-snapshot:ora-sub-1"],
+        waitingChildIds: [],
+        updatedAt: 1_714_000_000_000,
+      },
+      events: [{
+        id: "run-overlay-snapshot:event:0",
+        runId: "run-overlay-snapshot",
+        seq: 0,
+        type: "child_session.updated",
+        createdAt: 1_714_000_000_000,
+        payload: {
+          childSession: {
+            id: "run-overlay-snapshot:ora-sub-1",
+            agentId: "ora-sub-1",
+            label: "Researcher",
+            sessionClass: "temporary_spawn",
+            status: "queued",
+            startedAt: 1_714_000_000_000,
+            updatedAt: 1_714_000_000_000,
+          },
+        },
+      } as unknown as OraStateSnapshot["events"][number]],
+    });
+    const stream: OraRunEventStream = {
+      runId: "run-overlay-snapshot",
+      fromSeq: 1,
+      nextSeq: 3,
+      status: "running",
+      snapshot: testSnapshot({
+        runId: "run-overlay-snapshot",
+        updatedAt: 1_714_000_000_002,
+      }),
+      events: [
+        {
+          id: "run-overlay-snapshot:event:1",
+          runId: "run-overlay-snapshot",
+          seq: 1,
+          type: "child_session.updated",
+          createdAt: 1_714_000_000_001,
+          payload: {
+            childSession: {
+              id: "run-overlay-snapshot:ora-sub-1",
+              agentId: "ora-sub-1",
+              label: "Researcher",
+              sessionClass: "temporary_spawn",
+              status: "running",
+              startedAt: 1_714_000_000_000,
+              updatedAt: 1_714_000_000_001,
+            },
+          },
+        },
+        {
+          id: "run-overlay-snapshot:event:2",
+          runId: "run-overlay-snapshot",
+          seq: 2,
+          type: "parent_coordination.updated",
+          createdAt: 1_714_000_000_002,
+          payload: {
+            coordination: {
+              phase: "waiting_on_required_children",
+              activeChildIds: ["run-overlay-snapshot:ora-sub-1"],
+              waitingChildIds: ["run-overlay-snapshot:ora-sub-1"],
+              updatedAt: 1_714_000_000_002,
+            },
+          },
+        },
+      ] as unknown as OraRunEventStream["events"],
+    };
+
+    const merged = mergeRunStreamSnapshot(existing, stream);
+
+    expect(merged?.childSessions).toMatchObject([
+      { agentId: "ora-sub-1", status: "running" },
+    ]);
+    expect(merged?.parentCoordination).toMatchObject({
+      phase: "waiting_on_required_children",
+      waitingChildIds: ["run-overlay-snapshot:ora-sub-1"],
+    });
   });
 
   it("merges stream latency diagnostics into snapshots without attached snapshots", () => {

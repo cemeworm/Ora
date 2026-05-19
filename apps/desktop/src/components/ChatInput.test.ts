@@ -15,6 +15,7 @@ import {
   getComposerTrayVisibility,
   getContextRingState,
   getCurrentLineInfo,
+  restoreSelectionBookmark,
   scrollComposerTextareaToBottom,
 } from "./ChatInput";
 
@@ -190,6 +191,20 @@ function setCaret(textSegment: HTMLElement, offset: number) {
   selection?.addRange(range);
 }
 
+function setSelectionRange(
+  textSegment: HTMLElement,
+  startOffset: number,
+  endOffset: number,
+) {
+  const textNode = textSegment.firstChild ?? textSegment;
+  const selection = window.getSelection();
+  const range = document.createRange();
+  range.setStart(textNode, startOffset);
+  range.setEnd(textNode, endOffset);
+  selection?.removeAllRanges();
+  selection?.addRange(range);
+}
+
 function flushSelection(editor: HTMLElement) {
   act(() => {
     editor.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
@@ -208,9 +223,41 @@ function dispatchEditorInput(editor: HTMLElement) {
   });
 }
 
+function dispatchEditorInputWithType(
+  editor: HTMLElement,
+  inputType: string,
+  data: string | null = null,
+) {
+  act(() => {
+    editor.dispatchEvent(
+      new InputEvent("input", { bubbles: true, inputType, data }),
+    );
+  });
+}
+
 function dispatchComposition(editor: HTMLElement, type: "compositionstart" | "compositionend", data = "") {
   act(() => {
     editor.dispatchEvent(new CompositionEvent(type, { bubbles: true, data }));
+  });
+}
+
+function insertTextAtCurrentSelection(editor: HTMLElement, text: string) {
+  act(() => {
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0) {
+      throw new Error("Expected an active selection before inserting text");
+    }
+    const range = selection.getRangeAt(0);
+    range.deleteContents();
+    const textNode = document.createTextNode(text);
+    range.insertNode(textNode);
+    range.setStartAfter(textNode);
+    range.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    editor.dispatchEvent(
+      new InputEvent("input", { bubbles: true, inputType: "insertText", data: text }),
+    );
   });
 }
 
@@ -525,6 +572,28 @@ describe("getCurrentLineInfo", () => {
 });
 
 describe("ChatInput content editable chips", () => {
+  it("does not throw when restoring a selection into an empty text segment with a placeholder br", () => {
+    const root = document.createElement("div");
+    const segment = document.createElement("span");
+    segment.dataset.segmentKind = "text";
+    segment.dataset.segmentId = "segment-1";
+    segment.appendChild(document.createElement("br"));
+    root.appendChild(segment);
+    document.body.appendChild(root);
+
+    expect(() =>
+      restoreSelectionBookmark(root, {
+        start: { segmentId: "segment-1", offset: 0 },
+        end: { segmentId: "segment-1", offset: 0 },
+      }),
+    ).not.toThrow();
+
+    const selection = window.getSelection();
+    expect(selection?.rangeCount).toBe(1);
+    expect(selection?.getRangeAt(0).startContainer).toBe(segment);
+    expect(selection?.getRangeAt(0).startOffset).toBe(0);
+  });
+
   it("renders widget context chips and selected skill chips inside the editor flow", () => {
     const html = renderToStaticMarkup(
       createElement(
@@ -628,6 +697,163 @@ describe("ChatInput content editable chips", () => {
     expect(
       getTextSegments(editor).map((segment) => sanitizeText(segment.textContent)).join(""),
     ).toBe("前中后");
+  });
+
+  it("keeps appending text in the trailing segment after a context chip and skill chip", () => {
+    let latestState: HarnessState = {
+      prompt: "",
+      selectedSkillIds: [],
+      contextIds: [],
+    };
+    const { container } = renderElement(
+      createElement(ChatInputHarness, {
+        initialSkillIds: ["release-helper"],
+        initialContextChips: [
+          { id: "widget-1", label: "任务清单 · 3 待办", tone: "widget" },
+        ],
+        onStateChange: (state: HarnessState) => {
+          latestState = state;
+        },
+      }),
+    );
+
+    const editor = getEditor(container);
+
+    let textSegments = getTextSegments(editor);
+    textSegments[1]!.textContent = "middle";
+    dispatchEditorInput(editor);
+
+    textSegments = getTextSegments(editor);
+    const trailingText = textSegments[2]!;
+    setCaret(trailingText, 0);
+    flushSelection(editor);
+
+    insertTextAtCurrentSelection(editor, "a");
+    insertTextAtCurrentSelection(editor, "b");
+
+    const nextTextSegments = getTextSegments(editor).map((segment) =>
+      sanitizeText(segment.textContent),
+    );
+    expect(nextTextSegments).toEqual(["", "middle", "ab"]);
+    expect(latestState.prompt).toBe("middleab");
+  });
+
+  it.each([
+    {
+      name: "an empty text node",
+      applyEmptyDom(textSegment: HTMLElement, _editor: HTMLElement) {
+        textSegment.textContent = "";
+        setCaret(textSegment, 0);
+      },
+    },
+    {
+      name: "a placeholder br inside the text segment",
+      applyEmptyDom(textSegment: HTMLElement, _editor: HTMLElement) {
+        textSegment.replaceChildren(document.createElement("br"));
+        const selection = window.getSelection();
+        const range = document.createRange();
+        range.setStart(textSegment, 0);
+        range.collapse(true);
+        selection?.removeAllRanges();
+        selection?.addRange(range);
+      },
+    },
+  ])(
+    "stays stable when parsing an emptied text segment left as $name",
+    ({ applyEmptyDom }) => {
+      let latestState: HarnessState = {
+        prompt: "",
+        selectedSkillIds: [],
+        contextIds: [],
+      };
+      const { container } = renderElement(
+        createElement(ChatInputHarness, {
+          initialPrompt: "ab",
+          onStateChange: (state: HarnessState) => {
+            latestState = state;
+          },
+        }),
+      );
+
+      const editor = getEditor(container);
+      const originalTextSegment = getTextSegments(editor)[0]!;
+      originalTextSegment.textContent = "a";
+      setCaret(originalTextSegment, 1);
+      dispatchEditorInputWithType(editor, "deleteContentBackward");
+
+      expect(latestState.prompt).toBe("a");
+
+      const nextTextSegment = getTextSegments(editor)[0]!;
+      applyEmptyDom(nextTextSegment, editor);
+      flushSelection(editor);
+      dispatchEditorInputWithType(editor, "deleteContentBackward");
+
+      expect(() => getEditor(container)).not.toThrow();
+      expect(latestState.prompt).toBe("");
+      expect(
+        getTextSegments(getEditor(container)).map((segment) =>
+          sanitizeText(segment.textContent),
+        ),
+      ).toEqual([""]);
+    },
+  );
+
+  it("removes the final character with Backspace without letting the browser collapse the editor DOM", () => {
+    let latestState: HarnessState = {
+      prompt: "",
+      selectedSkillIds: [],
+      contextIds: [],
+    };
+    const { container } = renderElement(
+      createElement(ChatInputHarness, {
+        initialPrompt: "a",
+        onStateChange: (state: HarnessState) => {
+          latestState = state;
+        },
+      }),
+    );
+
+    const editor = getEditor(container);
+    const textSegment = getTextSegments(editor)[0]!;
+    setCaret(textSegment, 1);
+    flushSelection(editor);
+    dispatchEditorKey(editor, "Backspace");
+
+    expect(latestState.prompt).toBe("");
+    expect(
+      getTextSegments(getEditor(container)).map((segment) =>
+        sanitizeText(segment.textContent),
+      ),
+    ).toEqual([""]);
+  });
+
+  it("clears a full text selection with Backspace without crashing", () => {
+    let latestState: HarnessState = {
+      prompt: "",
+      selectedSkillIds: [],
+      contextIds: [],
+    };
+    const { container } = renderElement(
+      createElement(ChatInputHarness, {
+        initialPrompt: "clear me",
+        onStateChange: (state: HarnessState) => {
+          latestState = state;
+        },
+      }),
+    );
+
+    const editor = getEditor(container);
+    const textSegment = getTextSegments(editor)[0]!;
+    setSelectionRange(textSegment, 0, "clear me".length);
+    flushSelection(editor);
+    dispatchEditorKey(editor, "Backspace");
+
+    expect(latestState.prompt).toBe("");
+    expect(
+      getTextSegments(getEditor(container)).map((segment) =>
+        sanitizeText(segment.textContent),
+      ),
+    ).toEqual([""]);
   });
 
   it("replaces the current slash query with a skill chip without disturbing trailing text", () => {

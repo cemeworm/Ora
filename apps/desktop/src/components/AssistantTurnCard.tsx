@@ -60,6 +60,7 @@ interface AssistantTurnCardProps {
   content: string;
   turn?: AssistantTurnAttachment;
   isPlaceholder?: boolean;
+  density?: "default" | "compact";
   onOpenArtifact?: (artifactId: string) => void;
   onSubmitFeedback?: (params: {
     turn: AssistantTurnAttachment;
@@ -72,10 +73,12 @@ export const AssistantTurnCard = memo(function AssistantTurnCard({
   content,
   turn,
   isPlaceholder = false,
+  density = "default",
   onOpenArtifact,
   onSubmitFeedback,
   projectRootPath,
 }: AssistantTurnCardProps) {
+  const isCompact = density === "compact";
   const processSteps = turn?.processSteps ?? [];
   const clarificationExchanges = turn?.clarificationExchanges ?? [];
   const agentMessages = turn?.agentMessages ?? [];
@@ -120,7 +123,9 @@ export const AssistantTurnCard = memo(function AssistantTurnCard({
     bodyContent.trim(),
   );
   const sources = turn?.sources ?? [];
-  const canShowActions = canCopyContent || canSubmitFeedback || sources.length > 0;
+  const showCopyAction = canCopyContent && !isCompact;
+  const showFeedbackAction = canSubmitFeedback && !isCompact;
+  const canShowActions = showCopyAction || showFeedbackAction || sources.length > 0;
   const currentAgentLabel = turn?.currentAgentLabel?.trim();
   const hasTimelineAgentLabel = timelineItems.some((item) => Boolean(timelineAgentLabel(item)));
   const showThinkingIndicator = shouldShowThinkingIndicator({
@@ -181,9 +186,19 @@ export const AssistantTurnCard = memo(function AssistantTurnCard({
   return (
     <Message from="assistant" className="w-full">
       <div className="max-w-full">
-        <div className="min-w-0 flex-1 space-y-3 pt-1">
+        <div
+          className={cn(
+            "min-w-0 flex-1",
+            isCompact ? "space-y-2 pt-0" : "space-y-3 pt-1",
+          )}
+        >
           {currentAgentLabel && !hasTimelineAgentLabel ? (
-            <p className="text-sm font-semibold leading-6 text-foreground">
+            <p
+              className={cn(
+                "text-sm font-semibold text-foreground",
+                isCompact ? "leading-5" : "leading-6",
+              )}
+            >
               {currentAgentLabel}
             </p>
           ) : null}
@@ -203,6 +218,7 @@ export const AssistantTurnCard = memo(function AssistantTurnCard({
           {hasTimeline ? (
             <TurnTimeline
               items={timelineItems}
+              density={density}
               activeLoadingItemId={
                 turn?.activeLoadingTarget?.kind === "timeline"
                   ? turn.activeLoadingTarget.itemId
@@ -213,7 +229,10 @@ export const AssistantTurnCard = memo(function AssistantTurnCard({
           ) : null}
 
           {clarificationExchanges.length > 0 ? (
-            <ClarificationExchangeList exchanges={clarificationExchanges} />
+            <ClarificationExchangeList
+              exchanges={clarificationExchanges}
+              density={density}
+            />
           ) : null}
 
           {!presentation?.showStandaloneBody ? null : (
@@ -233,11 +252,12 @@ export const AssistantTurnCard = memo(function AssistantTurnCard({
           {showThinkingIndicator ? <ThinkingIndicator /> : null}
 
           {visibleArtifacts.length > 0 ? (
-            <div className="space-y-3">
+            <div className={cn(isCompact ? "space-y-2" : "space-y-3")}>
               {visibleArtifacts.map((artifact) => (
                 <ArtifactCard
                   key={artifact.id}
                   artifact={artifact}
+                  density={density}
                   filePath={artifactPathMap.get(artifact.id) ?? artifact.label}
                   rootPath={projectRootPath}
                   onOpenArtifact={onOpenArtifact}
@@ -247,12 +267,12 @@ export const AssistantTurnCard = memo(function AssistantTurnCard({
           ) : null}
 
           {fileChanges.length > 0 ? (
-            <FileChangeDiffPanel fileChanges={fileChanges} />
+            <FileChangeDiffPanel fileChanges={fileChanges} density={density} />
           ) : null}
 
           {canShowActions ? (
-            <div className="flex items-center gap-1">
-              {canCopyContent ? (
+            <div className={cn("flex items-center", isCompact ? "gap-0.5" : "gap-1")}>
+              {showCopyAction ? (
                 <button
                   type="button"
                   onClick={() => void handleCopyContent()}
@@ -263,7 +283,7 @@ export const AssistantTurnCard = memo(function AssistantTurnCard({
                   {copied ? <Check size={14} /> : <Copy size={14} />}
                 </button>
               ) : null}
-              {canSubmitFeedback ? (
+              {showFeedbackAction ? (
                 <button
                   type="button"
                   onClick={() => setFeedbackOpen(true)}
@@ -326,11 +346,19 @@ export const AssistantTurnCard = memo(function AssistantTurnCard({
 
 function ClarificationExchangeList({
   exchanges,
+  density = "default",
 }: {
   exchanges: TurnClarificationExchange[];
+  density?: "default" | "compact";
 }) {
+  const isCompact = density === "compact";
   return (
-    <div className="space-y-2 rounded-lg border border-border bg-muted/30 p-3">
+    <div
+      className={cn(
+        "space-y-2 rounded-lg border border-border bg-muted/30",
+        isCompact ? "p-2.5" : "p-3",
+      )}
+    >
       {exchanges.map((exchange) => (
         <div key={exchange.id} className="space-y-2">
           <div className="flex gap-2">
@@ -338,7 +366,9 @@ function ClarificationExchangeList({
               Q
             </span>
             <div className="min-w-0 flex-1">
-              <p className="text-sm leading-6 text-foreground">{exchange.question}</p>
+              <p className={cn("text-sm text-foreground", isCompact ? "leading-5" : "leading-6")}>
+                {exchange.question}
+              </p>
               <p className="text-xs leading-5 text-muted-foreground">{exchange.requestedAt}</p>
             </div>
           </div>
@@ -346,9 +376,12 @@ function ClarificationExchangeList({
             <div className="flex gap-2">
               <span className="mt-0.5 inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-bench-900 text-[11px] font-semibold text-white">
                 A
-              </span>
-              <div className="min-w-0 flex-1">
-                <MarkdownContent content={exchange.answer} className="text-sm leading-6" />
+            </span>
+            <div className="min-w-0 flex-1">
+                <MarkdownContent
+                  content={exchange.answer}
+                  className={cn("text-sm", isCompact ? "leading-5" : "leading-6")}
+                />
                 {exchange.answeredAt ? (
                   <p className="text-xs leading-5 text-muted-foreground">{exchange.answeredAt}</p>
                 ) : null}
@@ -390,28 +423,37 @@ function ThinkingIndicator() {
 
 function TurnTimeline({
   items,
+  density = "default",
   activeLoadingItemId,
   onOpenArtifact,
 }: {
   items: TurnTimelineItem[];
+  density?: "default" | "compact";
   activeLoadingItemId?: string;
   onOpenArtifact?: (artifactId: string) => void;
 }) {
+  const isCompact = density === "compact";
   const groups = groupTimelineItemsByAgent(items);
   return (
-    <div className="space-y-3">
+    <div className={cn(isCompact ? "space-y-2" : "space-y-3")}>
       {groups.map((group) => (
         <div key={group.id} className="space-y-2">
           {group.agentLabel ? (
-            <p className="text-sm font-semibold leading-6 text-foreground">
+            <p
+              className={cn(
+                "text-sm font-semibold text-foreground",
+                isCompact ? "leading-5" : "leading-6",
+              )}
+            >
               {group.agentLabel}
             </p>
           ) : null}
-          <div className="space-y-3">
+          <div className={cn(isCompact ? "space-y-2" : "space-y-3")}>
             {group.items.map((item) => (
               <TurnTimelineRow
                 key={item.id}
                 item={item}
+                density={density}
                 showProgressLoading={activeLoadingItemId === item.id}
                 onOpenArtifact={onOpenArtifact}
               />
@@ -454,10 +496,12 @@ function timelineAgentLabel(item: TurnTimelineItem): string | undefined {
 
 function TurnTimelineRow({
   item,
+  density = "default",
   showProgressLoading = false,
   onOpenArtifact,
 }: {
   item: TurnTimelineItem;
+  density?: "default" | "compact";
   showProgressLoading?: boolean;
   onOpenArtifact?: (artifactId: string) => void;
 }) {
@@ -470,9 +514,15 @@ function TurnTimelineRow({
         </MessageContent>
       );
     case "agent_message":
-      return <AgentMessageTimelineItem item={item} />;
+      return <AgentMessageTimelineItem item={item} density={density} />;
     case "status_group":
-      return <TimelineStatusGroup item={item} showProgressLoading={showProgressLoading} />;
+      return (
+        <TimelineStatusGroup
+          item={item}
+          density={density}
+          showProgressLoading={showProgressLoading}
+        />
+      );
     case "artifact": {
       const content = (
         <InlineTimelineMeta icon={<FileText size={14} />}>
@@ -499,11 +549,13 @@ function TurnTimelineRow({
 
 function AgentMessageTimelineItem({
   item,
+  density = "default",
 }: {
   item: Extract<TurnTimelineItem, { kind: "agent_message" }>;
+  density?: "default" | "compact";
 }) {
   return (
-    <div className="space-y-1">
+    <div className={cn(density === "compact" ? "space-y-0.5" : "space-y-1")}>
       <MessageContent className="w-full">
         <MarkdownContent content={item.content} />
       </MessageContent>
@@ -513,22 +565,29 @@ function AgentMessageTimelineItem({
 
 function TimelineStatusGroup({
   item,
+  density = "default",
   showProgressLoading = false,
 }: {
   item: Extract<TurnTimelineItem, { kind: "status_group" }>;
+  density?: "default" | "compact";
   showProgressLoading?: boolean;
 }) {
+  const isCompact = density === "compact";
   const [open, setOpen] = useState(false);
   const active = item.status === "active" || showProgressLoading;
 
   return (
-    <div className="space-y-2">
+    <div className={cn(isCompact ? "space-y-1.5" : "space-y-2")}>
       <button
         type="button"
         onClick={() => setOpen((current) => !current)}
-        className="group flex w-full items-center gap-3 text-left"
+        className={cn(
+          "group flex w-full items-center text-left",
+          isCompact ? "gap-2" : "gap-3",
+        )}
       >
         <InlineTimelineMeta
+          density={density}
           icon={active ? <LoaderCircle size={14} className="animate-spin" /> : null}
         >
           {item.summary}
@@ -542,8 +601,8 @@ function TimelineStatusGroup({
         />
       </button>
       {open ? (
-        <div className="ml-5 border-l border-border/70 pl-4">
-          <div className="space-y-2">
+        <div className={cn("border-l border-border/70", isCompact ? "ml-4 pl-3" : "ml-5 pl-4")}>
+          <div className={cn(isCompact ? "space-y-1.5" : "space-y-2")}>
             {item.steps.map((step) => (
               <ProcessStepItem key={step.id} step={step} />
             ))}
@@ -556,13 +615,20 @@ function TimelineStatusGroup({
 
 function InlineTimelineMeta({
   icon,
+  density = "default",
   children,
 }: {
   icon?: ReactNode;
+  density?: "default" | "compact";
   children: ReactNode;
 }) {
   return (
-    <div className="flex min-w-0 items-center gap-2 text-sm text-muted-foreground">
+    <div
+      className={cn(
+        "flex min-w-0 items-center gap-2 text-muted-foreground",
+        density === "compact" ? "text-[13px]" : "text-sm",
+      )}
+    >
       {icon ? (
         <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center">
           {icon}
@@ -685,15 +751,18 @@ function StepStatusIcon({ step }: { step: TurnProcessStep }) {
 
 function ArtifactCard({
   artifact,
+  density = "default",
   filePath,
   rootPath,
   onOpenArtifact,
 }: {
   artifact: TurnArtifactAttachment;
+  density?: "default" | "compact";
   filePath?: string;
   rootPath?: string;
   onOpenArtifact?: (artifactId: string) => void;
 }) {
+  const isCompact = density === "compact";
   const [contextMenu, setContextMenu] = useState<{ open: boolean; x: number; y: number }>({
     open: false,
     x: 0,
@@ -740,15 +809,21 @@ function ArtifactCard({
           className={cn(
             "transition",
             onOpenArtifact && "hover:bg-accent/25 active:scale-[0.995]",
+            isCompact && "[&_div[data-slot='artifact-header']]:gap-2",
           )}
         >
           <ArtifactHeader>
-            <div className="flex min-w-0 items-center gap-3">
-              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-border bg-muted/35 text-muted-foreground">
+            <div className={cn("flex min-w-0 items-center", isCompact ? "gap-2.5" : "gap-3")}>
+              <div
+                className={cn(
+                  "flex shrink-0 items-center justify-center rounded-xl border border-border bg-muted/35 text-muted-foreground",
+                  isCompact ? "h-8 w-8" : "h-9 w-9",
+                )}
+              >
                 {artifact.previewable ? (
-                  <FileImage size={18} />
+                  <FileImage size={isCompact ? 16 : 18} />
                 ) : (
-                  <FileText size={18} />
+                  <FileText size={isCompact ? 16 : 18} />
                 )}
               </div>
               <div className="min-w-0">
@@ -761,7 +836,12 @@ function ArtifactCard({
               </div>
             </div>
             <ArtifactActions>
-              <span className="inline-flex items-center rounded-full border border-border px-3 py-1.5 text-xs text-muted-foreground">
+              <span
+                className={cn(
+                  "inline-flex items-center rounded-full border border-border text-xs text-muted-foreground",
+                  isCompact ? "px-2.5 py-1" : "px-3 py-1.5",
+                )}
+              >
                 Preview
               </span>
             </ArtifactActions>
@@ -781,9 +861,12 @@ function ArtifactCard({
 
 function FileChangeDiffPanel({
   fileChanges,
+  density = "default",
 }: {
   fileChanges: TurnFileChangeAttachment[];
+  density?: "default" | "compact";
 }) {
+  const isCompact = density === "compact";
   const [openPaths, setOpenPaths] = useState<Set<string>>(() => new Set());
   const additions = fileChanges.reduce(
     (total, change) => total + change.additions,
@@ -808,7 +891,12 @@ function FileChangeDiffPanel({
 
   return (
     <div className="overflow-hidden rounded-md border border-border bg-card/70 text-sm shadow-xs">
-      <div className="flex h-10 items-center justify-between gap-3 bg-muted/35 px-3">
+      <div
+        className={cn(
+          "flex items-center justify-between gap-3 bg-muted/35",
+          isCompact ? "h-9 px-2.5" : "h-10 px-3",
+        )}
+      >
         <div className="min-w-0 font-medium text-foreground">
           <span>{fileChanges.length} 个文件已更改 </span>
           <span className="font-semibold text-emerald-700">+{additions}</span>
@@ -824,7 +912,10 @@ function FileChangeDiffPanel({
               <button
                 type="button"
                 onClick={() => togglePath(change.path)}
-                className="flex h-9 w-full items-center justify-between gap-3 bg-muted/55 px-3 text-left transition hover:bg-muted/75 active:scale-[0.998]"
+                className={cn(
+                  "flex w-full items-center justify-between gap-3 bg-muted/55 text-left transition hover:bg-muted/75 active:scale-[0.998]",
+                  isCompact ? "h-8 px-2.5" : "h-9 px-3",
+                )}
               >
                 <div className="min-w-0 truncate font-mono text-xs text-foreground">
                   {change.path}

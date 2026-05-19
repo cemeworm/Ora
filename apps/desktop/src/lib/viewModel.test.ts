@@ -3695,7 +3695,7 @@ describe("desktop session view model", () => {
     expect(assistant?.turn?.presentation?.transcriptTakeaway).toBeUndefined();
   });
 
-  it("keeps root orchestrator handoff content in public timeline items", () => {
+  it("keeps orchestrator subagent handoff content out of the public chat timeline", () => {
     const createdAt = 1_714_000_000_000;
     const snapshot = {
       runId: "run-orchestrator-subagent",
@@ -3760,6 +3760,32 @@ describe("desktop session view model", () => {
           trigger: "task.progress",
           summary: "正在协调子智能体。",
         },
+      }, {
+        id: "run-orchestrator-subagent:evt-1",
+        runId: "run-orchestrator-subagent",
+        seq: 1,
+        type: "tool.called",
+        agentId: "ora-sub-1",
+        createdAt: createdAt + 1,
+        pattern: "orchestrator_subagent",
+        payload: {
+          toolId: "file.read",
+          status: "succeeded",
+          input: { path: "apps/desktop/src/components/ChatInput.tsx" },
+          output: { path: "apps/desktop/src/components/ChatInput.tsx", sizeBytes: 128 },
+        },
+      }, {
+        id: "run-orchestrator-subagent:evt-2",
+        runId: "run-orchestrator-subagent",
+        seq: 2,
+        type: "message.delta",
+        agentId: "ora-sub-1",
+        createdAt: createdAt + 2,
+        pattern: "orchestrator_subagent",
+        payload: {
+          messageId: "run-orchestrator-subagent:child-msg",
+          content: "Research subagent 正在读取相关文件。",
+        },
       }],
       agentMessages: [
         {
@@ -3803,6 +3829,16 @@ describe("desktop session view model", () => {
           artifactIds: [],
         },
       ],
+      childSessions: [{
+        id: "run-orchestrator-subagent:ora-sub-1",
+        agentId: "ora-sub-1",
+        label: "Research subagent",
+        sessionClass: "temporary_spawn",
+        status: "running",
+        startedAt: createdAt,
+        updatedAt: createdAt + 2,
+        artifactIds: [],
+      }],
       artifacts: [],
       activeAgents: [],
       queueSummary: { mode: "dag", pending: 0, inProgress: 1, completed: 0, topics: [] },
@@ -3829,21 +3865,20 @@ describe("desktop session view model", () => {
     );
     const assistant = messages.find((message) => message.role === "assistant");
 
-    expect(assistant?.turn?.agentMessages).toHaveLength(3);
-    expect(assistant?.turn?.agentMessages.map((message) => message.kind)).toEqual(["handoff", "status", "reply"]);
-    expect(assistant?.turn?.agentMessages[0]?.fromAgentLabel).toBe(ORA_ROOT_AGENT_LABEL);
-    expect(assistant?.turn?.agentMessages[0]?.toAgentLabels).toEqual(["Orchestrator"]);
-    expect(assistant?.turn?.agentMessages[2]?.fromAgentLabel).toBe("Orchestrator");
-    expect(assistant?.turn?.agentMessages[2]?.toAgentLabels).toEqual([ORA_ROOT_AGENT_LABEL]);
     expect(assistant?.turn?.currentAgentLabel).toBe("Orchestrator");
+    expect(assistant?.turn?.agentMessages).toEqual([]);
     const agentTimelineItems = assistant?.turn?.timelineItems?.filter((item) => item.kind === "agent_message") ?? [];
-    const agentTimelineText = agentTimelineItems
-      .map((item) => "content" in item ? item.content : "")
-      .join("\n");
-    expect(agentTimelineItems).toHaveLength(2);
-    expect(agentTimelineText).toContain(`${ORA_ROOT_AGENT_LABEL} is handing this request to orchestrator.`);
-    expect(agentTimelineText).toContain("Orchestrator returned its mode output to Ora.");
-    expect(agentTimelineText).not.toContain(`${ORA_ROOT_AGENT_LABEL} observed the handoff.`);
+    expect(agentTimelineItems).toEqual([]);
+    const timelineText = assistant?.turn?.timelineItems
+      ?.flatMap((item) => "content" in item ? [item.content] : "summary" in item ? [item.summary] : [])
+      .join("\n") ?? "";
+    expect(timelineText).not.toContain("Research subagent");
+    expect(timelineText).not.toContain("ChatInput.tsx");
+    const handoffSteps = assistant?.turn?.processSteps?.filter((step) => step.eventType === "agent.handoff") ?? [];
+    expect(handoffSteps).toEqual([]);
+    expect(assistant?.turn?.processSteps?.some((step) =>
+      step.eventType === "tool.called" && step.contextLabel === "apps/desktop/src/components/ChatInput.tsx"
+    )).toBe(false);
   });
 
   it("keeps Code Development main-agent handoff content visible in the turn timeline", () => {

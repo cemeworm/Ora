@@ -326,18 +326,17 @@ function normalizeComposerSegments(segments: ComposerSegment[]) {
       appendText(segment.text, segment.id);
       continue;
     }
-    if (normalized.length === 0 || normalized[normalized.length - 1]?.kind !== "text") {
+    if (
+      normalized.length === 0 ||
+      normalized[normalized.length - 1]?.kind !== "text"
+    ) {
       normalized.push(createTextSegment(""));
     }
     normalized.push(segment);
-    normalized.push(createTextSegment(""));
   }
 
   if (normalized.length === 0) {
     return [createTextSegment("")];
-  }
-  if (normalized[0]?.kind !== "text") {
-    normalized.unshift(createTextSegment(""));
   }
   if (normalized[normalized.length - 1]?.kind !== "text") {
     normalized.push(createTextSegment(""));
@@ -683,18 +682,66 @@ function restoreSelectionPoint(root: HTMLElement, point: ComposerSelectionPoint)
   if (!textElement) {
     return null;
   }
-  const textNode = textElement.firstChild ?? textElement;
-  const rawText = textNode.textContent ?? "";
-  if (rawText === COMPOSER_ZWSP) {
-    return { node: textNode, offset: 0 };
+  const textNodes = Array.from(textElement.childNodes).filter(
+    (node): node is Text => node.nodeType === Node.TEXT_NODE,
+  );
+  if (textNodes.length === 0) {
+    // WebKit may leave a placeholder <br> inside an empty contentEditable span.
+    // Restore against the wrapper element instead of the placeholder node.
+    return { node: textElement, offset: 0 };
   }
+
+  const clampedOffset = Math.max(0, point.offset);
+  let remaining = clampedOffset;
+  let lastContentNode: Text | null = null;
+
+  for (const textNode of textNodes) {
+    const rawText = textNode.textContent ?? "";
+    const sanitizedLength = sanitizeEditableText(rawText).length;
+    if (sanitizedLength === 0) {
+      continue;
+    }
+    lastContentNode = textNode;
+    if (remaining <= sanitizedLength) {
+      return {
+        node: textNode,
+        offset: rawOffsetFromSanitizedOffset(rawText, remaining),
+      };
+    }
+    remaining -= sanitizedLength;
+  }
+
+  if (!lastContentNode) {
+    return { node: textNodes[0], offset: 0 };
+  }
+
   return {
-    node: textNode,
-    offset: Math.max(0, Math.min(point.offset, rawText.length)),
+    node: lastContentNode,
+    offset: rawOffsetFromSanitizedOffset(
+      lastContentNode.textContent ?? "",
+      sanitizeEditableText(lastContentNode.textContent ?? "").length,
+    ),
   };
 }
 
-function restoreSelectionBookmark(
+function rawOffsetFromSanitizedOffset(rawText: string, sanitizedOffset: number) {
+  if (sanitizedOffset <= 0) {
+    return 0;
+  }
+  let visibleCount = 0;
+  for (let index = 0; index < rawText.length; index += 1) {
+    if (rawText[index] === COMPOSER_ZWSP) {
+      continue;
+    }
+    visibleCount += 1;
+    if (visibleCount === sanitizedOffset) {
+      return index + 1;
+    }
+  }
+  return rawText.length;
+}
+
+export function restoreSelectionBookmark(
   root: HTMLElement,
   bookmark: ComposerSelectionBookmark | null,
 ) {
@@ -706,12 +753,17 @@ function restoreSelectionBookmark(
   if (!start || !end) {
     return;
   }
-  const range = document.createRange();
-  range.setStart(start.node, start.offset);
-  range.setEnd(end.node, end.offset);
-  const selection = window.getSelection();
-  selection?.removeAllRanges();
-  selection?.addRange(range);
+  try {
+    const range = document.createRange();
+    range.setStart(start.node, start.offset);
+    range.setEnd(end.node, end.offset);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+  } catch {
+    // Selection restore is a best-effort UX enhancement and must never take
+    // down the composer when the browser provides an unexpected placeholder DOM.
+  }
 }
 
 function serializeEditableNode(
@@ -1206,18 +1258,142 @@ export function ChatInput({
     return true;
   }
 
+  function removeFinalCharacterFromTextSegment(
+    direction: "backward" | "forward",
+  ) {
+    if (!selectionLineInfo) {
+      return false;
+    }
+
+    const textSegment = segments[
+      selectionLineInfo.segmentIndex
+    ] as ComposerTextSegment;
+    if (textSegment.text.length !== 1) {
+      return false;
+    }
+
+    const isBackwardDelete =
+      direction === "backward" && selectionLineInfo.caretOffset === 1;
+    const isForwardDelete =
+      direction === "forward" && selectionLineInfo.caretOffset === 0;
+    if (!isBackwardDelete && !isForwardDelete) {
+      return false;
+    }
+
+    const emptiedTextSegment: ComposerTextSegment = {
+      ...textSegment,
+      text: "",
+    };
+    applySegmentChange(
+      [
+        ...segments.slice(0, selectionLineInfo.segmentIndex),
+        emptiedTextSegment,
+        ...segments.slice(selectionLineInfo.segmentIndex + 1),
+      ],
+      {
+        focus: true,
+        selection: {
+          start: { segmentId: emptiedTextSegment.id, offset: 0 },
+          end: { segmentId: emptiedTextSegment.id, offset: 0 },
+        },
+      },
+    );
+    return true;
+  }
+
+  function removeExpandedSelection() {
+    if (!selectionBookmark || isSelectionCollapsed(selectionBookmark)) {
+      return false;
+    }
+
+    const startSegmentIndex = findTextSegmentIndexById(
+      segments,
+      selectionBookmark.start.segmentId,
+    );
+    const endSegmentIndex = findTextSegmentIndexById(
+      segments,
+      selectionBookmark.end.segmentId,
+    );
+    if (startSegmentIndex < 0 || endSegmentIndex < 0) {
+      return false;
+    }
+
+    const [fromIndex, toIndex] =
+      startSegmentIndex <= endSegmentIndex
+        ? [startSegmentIndex, endSegmentIndex]
+        : [endSegmentIndex, startSegmentIndex];
+    const fromPoint =
+      fromIndex === startSegmentIndex
+        ? selectionBookmark.start
+        : selectionBookmark.end;
+    const toPoint =
+      toIndex === endSegmentIndex
+        ? selectionBookmark.end
+        : selectionBookmark.start;
+
+    const startSegment = segments[fromIndex] as ComposerTextSegment;
+    const endSegment = segments[toIndex] as ComposerTextSegment;
+    const startOffset = Math.max(
+      0,
+      Math.min(fromPoint.offset, startSegment.text.length),
+    );
+    const endOffset = Math.max(
+      0,
+      Math.min(toPoint.offset, endSegment.text.length),
+    );
+    const mergedText: ComposerTextSegment = {
+      ...startSegment,
+      text:
+        startSegment.text.slice(0, startOffset) +
+        endSegment.text.slice(endOffset),
+    };
+
+    applySegmentChange(
+      [
+        ...segments.slice(0, fromIndex),
+        mergedText,
+        ...segments.slice(toIndex + 1),
+      ],
+      {
+        focus: true,
+        selection: {
+          start: { segmentId: mergedText.id, offset: startOffset },
+          end: { segmentId: mergedText.id, offset: startOffset },
+        },
+      },
+    );
+    return true;
+  }
+
   function handleKeyDown(e: KeyboardEvent<HTMLDivElement>) {
     if (isComposingRef.current || e.nativeEvent.isComposing) {
       return;
+    }
+    if (
+      (e.key === "Backspace" || e.key === "Delete") &&
+      !isSelectionCollapsed(selectionBookmark)
+    ) {
+      if (removeExpandedSelection()) {
+        e.preventDefault();
+        return;
+      }
     }
     if (e.key === "Backspace" && isSelectionCollapsed(selectionBookmark)) {
       if (removeBoundaryChip("backward")) {
         e.preventDefault();
         return;
       }
+      if (removeFinalCharacterFromTextSegment("backward")) {
+        e.preventDefault();
+        return;
+      }
     }
     if (e.key === "Delete" && isSelectionCollapsed(selectionBookmark)) {
       if (removeBoundaryChip("forward")) {
+        e.preventDefault();
+        return;
+      }
+      if (removeFinalCharacterFromTextSegment("forward")) {
         e.preventDefault();
         return;
       }

@@ -92,11 +92,11 @@ describe("trail debugger view model", () => {
             actionRisk: 0.1,
             userCost: 0.3,
             reversibility: "high",
-            recommendedAction: "clarify",
-            reason: "clarify: high goal uncertainty",
-            wouldChangeOutcomeIfWrong: true,
+            recommendedAction: "use_tool",
+            reason: "use_tool: low uncertainty, safe to proceed",
+            wouldChangeOutcomeIfWrong: false,
           },
-          chosenIntervention: "clarify",
+          chosenIntervention: "use_tool",
           alternativeInterventions: [],
           recordedAt: 1000,
           decisionContext: {
@@ -109,6 +109,18 @@ describe("trail debugger view model", () => {
             nodeId: "agent-1",
           },
         },
+      }],
+      toolCalls: [{
+        id: "run-test:tool-call-0",
+        runId: "run-test",
+        toolId: "file.read",
+        agentId: "agent-1",
+        nodeId: "agent-1",
+        args: {},
+        source: "provider_native",
+        status: "succeeded",
+        requestedAt: 1000,
+        updatedAt: 1001,
       }],
     });
 
@@ -126,7 +138,7 @@ describe("trail debugger view model", () => {
       phaseLabel: "工具请求 · file.read #2",
       agentLabel: "Ora",
       nodeLabel: "Ora",
-      assistantPreview: "已记住，QC。你在本对话中我将直接称呼你 QC。",
+      assistantPreview: "当前未找到与该干预直接绑定的回复片段。",
     });
   });
 
@@ -148,14 +160,28 @@ describe("trail debugger view model", () => {
             actionRisk: 0.1,
             userCost: 0.3,
             reversibility: "high",
-            recommendedAction: "clarify",
-            reason: "clarify: high goal uncertainty",
-            wouldChangeOutcomeIfWrong: true,
+            recommendedAction: "use_tool",
+            reason: "use_tool: low uncertainty, safe to proceed",
+            wouldChangeOutcomeIfWrong: false,
           },
-          chosenIntervention: "clarify",
+          chosenIntervention: "use_tool",
           alternativeInterventions: [],
           recordedAt: 1000,
+          decisionContext: {
+            phase: "tool_request",
+            toolId: "file.read",
+          },
         },
+      }],
+      toolCalls: [{
+        id: "run-test:tool-call-legacy",
+        runId: "run-test",
+        toolId: "file.read",
+        args: {},
+        source: "provider_native",
+        status: "succeeded",
+        requestedAt: 1000,
+        updatedAt: 1001,
       }],
     });
 
@@ -167,12 +193,13 @@ describe("trail debugger view model", () => {
       turnIndex: 2,
       replyMessageId: "run-test:assistant",
       replyLabel: "#assistant",
-      phaseLabel: "决策",
+      phaseLabel: "工具请求 · file.read",
     });
   });
 
-  it("filters runtime follow-up causal records and keeps only effective episodes by default", () => {
+  it("keeps effective runtime follow-up gate episodes visible by default", () => {
     const snapshot = baseSnapshot({
+      status: "interrupted",
       events: [
         {
           id: "evt-primary",
@@ -224,31 +251,154 @@ describe("trail debugger view model", () => {
             chosenIntervention: "request_approval",
             alternativeInterventions: [],
             recordedAt: 1001,
-            decisionContext: { phase: "approval_triggered", toolId: "file.read" },
+            decisionContext: { phase: "approval_triggered", toolId: "file.read", toolCallId: "run-test:tool-call-1b" },
           },
         },
       ],
-      toolCalls: [{
-        id: "run-test:tool-call-0",
-        runId: "run-test",
-        toolId: "file.read",
-        args: {},
-        source: "provider_native",
-        status: "succeeded",
-        requestedAt: 1000,
-        updatedAt: 1001,
-      }],
+      toolCalls: [
+        {
+          id: "run-test:tool-call-0",
+          runId: "run-test",
+          toolId: "file.read",
+          args: {},
+          source: "provider_native",
+          status: "succeeded",
+          requestedAt: 1000,
+          updatedAt: 1001,
+        },
+        {
+          id: "run-test:tool-call-1b",
+          runId: "run-test",
+          toolId: "file.read",
+          args: {},
+          source: "provider_native",
+          status: "approval_required",
+          requestedAt: 1001,
+          updatedAt: 1002,
+        },
+      ],
     });
 
     const summary = buildCausalDecisionSummary(snapshot);
 
-    expect(summary.totalDecisions).toBe(1);
-    expect(summary.hiddenDecisionCount).toBe(1);
+    expect(summary.totalDecisions).toBe(2);
+    expect(summary.hiddenDecisionCount).toBe(0);
     expect(summary.decisions[0]).toMatchObject({
       eventId: "evt-primary",
       intervention: "use_tool",
       outcomeSummary: "已执行 file.read，并产出成功结果。",
     });
+    expect(summary.decisions[1]).toMatchObject({
+      eventId: "evt-followup",
+      intervention: "request_approval",
+      status: "pending",
+      outcomeSummary: "已进入审批关卡，等待用户确认后继续。",
+    });
+  });
+
+  it("binds assistant previews to each episode instead of reusing the latest assistant text", () => {
+    const snapshot = baseSnapshot({
+      events: [
+        {
+          id: "evt-first",
+          runId: "run-test",
+          seq: 10,
+          type: "causal.decision.recorded",
+          createdAt: 1000,
+          agentId: "agent-1",
+          nodeId: "agent-1",
+          payload: {
+            source: "router_primary",
+            taskState: { surfaceRequest: "先解释现状，再给方案" },
+            policyDecision: {
+              goalUncertainty: 0.2,
+              factUncertainty: 0.2,
+              contextUncertainty: 0.2,
+              actionRisk: 0.1,
+              userCost: 0.05,
+              reversibility: "high",
+              recommendedAction: "answer_directly",
+              reason: "answer_directly: low uncertainty, safe to proceed",
+              wouldChangeOutcomeIfWrong: false,
+            },
+            chosenIntervention: "answer_directly",
+            alternativeInterventions: [],
+            recordedAt: 1000,
+            decisionContext: { phase: "completion", replyMessageId: "msg-1", agentId: "agent-1", nodeId: "agent-1" },
+          },
+        },
+        {
+          id: "evt-msg-1",
+          runId: "run-test",
+          seq: 11,
+          type: "message.delta",
+          createdAt: 1010,
+          agentId: "agent-1",
+          nodeId: "agent-1",
+          payload: { role: "assistant", messageId: "msg-1", content: "第一段解释。", delta: "第一段解释。", streaming: true },
+        },
+        {
+          id: "evt-second",
+          runId: "run-test",
+          seq: 20,
+          type: "causal.decision.recorded",
+          createdAt: 2000,
+          agentId: "agent-1",
+          nodeId: "agent-1",
+          payload: {
+            source: "router_primary",
+            taskState: { surfaceRequest: "给方案" },
+            policyDecision: {
+              goalUncertainty: 0.2,
+              factUncertainty: 0.2,
+              contextUncertainty: 0.2,
+              actionRisk: 0.1,
+              userCost: 0.05,
+              reversibility: "high",
+              recommendedAction: "answer_directly",
+              reason: "answer_directly: low uncertainty, safe to proceed",
+              wouldChangeOutcomeIfWrong: false,
+            },
+            chosenIntervention: "answer_directly",
+            alternativeInterventions: [],
+            recordedAt: 2000,
+            decisionContext: { phase: "completion", replyMessageId: "msg-2", agentId: "agent-1", nodeId: "agent-1" },
+          },
+        },
+        {
+          id: "evt-msg-2",
+          runId: "run-test",
+          seq: 21,
+          type: "message.delta",
+          createdAt: 2010,
+          agentId: "agent-1",
+          nodeId: "agent-1",
+          payload: { role: "assistant", messageId: "msg-2", content: "第二段方案。", delta: "第二段方案。", streaming: true },
+        },
+      ],
+      output: { text: "第二段方案。" },
+      topology: {
+        nodes: [{ id: "agent-1", label: "Ora", kind: "agent", agentId: "agent-1", status: "done", metadata: {} }],
+        edges: [],
+      },
+      profiles: [{
+        id: "agent-1",
+        label: "Ora",
+        role: "Assistant",
+        modelRef: "local/smoke-model",
+        toolPolicyId: "policy",
+        toolIds: [],
+        skillIds: [],
+        memoryNamespaces: ["session"],
+        budget: { maxTokens: 1000, maxToolCalls: 2, maxRuntimeMs: 1000 },
+      }],
+    });
+
+    const summary = buildCausalDecisionSummary(snapshot);
+
+    expect(summary.decisions).toHaveLength(2);
+    expect(summary.decisions[0]?.assistantPreview).toBe("第一段解释。");
+    expect(summary.decisions[1]?.assistantPreview).toBe("第二段方案。");
   });
 
   it("prioritizes failed runs and points developers to flow evidence", () => {

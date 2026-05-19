@@ -1341,22 +1341,18 @@ export function adaptChatMessages(
         });
       }
 
-      const liveAssistantText = turn.snapshot
-        ? liveAssistantTextForSnapshot(turn.snapshot, liveMessageDeltas)
-        : undefined;
-      const liveAssistantPlan = liveAssistantText
-        ? parseProposedPlan(liveAssistantText)
-        : undefined;
-      const canDisplayLivePlanBody = liveAssistantPlan
-        ? liveAssistantPlan.status === "streaming" || liveAssistantPlan.hasCompletePlan
-        : false;
       const storedContent = !turn.snapshot ? turn.assistant?.content : undefined;
       const storedPlan = storedContent ? parseProposedPlan(storedContent) : undefined;
       const canDisplayStoredPlan = storedPlan
         ? storedPlan.status === "streaming" || storedPlan.hasCompletePlan
         : false;
+      const snapshotAssistantView = turn.snapshot
+        ? derivePresentedAssistantTurnFromSnapshot(turn.snapshot, {
+            liveAssistantText: liveAssistantTextForSnapshot(turn.snapshot, liveMessageDeltas),
+          })
+        : undefined;
       const assistantTurn = turn.snapshot
-        ? buildAssistantTurnAttachment(turn.snapshot, canDisplayLivePlanBody ? liveAssistantPlan : undefined)
+        ? snapshotAssistantView?.turn
         : turn.assistant
           ? ({
               runId: turn.runId,
@@ -1376,34 +1372,16 @@ export function adaptChatMessages(
               currentAgentLabel: turn.assistant?.agentLabel,
             } satisfies AssistantTurnAttachment)
           : undefined;
-      const rawAssistantText = turn.snapshot
-        ? liveAssistantText ?? assistantTextFromSnapshot(turn.snapshot)
-        : undefined;
-      const snapshotProposedPlan = !canDisplayLivePlanBody && turn.snapshot
-        ? proposedPlanFromSnapshot(turn.snapshot)
-        : undefined;
-      const parsedAssistantPlan = !snapshotProposedPlan && !canDisplayLivePlanBody && rawAssistantText
-        ? parseProposedPlan(rawAssistantText)
-        : undefined;
-      const canDisplayPlanBody = parsedAssistantPlan
-        ? parsedAssistantPlan.status === "streaming" || parsedAssistantPlan.hasCompletePlan
-        : false;
-      const snapshotAssistant = canDisplayLivePlanBody
-        ? liveAssistantPlan?.planContent
-        : snapshotProposedPlan
-        ? snapshotProposedPlan.planContent
-        : parsedAssistantPlan && canDisplayPlanBody
-          ? parsedAssistantPlan.planContent
-          : parsedAssistantPlan?.displayText
-          ?? (canDisplayStoredPlan ? storedPlan?.displayText : undefined);
       const suppressStoredAssistant = turn.snapshot
         ? shouldSuppressStoredAssistantFallback(turn.snapshot)
         : false;
       const assistantContent =
-        snapshotAssistant ??
+        snapshotAssistantView?.content ??
         (suppressStoredAssistant ? undefined : turn.assistant?.content) ??
         placeholderAssistantCopy(turn.snapshot);
-      const presentedAssistantTurn = assistantTurn
+      const presentedAssistantTurn = turn.snapshot
+        ? assistantTurn
+        : assistantTurn
         ? {
             ...assistantTurn,
             presentation: deriveAssistantTurnPresentation({
@@ -1462,6 +1440,58 @@ export function adaptPendingRunMessages(
       isPlaceholder: true,
     },
   ];
+}
+
+export function derivePresentedAssistantTurnFromSnapshot(
+  snapshot: OraStateSnapshot,
+  options?: {
+    liveAssistantText?: string;
+  },
+): {
+  content: string;
+  turn: AssistantTurnAttachment;
+} {
+  const liveAssistantText = options?.liveAssistantText;
+  const liveAssistantPlan = liveAssistantText
+    ? parseProposedPlan(liveAssistantText)
+    : undefined;
+  const canDisplayLivePlanBody = liveAssistantPlan
+    ? liveAssistantPlan.status === "streaming" || liveAssistantPlan.hasCompletePlan
+    : false;
+  const assistantTurn = buildAssistantTurnAttachment(
+    snapshot,
+    canDisplayLivePlanBody ? liveAssistantPlan : undefined,
+  );
+  const rawAssistantText = liveAssistantText ?? assistantTextFromSnapshot(snapshot);
+  const snapshotProposedPlan = !canDisplayLivePlanBody
+    ? proposedPlanFromSnapshot(snapshot)
+    : undefined;
+  const parsedAssistantPlan = !snapshotProposedPlan && !canDisplayLivePlanBody && rawAssistantText
+    ? parseProposedPlan(rawAssistantText)
+    : undefined;
+  const canDisplayPlanBody = parsedAssistantPlan
+    ? parsedAssistantPlan.status === "streaming" || parsedAssistantPlan.hasCompletePlan
+    : false;
+  const content =
+    (canDisplayLivePlanBody
+      ? liveAssistantPlan?.planContent
+      : snapshotProposedPlan
+      ? snapshotProposedPlan.planContent
+      : parsedAssistantPlan && canDisplayPlanBody
+        ? parsedAssistantPlan.planContent
+        : parsedAssistantPlan?.displayText) ??
+    placeholderAssistantCopy(snapshot);
+
+  return {
+    content,
+    turn: {
+      ...assistantTurn,
+      presentation: deriveAssistantTurnPresentation({
+        content,
+        turn: assistantTurn,
+      }),
+    },
+  };
 }
 
 export function adaptRenderableChatMessages(params: {
@@ -2103,11 +2133,7 @@ function isInternalAssistantDelta(
     return true;
   }
   const agentId = typeof event.agentId === "string" ? event.agentId : undefined;
-  if (
-    agentId &&
-    agentId !== ORA_ROOT_AGENT_ID &&
-    (snapshot.childSessions ?? []).some((child) => child.agentId === agentId)
-  ) {
+  if (isChildSessionAgent(snapshot, agentId)) {
     return true;
   }
   if (!isRecord(event.payload)) {
@@ -2365,6 +2391,7 @@ function currentAgentLabelFromSnapshot(snapshot: OraStateSnapshot): string {
   const profiles = new Map(snapshot.profiles.map((profile) => [profile.id, profile.label]));
   const latestAgentMessage = [...(snapshot.agentMessages ?? [])].reverse().find((message) =>
     message.fromAgentId !== ORA_ROOT_AGENT_ID &&
+    !shouldSuppressAgentMessageFromPublicChat(snapshot, message) &&
     !isRootHandoffScaffoldingMessage(snapshot, message) &&
     !message.transcript &&
     message.kind !== "status" &&
@@ -2482,11 +2509,68 @@ function proposedPlanFromAssistantDeltas(snapshot: OraStateSnapshot): ReturnType
   return latestStartedPlan;
 }
 
+function shouldSuppressPublicSubagentOrchestration(
+  snapshot: Pick<OraStateSnapshot, "pattern" | "childSessions">,
+): boolean {
+  return snapshot.pattern === "orchestrator_subagent" && (snapshot.childSessions?.length ?? 0) > 0;
+}
+
+function isChildSessionAgent(
+  snapshot: Pick<OraStateSnapshot, "childSessions">,
+  agentId: string | undefined,
+): boolean {
+  return Boolean(
+    agentId &&
+      agentId !== ORA_ROOT_AGENT_ID &&
+      (snapshot.childSessions ?? []).some((child) => child.agentId === agentId),
+  );
+}
+
+function shouldSuppressPublicChildAgentActivity(
+  snapshot: Pick<OraStateSnapshot, "pattern" | "childSessions">,
+  agentId: string | undefined,
+): boolean {
+  return shouldSuppressPublicSubagentOrchestration(snapshot) &&
+    isChildSessionAgent(snapshot, agentId);
+}
+
+function publicEventAgentId(
+  snapshot: OraStateSnapshot,
+  event: OraEventEnvelope,
+): string | undefined {
+  return event.agentId ?? inferTimelineEventAgentId(snapshot, event);
+}
+
+function shouldSuppressPublicEventFromChat(
+  snapshot: OraStateSnapshot,
+  event: OraEventEnvelope,
+): boolean {
+  return shouldSuppressPublicChildAgentActivity(
+    snapshot,
+    publicEventAgentId(snapshot, event),
+  );
+}
+
+function shouldSuppressAgentMessageFromPublicChat(
+  snapshot: Pick<OraStateSnapshot, "pattern" | "childSessions">,
+  message: OraStateSnapshot["agentMessages"][number],
+): boolean {
+  if (!shouldSuppressPublicSubagentOrchestration(snapshot)) {
+    return false;
+  }
+  return !message.transcript;
+}
+
 function deriveAgentMessages(snapshot: OraStateSnapshot): TurnAgentConversationMessage[] {
   const profiles = new Map(snapshot.profiles.map((profile) => [profile.id, profile.label]));
   const deltaCursorByAgent = new Map<string, number>();
   const deltasByAgent = agentMessageDeltasByAgent(snapshot);
-  return (snapshot.agentMessages ?? []).filter((message) => !isInternalAgentMessage(message)).map((message) => {
+  return (snapshot.agentMessages ?? [])
+    .filter((message) =>
+      !isInternalAgentMessage(message) &&
+      !shouldSuppressAgentMessageFromPublicChat(snapshot, message),
+    )
+    .map((message) => {
     let deltaContent: string | undefined;
     if (message.content.endsWith("...")) {
       const deltaCursor = deltaCursorByAgent.get(message.fromAgentId) ?? 0;
@@ -2569,13 +2653,18 @@ function deriveProcessSteps(
 
   type TimedStep = { rawTime: number; step: TurnProcessStep };
 
-  const timed: TimedStep[] = visibleEvents.map((event, index) => ({
+  const publicVisibleEvents = visibleEvents.filter((event) =>
+    !shouldSuppressPublicEventFromChat(snapshot, event),
+  );
+
+  const timed: TimedStep[] = publicVisibleEvents.map((event, index) => ({
     rawTime: event.createdAt,
     step: processStepFromEvent(
+      snapshot,
       event,
       baseTime,
       snapshot.status,
-      index === visibleEvents.length - 1,
+      index === publicVisibleEvents.length - 1,
     ),
   }));
 
@@ -2598,6 +2687,9 @@ function deriveProcessSteps(
   const profiles = new Map(snapshot.profiles.map((p) => [p.id, p.label]));
   for (const message of snapshot.agentMessages ?? []) {
     if (message.kind !== "handoff" || message.transcript) {
+      continue;
+    }
+    if (shouldSuppressAgentMessageFromPublicChat(snapshot, message)) {
       continue;
     }
     const fromLabel = profiles.get(message.fromAgentId) ?? message.fromAgentId;
@@ -2640,6 +2732,7 @@ function visibleProcessEvents(
 }
 
 function processStepFromEvent(
+  snapshot: OraStateSnapshot,
   event: OraEventEnvelope,
   baseTime: number,
   runStatus: OraStateSnapshot["status"],
@@ -2653,7 +2746,7 @@ function processStepFromEvent(
     timestamp: formatElapsed(baseTime, event.createdAt),
     status: processStepStatus(event, runStatus, isLatestProcessEvent),
     tone: processStepTone(event),
-    agentId: event.agentId,
+    agentId: publicEventAgentId(snapshot, event),
     contextLabel: processContextLabel(event),
   };
 }
@@ -2743,6 +2836,9 @@ function deriveTimelineItems(
   }
 
   for (const event of projection.events) {
+    if (shouldSuppressPublicEventFromChat(snapshot, event)) {
+      continue;
+    }
     if (isPublicAssistantDelta(snapshot, event)) {
       const text = assistantDeltaText(event);
       const shouldCollectText = shouldCollectAssistantDeltaForTimeline(
@@ -2789,6 +2885,9 @@ function deriveTimelineItems(
 
     if (event.type === "plan_list.updated") {
       const eventAgentId = inferTimelineEventAgentId(snapshot, event);
+      if (shouldSuppressPublicChildAgentActivity(snapshot, eventAgentId)) {
+        continue;
+      }
       flushPendingText();
       flushPendingSteps();
       items.push({
@@ -2809,6 +2908,9 @@ function deriveTimelineItems(
 
     if (event.type === "artifact.exported") {
       const eventAgentId = inferTimelineEventAgentId(snapshot, event);
+      if (shouldSuppressPublicChildAgentActivity(snapshot, eventAgentId)) {
+        continue;
+      }
       flushPendingText();
       flushPendingSteps();
       items.push({
@@ -2836,6 +2938,9 @@ function deriveTimelineItems(
       continue;
     }
     const eventAgentId = inferTimelineEventAgentId(snapshot, event);
+    if (shouldSuppressPublicChildAgentActivity(snapshot, eventAgentId)) {
+      continue;
+    }
     const effectiveStep = eventAgentId && !step.agentId
       ? { ...step, agentId: eventAgentId }
       : step;
@@ -2867,7 +2972,8 @@ function deriveTimelineItems(
       message.transcript ||
       message.kind === "status" ||
       (message.kind === "handoff" && message.toAgentIds.length === 0) ||
-      isInternalAgentMessage(message)
+      isInternalAgentMessage(message) ||
+      shouldSuppressAgentMessageFromPublicChat(snapshot, message)
     ) {
       continue;
     }

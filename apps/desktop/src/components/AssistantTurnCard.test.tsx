@@ -1513,4 +1513,75 @@ describe("assistant turn display helpers", () => {
     expect(html).toContain("好的，以下是我整理出的结论。");
   });
 
+  it("keeps full actions in the default density", () => {
+    const turn: AssistantTurnAttachment = {
+      runId: "run-default-actions",
+      turnIndex: 1,
+      status: "done",
+      pattern: "agent_teams",
+      sources: [{ title: "Spec", url: "https://example.com/spec" }],
+      processSteps: [],
+      agentMessages: [],
+      artifacts: [],
+      todos: [],
+      planList: [],
+      approvalCount: 0,
+      clarificationCount: 0,
+      hasProposedPlan: false,
+      activeLoadingTarget: { kind: "thinking" },
+    };
+
+    const html = renderToStaticMarkup(
+      <AssistantTurnCard
+        content="Implementation completed."
+        turn={turn}
+        onSubmitFeedback={async () => {}}
+      />,
+    );
+
+    expect(html).toContain("space-y-3 pt-1");
+    expect(html).toContain("aria-label=\"复制消息\"");
+    expect(html).toContain("aria-label=\"Feedback\"");
+    expect(html).toContain("aria-label=\"引用来源\"");
+  });
+
+  it("uses compact density for narrow overlay cards while keeping sources", () => {
+    const turn: AssistantTurnAttachment = {
+      runId: "run-compact-actions",
+      turnIndex: 1,
+      status: "done",
+      pattern: "orchestrator_subagent",
+      sources: [{ title: "Spec", url: "https://example.com/spec" }],
+      processSteps: [],
+      timelineItems: [{
+        id: "timeline-1",
+        kind: "assistant_text",
+        content: "子代理已完成第一轮排查。",
+        timestamp: "00:02",
+      }],
+      agentMessages: [],
+      artifacts: [],
+      todos: [],
+      planList: [],
+      approvalCount: 0,
+      clarificationCount: 0,
+      hasProposedPlan: false,
+      activeLoadingTarget: { kind: "timeline", itemId: "timeline-1" },
+    };
+
+    const html = renderToStaticMarkup(
+      <AssistantTurnCard
+        content="子代理已完成第一轮排查。"
+        turn={turn}
+        density="compact"
+        onSubmitFeedback={async () => {}}
+      />,
+    );
+
+    expect(html).toContain("space-y-2 pt-0");
+    expect(html).toContain("aria-label=\"引用来源\"");
+    expect(html).not.toContain("aria-label=\"复制消息\"");
+    expect(html).not.toContain("aria-label=\"Feedback\"");
+  });
+
 });
