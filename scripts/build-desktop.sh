@@ -31,8 +31,8 @@ fi
 CREATE_UPDATER=$(node -e "const c=require('$ROOT_DIR/apps/desktop/src-tauri/tauri.conf.json');process.stdout.write(String(c.bundle.createUpdaterArtifacts))" 2>/dev/null || echo "true")
 
 if [ "$CREATE_UPDATER" = "true" ] && [ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ] && [ -z "${TAURI_SIGNING_PRIVATE_KEY_PATH:-}" ] && [ -f "$DEFAULT_TAURI_SIGNING_PRIVATE_KEY_PATH" ]; then
-  export TAURI_SIGNING_PRIVATE_KEY_PATH="$DEFAULT_TAURI_SIGNING_PRIVATE_KEY_PATH"
-  echo "Using default Tauri updater signing key: $TAURI_SIGNING_PRIVATE_KEY_PATH"
+  export TAURI_SIGNING_PRIVATE_KEY="$DEFAULT_TAURI_SIGNING_PRIVATE_KEY_PATH"
+  echo "Using default Tauri updater signing key: $DEFAULT_TAURI_SIGNING_PRIVATE_KEY_PATH"
 fi
 
 if [ "$CREATE_UPDATER" = "true" ] && [ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ] && [ -z "${TAURI_SIGNING_PRIVATE_KEY_PATH:-}" ]; then
