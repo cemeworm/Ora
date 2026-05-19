@@ -55,7 +55,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDdFQ0RCMUQ0N0M3RDIzRUQKUldUdEkzMTgxTEhOZm93VXRoekI4dEE2MWh4cnpOenZhVzI3aHI2ZFdzMVBONnRId3JGTjRtc3AK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDI0OEFEN0Q2RTcxMjBCOEMKUldTTUN4TG4xdGVLSkVkbWNmUnNvbjUrdzJqZFFiZndYbkFBWFdlWlExV0xNbENsVWR2V29GNHYK",
       "endpoints": [
         "https://github.com/cemeworm/Ora/releases/latest/download/latest.json"
       ]
