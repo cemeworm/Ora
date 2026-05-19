@@ -5,6 +5,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUNDLE_DIR="$ROOT_DIR/apps/desktop/src-tauri/target/release/bundle"
 PNPM_STATE_FILE="$ROOT_DIR/node_modules/.modules.yaml"
+DEFAULT_TAURI_SIGNING_PRIVATE_KEY_PATH="$HOME/.tauri/ora-release.key"
 
 if [ -f "$HOME/.cargo/env" ]; then
   # shellcheck disable=SC1090
@@ -28,6 +29,11 @@ if needs_pnpm_install; then
 fi
 
 CREATE_UPDATER=$(node -e "const c=require('$ROOT_DIR/apps/desktop/src-tauri/tauri.conf.json');process.stdout.write(String(c.bundle.createUpdaterArtifacts))" 2>/dev/null || echo "true")
+
+if [ "$CREATE_UPDATER" = "true" ] && [ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ] && [ -z "${TAURI_SIGNING_PRIVATE_KEY_PATH:-}" ] && [ -f "$DEFAULT_TAURI_SIGNING_PRIVATE_KEY_PATH" ]; then
+  export TAURI_SIGNING_PRIVATE_KEY_PATH="$DEFAULT_TAURI_SIGNING_PRIVATE_KEY_PATH"
+  echo "Using default Tauri updater signing key: $TAURI_SIGNING_PRIVATE_KEY_PATH"
+fi
 
 if [ "$CREATE_UPDATER" = "true" ] && [ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ] && [ -z "${TAURI_SIGNING_PRIVATE_KEY_PATH:-}" ]; then
   echo "❌ Neither TAURI_SIGNING_PRIVATE_KEY nor TAURI_SIGNING_PRIVATE_KEY_PATH is set." >&2
