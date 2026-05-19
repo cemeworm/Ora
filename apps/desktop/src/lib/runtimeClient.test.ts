@@ -214,26 +214,21 @@ describe("desktop runtime client agent catalog", () => {
   it("opens external urls with window.open in browser fallback", async () => {
     const client = createRuntimeClient();
     const openSpy = vi.fn(() => null);
-    const originalWindow = (globalThis as typeof globalThis & {
-      window?: { open: typeof openSpy };
-    }).window;
-    (globalThis as typeof globalThis & {
-      window?: { open: typeof openSpy };
-    }).window = {
-      open: openSpy,
-    };
+    const originalWindowDescriptor = Object.getOwnPropertyDescriptor(globalThis, "window");
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: {
+        open: openSpy,
+      } as Pick<Window, "open"> as Window,
+    });
 
     try {
       await client.openExternalUrl("https://platform.openai.com/api-keys");
     } finally {
-      if (originalWindow) {
-        (globalThis as typeof globalThis & {
-          window?: { open: typeof openSpy };
-        }).window = originalWindow;
+      if (originalWindowDescriptor) {
+        Object.defineProperty(globalThis, "window", originalWindowDescriptor);
       } else {
-        delete (globalThis as typeof globalThis & {
-          window?: { open: typeof openSpy };
-        }).window;
+        Reflect.deleteProperty(globalThis, "window");
       }
     }
 
