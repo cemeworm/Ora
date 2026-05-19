@@ -29,6 +29,17 @@ export const CausalInterventionGoalImpactSchema = z.enum([
 ]);
 export type CausalInterventionGoalImpact = z.infer<typeof CausalInterventionGoalImpactSchema>;
 
+export const CausalInterventionEvidenceKindSchema = z.enum([
+  "tool_call",
+  "clarification_gate",
+  "approval_gate",
+  "plan_gate",
+  "reply_message",
+  "superseded",
+  "missing",
+]);
+export type CausalInterventionEvidenceKind = z.infer<typeof CausalInterventionEvidenceKindSchema>;
+
 export const CausalInterventionEpisodeSchema = z.object({
   episodeId: z.string().min(1),
   decisionId: z.string().min(1),
@@ -47,8 +58,13 @@ export const CausalInterventionEpisodeSchema = z.object({
   toolId: z.string().min(1).optional(),
   actionId: z.string().min(1).optional(),
   toolCallId: z.string().min(1).optional(),
+  providerCallId: z.string().min(1).optional(),
   clarificationId: z.string().min(1).optional(),
   planDecisionId: z.string().min(1).optional(),
+  evidenceKind: CausalInterventionEvidenceKindSchema,
+  evidenceMessageId: z.string().min(1).optional(),
+  evidenceStartSeq: z.number().int().nonnegative().optional(),
+  evidenceEndSeq: z.number().int().nonnegative().optional(),
   surfaceRequest: z.string(),
   selectedLatentGoal: z.string(),
   keyUncertainties: z.array(z.string()),
@@ -74,6 +90,12 @@ type EpisodeSnapshot = Pick<
 interface DecisionCarrier {
   record: CausalDecisionRecord;
   event?: Pick<OraEventEnvelope, "id" | "runId" | "createdAt" | "agentId" | "nodeId">;
+}
+
+interface AssistantMessageEvidence {
+  messageId?: string;
+  startSeq?: number;
+  endSeq?: number;
 }
 
 export function extractCausalDecisionRecords(snapshot: Pick<StateSnapshot, "events">): CausalDecisionRecord[] {
@@ -170,16 +192,16 @@ function buildEpisode(
   const context = record.decisionContext ?? {};
   const turnIndex = context.turnIndex ?? snapshot.turnIndex ?? 1;
   const source = record.source ?? inferDecisionSource(record);
-  const effective = source !== "runtime_followup";
-  const laterEffectiveDecision = laterCarriers.find((candidate) => {
-    const sourceValue = candidate.record.source ?? inferDecisionSource(candidate.record);
-    return sourceValue !== "runtime_followup" && candidate.record.recordedAt > record.recordedAt;
-  });
-  const toolCall = findRelatedToolCall(snapshot.toolCalls, record);
+  const laterRelatedDecision = laterCarriers.find((candidate) =>
+    isPotentialSuccessor(record, candidate.record, snapshot.turnIndex ?? 1)
+  );
+  const laterRelatedDecisionAt = laterRelatedDecision?.record.recordedAt;
+  const toolCall = findRelatedToolCall(snapshot.toolCalls, record, laterRelatedDecisionAt);
   const action = findRelatedAction(snapshot.actions, record, toolCall);
   const clarifications = findClarificationOutcome(snapshot.events, snapshot.pendingClarifications, record);
   const planDecision = findPlanDecision(snapshot.planDecisions, record);
   const rejected = findRejectedOutcome(snapshot.events, record);
+  const replyEvidence = findReplyEvidence(snapshot.events, record, laterRelatedDecisionAt);
   const outcome = resolveOutcome({
     snapshotStatus: snapshot.status,
     record,
@@ -188,7 +210,8 @@ function buildEpisode(
     clarifications,
     planDecision,
     rejected,
-    laterEffectiveDecision,
+    laterRelatedDecision,
+    replyEvidence,
   });
 
   return CausalInterventionEpisodeSchema.parse({
@@ -199,18 +222,21 @@ function buildEpisode(
     turnIndex,
     recordedAt: record.recordedAt,
     source,
-    effective,
     chosenIntervention: record.chosenIntervention,
     phase: context.phase,
-    replyMessageId: context.replyMessageId,
     iteration: context.iteration,
     agentId: carrier.event?.agentId ?? context.agentId,
     nodeId: carrier.event?.nodeId ?? context.nodeId,
     toolId: context.toolId ?? toolCall?.toolId,
     actionId: context.actionId ?? action?.id ?? toolCall?.actionId,
     toolCallId: context.toolCallId ?? toolCall?.id,
+    providerCallId: context.providerCallId ?? toolCall?.providerCallId,
     clarificationId: context.clarificationId ?? clarifications.id,
     planDecisionId: context.planDecisionId ?? planDecision?.id,
+    evidenceKind: outcome.evidenceKind,
+    evidenceMessageId: outcome.evidenceMessageId,
+    evidenceStartSeq: outcome.evidenceStartSeq,
+    evidenceEndSeq: outcome.evidenceEndSeq,
     surfaceRequest: record.taskState.surfaceRequest,
     selectedLatentGoal: record.taskState.selectedLatentGoal,
     keyUncertainties: record.taskState.keyUncertainties,
@@ -222,6 +248,8 @@ function buildEpisode(
     userCost: record.policyDecision.userCost,
     reversibility: record.policyDecision.reversibility,
     wouldChangeOutcomeIfWrong: record.policyDecision.wouldChangeOutcomeIfWrong,
+    effective: outcome.effective,
+    replyMessageId: replyEvidence?.messageId ?? context.replyMessageId,
     status: outcome.status,
     goalImpact: outcome.goalImpact,
     outcomeSummary: outcome.summary,
@@ -231,17 +259,27 @@ function buildEpisode(
 function findRelatedToolCall(
   toolCalls: readonly OraToolCallEnvelope[] | undefined,
   record: CausalDecisionRecord,
+  nextDecisionAt?: number,
 ): OraToolCallEnvelope | undefined {
   if (!toolCalls) return undefined;
   const context = record.decisionContext ?? {};
   if (context.toolCallId) return toolCalls.find((call) => call.id === context.toolCallId);
-  const requestedAfter = record.recordedAt;
-  return toolCalls.find((call) =>
-    call.requestedAt >= requestedAfter &&
+  if (context.providerCallId) return toolCalls.find((call) => call.providerCallId === context.providerCallId);
+  if (context.actionId) {
+    const exactActionMatch = toolCalls.find((call) => call.actionId === context.actionId);
+    if (exactActionMatch) return exactActionMatch;
+  }
+  const windowStart = record.recordedAt - 5_000;
+  const windowEnd = nextDecisionAt !== undefined ? nextDecisionAt + 15_000 : record.recordedAt + 60_000;
+  const candidates = toolCalls.filter((call) =>
     (!context.toolId || call.toolId === context.toolId) &&
     (!context.agentId || call.agentId === context.agentId) &&
-    (!context.nodeId || call.nodeId === context.nodeId)
+    (!context.nodeId || call.nodeId === context.nodeId) &&
+    (!context.actionId || call.actionId === context.actionId) &&
+    call.requestedAt >= windowStart &&
+    call.requestedAt <= windowEnd
   );
+  return candidates.sort((left, right) => toolCallDistance(left, record.recordedAt) - toolCallDistance(right, record.recordedAt))[0];
 }
 
 function findRelatedAction(
@@ -253,10 +291,11 @@ function findRelatedAction(
   const context = record.decisionContext ?? {};
   if (context.actionId) return actions.find((action) => action.id === context.actionId);
   if (toolCall?.actionId) return actions.find((action) => action.id === toolCall.actionId);
-  return actions.find((action) =>
+  const candidates = actions.filter((action) =>
     (!context.toolId || action.type === context.toolId) &&
     (!context.agentId || action.agentId === context.agentId)
   );
+  return candidates[0];
 }
 
 function findClarificationOutcome(
@@ -320,100 +359,320 @@ function resolveOutcome(params: {
   clarifications: { id?: string; required: boolean; resolved: boolean };
   planDecision?: PlanDecisionGate;
   rejected: { rejected: boolean; reason?: string };
-  laterEffectiveDecision?: DecisionCarrier;
-}): { status: CausalInterventionEpisodeStatus; goalImpact: CausalInterventionGoalImpact; summary: string } {
+  laterRelatedDecision?: DecisionCarrier;
+  replyEvidence?: AssistantMessageEvidence;
+}): {
+  effective: boolean;
+  status: CausalInterventionEpisodeStatus;
+  goalImpact: CausalInterventionGoalImpact;
+  summary: string;
+  evidenceKind: CausalInterventionEvidenceKind;
+  evidenceMessageId?: string;
+  evidenceStartSeq?: number;
+  evidenceEndSeq?: number;
+} {
   const intervention = params.record.chosenIntervention;
 
   if (params.rejected.rejected) {
     return {
+      effective: true,
       status: "blocked",
       goalImpact: "weak_positive",
       summary: params.rejected.reason ?? "该干预对应的工具尝试被因果策略阻断。",
+      evidenceKind: evidenceKindForIntervention(intervention),
     };
   }
 
   if ((intervention === "clarify" || params.record.decisionContext?.phase === "clarification_triggered")) {
     if (params.clarifications.resolved) {
-      return { status: "resolved", goalImpact: "strong_positive", summary: "已触发澄清并收到用户补充信息，运行继续推进。" };
+      return {
+        effective: true,
+        status: "resolved",
+        goalImpact: "strong_positive",
+        summary: "已触发澄清并收到用户补充信息，运行继续推进。",
+        evidenceKind: "clarification_gate",
+      };
     }
     if (params.clarifications.required) {
-      return { status: "pending", goalImpact: "neutral", summary: "已触发澄清，当前仍在等待用户补充信息。" };
+      return {
+        effective: true,
+        status: "pending",
+        goalImpact: "neutral",
+        summary: "已触发澄清，当前仍在等待用户补充信息。",
+        evidenceKind: "clarification_gate",
+      };
     }
   }
 
   if (intervention === "request_approval" || params.record.decisionContext?.phase === "approval_triggered") {
     if (params.toolCall?.status === "succeeded" || params.action?.status === "succeeded") {
-      return { status: "resolved", goalImpact: "strong_positive", summary: "高风险动作已完成审批并成功执行。" };
+      return {
+        effective: true,
+        status: "resolved",
+        goalImpact: "strong_positive",
+        summary: "高风险动作已完成审批并成功执行。",
+        evidenceKind: "approval_gate",
+      };
     }
     if (params.action?.status === "denied" || params.toolCall?.status === "denied") {
-      return { status: "resolved", goalImpact: "neutral", summary: "该高风险动作被拒绝执行，风险已被拦下。" };
+      return {
+        effective: true,
+        status: "resolved",
+        goalImpact: "neutral",
+        summary: "该高风险动作被拒绝执行，风险已被拦下。",
+        evidenceKind: "approval_gate",
+      };
     }
     if (params.action?.status === "approval_required" || params.toolCall?.status === "approval_required") {
-      return { status: "pending", goalImpact: "neutral", summary: "已进入审批关卡，等待用户确认后继续。" };
+      return {
+        effective: true,
+        status: "pending",
+        goalImpact: "neutral",
+        summary: "已进入审批关卡，等待用户确认后继续。",
+        evidenceKind: "approval_gate",
+      };
     }
   }
 
   if (intervention === "plan" || params.record.decisionContext?.phase === "plan_updated") {
     if (params.planDecision?.status === "accepted") {
-      return { status: "resolved", goalImpact: "weak_positive", summary: "计划决策已被接受，并作为后续执行依据保留。" };
+      return {
+        effective: true,
+        status: "resolved",
+        goalImpact: "weak_positive",
+        summary: "计划决策已被接受，并作为后续执行依据保留。",
+        evidenceKind: "plan_gate",
+      };
     }
     if (params.planDecision?.status === "declined") {
-      return { status: "resolved", goalImpact: "neutral", summary: "计划决策已被拒绝，未继续推进后续执行。" };
+      return {
+        effective: true,
+        status: "resolved",
+        goalImpact: "neutral",
+        summary: "计划决策已被拒绝，未继续推进后续执行。",
+        evidenceKind: "plan_gate",
+      };
     }
     if (params.planDecision?.status === "pending") {
-      return { status: "pending", goalImpact: "neutral", summary: "已形成计划决策，当前等待用户确认。" };
+      return {
+        effective: true,
+        status: "pending",
+        goalImpact: "neutral",
+        summary: "已形成计划决策，当前等待用户确认。",
+        evidenceKind: "plan_gate",
+      };
     }
   }
 
   if (params.toolCall) {
     if (params.toolCall.status === "succeeded") {
       return {
+        effective: true,
         status: "resolved",
         goalImpact: "strong_positive",
         summary: `已执行 ${params.toolCall.toolId}，并产出成功结果。`,
+        evidenceKind: "tool_call",
       };
     }
     if (params.toolCall.status === "failed" || params.action?.status === "failed") {
       return {
+        effective: true,
         status: "resolved",
         goalImpact: "negative",
         summary: `已尝试执行 ${params.toolCall.toolId}，但结果失败。`,
+        evidenceKind: "tool_call",
       };
     }
     if (params.toolCall.status === "approval_required" || params.toolCall.status === "running" || params.toolCall.status === "proposed") {
       return {
+        effective: true,
         status: "pending",
         goalImpact: "unknown",
         summary: `已进入 ${params.toolCall.toolId} 执行链路，当前尚未得到最终结果。`,
+        evidenceKind: "tool_call",
       };
     }
   }
 
+  if (params.replyEvidence?.messageId || params.replyEvidence?.startSeq !== undefined) {
+    return {
+      effective: true,
+      status: "resolved",
+      goalImpact: intervention === "answer_directly" || intervention === "stop" ? "weak_positive" : "unknown",
+      summary:
+        intervention === "answer_directly"
+          ? "本轮以直接回答形成了独立回复证据。"
+          : intervention === "stop"
+            ? "停止策略形成了独立回复证据。"
+            : "该决策已形成独立的回复证据。",
+      evidenceKind: "reply_message",
+      evidenceMessageId: params.replyEvidence.messageId,
+      evidenceStartSeq: params.replyEvidence.startSeq,
+      evidenceEndSeq: params.replyEvidence.endSeq,
+    };
+  }
+
   if (intervention === "answer_directly") {
     if (params.snapshotStatus === "succeeded") {
-      return { status: "resolved", goalImpact: "weak_positive", summary: "本轮最终以直接回答收束，没有继续进入额外工具或关卡。" };
+      return {
+        effective: false,
+        status: "unknown",
+        goalImpact: "unknown",
+        summary: "本轮成功结束，但未找到可归因到该决策的独立回复证据。",
+        evidenceKind: "missing",
+      };
     }
   }
 
   if (intervention === "stop") {
     if (params.snapshotStatus === "succeeded") {
-      return { status: "resolved", goalImpact: "weak_positive", summary: "运行以停止策略收束，未继续追加额外动作。" };
+      return {
+        effective: false,
+        status: "unknown",
+        goalImpact: "unknown",
+        summary: "运行已收束，但未找到可归因到该停止策略的独立证据。",
+        evidenceKind: "missing",
+      };
     }
   }
 
-  if (params.laterEffectiveDecision) {
+  if (params.laterRelatedDecision) {
     return {
+      effective: false,
       status: "superseded",
       goalImpact: "neutral",
-      summary: "该决策很快被后续主决策覆盖，没有独立形成有效执行结果。",
+      summary: "该决策在形成独立执行证据前，被后续主决策接管。",
+      evidenceKind: "superseded",
     };
   }
 
   return {
+    effective: false,
     status: "unknown",
     goalImpact: "unknown",
-    summary: "未找到足够的后续执行证据来判断该决策是否真正改变了结果。",
+    summary: "暂未观察到该决策形成独立干预的足够证据。",
+    evidenceKind: "missing",
   };
+}
+
+function evidenceKindForIntervention(intervention: InterventionAction): CausalInterventionEvidenceKind {
+  switch (intervention) {
+    case "clarify":
+      return "clarification_gate";
+    case "request_approval":
+      return "approval_gate";
+    case "plan":
+      return "plan_gate";
+    case "answer_directly":
+    case "stop":
+      return "reply_message";
+    default:
+      return "tool_call";
+  }
+}
+
+function toolCallDistance(call: OraToolCallEnvelope, recordedAt: number): number {
+  const drift = Math.abs(call.requestedAt - recordedAt);
+  return call.requestedAt >= recordedAt ? drift : drift + 250;
+}
+
+function isPotentialSuccessor(
+  record: CausalDecisionRecord,
+  candidate: CausalDecisionRecord,
+  fallbackTurnIndex: number,
+): boolean {
+  const current = record.decisionContext ?? {};
+  const next = candidate.decisionContext ?? {};
+  const currentTurn = current.turnIndex ?? fallbackTurnIndex;
+  const nextTurn = next.turnIndex ?? fallbackTurnIndex;
+  if (currentTurn !== nextTurn) return false;
+  if (current.agentId && next.agentId && current.agentId !== next.agentId) return false;
+  if (current.nodeId && next.nodeId && current.nodeId !== next.nodeId) return false;
+  if (
+    current.phase === "tool_request" &&
+    next.phase === "tool_request" &&
+    current.toolId &&
+    next.toolId &&
+    current.toolId !== next.toolId
+  ) {
+    return false;
+  }
+  return candidate.recordedAt > record.recordedAt;
+}
+
+function findReplyEvidence(
+  events: readonly OraEventEnvelope[] | undefined,
+  record: CausalDecisionRecord,
+  nextDecisionAt?: number,
+): AssistantMessageEvidence | undefined {
+  if (!events?.length) return undefined;
+  const context = record.decisionContext ?? {};
+  const groups = groupAssistantMessageEvents(events, context.agentId, context.nodeId);
+  if (groups.length === 0) return undefined;
+  if (context.replyMessageId) {
+    const exact = groups.find((group) => group.messageId === context.replyMessageId);
+    if (exact) {
+      return { messageId: exact.messageId, startSeq: exact.startSeq, endSeq: exact.endSeq };
+    }
+  }
+  const windowStart = record.recordedAt - 2_000;
+  const windowEnd = nextDecisionAt !== undefined ? nextDecisionAt + 15_000 : record.recordedAt + 90_000;
+  const candidates = groups.filter((group) =>
+    group.endAt >= windowStart &&
+    group.startAt <= windowEnd
+  );
+  const best = candidates.sort((left, right) =>
+    assistantGroupDistance(left, record.recordedAt) - assistantGroupDistance(right, record.recordedAt)
+  )[0];
+  return best
+    ? { messageId: best.messageId, startSeq: best.startSeq, endSeq: best.endSeq }
+    : undefined;
+}
+
+function groupAssistantMessageEvents(
+  events: readonly OraEventEnvelope[],
+  agentId?: string,
+  nodeId?: string,
+): Array<{ messageId?: string; startSeq: number; endSeq: number; startAt: number; endAt: number }> {
+  const groups = new Map<string, { messageId?: string; startSeq: number; endSeq: number; startAt: number; endAt: number }>();
+  for (const event of events) {
+    if (event.type !== "message.delta" || !isRecord(event.payload)) continue;
+    const payload = event.payload;
+    const role = readString(payload.role);
+    if (role && role !== "assistant") continue;
+    if (payload.visibility === "internal" || payload.visibility === "collaboration") continue;
+    if (payload.audience === "internal" || payload.audience === "collaboration") continue;
+    if (payload.surface === "collaboration" || payload.public === false) continue;
+    if (agentId && event.agentId && event.agentId !== agentId) continue;
+    if (nodeId && event.nodeId && event.nodeId !== nodeId) continue;
+    const messageId = readString(payload.messageId);
+    const groupKey = messageId ?? `${event.agentId ?? "__default__"}:${event.nodeId ?? "__default__"}:${event.seq}`;
+    const existing = groups.get(groupKey);
+    if (!existing) {
+      groups.set(groupKey, {
+        messageId,
+        startSeq: event.seq,
+        endSeq: event.seq,
+        startAt: event.createdAt,
+        endAt: event.createdAt,
+      });
+      continue;
+    }
+    existing.startSeq = Math.min(existing.startSeq, event.seq);
+    existing.endSeq = Math.max(existing.endSeq, event.seq);
+    existing.startAt = Math.min(existing.startAt, event.createdAt);
+    existing.endAt = Math.max(existing.endAt, event.createdAt);
+  }
+  return [...groups.values()];
+}
+
+function assistantGroupDistance(
+  group: { startAt: number; endAt: number },
+  recordedAt: number,
+): number {
+  if (group.startAt >= recordedAt) return group.startAt - recordedAt;
+  if (group.endAt >= recordedAt) return 0;
+  return recordedAt - group.endAt + 50;
 }
 
 function readString(value: unknown): string | undefined {

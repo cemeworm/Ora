@@ -42,6 +42,22 @@ export const WebSearchResponseSchema = z.object({
 });
 export type WebSearchResponse = z.infer<typeof WebSearchResponseSchema>;
 
+export const AgentToolBundleIdSchema = z.enum([
+  "research_readonly",
+  "repo_forensics",
+  "review_readonly",
+  "builder_write",
+]);
+export type AgentToolBundleId = z.infer<typeof AgentToolBundleIdSchema>;
+
+export const AgentResultContractSchema = z.enum([
+  "final_answer",
+  "evidence_report",
+  "diff_report",
+  "plan_only",
+]);
+export type AgentResultContract = z.infer<typeof AgentResultContractSchema>;
+
 // ---------------------------------------------------------------------------
 // Tool Descriptor Schemas
 // ---------------------------------------------------------------------------
@@ -1504,7 +1520,9 @@ export const MVP_TOOLS: ToolDescriptor[] = [
         run_in_background: { type: "boolean", description: "When true, spawn the sub-agent asynchronously and return immediately. The sub-agent's result will be available as context in the next turn. Use for parallelizable subtasks." },
         inherit_context: { type: "boolean", description: "When true, the sub-agent inherits the parent's system prompt and task context. Use when the sub-agent needs the full context to understand the task." },
         system_prompt: { type: "string", description: "Custom system prompt for the sub-agent. Overrides the default agent profile's system prompt." },
+        tool_bundle: { type: "string", enum: AgentToolBundleIdSchema.options, description: "Maintained tool bundle for the sub-agent. Prefer this over hand-authoring tool_ids so the child gets a role-appropriate tool set." },
         tool_ids: { type: "array", items: { type: "string" }, description: "Custom tool IDs for the sub-agent. If not provided, uses the default agent profile's tools." },
+        result_contract: { type: "string", enum: AgentResultContractSchema.options, description: "What kind of result the parent expects back from the sub-agent. Use plan_only only when a structured plan is explicitly desired." },
       },
       required: ["description", "prompt"],
       additionalProperties: false,
@@ -1514,7 +1532,33 @@ export const MVP_TOOLS: ToolDescriptor[] = [
       "Delegate only substantial, self-contained subtasks that benefit from a fresh context window.",
       "Write prompts that include all necessary context — file paths, line numbers, error messages.",
       "State what \"done\" looks like for the sub-agent.",
+      "Prefer tool_bundle over raw tool_ids so the child gets a maintained, role-appropriate tool surface.",
       "Do not spawn agents for trivial lookups that a single tool call can handle.",
+    ],
+    requiresApproval: false,
+    implemented: true,
+    allowedForProfiles: [],
+  },
+  {
+    id: "agent.wait",
+    label: "Wait For Agents",
+    description: "Wait for background sub-agents to finish and return their structured results to the parent agent. Use this after fan-out when you need an explicit fan-in point before synthesis.",
+    category: "internal",
+    riskLevel: "low_risk",
+    parameters: {
+      type: "object",
+      properties: {
+        agent_ids: { type: "array", items: { type: "string" }, description: "Optional child agent IDs to wait for. Omit to wait for any/all active background children owned by the current parent agent." },
+        child_session_ids: { type: "array", items: { type: "string" }, description: "Optional child session IDs to wait for. Use when you want to join a specific spawned child session." },
+        require_all: { type: "boolean", description: "When true (default), wait until all selected children finish. When false, return as soon as any selected child result is available." },
+      },
+      additionalProperties: false,
+    },
+    promptSnippet: "Use agent.wait after launching background sub-agents when you need to explicitly gather their results before writing the final answer.",
+    promptGuidelines: [
+      "Fan out background children first, then use agent.wait as the explicit fan-in point.",
+      "Pass agent_ids or child_session_ids when you only want a subset of children.",
+      "Summarize the returned child evidence in your own words rather than copying raw internal metadata.",
     ],
     requiresApproval: false,
     implemented: true,

@@ -67,6 +67,7 @@ export const CausalDecisionContextSchema = z.object({
   replyMessageId: z.string().min(1).optional(),
   toolId: z.string().min(1).optional(),
   toolCallId: z.string().min(1).optional(),
+  providerCallId: z.string().min(1).optional(),
   actionId: z.string().min(1).optional(),
   clarificationId: z.string().min(1).optional(),
   planDecisionId: z.string().min(1).optional(),

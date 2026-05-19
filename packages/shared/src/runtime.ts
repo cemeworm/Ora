@@ -3,7 +3,7 @@ import { ActionRecordSchema, OraToolCallEnvelopeSchema, PlanItemSchema, PlanList
 import { CausalTaskStateSchema } from "./interventions.js";
 import { RuntimeToolResultPreviewSchema } from "./actions.js";
 export { RuntimeToolResultPreviewSchema };
-import { SearchProviderConfigSchema } from "./capabilities.js";
+import { AgentResultContractSchema, AgentToolBundleIdSchema, SearchProviderConfigSchema } from "./capabilities.js";
 import { MemoryRecordSchema } from "./memory.js";
 import { ModeSpecSchema, ModeTranscriptLayoutSchema } from "./modes.js";
 import { PermissionModeSchema } from "./config.js";
@@ -686,6 +686,12 @@ export const ChildSessionStatusSchema = z.enum([
 ]);
 export type ChildSessionStatus = z.infer<typeof ChildSessionStatusSchema>;
 
+export const ChildSessionDeliveryStatusSchema = z.enum([
+  "awaiting_pickup",
+  "consumed",
+]);
+export type ChildSessionDeliveryStatus = z.infer<typeof ChildSessionDeliveryStatusSchema>;
+
 export const ChildSessionReplayRefSchema = z.object({
   kind: z.enum(["event_range", "session_turn"]).default("event_range"),
   runId: z.string().min(1),
@@ -701,9 +707,15 @@ export const ChildSessionSummarySchema = z.object({
   label: z.string().min(1),
   sessionClass: ChildSessionClassSchema,
   status: ChildSessionStatusSchema,
+  deliveryStatus: ChildSessionDeliveryStatusSchema.optional(),
   summary: z.string().min(1).optional(),
   lastMessage: z.string().min(1).optional(),
   artifactIds: z.array(z.string().min(1)).default([]),
+  toolBundleId: AgentToolBundleIdSchema.optional(),
+  resolvedToolIds: z.array(z.string().min(1)).optional(),
+  resultContract: AgentResultContractSchema.optional(),
+  usedToolCount: z.number().int().nonnegative().optional(),
+  durationMs: z.number().int().nonnegative().optional(),
   replayRef: ChildSessionReplayRefSchema.optional(),
   sourceSessionId: z.string().min(1).optional(),
   sourceRunId: z.string().min(1).optional(),
