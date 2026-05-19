@@ -282,6 +282,92 @@ describe("agent.spawn integration", () => {
     }
   });
 
+  it("forces a delegated collaboration step before completion when single_agent is degraded from an explicit Agent Teams request", async () => {
+    process.env.NODE_LOOP_TOOL_KEY = "test";
+    const prevFetch = globalThis.fetch;
+    let sawRequiredCollaborationFollowUp = false;
+    const requestLog: Array<{ system: string; latestUser: string; toolText: string }> = [];
+
+    globalThis.fetch = (async (_input, init) => {
+      const request = parseProviderRequest(init);
+      requestLog.push({
+        system: request.systemText.slice(0, 120),
+        latestUser: request.latestUserText.slice(0, 240),
+        toolText: request.toolText.slice(0, 120),
+      });
+      const infraResponse = maybeHandleInfraProviderRequest(request);
+      if (infraResponse) {
+        return infraResponse;
+      }
+      if (!hasWorkspaceSpawnResult(request) && request.latestUserText.includes("Research MiniMax recent status.")) {
+        return jsonResponse("MiniMax recently launched new model and product updates; this delegated research response is intentionally detailed enough for the parent agent to synthesize cleanly.");
+      }
+      if (request.latestUserText.includes("delegate at least one substantial top-level subtask with agent.spawn")) {
+        sawRequiredCollaborationFollowUp = true;
+        return jsonResponse(JSON.stringify({
+          tool: "agent.spawn",
+          args: {
+            description: "Research MiniMax",
+            prompt: "Research MiniMax recent status.",
+          },
+        }));
+      }
+      if (request.latestUserText.includes("What is MiniMax up to lately?")) {
+        return jsonResponse("MiniMax has been active recently and here is a direct summary that skips delegation.");
+      }
+      if (hasWorkspaceSpawnResult(request)) {
+        return jsonResponse("Using the delegated research result, here is the final MiniMax summary with the required collaboration incorporated and enough detail to satisfy the completion guard.");
+      }
+      return unexpectedProviderCall(request);
+    }) as typeof fetch;
+
+    try {
+      const handle = createRuntimeMethodHandler(createTempStore());
+      const start = await handle({
+        jsonrpc: "2.0", id: 1, method: "runs.start",
+        params: {
+          input: {
+            prompt: "通过 Agent team 的方式帮我分析一下 MiniMax 最近的情况。What is MiniMax up to lately?",
+          },
+          config: runConfig(),
+        },
+      }) as { runId?: string; error?: unknown };
+
+      if (!start.runId) throw new Error(`Start failed: ${JSON.stringify(start)}`);
+
+      const result = await pollUntilDone(handle, start.runId);
+      if (result.status !== "succeeded") {
+        const raw = await handle({ jsonrpc: "2.0", id: 99, method: "runs.state", params: { runId: start.runId } });
+        const parsed = StateSnapshotSchema.parse(raw);
+        throw new Error(`degraded collaboration run failed: ${JSON.stringify({
+          status: result.status,
+          error: parsed.error,
+          sawRequiredCollaborationFollowUp,
+          toolCalls: result.toolCalls,
+          requestLog,
+        })}`);
+      }
+      expect(result.status).toBe("succeeded");
+      expect(sawRequiredCollaborationFollowUp).toBe(true);
+
+      const raw = await handle({ jsonrpc: "2.0", id: 3, method: "runs.state", params: { runId: start.runId } });
+      const parsed = StateSnapshotSchema.parse(raw);
+      expect(parsed.config.effectiveStrategy).toMatchObject({
+        sourceModeId: SINGLE_AGENT_MODE_ID,
+        delegation: "preferred",
+        delegationEnabled: true,
+        collaborationRequirement: "required",
+        collaborationRequirementSource: "explicit_mode_degraded",
+        requestedModeId: "agent_teams",
+      });
+      expect(parsed.toolCalls).toEqual(expect.arrayContaining([
+        expect.objectContaining({ agentId: "ora", toolId: "agent.spawn", status: "succeeded" }),
+      ]));
+    } finally {
+      globalThis.fetch = prevFetch;
+    }
+  });
+
   it("sub-agent cannot use agent.spawn (isNestedAgentSpawn filter)", async () => {
     process.env.NODE_LOOP_TOOL_KEY = "test";
     const prevFetch = globalThis.fetch;

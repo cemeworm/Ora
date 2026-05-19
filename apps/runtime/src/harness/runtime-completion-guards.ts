@@ -16,6 +16,8 @@ export interface RuntimeCompletionGuardState {
   agentId?: string;
   activeBackgroundChildCount?: number;
   pendingAsyncResultCount?: number;
+  collaborationRequirement?: "none" | "required";
+  collaborationObserved?: boolean;
   stalledBackgroundChildren?: readonly Pick<
     ChildSessionSummary,
     "id" | "agentId" | "label" | "lifecyclePhase" | "stallReason" | "resultAvailability"
@@ -138,9 +140,31 @@ export const DEFAULT_RUNTIME_COMPLETION_GUARDS: readonly RuntimeCompletionGuard[
   planListCompletionGuard,
   legacyProgressCompletionGuard,
   pendingRuntimeWorkGuard,
+  requiredCollaborationGuard,
   stalledBackgroundWorkGuard,
   pendingBackgroundWorkGuard,
 ];
+
+export function requiredCollaborationGuard(
+  state: RuntimeCompletionGuardState,
+): RuntimeCompletionGuardResult {
+  if (state.collaborationRequirement !== "required" || state.collaborationObserved === true) {
+    return { allowComplete: true };
+  }
+  return {
+    allowComplete: false,
+    reason: "required_collaboration_missing",
+    progressTrigger: "collaboration.required",
+    progressSummary: "This turn requires delegated collaboration before the run can complete.",
+    detail: "The current run is under a required collaboration contract, but no qualifying collaboration event has been observed yet.",
+    followUpReason: "required_collaboration_follow_up",
+    followUpContent: [
+      "The user explicitly required team-style collaboration for this turn, and you have not satisfied that contract yet.",
+      "Before giving the final answer, delegate at least one substantial top-level subtask with agent.spawn and use its result in your synthesis.",
+      "Do not provide the final answer until that collaboration has happened.",
+    ].join(" "),
+  };
+}
 
 export function stalledBackgroundWorkGuard(
   state: RuntimeCompletionGuardState,

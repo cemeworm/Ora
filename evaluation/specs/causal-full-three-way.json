@@ -31,7 +31,7 @@
         "pattern": "solo_agent",
         "modeSelection": "auto",
         "providerId": "deepseek",
-        "modelRef": "deepseek-v4-flash",
+        "modelRef": "deepseek-v4-pro",
         "causalInterventionLevel": "record_only",
         "metadata": { "evaluationBatch": "causal-full-three-way" }
       }
@@ -43,7 +43,7 @@
         "pattern": "solo_agent",
         "modeSelection": "auto",
         "providerId": "deepseek",
-        "modelRef": "deepseek-v4-flash",
+        "modelRef": "deepseek-v4-pro",
         "causalInterventionLevel": "advisory",
         "metadata": { "evaluationBatch": "causal-full-three-way" }
       }
@@ -55,7 +55,7 @@
         "pattern": "solo_agent",
         "modeSelection": "auto",
         "providerId": "deepseek",
-        "modelRef": "deepseek-v4-flash",
+        "modelRef": "deepseek-v4-pro",
         "causalInterventionLevel": "enforcing",
         "metadata": { "evaluationBatch": "causal-full-three-way" }
       }

@@ -6,6 +6,7 @@ import {
   pendingBackgroundWorkGuard,
   pendingRuntimeWorkGuard,
   planListCompletionGuard,
+  requiredCollaborationGuard,
   stalledBackgroundWorkGuard,
 } from "../src/harness/runtime-completion-guards.js";
 
@@ -272,6 +273,35 @@ describe("runtime completion guards", () => {
       reason: "pending_background_results",
       progressTrigger: "background_results.pending",
     });
+  });
+
+  it("blocks natural completion when a required collaboration contract has not been satisfied", () => {
+    const result = requiredCollaborationGuard({
+      actions: [],
+      planList: [],
+      toolCalls: [],
+      collaborationRequirement: "required",
+      collaborationObserved: false,
+    });
+
+    expect(result).toMatchObject({
+      allowComplete: false,
+      reason: "required_collaboration_missing",
+      progressTrigger: "collaboration.required",
+    });
+    if (!result.allowComplete) {
+      expect(result.followUpContent).toContain("agent.spawn");
+    }
+  });
+
+  it("allows completion after the required collaboration contract is satisfied", () => {
+    expect(requiredCollaborationGuard({
+      actions: [],
+      planList: [],
+      toolCalls: [],
+      collaborationRequirement: "required",
+      collaborationObserved: true,
+    })).toEqual({ allowComplete: true });
   });
 
   it("blocks completion explicitly when background children are stalled", () => {

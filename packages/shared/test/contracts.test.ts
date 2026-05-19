@@ -332,9 +332,31 @@ describe("Ora shared contracts", () => {
     expect(deepResearch.visibility).toBe("user");
     expect(deepResearch.family).toBe("orchestrator_subagent");
     expect(deepResearch.completionPolicy.preset).toBe("persistent");
-    expect(deepResearch.nodes.map((node) => node.id)).toEqual(["scope", "gather", "analyze", "synthesize"]);
-    expect(deepResearch.profiles.map((profile) => profile.id)).toEqual(["ora", "researcher"]);
-    expect(deepResearch.stages?.map((stage) => stage.nodeId)).toEqual(["scope", "gather", "analyze", "synthesize"]);
+    expect(deepResearch.nodes.map((node) => node.id)).toEqual([
+      "scope",
+      "gather",
+      "analyze",
+      "gap_analysis",
+      "compile",
+      "verify",
+      "synthesize",
+    ]);
+    expect(deepResearch.profiles.map((profile) => profile.id)).toEqual([
+      "ora",
+      "researcher",
+      "fact_checker",
+      "gap_analyst",
+      "knowledge_compiler",
+    ]);
+    expect(deepResearch.stages?.map((stage) => stage.nodeId)).toEqual([
+      "scope",
+      "gather",
+      "analyze",
+      "gap_analysis",
+      "compile",
+      "verify",
+      "synthesize",
+    ]);
 
     const reviewCritique = MVP_MODES.find((mode) => mode.id === REVIEW_CRITIQUE_MODE_ID)!;
     expect(reviewCritique.systemPreset).toBe(true);
@@ -442,6 +464,9 @@ describe("Ora shared contracts", () => {
 
     expect(strategy.sourceModeId).toBe("single_agent");
     expect(strategy.budget.maxToolCalls).toBe(singleAgent.defaultBudget.maxToolCalls);
+    expect(strategy.collaborationRequirement).toBe("none");
+    expect(strategy.collaborationRequirementSource).toBe("mode_default");
+    expect(strategy.delegationRequestedByUser).toBe(false);
   });
 
   it("keeps canonical built-in agents on concrete responsibility contracts", () => {
@@ -456,6 +481,9 @@ describe("Ora shared contracts", () => {
       "builder",
       "debate_agent",
       "debugger",
+      "fact_checker",
+      "gap_analyst",
+      "knowledge_compiler",
       "ora",
       "researcher",
       "reviewer",

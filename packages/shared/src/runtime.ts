@@ -46,6 +46,16 @@ export const DelegationIntentSchema = z.object({
 });
 export type DelegationIntent = z.infer<typeof DelegationIntentSchema>;
 
+export const CollaborationRequirementSchema = z.enum(["none", "required"]);
+export type CollaborationRequirement = z.infer<typeof CollaborationRequirementSchema>;
+
+export const CollaborationRequirementSourceSchema = z.enum([
+  "mode_default",
+  "turn_intent_override",
+  "explicit_mode_degraded",
+]);
+export type CollaborationRequirementSource = z.infer<typeof CollaborationRequirementSourceSchema>;
+
 export const ProviderPolicyStatusSchema = z.enum(["applied", "unsupported", "degraded"]);
 export type ProviderPolicyStatus = z.infer<typeof ProviderPolicyStatusSchema>;
 
@@ -60,6 +70,10 @@ export const EffectiveRunStrategySchema = z.object({
   planningEnabled: z.boolean(),
   delegation: ModeDelegationSchema,
   delegationEnabled: z.boolean(),
+  collaborationRequirement: CollaborationRequirementSchema.default("none"),
+  collaborationRequirementSource: CollaborationRequirementSourceSchema.default("mode_default"),
+  delegationRequestedByUser: z.boolean().default(false),
+  requestedModeId: ModeIdSchema.optional(),
   providerThinkingEnabled: z.boolean(),
   providerPolicyStatus: ProviderPolicyStatusSchema,
   notes: z.array(z.string().min(1)).default([]),

@@ -50,7 +50,7 @@ import {
   NodeLoopController,
 } from "./node-loop-transitions.js";
 import { routeIntervention, applyCausalPolicyGate, interventionActionToLabel } from "./causal-policy-router.js";
-import { classifyToolRisk } from "@cemeworm/shared";
+import { classifyToolRisk, ORA_ROOT_AGENT_ID } from "@cemeworm/shared";
 import {
   extractCausalTaskState as defaultExtractCausalTaskState,
   hasPrimaryCausalDecisionInPhase,
@@ -725,6 +725,12 @@ export async function runNodeRuntimeLoop(
   const backgroundChildCount = () => deps.activeBackgroundChildCount?.(params.agentId) ?? 0;
   const pendingAsyncResultCount = () => deps.pendingAsyncResultCount?.(params.agentId) ?? 0;
   const stalledBackgroundChildren = () => deps.stalledBackgroundChildren?.(params.agentId) ?? [];
+  const collaborationObserved = () =>
+    deps.toolCalls().some((call) =>
+      call.agentId === params.agentId
+      && call.toolId === "agent.spawn"
+      && (call.status === "succeeded" || call.status === "completed")
+    );
   const toolRecoveryService = new RuntimeToolRecoveryService({
     agentId: params.agentId,
     nodeId: params.nodeId,
@@ -863,6 +869,10 @@ export async function runNodeRuntimeLoop(
       agentId: params.agentId,
       activeBackgroundChildCount: backgroundChildCount(),
       pendingAsyncResultCount: pendingAsyncResultCount(),
+      collaborationRequirement: params.agentId === ORA_ROOT_AGENT_ID
+        ? config.effectiveStrategy?.collaborationRequirement
+        : "none",
+      collaborationObserved: collaborationObserved(),
       stalledBackgroundChildren: stalledBackgroundChildren(),
     });
     if (guardResult.allowComplete) {

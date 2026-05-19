@@ -1073,8 +1073,14 @@ export function buildEffectiveStrategySummary(snapshot: OraStateSnapshot): Effec
       strategy.delegationEnabled
         ? `${strategy.delegation} 委派`
         : "未启用委派",
+      strategy.collaborationRequirement === "required"
+        ? "本回合必须协作"
+        : undefined,
+      strategy.requestedModeId
+        ? `请求模式 ${strategy.requestedModeId}`
+        : undefined,
       `${strategy.budget.maxToolCalls} 次工具预算`,
-    ].join(" · "),
+    ].filter((value): value is string => typeof value === "string" && value.length > 0).join(" · "),
     statusLabel,
     statusTone,
     notes: strategy.notes,

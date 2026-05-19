@@ -76,6 +76,16 @@ export interface ModeSelectionDeps {
   projectScenarioStore?: (projectId: string) => import("./memory-scenarios.js").ScenarioStore;
 }
 
+interface ExplicitTurnSignal {
+  delegationIntent?: z.infer<typeof DelegationIntentSchema>;
+  modeRequest?: {
+    requestedModeId: string;
+    requestedByUser: true;
+    reason: string;
+    source: "rule_based";
+  };
+}
+
 function renderHybridOverlay(
   cards: Array<{ id: string; category: string; confidence: number; content: string }>,
   reason: string,
@@ -112,16 +122,20 @@ export async function resolveModeSelection(
   fullConfig: RunConfig;
 }> {
   const parsed = RunConfigSchema.parse(config ?? {});
+  const explicitTurnSignal = input
+    ? resolveExplicitTurnSignal(input, session, deps)
+    : undefined;
   const [autoRoute, delegationIntentMetadata] = await Promise.all([
     parsed.modeSelection === "auto" && input
-      ? routeAutoMode(parsed, input, session, deps)
+      ? routeAutoMode(parsed, input, session, deps, explicitTurnSignal)
       : Promise.resolve(undefined),
     input
-      ? resolveDelegationIntentMetadata(parsed, input, session, deps)
+      ? resolveDelegationIntentMetadata(parsed, input, session, deps, explicitTurnSignal)
       : Promise.resolve(undefined),
   ]);
   const effectiveMetadata = {
     ...resolveAutoTaskIntentMetadata(parsed.metadata, autoRoute),
+    ...explicitTurnSignalToMetadata(explicitTurnSignal),
     ...(delegationIntentMetadata ?? {}),
   };
   const requestedModeId = autoRoute?.modeId
@@ -166,6 +180,7 @@ export async function resolveModeSelection(
     modeSelection: parsed.modeSelection,
     budget,
     toolIds,
+    metadata: effectiveMetadata,
   });
   const fullConfig = RunConfigSchema.parse({
     ...parsed,
@@ -205,7 +220,7 @@ export async function resolveModeSelection(
 
 export function resolveEffectiveRunStrategy(
   modeSpec: ModeSpec,
-  config: Pick<RunConfig, "modeSelection" | "budget" | "providerConfig" | "providerId" | "modelRef" | "toolIds">,
+  config: Pick<RunConfig, "modeSelection" | "budget" | "providerConfig" | "providerId" | "modelRef" | "toolIds" | "metadata">,
 ) {
   const policy = modeSpec.runtimePolicy;
   const budget = config.budget ?? modeSpec.defaultBudget ?? DEFAULT_RESOURCE_BUDGETS[modeSpec.family];
@@ -232,12 +247,49 @@ export function resolveEffectiveRunStrategy(
   const delegationSupported =
     modeSpec.capabilityFlags.supportsPersistentWorkers
     || modeSpec.runtimeAtoms.includes("subagent_delegate")
+    || modeToolIds.has("agent.spawn")
     || modeToolIds.has("model.handoff")
     || modeSpec.nodes.some((node) => Array.isArray(node.config.atoms) && node.config.atoms.includes("subagent_delegate"));
-  const delegationEnabled = policy.delegation !== "none" && delegationSupported;
+  const turnDelegationIntent = readDelegationIntent(config.metadata);
+  const requestedModeId = readRequestedModeId(config.metadata);
+  const requestedTeamModeWhileStayingSingleAgent =
+    requestedModeId === "agent_teams"
+    && modeSpec.id === SINGLE_AGENT_MODE_ID
+    && turnDelegationIntent?.preference !== "none";
+  let delegation = policy.delegation;
+  let delegationEnabled = policy.delegation !== "none" && delegationSupported;
+  let collaborationRequirement: "none" | "required" = "none";
+  let collaborationRequirementSource: "mode_default" | "turn_intent_override" | "explicit_mode_degraded" = "mode_default";
+  const delegationRequestedByUser = turnDelegationIntent?.requestedByUser === true || requestedModeId !== undefined;
 
   if (policy.delegation !== "none" && !delegationSupported) {
     notes.push("Mode policy allows delegation, but this mode has no delegation runtime capability enabled.");
+  }
+
+  if (turnDelegationIntent?.preference === "allow") {
+    delegation = "allowed";
+    delegationEnabled = delegationSupported;
+    if (!delegationSupported) {
+      notes.push("The user allowed delegation for this turn, but the selected mode exposes no delegation capability.");
+    }
+  } else if (turnDelegationIntent?.preference === "prefer") {
+    delegation = "preferred";
+    delegationEnabled = delegationSupported;
+    if (!delegationSupported) {
+      notes.push("The user requested collaboration for this turn, but the selected mode exposes no delegation capability.");
+    }
+  }
+
+  if (requestedTeamModeWhileStayingSingleAgent) {
+    delegation = "preferred";
+    delegationEnabled = delegationSupported;
+    collaborationRequirement = delegationSupported ? "required" : "none";
+    collaborationRequirementSource = delegationSupported ? "explicit_mode_degraded" : "turn_intent_override";
+    notes.push(
+      delegationSupported
+        ? "The user explicitly requested Agent Teams, but this run remains in single_agent; collaboration is required this turn."
+        : "The user explicitly requested Agent Teams, but this run remains in single_agent and no delegation capability is available.",
+    );
   }
 
   return EffectiveRunStrategySchema.parse({
@@ -249,8 +301,12 @@ export function resolveEffectiveRunStrategy(
     budget,
     planning: policy.planning,
     planningEnabled: policy.planning !== "none",
-    delegation: policy.delegation,
+    delegation,
     delegationEnabled,
+    collaborationRequirement,
+    collaborationRequirementSource,
+    delegationRequestedByUser,
+    requestedModeId,
     providerThinkingEnabled,
     providerPolicyStatus,
     notes,
@@ -556,6 +612,7 @@ async function routeAutoMode(
   input: UserTaskInput,
   session: SessionSummary | undefined,
   deps: ModeSelectionDeps,
+  explicitTurnSignal?: ExplicitTurnSignal,
 ): Promise<{ modeId: string; taskIntent?: TaskIntent; metadata: Record<string, unknown> }> {
   const candidates = deps.modeStore.list()
     .filter((mode) => mode.visibility !== "internal")
@@ -592,6 +649,25 @@ async function routeAutoMode(
 
   if (candidates.length === 0) {
     return fallback("No modes were available to route.");
+  }
+
+  const requestedModeId = explicitTurnSignal?.modeRequest?.requestedModeId;
+  if (requestedModeId && candidateIds.has(requestedModeId)) {
+    return {
+      modeId: requestedModeId,
+      ...(autoTaskIntent ? { taskIntent: "plan" as const } : {}),
+      metadata: {
+        selectedModeId: requestedModeId,
+        ...(autoTaskIntent ? { selectedTaskIntent: "plan" } : {}),
+        confidence: 1,
+        ...(autoTaskIntent ? { taskIntentConfidence: 1 } : {}),
+        reason: explicitTurnSignal?.modeRequest?.reason ?? `Explicit mode request for ${requestedModeId}.`,
+        status: "selected",
+        entryAgentId: ORA_ROOT_AGENT_ID,
+        handoffSummary: explicitTurnSignal?.modeRequest?.reason ?? `Explicit mode request for ${requestedModeId}.`,
+        selectionSource: "rule_based_mode_request",
+      },
+    };
   }
 
   let rawResponseText = "";
@@ -682,8 +758,12 @@ async function resolveDelegationIntentMetadata(
   input: UserTaskInput | undefined,
   session: SessionSummary | undefined,
   deps: ModeSelectionDeps,
+  explicitTurnSignal?: ExplicitTurnSignal,
 ): Promise<Record<string, unknown> | undefined> {
   if (!input) {
+    return undefined;
+  }
+  if (explicitTurnSignal?.delegationIntent) {
     return undefined;
   }
   const recentMessages = resolveRecentMessages(input, session, deps);
@@ -747,6 +827,99 @@ async function resolveDelegationIntentMetadata(
   }
 }
 
+function explicitTurnSignalToMetadata(
+  signal: ExplicitTurnSignal | undefined,
+): Record<string, unknown> | undefined {
+  if (!signal) {
+    return undefined;
+  }
+  const metadata: Record<string, unknown> = {};
+  if (signal.delegationIntent) {
+    metadata.delegationIntent = DelegationIntentSchema.parse(signal.delegationIntent);
+    metadata.delegationClassifier = {
+      status: "rule_based",
+      requestedByUser: signal.delegationIntent.requestedByUser,
+      preference: signal.delegationIntent.preference,
+      confidence: 1,
+      reason: signal.delegationIntent.reason,
+    };
+  }
+  if (signal.modeRequest) {
+    metadata.modeRequest = {
+      requestedModeId: signal.modeRequest.requestedModeId,
+      requestedByUser: true,
+      reason: signal.modeRequest.reason,
+      source: signal.modeRequest.source,
+    };
+  }
+  return Object.keys(metadata).length > 0 ? metadata : undefined;
+}
+
+function resolveExplicitTurnSignal(
+  input: UserTaskInput,
+  session: SessionSummary | undefined,
+  deps: ModeSelectionDeps,
+): ExplicitTurnSignal | undefined {
+  const recentMessages = resolveRecentMessages(input, session, deps)
+    .map((message) => message.content)
+    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    .slice(-3);
+  const haystack = [input.prompt, ...recentMessages].join("\n");
+
+  if (/(不要开子智能体|不要委派|不要分工|你自己回答|不要用\s*agent\.spawn|do not delegate|don't delegate|answer it yourself)/i.test(haystack)) {
+    return {
+      delegationIntent: {
+        requestedByUser: true,
+        preference: "none",
+        reason: "The user explicitly asked to avoid delegation for this turn.",
+        source: "explicit_no_delegation",
+      },
+    };
+  }
+
+  const explicitAgentTeamsRequest =
+    /(agent\s*teams?|agent team(?:\s*的)?(?:模式|方式)?|通过\s*agent team|智能体团队|团队模式|用团队协作)/i.test(haystack);
+  const explicitTeamCollaboration =
+    explicitAgentTeamsRequest
+    || /(子智能体协作|子智能体分工|并行协作|多个\s*agents|多智能体协作|分工处理|parallel work|sub-?agent coordination|team-style collaboration)/i.test(haystack);
+
+  if (explicitTeamCollaboration) {
+    return {
+      delegationIntent: {
+        requestedByUser: true,
+        preference: "prefer",
+        reason: explicitAgentTeamsRequest
+          ? "The user explicitly requested Agent Teams style collaboration."
+          : "The user explicitly requested team-style collaboration for this turn.",
+        source: "explicit_team_collab",
+      },
+      ...(explicitAgentTeamsRequest
+        ? {
+            modeRequest: {
+              requestedModeId: "agent_teams",
+              requestedByUser: true as const,
+              reason: "The user explicitly requested Agent Teams mode for this turn.",
+              source: "rule_based" as const,
+            },
+          }
+        : {}),
+    };
+  }
+
+  if (/(可以(让|开)?子智能体|可以委派|可以分工|sub-?agents? (are )?allowed|you may delegate)/i.test(haystack)) {
+    return {
+      delegationIntent: {
+        requestedByUser: true,
+        preference: "allow",
+        reason: "The user explicitly allowed delegation for this turn.",
+        source: "explicit_subagent_request",
+      },
+    };
+  }
+
+  return undefined;
+}
+
 function normalizeDelegationIntentClassifierResponse(
   response: z.infer<typeof DelegationIntentClassifierResponseSchema>,
 ): z.infer<typeof DelegationIntentClassifierResponseSchema> {
@@ -778,6 +951,32 @@ function readContextRecentMessages(context: Record<string, unknown> | undefined)
     role: message.role,
     content: message.content,
   }));
+}
+
+function readDelegationIntent(
+  metadata: RunConfig["metadata"] | undefined,
+): z.infer<typeof DelegationIntentSchema> | undefined {
+  if (!metadata || typeof metadata !== "object") {
+    return undefined;
+  }
+  const parsed = DelegationIntentSchema.safeParse(metadata.delegationIntent);
+  return parsed.success ? parsed.data : undefined;
+}
+
+function readRequestedModeId(
+  metadata: RunConfig["metadata"] | undefined,
+): string | undefined {
+  if (!metadata || typeof metadata !== "object") {
+    return undefined;
+  }
+  const raw = metadata.modeRequest;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return undefined;
+  }
+  const requestedModeId = (raw as Record<string, unknown>).requestedModeId;
+  return typeof requestedModeId === "string" && requestedModeId.length > 0
+    ? requestedModeId
+    : undefined;
 }
 
 function parseAutoModeRouterResponse(text: string): z.infer<typeof AutoModeRouterResponseSchema> {

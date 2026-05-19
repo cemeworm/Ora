@@ -40,7 +40,6 @@ import {
   CausalDecisionRecordSchema,
   type CompletionStopReason,
   type CustomAgentDetail,
-  type DelegationIntent,
   getPermissionProfile,
   ORA_ROOT_AGENT_ID,
   ORA_ROOT_AGENT_LABEL,
@@ -1313,17 +1312,38 @@ export function deriveParentCoordinationUpdate(params: {
 }
 
 export function buildDelegationGuidance(
-  delegationIntent: DelegationIntent | undefined,
+  config: RunConfig,
+  agentId: string = ORA_ROOT_AGENT_ID,
 ): string | undefined {
-  if (!delegationIntent || delegationIntent.preference === "none") {
+  if (agentId !== ORA_ROOT_AGENT_ID) {
     return undefined;
   }
-  if (delegationIntent.preference === "allow") {
+  const strategy = config.effectiveStrategy;
+  const delegationIntent = delegationIntentFromMetadata(config.metadata);
+  if (!strategy) {
+    return undefined;
+  }
+  if (strategy.collaborationRequirement === "required") {
+    return [
+      "Delegation guidance for this turn:",
+      "- The user explicitly requested team-style collaboration for this turn.",
+      strategy.requestedModeId
+        ? `- The requested mode was ${strategy.requestedModeId}, but this run remains in ${strategy.sourceModeId}.`
+        : "- This run remains in single-agent execution, so collaboration must happen through a delegated child task.",
+      "- Before providing the final answer, you must delegate at least one substantial top-level subtask with agent.spawn.",
+      "- Use the delegated result in your synthesis rather than answering entirely from the root agent.",
+      ...(delegationIntent?.reason ? [`- Reason: ${delegationIntent.reason}`] : []),
+    ].join("\n");
+  }
+  if (!strategy.delegationEnabled || !strategy.delegationRequestedByUser || delegationIntent?.preference === "none") {
+    return undefined;
+  }
+  if (delegationIntent?.preference === "allow" || strategy.delegation === "allowed") {
     return [
       "Delegation guidance for this turn:",
       "- The user explicitly allowed sub-agent help for this turn.",
       "- You may use agent.spawn if delegation would materially improve the outcome.",
-      `- Reason: ${delegationIntent.reason}`,
+      ...(delegationIntent?.reason ? [`- Reason: ${delegationIntent.reason}`] : []),
     ].join("\n");
   }
   return [
@@ -1331,7 +1351,7 @@ export function buildDelegationGuidance(
     "- The user explicitly requested team-style collaboration or sub-agent coordination for this turn.",
     "- Even in single-agent mode, treat this as explicit permission to delegate.",
     "- If the work can be split into substantial, self-contained subtasks, prefer using agent.spawn instead of doing everything locally.",
-    `- Reason: ${delegationIntent.reason}`,
+    ...(delegationIntent?.reason ? [`- Reason: ${delegationIntent.reason}`] : []),
   ].join("\n");
 }
 
@@ -2176,9 +2196,9 @@ export async function executeRuntimeKernel(
   const mergedMemoryContext = [memoryContext, taskMemoryOverlay]
     .filter((s): s is string => typeof s === "string" && s.length > 0)
     .join("\n\n") || undefined;
-  const taskIntentContext = (() => {
+  const taskIntentContextForAgent = (agentId: string) => {
     const taskIntent = config.metadata.taskIntent as TaskIntent | undefined;
-    const delegationContext = buildDelegationGuidance(delegationIntentFromMetadata(config.metadata));
+    const delegationContext = buildDelegationGuidance(config, agentId);
     switch (taskIntent) {
       case "chat":
         return [
@@ -2229,7 +2249,7 @@ export async function executeRuntimeKernel(
       default:
         return delegationContext;
     }
-  })();
+  };
   const systemPrompt = (extra: string) => extra.trim();
 
   const withAgentRuntimeContext = (
@@ -2266,7 +2286,7 @@ export async function executeRuntimeKernel(
       turnLocalMetadataGuidance,
       temporalContext,
       memoryContext: mergedMemoryContext,
-      taskIntentContext,
+      taskIntentContext: taskIntentContextForAgent(params.agentId),
       availableSkills,
       toolProtocol: toolPrompt,
       skillSnippets: snippets,
