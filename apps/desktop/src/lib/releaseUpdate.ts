@@ -1,5 +1,3 @@
-import desktopPackage from "../../package.json";
-
 const ORA_LATEST_RELEASE_URL = "https://api.github.com/repos/cemeworm/Ora/releases/latest";
 
 export type ReleaseUpdateStatus = {
@@ -14,57 +12,86 @@ type ReleaseFetch = (input: string, init?: RequestInit) => Promise<{
   json: () => Promise<unknown>;
 }>;
 
+type UpdaterCheck = () => Promise<{
+  version: string;
+} | null>;
+
+type ReleasePageInfo = {
+  latestVersion?: string;
+  releaseUrl?: string;
+  error?: string;
+};
+
 export async function checkOraReleaseUpdate(
+  checkImpl: UpdaterCheck,
   fetchImpl: ReleaseFetch = fetch,
-  currentVersion = desktopPackage.version,
 ): Promise<ReleaseUpdateStatus> {
+  const [releaseInfo, updateResult] = await Promise.allSettled([
+    fetchOraReleasePageInfo(fetchImpl),
+    checkImpl(),
+  ]);
+
+  const resolvedReleaseInfo = releaseInfo.status === "fulfilled"
+    ? releaseInfo.value
+    : {
+        error: releaseInfo.reason instanceof Error
+          ? releaseInfo.reason.message
+          : "GitHub release check failed.",
+      };
+
+  if (updateResult.status === "fulfilled") {
+    const update = updateResult.value;
+    if (!update) {
+      return {
+        available: false,
+        latestVersion: resolvedReleaseInfo.latestVersion,
+        releaseUrl: resolvedReleaseInfo.releaseUrl,
+        error: resolvedReleaseInfo.error,
+      };
+    }
+
+    return {
+      available: true,
+      latestVersion: update.version,
+      releaseUrl: resolvedReleaseInfo.releaseUrl,
+      error: resolvedReleaseInfo.error,
+    };
+  }
+
+  return {
+    available: false,
+    latestVersion: resolvedReleaseInfo.latestVersion,
+    releaseUrl: resolvedReleaseInfo.releaseUrl,
+    error: updateResult.reason instanceof Error
+      ? updateResult.reason.message
+      : "Ora updater check failed.",
+  };
+}
+
+async function fetchOraReleasePageInfo(
+  fetchImpl: ReleaseFetch = fetch,
+): Promise<ReleasePageInfo> {
   try {
     const response = await fetchImpl(ORA_LATEST_RELEASE_URL, {
       headers: { Accept: "application/vnd.github+json" },
     });
     if (!response.ok) {
-      return { available: false, error: "GitHub release check failed." };
+      return { error: "GitHub release check failed." };
     }
 
     const payload = await response.json();
     if (!isRecord(payload)) {
-      return { available: false, error: "GitHub release response was malformed." };
+      return { error: "GitHub release response was malformed." };
     }
 
     const latestVersion = stringValue(payload.tag_name);
     const releaseUrl = stringValue(payload.html_url);
-    if (!latestVersion || !releaseUrl || !isReleaseNewer(latestVersion, currentVersion)) {
-      return { available: false, latestVersion, releaseUrl };
-    }
-
-    return { available: true, latestVersion, releaseUrl };
+    return { latestVersion, releaseUrl };
   } catch (error) {
     return {
-      available: false,
       error: error instanceof Error ? error.message : "GitHub release check failed.",
     };
   }
-}
-
-export function isReleaseNewer(latestVersion: string, currentVersion: string): boolean {
-  const latest = parseReleaseVersion(latestVersion);
-  const current = parseReleaseVersion(currentVersion);
-  if (!latest || !current) return false;
-
-  const length = Math.max(latest.length, current.length);
-  for (let index = 0; index < length; index += 1) {
-    const latestPart = latest[index] ?? 0;
-    const currentPart = current[index] ?? 0;
-    if (latestPart > currentPart) return true;
-    if (latestPart < currentPart) return false;
-  }
-  return false;
-}
-
-function parseReleaseVersion(value: string): number[] | undefined {
-  const match = value.trim().match(/^v?(\d+(?:\.\d+){0,2})(?:[-+].*)?$/i);
-  if (!match) return undefined;
-  return match[1].split(".").map((part) => Number(part));
 }
 
 function stringValue(value: unknown): string | undefined {
