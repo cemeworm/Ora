@@ -31,6 +31,8 @@ interface ChatMessagesProps {
 
 export const CHAT_SURFACE_WIDTH_CLASS =
   "w-full max-w-[88rem] pl-4 pr-4 md:pl-6 md:pr-6 xl:pl-8 xl:pr-8";
+export const CHAT_MESSAGES_SCROLL_CLASS =
+  "h-full min-h-0 w-full flex-1 overflow-x-hidden overflow-y-auto overscroll-contain lg:-mr-4 lg:pr-4 xl:-mr-6 xl:pr-6";
 
 export function messageBottomPaddingPx({
   hasTray,
@@ -93,7 +95,7 @@ export function ChatMessages({
     <div
       ref={scrollRef}
       onScroll={handleScroll}
-      className="h-full min-h-0 w-full flex-1 overflow-x-hidden overflow-y-auto overscroll-contain"
+      className={CHAT_MESSAGES_SCROLL_CLASS}
     >
       <Conversation className="min-h-0 flex-1">
         <ConversationContent

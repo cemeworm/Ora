@@ -1,13 +1,22 @@
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import {
+  canUseDesktopOverlayRail,
   CHAT_VIEW_COLLABORATION_SHIFT_CLASS,
+  CHAT_VIEW_COLLABORATION_DETAIL_CLASS,
+  CHAT_VIEW_COLLABORATION_ITEM_CLASS,
+  CHAT_VIEW_COLLABORATION_PANEL_CLASS,
   CHAT_VIEW_CONTENT_ROW_CLASS,
+  CHAT_VIEW_DESKTOP_OVERLAY_MIN_CONTENT_ROW_WIDTH,
   CHAT_VIEW_DESKTOP_OVERLAY_RAIL_CLASS,
   CHAT_VIEW_DESKTOP_OVERLAY_STACK_CLASS,
   CHAT_VIEW_MAIN_CLASS,
   CHAT_VIEW_MESSAGES_PANEL_CLASS,
   CHAT_VIEW_ROOT_CLASS,
   CHAT_VIEW_STABLE_CONTENT_WIDTH_CLASS,
+  collaborationStatusBadgeClassName,
+  DesktopOverlayRail,
   deriveChildReplaySelection,
   deriveChatSurfaceContentWidthClassName,
   deriveChatSurfaceShiftClassName,
@@ -25,6 +34,12 @@ import {
   shouldShowDesktopOverlayRail,
   toggleExpandedOverlayChildId,
 } from "./ChatView";
+import {
+  FLOATING_OVERLAY_BADGE_BASE_CLASS,
+  FLOATING_OVERLAY_CARD_CLASS,
+  FLOATING_OVERLAY_DETAIL_CLASS,
+  FLOATING_OVERLAY_PANEL_CLASS,
+} from "./PlanStepsTray";
 
 describe("chat view provider selection", () => {
   it("uses the selected provider when it is available", () => {
@@ -318,20 +333,20 @@ describe("chat view plan steps presentation", () => {
     { step: "整理结果", status: "pending" },
   ] as const;
 
-  it("keeps plan steps inline on small viewports", () => {
+  it("keeps plan steps inline when the desktop overlay rail is unavailable", () => {
     expect(derivePlanStepsPresentation({
       planSteps: [...plan],
-      isDesktopViewport: false,
+      canUseDesktopOverlayRail: false,
     })).toEqual({
       inlinePlanSteps: [...plan],
       floatingPlanSteps: [],
     });
   });
 
-  it("moves plan steps into the floating rail on desktop viewports", () => {
+  it("moves plan steps into the floating rail when enough space is available", () => {
     expect(derivePlanStepsPresentation({
       planSteps: [...plan],
-      isDesktopViewport: true,
+      canUseDesktopOverlayRail: true,
     })).toEqual({
       inlinePlanSteps: [],
       floatingPlanSteps: [...plan],
@@ -396,6 +411,27 @@ describe("chat view collaboration panel replay selection", () => {
 });
 
 describe("chat view collaboration overlay visibility", () => {
+  it("does not allow the desktop overlay rail before the content row is measured", () => {
+    expect(canUseDesktopOverlayRail({
+      isDesktopViewport: true,
+      contentRowWidth: null,
+    })).toBe(false);
+  });
+
+  it("hides the desktop overlay rail when the content row is too narrow", () => {
+    expect(canUseDesktopOverlayRail({
+      isDesktopViewport: true,
+      contentRowWidth: CHAT_VIEW_DESKTOP_OVERLAY_MIN_CONTENT_ROW_WIDTH - 1,
+    })).toBe(false);
+  });
+
+  it("shows the desktop overlay rail once the content row reaches the safe width", () => {
+    expect(canUseDesktopOverlayRail({
+      isDesktopViewport: true,
+      contentRowWidth: CHAT_VIEW_DESKTOP_OVERLAY_MIN_CONTENT_ROW_WIDTH,
+    })).toBe(true);
+  });
+
   it("shows only queued and running child sessions in the floating overlay", () => {
     expect(deriveVisibleCollaborationChildren({
       childSessions: [
@@ -439,6 +475,7 @@ describe("chat view collaboration overlay visibility", () => {
     expect(shouldShowDesktopOverlayRail({
       hasCollaborationOverlay: false,
       hasFloatingPlanSteps: true,
+      canUseDesktopOverlayRail: true,
     })).toBe(true);
   });
 
@@ -446,6 +483,15 @@ describe("chat view collaboration overlay visibility", () => {
     expect(shouldShowDesktopOverlayRail({
       hasCollaborationOverlay: false,
       hasFloatingPlanSteps: false,
+      canUseDesktopOverlayRail: true,
+    })).toBe(false);
+  });
+
+  it("keeps the desktop overlay rail hidden when space is insufficient even if content exists", () => {
+    expect(shouldShowDesktopOverlayRail({
+      hasCollaborationOverlay: true,
+      hasFloatingPlanSteps: true,
+      canUseDesktopOverlayRail: false,
     })).toBe(false);
   });
 
@@ -490,7 +536,69 @@ describe("chat view collaboration overlay visibility", () => {
     expect(CHAT_VIEW_DESKTOP_OVERLAY_STACK_CLASS).toContain("pointer-events-auto");
     expect(CHAT_VIEW_DESKTOP_OVERLAY_STACK_CLASS).toContain("flex");
     expect(CHAT_VIEW_DESKTOP_OVERLAY_STACK_CLASS).toContain("gap-3");
-    expect(CHAT_VIEW_DESKTOP_OVERLAY_STACK_CLASS).toContain("w-[min(24rem,calc(100vw-6rem))]");
+    expect(CHAT_VIEW_DESKTOP_OVERLAY_STACK_CLASS).toContain("w-[min(21.5rem,calc(100vw-6rem))]");
+  });
+
+  it("reuses the plan tray floating shell for the collaboration panel surfaces", () => {
+    expect(CHAT_VIEW_COLLABORATION_PANEL_CLASS).toBe(FLOATING_OVERLAY_PANEL_CLASS);
+    expect(CHAT_VIEW_COLLABORATION_ITEM_CLASS).toBe(FLOATING_OVERLAY_CARD_CLASS);
+    expect(CHAT_VIEW_COLLABORATION_DETAIL_CLASS).toBe(FLOATING_OVERLAY_DETAIL_CLASS);
+    expect(CHAT_VIEW_COLLABORATION_ITEM_CLASS).not.toContain("bg-card/80");
+    expect(CHAT_VIEW_COLLABORATION_DETAIL_CLASS).toContain("overflow-y-auto");
+    expect(CHAT_VIEW_COLLABORATION_DETAIL_CLASS).toContain("max-h-[min(72vh,42rem)]");
+  });
+
+  it("renders the collaboration panel with the shared floating shell and softened child cards", () => {
+    const html = renderToStaticMarkup(
+      createElement(DesktopOverlayRail, {
+        childSessions: [childSession("running-child", "running")],
+        planSteps: [{ step: "整理结果", status: "pending" }],
+        turnSnapshots: {},
+      }),
+    );
+
+    expect(html).toContain(CHAT_VIEW_COLLABORATION_PANEL_CLASS);
+    expect(html).toContain(CHAT_VIEW_COLLABORATION_ITEM_CLASS);
+    expect(html).toContain("子代理协作中");
+    expect(html).toContain("执行中");
+  });
+
+  it("shows a shorter in-progress badge once a running child already has substantial content", () => {
+    const html = renderToStaticMarkup(
+      createElement(DesktopOverlayRail, {
+        childSessions: [{
+          ...childSession("run-parent-1:ora-sub-1", "running"),
+          agentId: "ora-sub-1",
+          label: "Research subagent",
+          summary: "后台子 Agent 正在执行任务。",
+          sourceRunId: "run-parent-1",
+          replayRef: {
+            kind: "event_range",
+            runId: "run-parent-1",
+            fromSeq: 0,
+            toSeq: 0,
+          },
+        }],
+        planSteps: [],
+        turnSnapshots: {
+          "run-parent-1": parentOverlaySnapshot(),
+        },
+      }),
+    );
+
+    expect(html).toContain("完善中");
+    expect(html).not.toContain("执行中");
+  });
+
+  it("keeps collaboration status badges on muted surfaces instead of bright white pills", () => {
+    expect(collaborationStatusBadgeClassName("queued")).toContain(
+      FLOATING_OVERLAY_BADGE_BASE_CLASS,
+    );
+    expect(collaborationStatusBadgeClassName("queued")).toContain("bg-muted/65");
+    expect(collaborationStatusBadgeClassName("running")).toContain("bg-accent/80");
+    expect(
+      collaborationStatusBadgeClassName("succeeded", "awaiting_pickup"),
+    ).toContain("bg-emerald-50/70");
   });
 
   it("toggles overlay child expansion as a single-open accordion", () => {
@@ -538,6 +646,75 @@ describe("chat view collaboration overlay visibility", () => {
         ? firstTimelineItem.summary
         : "",
     ).toContain("AssistantTurnCard.tsx");
+  });
+
+  it("extends active child replay beyond a stale persisted toSeq when newer child events exist", () => {
+    const turnView = deriveOverlayChildTurnView({
+      ...childSession("run-parent-1:ora-sub-1", "running"),
+      agentId: "ora-sub-1",
+      label: "Research subagent",
+      summary: "后台子 Agent 正在执行任务。",
+      sourceRunId: "run-parent-1",
+      replayRef: {
+        kind: "event_range",
+        runId: "run-parent-1",
+        fromSeq: 0,
+        toSeq: 0,
+      },
+    } as any, {
+      "run-parent-1": parentOverlaySnapshot(),
+    });
+
+    expect(turnView?.content).toBe("子代理最终结论。");
+  });
+
+  it("renders collapsed child cards with live child content instead of stale generic summaries", () => {
+    const html = renderToStaticMarkup(
+      createElement(DesktopOverlayRail, {
+        childSessions: [{
+          ...childSession("run-parent-1:ora-sub-1", "running"),
+          agentId: "ora-sub-1",
+          label: "Research subagent",
+          summary: "后台子 Agent 正在执行任务。",
+          sourceRunId: "run-parent-1",
+          replayRef: {
+            kind: "event_range",
+            runId: "run-parent-1",
+            fromSeq: 0,
+            toSeq: 0,
+          },
+        }],
+        planSteps: [],
+        turnSnapshots: {
+          "run-parent-1": parentOverlaySnapshot(),
+        },
+      }),
+    );
+
+    expect(html).toContain("子代理最终结论。");
+    expect(html).not.toContain("后台子 Agent 正在执行任务。");
+  });
+
+  it("clips very long collapsed child summaries so the header does not become the full transcript", () => {
+    const longSummary = "很长的子代理摘要".repeat(80);
+    const html = renderToStaticMarkup(
+      createElement(DesktopOverlayRail, {
+        childSessions: [{
+          ...childSession("run-parent-1:ora-sub-1", "running"),
+          agentId: "ora-sub-1",
+          label: "Research subagent",
+          summary: longSummary,
+          sourceRunId: "run-parent-1",
+        }],
+        planSteps: [],
+        turnSnapshots: {},
+      }),
+    );
+
+    expect(html).toContain("Research subagent");
+    expect(html).toContain("…");
+    expect(html).not.toContain(longSummary);
+    expect(html).toContain("grid-cols-[minmax(0,1fr)_auto]");
   });
 
   it("does not return the raw parent snapshot when sourceRunId points at the parent run", () => {

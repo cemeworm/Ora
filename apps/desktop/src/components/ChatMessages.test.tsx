@@ -1,7 +1,11 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { SINGLE_AGENT_MODE_ID } from "@cemeworm/shared";
-import { ChatMessages, messageBottomPaddingPx } from "./ChatMessages";
+import {
+  ChatMessages,
+  CHAT_MESSAGES_SCROLL_CLASS,
+  messageBottomPaddingPx,
+} from "./ChatMessages";
 import { adaptRenderableChatMessages } from "../lib/viewModel";
 import { getPendingRunState, initialWorkbenchState, workbenchReducer, type WorkbenchState } from "../lib/state";
 import type { OraSessionBranchGroup, OraStateSnapshot } from "../lib/runtimeClient";
@@ -31,7 +35,7 @@ describe("ChatMessages bottom inset", () => {
   it("keeps the message list as the only scroll container", () => {
     const html = renderToStaticMarkup(<ChatMessages chatMessages={[]} />);
 
-    expect(html).toContain("h-full min-h-0 w-full flex-1 overflow-x-hidden overflow-y-auto overscroll-contain");
+    expect(html).toContain(CHAT_MESSAGES_SCROLL_CLASS);
     expect(html).not.toContain("relative flex flex-1 flex-col overflow-y-auto");
   });
 

@@ -1,7 +1,15 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { nextPlanTrayOpenState, PlanStepsTray, planStepsTrayRootClassName } from "./PlanStepsTray";
+import {
+  FLOATING_OVERLAY_PANEL_CLASS,
+  nextPlanTrayOpenState,
+  PLAN_STEPS_TRAY_HEADER_CHEVRON_CLASS,
+  PLAN_STEPS_TRAY_HEADER_SUMMARY_CLASS,
+  PLAN_STEPS_TRAY_HEADER_TITLE_ROW_CLASS,
+  PlanStepsTray,
+  planStepsTrayRootClassName,
+} from "./PlanStepsTray";
 import type { TurnPlanListStep } from "../types";
 
 describe("plan steps tray open state", () => {
@@ -46,6 +54,7 @@ describe("plan steps tray open state", () => {
   });
 
   it("uses a distinct floating shell class for the right overlay variant", () => {
+    expect(planStepsTrayRootClassName("floating")).toBe(FLOATING_OVERLAY_PANEL_CLASS);
     expect(planStepsTrayRootClassName("floating")).toContain("rounded-3xl");
     expect(planStepsTrayRootClassName("floating")).toContain("shadow-lift");
     expect(planStepsTrayRootClassName("inline")).toContain("mb-2");
@@ -61,6 +70,30 @@ describe("plan steps tray open state", () => {
 
     expect(html).toContain("rounded-3xl");
     expect(html).not.toContain("mb-2");
+  });
+
+  it("keeps the header summary constrained to a single truncated line", () => {
+    const html = renderToStaticMarkup(
+      createElement(PlanStepsTray, {
+        variant: "floating",
+        planSteps: [
+          {
+            step: "更新 AI Agent 主题页：添加 source 引用和最新进展，确保超长摘要不会把头部撑成两行",
+            status: "in_progress",
+          },
+          {
+            step: "补充 ingest log 记录",
+            status: "pending",
+          },
+        ],
+      }),
+    );
+
+    expect(html).toContain(PLAN_STEPS_TRAY_HEADER_TITLE_ROW_CLASS);
+    expect(html).toContain(PLAN_STEPS_TRAY_HEADER_SUMMARY_CLASS);
+    expect(html).toContain(PLAN_STEPS_TRAY_HEADER_CHEVRON_CLASS);
+    expect(html).toContain("whitespace-nowrap");
+    expect(html).toContain("truncate");
   });
 });
 

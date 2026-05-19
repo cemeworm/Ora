@@ -5,7 +5,14 @@ import { AssistantTurnCard } from "./AssistantTurnCard";
 import { ChatHeader } from "./ChatHeader";
 import { ChatMessages } from "./ChatMessages";
 import { ChatInput } from "./ChatInput";
-import { PlanStepsTray } from "./PlanStepsTray";
+import {
+  FLOATING_OVERLAY_BADGE_BASE_CLASS,
+  FLOATING_OVERLAY_CARD_CLASS,
+  FLOATING_OVERLAY_DETAIL_CLASS,
+  FLOATING_OVERLAY_ICON_PLATE_CLASS,
+  FLOATING_OVERLAY_PANEL_CLASS,
+  PlanStepsTray,
+} from "./PlanStepsTray";
 import { Button } from "./ui/button";
 import { Select } from "./ui/select";
 import { cn } from "../lib/utils";
@@ -44,7 +51,16 @@ export const CHAT_VIEW_COLLABORATION_SHIFT_CLASS = "lg:-translate-x-8";
 export const CHAT_VIEW_DESKTOP_OVERLAY_RAIL_CLASS =
   "pointer-events-none absolute right-4 top-3 z-20 hidden lg:block xl:right-6 xl:top-4";
 export const CHAT_VIEW_DESKTOP_OVERLAY_STACK_CLASS =
-  "pointer-events-auto flex w-[min(24rem,calc(100vw-6rem))] flex-col gap-3";
+  "pointer-events-auto flex w-[min(21.5rem,calc(100vw-6rem))] flex-col gap-3";
+export const CHAT_VIEW_COLLABORATION_PANEL_CLASS = FLOATING_OVERLAY_PANEL_CLASS;
+export const CHAT_VIEW_COLLABORATION_ICON_PLATE_CLASS = cn(
+  FLOATING_OVERLAY_ICON_PLATE_CLASS,
+  "bg-muted/40",
+);
+export const CHAT_VIEW_COLLABORATION_ITEM_CLASS = FLOATING_OVERLAY_CARD_CLASS;
+export const CHAT_VIEW_COLLABORATION_DETAIL_CLASS = FLOATING_OVERLAY_DETAIL_CLASS;
+export const CHAT_VIEW_DESKTOP_OVERLAY_MIN_CONTENT_ROW_WIDTH = 1272;
+const OVERLAY_CHILD_CARD_SUMMARY_MAX_CHARS = 280;
 const DESKTOP_FLOATING_OVERLAY_MEDIA_QUERY = "(min-width: 1024px)";
 
 function matchesDesktopFloatingOverlayViewport() {
@@ -234,7 +250,10 @@ export function deriveChildReplaySelection({
   if (!snapshot || !replayRef || replayRef.runId !== snapshot.runId) {
     return undefined;
   }
-  const preferredSeqs = [replayRef.fromSeq, replayRef.toSeq]
+  const preferredSeqs = [
+    replayRef.fromSeq,
+    deriveOverlayReplayUpperBound(snapshot, child, replayRef),
+  ]
     .filter((seq): seq is number => typeof seq === "number");
   const beatId = preferredSeqs
     .map((seq) => snapshot.events.find((event) => event.seq === seq)?.id)
@@ -284,6 +303,14 @@ export function deriveOverlayChildTurnView(
   return snapshot ? derivePresentedAssistantTurnFromSnapshot(snapshot) : undefined;
 }
 
+function isOverlayChildActive(
+  child: NonNullable<OraStateSnapshot["childSessions"]>[number],
+): boolean {
+  return child.status === "queued" ||
+    child.status === "running" ||
+    child.deliveryStatus === "awaiting_pickup";
+}
+
 function deriveOverlayReplayChildSnapshot(
   child: NonNullable<OraStateSnapshot["childSessions"]>[number],
   turnSnapshots: Record<string, OraStateSnapshot | undefined>,
@@ -314,9 +341,7 @@ function deriveOverlayChildSnapshotFromParentReplay({
     return undefined;
   }
   const fromSeq = typeof replayRef.fromSeq === "number" ? replayRef.fromSeq : 0;
-  const toSeq = typeof replayRef.toSeq === "number"
-    ? replayRef.toSeq
-    : Number.MAX_SAFE_INTEGER;
+  const toSeq = deriveOverlayReplayUpperBound(parentSnapshot, child, replayRef);
   const childEvents = parentSnapshot.events
     .filter((event) =>
       event.runId === parentSnapshot.runId &&
@@ -370,6 +395,43 @@ function deriveOverlayChildSnapshotFromParentReplay({
     output: fallbackOutputText ? { text: fallbackOutputText } : undefined,
     updatedAt: child.updatedAt,
   };
+}
+
+function deriveOverlayReplayUpperBound(
+  parentSnapshot: OraStateSnapshot,
+  child: NonNullable<OraStateSnapshot["childSessions"]>[number],
+  replayRef: NonNullable<NonNullable<OraStateSnapshot["childSessions"]>[number]["replayRef"]>,
+): number {
+  const persistedToSeq = typeof replayRef.toSeq === "number"
+    ? replayRef.toSeq
+    : Number.MAX_SAFE_INTEGER;
+  if (!isOverlayChildActive(child)) {
+    return persistedToSeq;
+  }
+  const liveToSeq = latestOverlayReplayChildEventSeq(parentSnapshot, child);
+  if (liveToSeq === undefined) {
+    return persistedToSeq;
+  }
+  return persistedToSeq === Number.MAX_SAFE_INTEGER
+    ? liveToSeq
+    : Math.max(persistedToSeq, liveToSeq);
+}
+
+function latestOverlayReplayChildEventSeq(
+  parentSnapshot: OraStateSnapshot,
+  child: NonNullable<OraStateSnapshot["childSessions"]>[number],
+): number | undefined {
+  let latestSeq: number | undefined;
+  for (const event of parentSnapshot.events) {
+    if (event.runId !== parentSnapshot.runId) {
+      continue;
+    }
+    if (!isOverlayReplayChildEvent(event, child)) {
+      continue;
+    }
+    latestSeq = event.seq;
+  }
+  return latestSeq;
 }
 
 function isOverlayReplayChildEvent(
@@ -485,7 +547,10 @@ function deriveOverlayReplayFallbackOutput({
   if (hasAssistantDelta) {
     return undefined;
   }
-  return child.lastMessage?.trim() || child.summary?.trim() || undefined;
+  return bestAvailableOverlayChildSummaryText([
+    child.lastMessage,
+    child.summary,
+  ]);
 }
 
 function deriveOverlayReplayProfiles(
@@ -526,12 +591,81 @@ function isRecord(value: unknown): value is Record<string, any> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function deriveOverlayChildCardSummaryText({
+  child,
+  childTurnView,
+}: {
+  child: NonNullable<OraStateSnapshot["childSessions"]>[number];
+  childTurnView?: ReturnType<typeof derivePresentedAssistantTurnFromSnapshot>;
+}): string {
+  const liveContent = normalizeOverlayChildSummaryText(childTurnView?.content);
+  if (liveContent && isUsefulOverlayChildSummaryText(liveContent)) {
+    return liveContent;
+  }
+  return bestAvailableOverlayChildSummaryText([
+    child.lastMessage,
+    child.summary,
+  ]) ?? "正在等待子代理返回最新进展。";
+}
+
+function bestAvailableOverlayChildSummaryText(
+  values: Array<string | undefined>,
+): string | undefined {
+  const normalizedValues = values
+    .map((value) => normalizeOverlayChildSummaryText(value))
+    .filter((value): value is string => value !== undefined);
+  const preferred = normalizedValues.find((value) =>
+    isUsefulOverlayChildSummaryText(value)
+  );
+  return preferred ?? normalizedValues[0];
+}
+
+function normalizeOverlayChildSummaryText(text: string | undefined): string | undefined {
+  if (!text) {
+    return undefined;
+  }
+  const normalized = clipOverlayChildSummaryText(
+    text.replace(/\s+/g, " ").trim(),
+  );
+  if (!normalized || isInternalOverlayChildSummaryText(normalized)) {
+    return undefined;
+  }
+  return normalized;
+}
+
+function clipOverlayChildSummaryText(text: string): string {
+  if (text.length <= OVERLAY_CHILD_CARD_SUMMARY_MAX_CHARS) {
+    return text;
+  }
+  return `${text.slice(0, OVERLAY_CHILD_CARD_SUMMARY_MAX_CHARS - 1).trimEnd()}…`;
+}
+
+function isUsefulOverlayChildSummaryText(text: string): boolean {
+  if (isGenericOverlayChildSummaryText(text)) {
+    return false;
+  }
+  return text.replace(/[#>*`\-\s]/g, "").length >= 6;
+}
+
+function isInternalOverlayChildSummaryText(text: string): boolean {
+  return text.startsWith("[tool-error-boundary]") ||
+    text.startsWith("[recovery:fallback]");
+}
+
+function isGenericOverlayChildSummaryText(text: string): boolean {
+  return text === "后台子 Agent 正在执行任务。" ||
+    text === "子 Agent 正在执行任务。" ||
+    text === "已进入后台协作队列。" ||
+    text === "后台子 Agent 已完成。" ||
+    text === "子 Agent 已完成。";
+}
+
 export function derivePlanStepsPresentation({
   planSteps,
-  isDesktopViewport,
+  canUseDesktopOverlayRail,
 }: {
   planSteps: TurnPlanListStep[];
-  isDesktopViewport: boolean;
+  canUseDesktopOverlayRail: boolean;
 }) {
   if (planSteps.length === 0) {
     return {
@@ -539,7 +673,7 @@ export function derivePlanStepsPresentation({
       floatingPlanSteps: [] as TurnPlanListStep[],
     };
   }
-  return isDesktopViewport
+  return canUseDesktopOverlayRail
     ? {
         inlinePlanSteps: [] as TurnPlanListStep[],
         floatingPlanSteps: planSteps,
@@ -550,14 +684,29 @@ export function derivePlanStepsPresentation({
       };
 }
 
+export function canUseDesktopOverlayRail({
+  isDesktopViewport,
+  contentRowWidth,
+}: {
+  isDesktopViewport: boolean;
+  contentRowWidth: number | null;
+}) {
+  return isDesktopViewport &&
+    typeof contentRowWidth === "number" &&
+    contentRowWidth >= CHAT_VIEW_DESKTOP_OVERLAY_MIN_CONTENT_ROW_WIDTH;
+}
+
 export function shouldShowDesktopOverlayRail({
   hasCollaborationOverlay,
   hasFloatingPlanSteps,
+  canUseDesktopOverlayRail,
 }: {
   hasCollaborationOverlay: boolean;
   hasFloatingPlanSteps: boolean;
+  canUseDesktopOverlayRail: boolean;
 }) {
-  return hasCollaborationOverlay || hasFloatingPlanSteps;
+  return canUseDesktopOverlayRail &&
+    (hasCollaborationOverlay || hasFloatingPlanSteps);
 }
 
 export function deriveChatSurfaceContentWidthClassName(
@@ -606,6 +755,7 @@ export function ChatView({
   onSelectModeSelection,
 }: ChatViewProps) {
   const { state, dispatch } = useWorkbench();
+  const [contentRowElement, setContentRowElement] = useState<HTMLDivElement | null>(null);
   const showWelcome = chatMessages.length === 0 && !runInteractionState.isProcessing;
   const allProviders = state.providerRegistry?.providers ?? [];
   const providerOptions = runnableProviderOptions(allProviders, state.providerSecretStatuses);
@@ -646,6 +796,7 @@ export function ChatView({
   const [isDesktopViewport, setIsDesktopViewport] = useState(
     matchesDesktopFloatingOverlayViewport,
   );
+  const [contentRowWidth, setContentRowWidth] = useState<number | null>(null);
   const handleOverlayHeightChange = useCallback((height: number) => {
     setComposerOverlayHeight((current) => current === height ? current : height);
   }, []);
@@ -668,7 +819,44 @@ export function ChatView({
     return () => mediaQuery.removeListener(handleChange);
   }, []);
 
+  useEffect(() => {
+    if (!contentRowElement) {
+      setContentRowWidth(null);
+      return;
+    }
+
+    const reportWidth = () => {
+      const nextWidth = Math.ceil(contentRowElement.getBoundingClientRect().width);
+      setContentRowWidth((current) => current === nextWidth ? current : nextWidth);
+    };
+
+    reportWidth();
+
+    if (typeof ResizeObserver === "undefined") {
+      return;
+    }
+
+    const observer = new ResizeObserver((entries) => {
+      const nextWidth = entries[0]?.contentRect.width;
+      if (typeof nextWidth === "number") {
+        const normalizedWidth = Math.ceil(nextWidth);
+        setContentRowWidth((current) =>
+          current === normalizedWidth ? current : normalizedWidth
+        );
+      }
+    });
+    observer.observe(contentRowElement);
+    return () => observer.disconnect();
+  }, [contentRowElement]);
+
   const gateKind = runInteractionState.gateKind;
+  const canShowDesktopOverlayRail = useMemo(
+    () => canUseDesktopOverlayRail({
+      isDesktopViewport,
+      contentRowWidth,
+    }),
+    [contentRowWidth, isDesktopViewport],
+  );
   const currentPlanSteps = useMemo<TurnPlanListStep[]>(
     () => deriveCurrentComposerPlanSteps({
       activeSnapshot: composerGateSnapshot,
@@ -687,16 +875,17 @@ export function ChatView({
   const { inlinePlanSteps, floatingPlanSteps } = useMemo(
     () => derivePlanStepsPresentation({
       planSteps: currentPlanSteps,
-      isDesktopViewport,
+      canUseDesktopOverlayRail: canShowDesktopOverlayRail,
     }),
-    [currentPlanSteps, isDesktopViewport],
+    [canShowDesktopOverlayRail, currentPlanSteps],
   );
   const showDesktopOverlayRail = useMemo(
     () => shouldShowDesktopOverlayRail({
       hasCollaborationOverlay: showCollaborationOverlay,
       hasFloatingPlanSteps: floatingPlanSteps.length > 0,
+      canUseDesktopOverlayRail: canShowDesktopOverlayRail,
     }),
-    [showCollaborationOverlay, floatingPlanSteps],
+    [canShowDesktopOverlayRail, showCollaborationOverlay, floatingPlanSteps],
   );
   const chatSurfaceContentWidthClassName = useMemo(
     () => deriveChatSurfaceContentWidthClassName(showDesktopOverlayRail),
@@ -793,7 +982,7 @@ export function ChatView({
             }}
           />
         )}
-        <div className={CHAT_VIEW_CONTENT_ROW_CLASS}>
+        <div ref={setContentRowElement} className={CHAT_VIEW_CONTENT_ROW_CLASS}>
           <div className={CHAT_VIEW_MESSAGES_PANEL_CLASS}>
             <div
               className={cn(
@@ -942,9 +1131,9 @@ export function DesktopOverlayRail({
     <div className={CHAT_VIEW_DESKTOP_OVERLAY_RAIL_CLASS}>
       <div className={CHAT_VIEW_DESKTOP_OVERLAY_STACK_CLASS}>
         {childSessions.length > 0 ? (
-          <section className="rounded-3xl border border-border/70 bg-background/92 p-3 shadow-lift backdrop-blur-md">
+          <section className={CHAT_VIEW_COLLABORATION_PANEL_CLASS}>
             <div className="flex items-center gap-2 px-1 pb-2">
-              <div className="flex h-8 w-8 items-center justify-center rounded-2xl bg-muted text-foreground">
+              <div className={CHAT_VIEW_COLLABORATION_ICON_PLATE_CLASS}>
                 <Bot className="h-4 w-4" />
               </div>
               <div className="min-w-0">
@@ -959,11 +1148,22 @@ export function DesktopOverlayRail({
             <div className="space-y-2">
               {childSessions.map((child) => {
                 const expanded = expandedChildId === child.id;
-                const childTurnView = deriveOverlayChildTurnView(child, turnSnapshots);
+                const childSnapshot = resolveOverlayChildSnapshot(child, turnSnapshots);
+                const childTurnView = childSnapshot
+                  ? derivePresentedAssistantTurnFromSnapshot(childSnapshot)
+                  : undefined;
+                const childSummaryText = deriveOverlayChildCardSummaryText({
+                  child,
+                  childTurnView,
+                });
+                const childStatusText = deriveOverlayChildStatusLabel({
+                  child,
+                  childTurnView,
+                });
                 return (
                   <section
                     key={child.id}
-                    className="rounded-2xl border border-border/70 bg-card/80 p-2.5"
+                    className={CHAT_VIEW_COLLABORATION_ITEM_CLASS}
                   >
                     <button
                       type="button"
@@ -971,19 +1171,24 @@ export function DesktopOverlayRail({
                       onClick={() => setExpandedChildId((current) =>
                         toggleExpandedOverlayChildId(current, child.id)
                       )}
-                      className="flex w-full items-start justify-between gap-3 text-left"
+                      className="grid w-full grid-cols-[minmax(0,1fr)_auto] items-start gap-3 text-left"
                     >
                       <div className="min-w-0">
                         <p className="truncate text-sm font-semibold text-foreground">
                           {child.label}
                         </p>
-                        <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
-                          {child.summary ?? child.lastMessage ?? "正在等待子代理返回最新进展。"}
+                        <p className="mt-0.5 overflow-hidden text-xs leading-5 text-muted-foreground [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:6] break-words">
+                          {childSummaryText}
                         </p>
                       </div>
-                      <div className="flex items-center gap-2">
-                        <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-foreground">
-                          {childStatusLabel(child.status, child.deliveryStatus)}
+                      <div className="flex items-center gap-2 self-start pl-2">
+                        <span
+                          className={collaborationStatusBadgeClassName(
+                            child.status,
+                            child.deliveryStatus,
+                          )}
+                        >
+                          {childStatusText}
                         </span>
                         <ChevronDown
                           className={cn(
@@ -994,7 +1199,7 @@ export function DesktopOverlayRail({
                       </div>
                     </button>
                     {expanded ? (
-                      <div className="mt-2 rounded-[1rem] border border-border/70 bg-background/82 p-2 max-h-[min(72vh,42rem)] overflow-y-auto overscroll-contain">
+                      <div className={CHAT_VIEW_COLLABORATION_DETAIL_CLASS}>
                         {childTurnView ? (
                           <AssistantTurnCard
                             content={childTurnView.content}
@@ -1029,18 +1234,23 @@ export function DesktopOverlayRail({
   );
 }
 
-function childStatusLabel(
-  status: NonNullable<OraStateSnapshot["childSessions"]>[number]["status"],
-  deliveryStatus?: NonNullable<OraStateSnapshot["childSessions"]>[number]["deliveryStatus"],
-): string {
-  if (status === "succeeded" && deliveryStatus === "awaiting_pickup") {
+function deriveOverlayChildStatusLabel({
+  child,
+  childTurnView,
+}: {
+  child: NonNullable<OraStateSnapshot["childSessions"]>[number];
+  childTurnView?: ReturnType<typeof derivePresentedAssistantTurnFromSnapshot>;
+}): string {
+  if (child.status === "succeeded" && child.deliveryStatus === "awaiting_pickup") {
     return "待接收";
   }
-  switch (status) {
+  switch (child.status) {
     case "queued":
       return "排队中";
     case "running":
-      return "执行中";
+      return overlayChildHasMeaningfulVisibleContent({ child, childTurnView })
+        ? "完善中"
+        : "执行中";
     case "succeeded":
       return "已完成";
     case "failed":
@@ -1048,7 +1258,57 @@ function childStatusLabel(
     case "cancelled":
       return "已取消";
     default:
-      return status;
+      return child.status;
+  }
+}
+
+function overlayChildHasMeaningfulVisibleContent({
+  child,
+  childTurnView,
+}: {
+  child: NonNullable<OraStateSnapshot["childSessions"]>[number];
+  childTurnView?: ReturnType<typeof derivePresentedAssistantTurnFromSnapshot>;
+}): boolean {
+  const liveContent = normalizeOverlayChildSummaryText(childTurnView?.content);
+  if (liveContent && isUsefulOverlayChildSummaryText(liveContent)) {
+    return true;
+  }
+  return [child.lastMessage, child.summary]
+    .map((value) => normalizeOverlayChildSummaryText(value))
+    .some((value) => value !== undefined && isUsefulOverlayChildSummaryText(value));
+}
+
+export function collaborationStatusBadgeClassName(
+  status: NonNullable<OraStateSnapshot["childSessions"]>[number]["status"],
+  deliveryStatus?: NonNullable<OraStateSnapshot["childSessions"]>[number]["deliveryStatus"],
+) {
+  if (status === "succeeded" && deliveryStatus === "awaiting_pickup") {
+    return cn(
+      FLOATING_OVERLAY_BADGE_BASE_CLASS,
+      "border-emerald-300/55 bg-emerald-50/70 text-emerald-700",
+    );
+  }
+  switch (status) {
+    case "running":
+      return cn(
+        FLOATING_OVERLAY_BADGE_BASE_CLASS,
+        "bg-accent/80 text-foreground",
+      );
+    case "queued":
+      return cn(
+        FLOATING_OVERLAY_BADGE_BASE_CLASS,
+        "bg-muted/65 text-muted-foreground",
+      );
+    case "failed":
+      return cn(
+        FLOATING_OVERLAY_BADGE_BASE_CLASS,
+        "border-destructive/25 bg-destructive/10 text-destructive",
+      );
+    default:
+      return cn(
+        FLOATING_OVERLAY_BADGE_BASE_CLASS,
+        "bg-muted/65 text-foreground",
+      );
   }
 }
 

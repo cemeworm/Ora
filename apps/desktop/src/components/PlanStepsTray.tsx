@@ -21,13 +21,30 @@ interface PlanStepsTrayProps {
   variant?: "inline" | "floating";
 }
 
+export const FLOATING_OVERLAY_PANEL_CLASS =
+  "rounded-3xl border border-border/70 bg-background/92 p-3 shadow-lift backdrop-blur-md";
+export const FLOATING_OVERLAY_ICON_PLATE_CLASS =
+  "flex h-8 w-8 items-center justify-center rounded-2xl bg-muted/50 text-foreground";
+export const FLOATING_OVERLAY_CARD_CLASS =
+  "rounded-2xl border border-border/70 bg-muted/30 p-2.5 backdrop-blur-sm";
+export const FLOATING_OVERLAY_DETAIL_CLASS =
+  "mt-2 max-h-[min(72vh,42rem)] overflow-y-auto rounded-[1rem] border border-border/60 bg-muted/25 p-2 overscroll-contain backdrop-blur-sm";
+export const FLOATING_OVERLAY_BADGE_BASE_CLASS =
+  "shrink-0 rounded-full border border-border/60 px-2 py-0.5 text-[11px] font-medium";
+
 export function planStepsTrayRootClassName(
   variant: "inline" | "floating",
 ) {
   return variant === "floating"
-    ? "rounded-3xl border border-border/70 bg-background/92 p-3 shadow-lift backdrop-blur-md"
+    ? FLOATING_OVERLAY_PANEL_CLASS
     : "mb-2 rounded-2xl border border-border bg-muted/40 backdrop-blur-sm";
 }
+
+export const PLAN_STEPS_TRAY_HEADER_TITLE_ROW_CLASS =
+  "flex min-w-0 flex-1 items-center gap-2 overflow-hidden";
+export const PLAN_STEPS_TRAY_HEADER_SUMMARY_CLASS =
+  "min-w-0 flex-1 truncate whitespace-nowrap text-xs text-muted-foreground";
+export const PLAN_STEPS_TRAY_HEADER_CHEVRON_CLASS = "shrink-0 transition-transform";
 
 export function PlanStepsTray({
   planSteps,
@@ -70,16 +87,16 @@ export function PlanStepsTray({
           className="w-full text-left"
         >
           <TaskListHeader>
-            <div className="flex min-w-0 items-center gap-2">
+            <div className={PLAN_STEPS_TRAY_HEADER_TITLE_ROW_CLASS}>
               <ListTodo size={14} />
-              <span className="font-medium text-foreground">{title}</span>
-              <span className="truncate text-xs text-muted-foreground">
+              <span className="shrink-0 font-medium text-foreground">{title}</span>
+              <span className={PLAN_STEPS_TRAY_HEADER_SUMMARY_CLASS}>
                 {planSummary(planSteps)}
               </span>
             </div>
             <ChevronDown
               size={14}
-              className={cn("transition-transform", open && "rotate-180")}
+              className={cn(PLAN_STEPS_TRAY_HEADER_CHEVRON_CLASS, open && "rotate-180")}
             />
           </TaskListHeader>
         </button>
