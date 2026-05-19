@@ -83,6 +83,10 @@ describe("evaluation workspace fixtures", () => {
     fs.writeFileSync(path.join(sourceRoot, "src", "sample.ts"), "export const value = 'fixture';\n", "utf8");
     fs.mkdirSync(path.join(sourceRoot, "node_modules", "left-pad"), { recursive: true });
     fs.writeFileSync(path.join(sourceRoot, "node_modules", "left-pad", "index.js"), "module.exports = 'skip';\n", "utf8");
+    fs.mkdirSync(path.join(sourceRoot, ".ora"), { recursive: true });
+    fs.writeFileSync(path.join(sourceRoot, ".ora", "state.json"), "{\"skip\":true}\n", "utf8");
+    fs.mkdirSync(path.join(sourceRoot, "apps", "desktop", "src-tauri", "target", "debug"), { recursive: true });
+    fs.writeFileSync(path.join(sourceRoot, "apps", "desktop", "src-tauri", "target", "debug", "artifact.o"), "skip\n", "utf8");
 
     const fixtureDir = path.join(root, "fixture");
     fs.mkdirSync(fixtureDir, { recursive: true });
@@ -95,7 +99,7 @@ describe("evaluation workspace fixtures", () => {
       isolation: {
         strategy: "copy",
         resetBetweenAttempts: true,
-        exclude: [".git", "node_modules"],
+        exclude: [".git", ".ora", "node_modules", "apps/desktop/src-tauri/target"],
       },
       projectWorkspace: {
         label: "Memory Eval Fixture",
@@ -151,6 +155,8 @@ describe("evaluation workspace fixtures", () => {
       expect(fs.existsSync(path.join(workspace.rootPath!, "AGENTS.md"))).toBe(true);
       expect(fs.existsSync(path.join(workspace.rootPath!, "src", "sample.ts"))).toBe(true);
       expect(fs.existsSync(path.join(workspace.rootPath!, "node_modules"))).toBe(false);
+      expect(fs.existsSync(path.join(workspace.rootPath!, ".ora"))).toBe(false);
+      expect(fs.existsSync(path.join(workspace.rootPath!, "apps", "desktop", "src-tauri", "target"))).toBe(false);
       expect(fs.existsSync(path.join(workspace.rootPath!, "attempt-marker.txt"))).toBe(false);
 
       fs.writeFileSync(

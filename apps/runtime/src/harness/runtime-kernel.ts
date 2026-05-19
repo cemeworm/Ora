@@ -40,6 +40,7 @@ import {
   ORA_ROOT_AGENT_LABEL,
   SINGLE_AGENT_MODE_ID,
   type TaskIntent,
+  delegationIntentFromMetadata,
   type PlanItem,
   type PlanListStep,
   type TodoItem,
@@ -1596,12 +1597,37 @@ export async function executeRuntimeKernel(
     .join("\n\n") || undefined;
   const taskIntentContext = (() => {
     const taskIntent = config.metadata.taskIntent as TaskIntent | undefined;
+    const delegationIntent = delegationIntentFromMetadata(config.metadata);
+    const delegationContext = (() => {
+      if (!delegationIntent || delegationIntent.preference === "none") {
+        return undefined;
+      }
+      if (delegationIntent.preference === "allow") {
+        return [
+          "Delegation guidance for this turn:",
+          "- The user explicitly allowed sub-agent help for this turn.",
+          "- You may use agent.spawn if delegation would materially improve the outcome.",
+          `- Reason: ${delegationIntent.reason}`,
+        ].join("\n");
+      }
+      return [
+        "Delegation guidance for this turn:",
+        "- The user explicitly requested team-style collaboration or sub-agent coordination for this turn.",
+        "- Even in single-agent mode, treat this as explicit permission to delegate.",
+        "- If the work can be split into substantial, self-contained subtasks, prefer using agent.spawn instead of doing everything locally.",
+        `- Reason: ${delegationIntent.reason}`,
+      ].join("\n");
+    })();
     switch (taskIntent) {
       case "chat":
-        return "你处于对话模式，不能修改任何文件。请以问答方式帮助用户，解释代码、回答问题，但不要尝试编辑或创建文件。";
+        return [
+          "你处于对话模式，不能修改任何文件。请以问答方式帮助用户，解释代码、回答问题，但不要尝试编辑或创建文件。",
+          delegationContext,
+        ].filter(Boolean).join("\n\n");
       case "plan":
         return [
           "你处于计划模式。你的目标：产出一份可直接交接给执行者实施的完整计划。不要执行任何文件修改操作。",
+          delegationContext,
           "",
           "## 停止标准",
           "计划必须「决策完备」：另一个 agent 或工程师拿到这份计划后，不需要做任何实现决策即可开始执行。",
@@ -1636,9 +1662,11 @@ export async function executeRuntimeKernel(
           "</proposed_plan>",
           "",
           "输出上述 XML 块后，立即停止——不要继续调用任何工具，不要追加解释文字。",
-        ].join("\n");
+        ].filter(Boolean).join("\n");
+      case "implement":
+        return delegationContext;
       default:
-        return undefined;
+        return delegationContext;
     }
   })();
   const systemPrompt = (extra: string) => extra.trim();

@@ -57,6 +57,7 @@
       "description": "关闭 long-term / active memory 注入，作为 A/B 基线。",
       "runConfig": {
         "pattern": "orchestrator_subagent",
+        "modeId": "code_development",
         "modeSelection": "manual",
         "providerId": "deepseek",
         "modelRef": "deepseek-v4-flash",
@@ -72,6 +73,7 @@
       "description": "保持当前 memory 主链路开启，观察长任务收益。",
       "runConfig": {
         "pattern": "orchestrator_subagent",
+        "modeId": "code_development",
         "modeSelection": "manual",
         "providerId": "deepseek",
         "modelRef": "deepseek-v4-flash",

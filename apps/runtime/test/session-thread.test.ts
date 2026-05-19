@@ -469,6 +469,28 @@ describe("session thread runtime behavior", () => {
     expect(reloaded.getSession({ sessionId: first.sessionId }).session.archivedAt).toBe(archived.archivedAt);
   });
 
+  it("archives projects by cascading to project sessions and hides them from active project lists", () => {
+    const dir = freshStoreDir();
+    const store = new LocalRunStore({ dataDir: dir, clock });
+    const project = store.createProject({ rootPath: dir, label: "alpha" });
+    const first = store.createSession({ projectId: project.projectId });
+    const second = store.createSession({ projectId: project.projectId });
+
+    const archivedProject = store.archiveProject({ projectId: project.projectId });
+    expect(archivedProject.archivedAt).toBeDefined();
+    expect(store.listProjects()).toEqual([]);
+    expect(store.listSessions({ projectId: project.projectId })).toEqual([]);
+    expect(store.getSession({ sessionId: first.sessionId }).session.archivedAt).toBe(archivedProject.archivedAt);
+    expect(store.getSession({ sessionId: second.sessionId }).session.archivedAt).toBe(archivedProject.archivedAt);
+    expect(store.getProject({ projectId: project.projectId }).project.sessionCount).toBe(0);
+
+    const reloaded = new LocalRunStore({ dataDir: dir, clock });
+    expect(reloaded.listProjects()).toEqual([]);
+    expect(reloaded.getProject({ projectId: project.projectId }).project.archivedAt).toBe(archivedProject.archivedAt);
+    expect(reloaded.getSession({ sessionId: first.sessionId }).session.archivedAt).toBe(archivedProject.archivedAt);
+    expect(reloaded.getSession({ sessionId: second.sessionId }).session.archivedAt).toBe(archivedProject.archivedAt);
+  });
+
   it("creates projects, deduplicates repeated paths, and groups project sessions", () => {
     const dir = freshStoreDir();
     const store = new LocalRunStore({ dataDir: dir, clock });
@@ -488,6 +510,21 @@ describe("session thread runtime behavior", () => {
     const reloaded = new LocalRunStore({ dataDir: dir, clock });
     expect(reloaded.listProjects()[0]?.projectId).toBe(created.projectId);
     expect(reloaded.getProject({ projectId: created.projectId }).project.sessionCount).toBe(1);
+  });
+
+  it("revives archived duplicate projects instead of returning a hidden match", () => {
+    const dir = freshStoreDir();
+    const store = new LocalRunStore({ dataDir: dir, clock });
+
+    const created = store.createProject({ rootPath: dir, label: "workspace" });
+    const archived = store.archiveProject({ projectId: created.projectId });
+    const restored = store.createProject({ rootPath: `${dir}/`, label: "workspace" });
+
+    expect(archived.archivedAt).toBeDefined();
+    expect(restored.projectId).toBe(created.projectId);
+    expect(restored.archivedAt).toBeUndefined();
+    expect(store.listProjects()).toHaveLength(1);
+    expect(store.listProjects()[0]?.projectId).toBe(created.projectId);
   });
 
   it("generates a first-turn session title from the completed conversation", async () => {

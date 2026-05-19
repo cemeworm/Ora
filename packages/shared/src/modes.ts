@@ -2115,9 +2115,9 @@ function createSingleAgentModeSpec(): ModeSpec {
     id: SINGLE_AGENT_MODE_ID,
     family: "orchestrator_subagent",
     label: "单智能体",
-    summary: "单个智能体独立制定计划并完成任务，不启用子代理。",
-    description: "当你需要一个可问责的智能体直接思考并回答时，使用最简单的执行路径。",
-    recommendedUse: "适用于简单直接的任务，无需委托额外的子代理。",
+    summary: "单个智能体默认独立制定计划并完成任务；若用户当前回合明确要求团队协作，可临时委托子代理。",
+    description: "当你需要一个可问责的智能体直接思考并回答时，使用最简单的执行路径；默认直接处理，但可在当前回合按用户要求委派。",
+    recommendedUse: "适用于简单直接的任务；默认无需委托额外子代理，但可在用户明确要求时临时协作。",
     failureMode: "单个智能体可能遗漏多智能体审查本可发现的盲点。",
     systemPreset: true,
     nodes: [
@@ -2162,7 +2162,7 @@ function createSingleAgentModeSpec(): ModeSpec {
       profile(
         ORA_ROOT_AGENT_ID,
         ORA_ROOT_AGENT_LABEL,
-        "端到端负责用户对话，包括直接的单智能体工作，不委托额外的子代理。",
+        "端到端负责用户对话，默认直接完成单智能体工作；如果用户当前回合明确要求团队协作或子智能体分工，可以临时委托额外子代理。",
         "orchestrator_subagent",
         ["session", "project"],
       ),

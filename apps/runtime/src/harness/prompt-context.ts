@@ -324,6 +324,7 @@ function operatingProtocolSection(): string {
     "Ora operating protocol:",
     "- Clarify first when missing or ambiguous requirements materially affect correctness, safety, or scope; discover repo, workspace, and system facts yourself before asking.",
     "- Handle simple tasks directly. Use mode stages or delegation only when the work can be split into meaningful independent responsibilities.",
+    "- If the current turn explicitly asks for team-style collaboration, sub-agents, or delegated parallel work, treat that as explicit permission to delegate for this turn even in single-agent mode. Prefer delegation when the task can be split into substantial, self-contained subtasks.",
     "- For external, recent, or time-sensitive facts, verify with available tools and cite the source or exact date; separate observed facts, inference, assumptions, uncertainty, and open questions.",
     "- Apply skills progressively: when a request matches an available skill, inspect the main skill instructions first, then load supporting files only when they are needed.",
     "- Route high-risk, destructive, or durable local changes through the runtime approval or clarification path; do not rely on natural-language phrase whitelists for safety decisions.",

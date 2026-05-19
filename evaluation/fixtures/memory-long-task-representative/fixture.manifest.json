@@ -8,12 +8,15 @@
     "strategy": "copy",
     "resetBetweenAttempts": true,
     "exclude": [
+      ".DS_Store",
       ".git",
+      ".ora",
       "node_modules",
       "dist",
       "build",
       "coverage",
-      ".turbo"
+      ".turbo",
+      "apps/desktop/src-tauri/target"
     ]
   },
   "projectWorkspace": {

@@ -27,6 +27,25 @@ export type ModeSelection = z.infer<typeof ModeSelectionSchema>;
 export const TaskIntentSchema = z.enum(["chat", "plan", "implement"]);
 export type TaskIntent = z.infer<typeof TaskIntentSchema>;
 
+export const DelegationIntentPreferenceSchema = z.enum(["none", "allow", "prefer"]);
+export type DelegationIntentPreference = z.infer<typeof DelegationIntentPreferenceSchema>;
+
+export const DelegationIntentSourceSchema = z.enum([
+  "explicit_team_collab",
+  "explicit_subagent_request",
+  "explicit_no_delegation",
+  "classifier",
+]);
+export type DelegationIntentSource = z.infer<typeof DelegationIntentSourceSchema>;
+
+export const DelegationIntentSchema = z.object({
+  requestedByUser: z.boolean().default(false),
+  preference: DelegationIntentPreferenceSchema.default("none"),
+  reason: z.string().min(1),
+  source: DelegationIntentSourceSchema.optional(),
+});
+export type DelegationIntent = z.infer<typeof DelegationIntentSchema>;
+
 export const ProviderPolicyStatusSchema = z.enum(["applied", "unsupported", "degraded"]);
 export type ProviderPolicyStatus = z.infer<typeof ProviderPolicyStatusSchema>;
 
@@ -331,6 +350,11 @@ export const RunConfigSchema = z.object({
   deterministicSeed: z.string().min(1).default("ora-smoke")
 });
 export type RunConfig = z.infer<typeof RunConfigSchema>;
+
+export function delegationIntentFromMetadata(metadata: RunConfig["metadata"]): DelegationIntent | undefined {
+  const parsed = DelegationIntentSchema.safeParse(metadata.delegationIntent);
+  return parsed.success ? parsed.data : undefined;
+}
 
 export const AutomationScheduleSchema = z.discriminatedUnion("kind", [
   z.object({
@@ -964,9 +988,9 @@ export type SessionCreateParams = z.infer<typeof SessionCreateParamsSchema>;
 export const ProjectSourceKindSchema = z.enum(["local_folder", "ora_project"]);
 export type ProjectSourceKind = z.infer<typeof ProjectSourceKindSchema>;
 
-export const ProjectCreateParamsSchema = z.discriminatedUnion("sourceKind", [
+export const ProjectCreateParamsSchema = z.union([
   z.object({
-    sourceKind: z.literal("local_folder"),
+    sourceKind: z.literal("local_folder").optional(),
     label: z.string().min(1).optional(),
     rootPath: z.string().min(1),
   }),
@@ -987,6 +1011,11 @@ export const ProjectGetParamsSchema = z.object({
   projectId: z.string().min(1),
 });
 export type ProjectGetParams = z.infer<typeof ProjectGetParamsSchema>;
+
+export const ProjectArchiveParamsSchema = z.object({
+  projectId: z.string().min(1),
+});
+export type ProjectArchiveParams = z.infer<typeof ProjectArchiveParamsSchema>;
 
 export const ProjectFilesParamsSchema = z.object({
   projectId: z.string().min(1),
@@ -1044,6 +1073,7 @@ export const ProjectSummarySchema = z.object({
   sessionCount: z.number().int().nonnegative(),
   createdAt: z.number().int().nonnegative(),
   updatedAt: z.number().int().nonnegative(),
+  archivedAt: z.number().int().nonnegative().optional(),
 });
 export type ProjectSummary = z.infer<typeof ProjectSummarySchema>;
 

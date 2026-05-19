@@ -4,6 +4,7 @@ import {
   DEFAULT_SKILL_TOOL_IDS,
   DEFAULT_WEB_TOOL_IDS,
   DEFAULT_PROVIDERS,
+  DelegationIntentSchema,
   EffectiveRunStrategySchema,
   ModeSpec,
   PatternDefinition,
@@ -53,6 +54,40 @@ const ContextRouterMessageSchema = z.object({
   role: z.enum(["user", "assistant"]),
   content: z.string().min(1),
 });
+
+const EXPLICIT_NO_DELEGATION_PATTERNS = [
+  /不要(?:开|用|启用|调用)?子智能体/u,
+  /不要(?:开|用|启用|调用)?sub-?agents?/iu,
+  /不要(?:让|找).*(?:agent|智能体).*(?:帮忙|参与|协作)/iu,
+  /自己回答/u,
+  /不要委派/u,
+  /不要 delegation/iu,
+];
+
+const TEAM_COLLAB_PATTERNS = [
+  /agent team/iu,
+  /team mode/iu,
+  /子智能体/u,
+  /sub-?agents?/iu,
+  /多个\s*agents?/iu,
+  /并行.*(?:agent|智能体)/iu,
+  /分工.*(?:agent|智能体)/iu,
+  /团队协作/u,
+];
+
+const PREFER_DELEGATION_PATTERNS = [
+  /通过.*agent team.*(?:模式|方式).*(?:帮我|处理|研究|完成)/iu,
+  /请用.*agent team/iu,
+  /请用.*子智能体/iu,
+  /并行.*研究/u,
+  /多个.*agents?.*(?:一起|协作|并行)/iu,
+];
+
+const ALLOW_DELEGATION_PATTERNS = [
+  /可以.*子智能体/u,
+  /可以.*sub-?agents?/iu,
+  /也可以.*(?:agent|智能体).*(?:帮忙|协作)/iu,
+];
 
 export interface ModeSelectionDeps {
   modeStore: ModeSpecFileStore;
@@ -106,7 +141,12 @@ export async function resolveModeSelection(
   const autoRoute = parsed.modeSelection === "auto" && input
     ? await routeAutoMode(parsed, input, session, deps)
     : undefined;
-  const effectiveMetadata = resolveAutoTaskIntentMetadata(parsed.metadata, autoRoute);
+  const effectiveMetadata = resolveDelegationIntentMetadata(
+    resolveAutoTaskIntentMetadata(parsed.metadata, autoRoute),
+    input,
+    session,
+    deps,
+  );
   const requestedModeId = autoRoute?.modeId
     ?? (typeof config?.modeId === "string" ? config.modeId : parsed.modeId ?? parsed.pattern);
   const modeSpec = deps.applySystemAgentOverridesToMode(deps.modeStore.resolve(requestedModeId, parsed.pattern));
@@ -662,6 +702,73 @@ function resolveAutoTaskIntentMetadata(
     ...metadata,
     taskIntent: autoRoute?.taskIntent ?? "plan",
   };
+}
+
+function resolveDelegationIntentMetadata(
+  metadata: Record<string, unknown>,
+  input: UserTaskInput | undefined,
+  session: SessionSummary | undefined,
+  deps: ModeSelectionDeps,
+): Record<string, unknown> {
+  if (!input) {
+    return metadata;
+  }
+  const delegationIntent = resolveDelegationIntent(input, session, deps);
+  if (!delegationIntent) {
+    return metadata;
+  }
+  return {
+    ...metadata,
+    delegationIntent,
+  };
+}
+
+function resolveDelegationIntent(
+  input: UserTaskInput,
+  session: SessionSummary | undefined,
+  deps: ModeSelectionDeps,
+) {
+  void session;
+  void deps;
+  const combined = input.prompt;
+
+  if (EXPLICIT_NO_DELEGATION_PATTERNS.some((pattern) => pattern.test(combined))) {
+    return DelegationIntentSchema.parse({
+      requestedByUser: true,
+      preference: "none",
+      reason: "The user explicitly asked not to use delegation or sub-agents for this turn.",
+      source: "explicit_no_delegation",
+    });
+  }
+
+  if (PREFER_DELEGATION_PATTERNS.some((pattern) => pattern.test(combined))) {
+    return DelegationIntentSchema.parse({
+      requestedByUser: true,
+      preference: "prefer",
+      reason: "The user explicitly requested team-style collaboration or sub-agent coordination for this turn.",
+      source: /agent team|team mode/iu.test(combined) ? "explicit_team_collab" : "explicit_subagent_request",
+    });
+  }
+
+  if (ALLOW_DELEGATION_PATTERNS.some((pattern) => pattern.test(combined))) {
+    return DelegationIntentSchema.parse({
+      requestedByUser: true,
+      preference: "allow",
+      reason: "The user explicitly allowed sub-agent help for this turn.",
+      source: "explicit_subagent_request",
+    });
+  }
+
+  if (TEAM_COLLAB_PATTERNS.some((pattern) => pattern.test(combined))) {
+    return DelegationIntentSchema.parse({
+      requestedByUser: true,
+      preference: "prefer",
+      reason: "The user used explicit team-collaboration language that should bias the run toward delegation.",
+      source: "explicit_team_collab",
+    });
+  }
+
+  return undefined;
 }
 
 function resolveAutoRouterRecentMessages(

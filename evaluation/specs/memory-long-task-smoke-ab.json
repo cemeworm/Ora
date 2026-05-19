@@ -1,9 +1,9 @@
 {
-  "datasetId": "<import-memory-long-task-smoke-dataset-first>",
+  "datasetId": "dataset-0033",
   "profileId": "task_completion",
   "repetitions": 1,
   "concurrency": 1,
-  "timeoutMs": 300000,
+  "timeoutMs": 600000,
   "objective": {
     "kind": "outcome",
     "target": "run.output",
@@ -52,6 +52,7 @@
       "label": "Memory Disabled",
       "runConfig": {
         "pattern": "orchestrator_subagent",
+        "modeId": "code_development",
         "modeSelection": "manual",
         "providerId": "deepseek",
         "modelRef": "deepseek-v4-flash",
@@ -66,6 +67,7 @@
       "label": "Memory Enabled",
       "runConfig": {
         "pattern": "orchestrator_subagent",
+        "modeId": "code_development",
         "modeSelection": "manual",
         "providerId": "deepseek",
         "modelRef": "deepseek-v4-flash",

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { CODE_DEVELOPMENT_MODE_ID, MVP_MODES, SINGLE_AGENT_MODE_ID } from "@cemeworm/shared";
 import {
+  delegationIntentFromMetadata,
   resolveAgenticRuntimeScheduling,
   routerCostHintForMode,
   taskIntentFromMetadata,
@@ -93,9 +94,22 @@ describe("agentic runtime scheduling", () => {
   it("exposes task intent and router cost hints", () => {
     expect(taskIntentFromMetadata({ taskIntent: "plan" })).toBe("plan");
     expect(taskIntentFromMetadata({ taskIntent: "unknown" })).toBeUndefined();
+    expect(delegationIntentFromMetadata({
+      delegationIntent: {
+        requestedByUser: true,
+        preference: "prefer",
+        reason: "The user explicitly requested team-style collaboration.",
+        source: "explicit_team_collab",
+      },
+    })).toMatchObject({
+      requestedByUser: true,
+      preference: "prefer",
+      source: "explicit_team_collab",
+    });
+    expect(delegationIntentFromMetadata({ delegationIntent: { preference: "invalid" } })).toBeUndefined();
 
     const singleAgent = MVP_MODES.find((mode) => mode.id === SINGLE_AGENT_MODE_ID)!;
-    const codeLike = MVP_MODES.find((mode) => mode.id === "agent_teams")!;
+    const codeLike = MVP_MODES.find((mode) => mode.family === "agent_teams")!;
 
     expect(routerCostHintForMode(singleAgent)).toMatchObject({
       costTier: expect.any(String),

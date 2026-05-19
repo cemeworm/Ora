@@ -1,4 +1,12 @@
-import { CODE_DEVELOPMENT_MODE_ID, type ModeSpec, type ResourceBudget, type RunConfig, type TaskIntent } from "@cemeworm/shared";
+import {
+  CODE_DEVELOPMENT_MODE_ID,
+  delegationIntentFromMetadata as sharedDelegationIntentFromMetadata,
+  type DelegationIntent,
+  type ModeSpec,
+  type ResourceBudget,
+  type RunConfig,
+  type TaskIntent,
+} from "@cemeworm/shared";
 
 const LIGHTWEIGHT_CAPS: Record<Extract<TaskIntent, "chat" | "plan">, {
   maxTokens: number;
@@ -132,4 +140,8 @@ export function routerCostHintForMode(mode: ModeSpec): RouterCostHint {
 export function taskIntentFromMetadata(metadata: RunConfig["metadata"]): TaskIntent | undefined {
   const value = metadata.taskIntent;
   return value === "chat" || value === "plan" || value === "implement" ? value : undefined;
+}
+
+export function delegationIntentFromMetadata(metadata: RunConfig["metadata"]): DelegationIntent | undefined {
+  return sharedDelegationIntentFromMetadata(metadata);
 }

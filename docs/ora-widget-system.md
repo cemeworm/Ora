@@ -116,7 +116,7 @@ MVP 支持三种内置 Widget 类型：
 
 沉淀生成内容：文章、摘要、Prompt、研究结果。
 
-- **Dashboard 小窗**：标题 + 内容预览（前几行）
+- **Dashboard 小窗**：标题 + 内容预览（前几行）；桌面端支持网格拖动与右下角拖拽改大小
 - **Detail 面板**：完整内容渲染、编辑、导出
 - **关联**：可关联到产生此 artifact 的 Session
 - **状态**：仅 structural change 触发版本快照
@@ -125,7 +125,7 @@ MVP 支持三种内置 Widget 类型：
 
 待办事项、日期、提醒、完成状态。
 
-- **Dashboard 小窗**：标题 + 待办数量 + 逾期标记
+- **Dashboard 小窗**：标题 + 待办数量 + 逾期标记；桌面端支持网格拖动与右下角拖拽改大小
 - **Detail 面板**：待办列表、勾选、截止日期、排序
 - **状态**：勾选/取消勾选是 state-only 更新（不创建版本）
 - **提醒**：通过 schedule 关联 automation
@@ -134,7 +134,7 @@ MVP 支持三种内置 Widget 类型：
 
 定时刷新外部信息：微博热点、GitHub issue、关键词新闻。
 
-- **Dashboard 小窗**：标题 + 最新条目数 + 上次刷新时间
+- **Dashboard 小窗**：标题 + 最新条目数 + 上次刷新时间；桌面端支持网格拖动与右下角拖拽改大小
 - **Detail 面板**：条目列表、手动刷新按钮、数据源配置
 - **刷新**：通过 schedule 配置定时刷新（cron / interval）
 - **状态**：刷新结果写入 state，不创建版本
@@ -145,6 +145,7 @@ MVP 支持三种内置 Widget 类型：
 Dashboard 小窗 (WidgetCard)
   ├── 摘要信息：标题、状态、关键数据
   ├── 快捷操作：Pin/Unpin、标记完成
+  ├── 桌面端布局编辑：拖动位置、拖拽调整宽高
   └── 点击进入 ↓
 
 Widget Detail (ArtifactWidgetDetail / TodoWidgetDetail / FeedWidgetDetail)

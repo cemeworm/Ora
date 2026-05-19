@@ -272,6 +272,7 @@ import {
   type RunStateOperationDeps
 } from "./run-state-operations.js";
 import {
+  archiveProject as archiveProjectOperation,
   archiveSession as archiveSessionOperation,
   branchGroupsForSession,
   createProject as createProjectOperation,
@@ -836,6 +837,10 @@ export class LocalRunStore {
 
   listProjects(params: unknown = {}): ProjectSummary[] {
     return listProjectsOperation(params, this.projectSessionOperationDeps());
+  }
+
+  archiveProject(params: unknown): ProjectSummary {
+    return archiveProjectOperation(params, this.projectSessionOperationDeps());
   }
 
   getProject(params: unknown): ProjectDetail {
@@ -4184,6 +4189,7 @@ export class LocalRunStore {
       ...existing,
       sessionCount: sessions.length,
       updatedAt,
+      archivedAt: existing.archivedAt,
     });
     this.projects.set(projectId, nextProject);
     this.backend.saveProject(nextProject);

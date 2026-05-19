@@ -25,7 +25,8 @@
 
 - `sourceRoot` 指向当前 Ora 仓库根目录，因此会带上当前工作树的未提交修改
 - `materializationRoot` 默认位于本目录下的 `workspaces/`
-- 复制时默认排除 `.git`、`node_modules`、`dist`、`build`、`coverage`、`.turbo`
+- 复制时默认排除 `.DS_Store`、`.git`、`.ora`、`node_modules`、`dist`、`build`、`coverage`、`.turbo`、`apps/desktop/src-tauri/target`
+- 这样可以避免把本地运行态数据和超大原生构建产物一起复制进评估 workspace，降低 `ENOSPC` 风险并缩短 materialize 时间
 - 如果后续发现还需要排除更大的生成目录，优先在 manifest 的 `isolation.exclude` 中追加
 
 ## 何时不用它

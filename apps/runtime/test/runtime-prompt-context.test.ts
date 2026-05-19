@@ -96,6 +96,7 @@ describe("buildAgentPromptContext", () => {
     expect(context.system).toContain("Preferred model hint: openai/gpt-5.2");
     expect(context.system).toContain("Memory namespaces: session, project");
     expect(context.system).toContain("Use mode stages or delegation only when the work can be split");
+    expect(context.system).toContain("If the current turn explicitly asks for team-style collaboration, sub-agents, or delegated parallel work");
     expect(context.system).toContain("do not rely on natural-language phrase whitelists");
     expect(context.system).toContain("<available_skills>");
     expect(context.system).toContain("<name>deep-research</name>");

@@ -1,5 +1,6 @@
 import path from "node:path";
 import {
+  ProjectArchiveParamsSchema,
   ProjectCreateParamsSchema,
   ProjectDetail,
   ProjectDetailSchema,
@@ -58,13 +59,22 @@ export function createProject(params: unknown, deps: ProjectSessionOperationDeps
   const parsed = ProjectCreateParamsSchema.parse(params ?? {});
   const now = deps.now();
 
-  if (parsed.sourceKind === "local_folder") {
+  if (parsed.sourceKind !== "ora_project") {
     const normalizedRootPath = normalizeProjectRootPath(parsed.rootPath);
     const existing = [...deps.projects.values()].find(
       (project) => project.sourceKind === "local_folder" && project.rootPath === normalizedRootPath,
     );
     if (existing) {
-      return ProjectSummarySchema.parse(existing);
+      if (existing.archivedAt === undefined) {
+        return ProjectSummarySchema.parse(existing);
+      }
+      const restored = ProjectSummarySchema.parse({
+        ...existing,
+        updatedAt: Math.max(existing.updatedAt, now),
+        archivedAt: undefined,
+      });
+      deps.persistProject(restored);
+      return restored;
     }
     const project = ProjectSummarySchema.parse({
       projectId: deps.nextProjectId(),
@@ -84,7 +94,16 @@ export function createProject(params: unknown, deps: ProjectSessionOperationDeps
     (project) => project.sourceKind === "ora_project" && project.label === parsed.label.trim(),
   );
   if (existing) {
-    return ProjectSummarySchema.parse(existing);
+    if (existing.archivedAt === undefined) {
+      return ProjectSummarySchema.parse(existing);
+    }
+    const restored = ProjectSummarySchema.parse({
+      ...existing,
+      updatedAt: Math.max(existing.updatedAt, now),
+      archivedAt: undefined,
+    });
+    deps.persistProject(restored);
+    return restored;
   }
   const project = ProjectSummarySchema.parse({
     projectId: deps.nextProjectId(),
@@ -102,6 +121,7 @@ export function createProject(params: unknown, deps: ProjectSessionOperationDeps
 export function listProjects(params: unknown, deps: ProjectSessionOperationDeps): ProjectSummary[] {
   const parsed = ProjectListParamsSchema.parse(params ?? {});
   return [...deps.projects.values()]
+    .filter((project) => project.archivedAt === undefined)
     .sort((a, b) => b.updatedAt - a.updatedAt || a.projectId.localeCompare(b.projectId))
     .slice(0, parsed.limit)
     .map((project) => ProjectSummarySchema.parse(project));
@@ -128,10 +148,38 @@ export function readProjectFile(params: unknown, deps: ProjectSessionOperationDe
   return readProjectFileForProject(project, parsed.path);
 }
 
+export function archiveProject(params: unknown, deps: ProjectSessionOperationDeps): ProjectSummary {
+  const parsed = ProjectArchiveParamsSchema.parse(params);
+  const existing = deps.getProjectOrThrow(parsed.projectId);
+  const archivedAt = existing.archivedAt ?? deps.now();
+  const project = ProjectSummarySchema.parse({
+    ...existing,
+    sessionCount: 0,
+    updatedAt: Math.max(existing.updatedAt, archivedAt),
+    archivedAt,
+  });
+  for (const session of deps.sessions.values()) {
+    if (session.projectId !== parsed.projectId || session.archivedAt !== undefined) {
+      continue;
+    }
+    const archivedSession = SessionSummarySchema.parse({
+      ...session,
+      archivedAt,
+      updatedAt: Math.max(session.updatedAt, archivedAt),
+    });
+    deps.persistSession(archivedSession);
+  }
+  deps.persistProject(project);
+  return project;
+}
+
 export function createSession(params: unknown, deps: ProjectSessionOperationDeps): SessionSummary {
   const parsed = SessionCreateParamsSchema.parse(params ?? {});
   if (parsed.projectId) {
-    deps.getProjectOrThrow(parsed.projectId);
+    const project = deps.getProjectOrThrow(parsed.projectId);
+    if (project.archivedAt !== undefined) {
+      throw new Error(`Project is archived: ${parsed.projectId}`);
+    }
   }
   const now = deps.now();
   const session = SessionSummarySchema.parse({
