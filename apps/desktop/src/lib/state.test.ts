@@ -2265,11 +2265,16 @@ describe("desktop workbench state", () => {
         startedAt: 1_714_000_000_000,
         updatedAt: 1_714_000_000_000,
         artifactIds: [],
+        recoveryAttemptCount: 0,
       }],
       parentCoordination: {
         phase: "dispatching",
         activeChildIds: ["run-overlay-snapshot:ora-sub-1"],
         waitingChildIds: [],
+        blockedByChildIds: [],
+        stalledChildIds: [],
+        recoverableChildIds: [],
+        partialResultChildIds: [],
         updatedAt: 1_714_000_000_000,
       },
       events: [{

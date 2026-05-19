@@ -835,6 +835,7 @@ function childSession(
     startedAt: 1,
     updatedAt: 1,
     artifactIds: [],
+    recoveryAttemptCount: 0,
   };
 }
 
