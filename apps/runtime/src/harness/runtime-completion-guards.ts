@@ -1,4 +1,10 @@
-import type { ActionRecord, OraToolCallEnvelope, PlanListStep, StateSnapshot } from "@cemeworm/shared";
+import type {
+  ActionRecord,
+  ChildSessionSummary,
+  OraToolCallEnvelope,
+  PlanListStep,
+  StateSnapshot,
+} from "@cemeworm/shared";
 
 export interface RuntimeCompletionGuardState {
   actions: readonly ActionRecord[];
@@ -10,6 +16,10 @@ export interface RuntimeCompletionGuardState {
   agentId?: string;
   activeBackgroundChildCount?: number;
   pendingAsyncResultCount?: number;
+  stalledBackgroundChildren?: readonly Pick<
+    ChildSessionSummary,
+    "id" | "agentId" | "label" | "lifecyclePhase" | "stallReason" | "resultAvailability"
+  >[];
 }
 
 /**
@@ -128,8 +138,48 @@ export const DEFAULT_RUNTIME_COMPLETION_GUARDS: readonly RuntimeCompletionGuard[
   planListCompletionGuard,
   legacyProgressCompletionGuard,
   pendingRuntimeWorkGuard,
+  stalledBackgroundWorkGuard,
   pendingBackgroundWorkGuard,
 ];
+
+export function stalledBackgroundWorkGuard(
+  state: RuntimeCompletionGuardState,
+): RuntimeCompletionGuardResult {
+  const stalledChildren = state.stalledBackgroundChildren ?? [];
+  if (stalledChildren.length === 0) {
+    return { allowComplete: true };
+  }
+  const detail = stalledChildren
+    .map((child, index) => {
+      const parts = [
+        `child ${index + 1}. ${child.label} (${child.id})`,
+        `phase=${child.lifecyclePhase ?? "unknown"}`,
+      ];
+      if (child.resultAvailability) {
+        parts.push(`result=${child.resultAvailability}`);
+      }
+      if (child.stallReason) {
+        parts.push(`reason=${child.stallReason}`);
+      }
+      return parts.join(" ");
+    })
+    .join("\n");
+  return {
+    allowComplete: false,
+    reason: "stalled_background_children",
+    progressTrigger: "background_children.stalled",
+    progressSummary: "One or more background children are stalled; explicit recovery or user-visible escalation is required.",
+    detail,
+    followUpReason: "stalled_background_children_follow_up",
+    followUpContent: [
+      "A background child is stalled.",
+      "Do not silently conclude the run.",
+      "Use the available child lifecycle details to decide whether to continue with partial results, explain the blockage, or ask the user for the needed decision.",
+      "Stalled children:",
+      detail,
+    ].join("\n"),
+  };
+}
 
 export function pendingBackgroundWorkGuard(
   state: RuntimeCompletionGuardState,
@@ -412,6 +462,7 @@ export function pendingRuntimeWorkGuard(
   state: RuntimeCompletionGuardState,
 ): RuntimeCompletionGuardResult {
   const pendingActions = state.actions.filter((item) =>
+    (!state.agentId || !item.agentId || item.agentId === state.agentId) &&
     !item.type.startsWith("agent.") &&
     (
       item.status === "proposed" ||

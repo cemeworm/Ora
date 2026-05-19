@@ -21,6 +21,7 @@ import {
   deriveChatSurfaceContentWidthClassName,
   deriveChatSurfaceShiftClassName,
   deriveComposerPlanDecisionState,
+  deriveOverlayChildStatusLabel,
   deriveOverlayChildTurnView,
   deriveCurrentComposerPlanSteps,
   derivePlanStepsPresentation,
@@ -432,12 +433,13 @@ describe("chat view collaboration overlay visibility", () => {
     })).toBe(true);
   });
 
-  it("shows only queued and running child sessions in the floating overlay", () => {
+  it("shows lifecycle-visible child sessions in the floating overlay", () => {
     expect(deriveVisibleCollaborationChildren({
       childSessions: [
         childSession("queued-child", "queued"),
         childSession("running-child", "running"),
-        childSession("awaiting-child", "succeeded", "awaiting_pickup"),
+        childSession("awaiting-child", "succeeded", "awaiting_pickup", "awaiting_pickup"),
+        childSession("stalled-child", "running", undefined, "stalled"),
         childSession("done-child", "succeeded"),
         childSession("failed-child", "failed"),
       ],
@@ -445,6 +447,7 @@ describe("chat view collaboration overlay visibility", () => {
       { id: "queued-child", status: "queued" },
       { id: "running-child", status: "running" },
       { id: "awaiting-child", status: "succeeded", deliveryStatus: "awaiting_pickup" },
+      { id: "stalled-child", lifecyclePhase: "stalled" },
     ]);
   });
 
@@ -597,8 +600,21 @@ describe("chat view collaboration overlay visibility", () => {
     expect(collaborationStatusBadgeClassName("queued")).toContain("bg-muted/65");
     expect(collaborationStatusBadgeClassName("running")).toContain("bg-accent/80");
     expect(
-      collaborationStatusBadgeClassName("succeeded", "awaiting_pickup"),
+      collaborationStatusBadgeClassName("succeeded", "awaiting_pickup", "awaiting_pickup"),
     ).toContain("bg-emerald-50/70");
+    expect(collaborationStatusBadgeClassName("running", "stalled")).toContain("text-destructive");
+  });
+
+  it("renders lifecycle-driven labels without relying on content heuristics", () => {
+    expect(deriveOverlayChildStatusLabel({
+      child: childSession("output-child", "running", undefined, "produced_output") as any,
+    })).toBe("完善中");
+    expect(deriveOverlayChildStatusLabel({
+      child: childSession("awaiting-child", "succeeded", "awaiting_pickup", "awaiting_pickup") as any,
+    })).toBe("待整合");
+    expect(deriveOverlayChildStatusLabel({
+      child: childSession("stalled-child", "running", undefined, "stalled") as any,
+    })).toBe("卡住");
   });
 
   it("toggles overlay child expansion as a single-open accordion", () => {
@@ -806,6 +822,7 @@ function childSession(
   id: string,
   status: "queued" | "running" | "succeeded" | "failed",
   deliveryStatus?: "awaiting_pickup" | "consumed",
+  lifecyclePhase?: "queued" | "running" | "produced_output" | "awaiting_pickup" | "picked_up" | "succeeded" | "failed" | "stalled",
 ) {
   return {
     id,
@@ -813,6 +830,7 @@ function childSession(
     label: id,
     sessionClass: "temporary_spawn" as const,
     status,
+    lifecyclePhase,
     deliveryStatus,
     startedAt: 1,
     updatedAt: 1,

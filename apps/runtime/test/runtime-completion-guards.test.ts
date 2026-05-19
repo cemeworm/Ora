@@ -6,6 +6,7 @@ import {
   pendingBackgroundWorkGuard,
   pendingRuntimeWorkGuard,
   planListCompletionGuard,
+  stalledBackgroundWorkGuard,
 } from "../src/harness/runtime-completion-guards.js";
 
 describe("runtime completion guards", () => {
@@ -193,6 +194,26 @@ describe("runtime completion guards", () => {
     expect(result).toEqual({ allowComplete: true });
   });
 
+  it("ignores pending non-agent actions owned by a different child agent", () => {
+    const result = pendingRuntimeWorkGuard({
+      actions: [{
+        id: "run-1:action:other-child-tool",
+        runId: "run-1",
+        type: "shell.execute",
+        riskLevel: "medium",
+        status: "running",
+        input: {},
+        artifactIds: [],
+        agentId: "ora-sub-2",
+      }],
+      agentId: "ora-sub-1",
+      planList: [],
+      toolCalls: [],
+    });
+
+    expect(result).toEqual({ allowComplete: true });
+  });
+
   it("blocks natural completion when tool calls are still pending", () => {
     const result = pendingRuntimeWorkGuard({
       actions: [],
@@ -251,6 +272,33 @@ describe("runtime completion guards", () => {
       reason: "pending_background_results",
       progressTrigger: "background_results.pending",
     });
+  });
+
+  it("blocks completion explicitly when background children are stalled", () => {
+    const result = stalledBackgroundWorkGuard({
+      actions: [],
+      planList: [],
+      toolCalls: [],
+      stalledBackgroundChildren: [{
+        id: "run-1:child-1",
+        agentId: "ora-sub-1",
+        label: "Research alpha",
+        lifecyclePhase: "stalled",
+        stallReason: "no_progress_timeout",
+        resultAvailability: "partial",
+      }],
+    });
+
+    expect(result).toMatchObject({
+      allowComplete: false,
+      reason: "stalled_background_children",
+      progressTrigger: "background_children.stalled",
+    });
+    expect(result.allowComplete).toBe(false);
+    if (!result.allowComplete) {
+      expect(result.detail).toContain("Research alpha");
+      expect(result.detail).toContain("no_progress_timeout");
+    }
   });
 });
 

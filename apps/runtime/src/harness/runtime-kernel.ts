@@ -8,6 +8,8 @@ import {
   type AgentConversationMessage,
   AgentConversationMessageSchema,
   type AgentToolBundleId,
+  type BackgroundChildLifecyclePhase,
+  type BackgroundChildResultAvailability,
   type ChildSessionClass,
   type ChildSessionDeliveryStatus,
   type ChildSessionSummary,
@@ -258,6 +260,110 @@ type ChildToolBundleDefinition = {
   requiredToolIds?: string[];
 };
 
+type BackgroundChildRegistryEntry = {
+  id: string;
+  agentId: string;
+  parentAgentId?: string;
+  label: string;
+  sessionClass: ChildSessionClass;
+  status: ChildSessionSummary["status"];
+  lifecyclePhase: BackgroundChildLifecyclePhase;
+  coordinationBarrier: "required" | "independent";
+  deliveryStatus?: ChildSessionDeliveryStatus;
+  resultAvailability: BackgroundChildResultAvailability;
+  summary?: string;
+  lastMessage?: string;
+  artifactIds: string[];
+  toolBundleId?: AgentToolBundleId;
+  resolvedToolIds: string[];
+  resultContract?: AgentResultContract;
+  usedToolCount?: number;
+  durationMs?: number;
+  replayRef?: ChildSessionSummary["replayRef"];
+  sourceSessionId?: string;
+  sourceRunId?: string;
+  lastProgressAt?: number;
+  lastMeaningfulOutputAt?: number;
+  lastToolActivityAt?: number;
+  stallReason?: string;
+  recoveryAttemptCount: number;
+  startedAt: number;
+  updatedAt: number;
+  completedAt?: number;
+};
+
+const BACKGROUND_CHILD_STALL_TIMEOUT_MS = 90_000;
+
+function defaultBackgroundLifecyclePhase(params: {
+  status: ChildSessionSummary["status"];
+  deliveryStatus?: ChildSessionDeliveryStatus;
+  currentPhase?: BackgroundChildLifecyclePhase;
+  hasMeaningfulOutput?: boolean;
+}): BackgroundChildLifecyclePhase {
+  if (params.deliveryStatus === "consumed") {
+    return "picked_up";
+  }
+  if (params.deliveryStatus === "awaiting_pickup") {
+    return "awaiting_pickup";
+  }
+  if (params.status === "queued") {
+    return "queued";
+  }
+  if (params.status === "running") {
+    if (params.currentPhase === "stalled") {
+      return "stalled";
+    }
+    return params.hasMeaningfulOutput ? "produced_output" : "running";
+  }
+  return params.status;
+}
+
+function isBackgroundLifecycleActive(
+  phase: BackgroundChildLifecyclePhase,
+): boolean {
+  return phase === "queued" || phase === "running" || phase === "produced_output";
+}
+
+function hasBackgroundChildConsumableOutput(
+  entry: Pick<BackgroundChildRegistryEntry, "lastMessage" | "summary" | "lastMeaningfulOutputAt">,
+): boolean {
+  return Boolean(entry.lastMeaningfulOutputAt || entry.lastMessage?.trim() || entry.summary?.trim());
+}
+
+function projectBackgroundChildSummary(
+  entry: BackgroundChildRegistryEntry,
+): ChildSessionSummary {
+  return ChildSessionSummarySchema.parse({
+    id: entry.id,
+    agentId: entry.agentId,
+    label: entry.label,
+    sessionClass: entry.sessionClass,
+    status: entry.status,
+    lifecyclePhase: entry.lifecyclePhase,
+    deliveryStatus: entry.deliveryStatus,
+    resultAvailability: entry.resultAvailability,
+    summary: entry.summary,
+    lastMessage: entry.lastMessage,
+    artifactIds: entry.artifactIds,
+    toolBundleId: entry.toolBundleId,
+    resolvedToolIds: entry.resolvedToolIds,
+    resultContract: entry.resultContract,
+    usedToolCount: entry.usedToolCount,
+    durationMs: entry.durationMs,
+    replayRef: entry.replayRef,
+    sourceSessionId: entry.sourceSessionId,
+    sourceRunId: entry.sourceRunId,
+    lastProgressAt: entry.lastProgressAt,
+    lastMeaningfulOutputAt: entry.lastMeaningfulOutputAt,
+    lastToolActivityAt: entry.lastToolActivityAt,
+    stallReason: entry.stallReason,
+    recoveryAttemptCount: entry.recoveryAttemptCount,
+    startedAt: entry.startedAt,
+    updatedAt: entry.updatedAt,
+    completedAt: entry.completedAt,
+  });
+}
+
 class KernelRuntimeContext {
   private readonly eventsValue: OraEventEnvelope[] = [];
   private readonly artifactsValue: ArtifactRef[] = [];
@@ -269,10 +375,10 @@ class KernelRuntimeContext {
   private readonly toolCallLedger: RuntimeToolCallLedger;
   private readonly topologyValue: StateSnapshot["topology"];
   private readonly asyncAgentResultsValue = new Map<string, AsyncAgentResultEnvelope[]>();
-  private readonly childSessionsValue = new Map<string, ChildSessionSummary>();
+  private readonly childSessionsValue = new Map<string, BackgroundChildRegistryEntry>();
   private readonly agentMessagesQueueValue = new Map<string, string[]>();
-  private readonly activeBackgroundChildrenByParentValue = new Map<string, Set<string>>();
   private readonly backgroundProgressWaitersValue = new Map<string, Array<() => void>>();
+  private readonly backgroundProgressTimersValue = new Map<string, ReturnType<typeof setTimeout>>();
   private parentCoordinationValue: ParentCoordinationState | undefined;
   private planListValue: PlanListStep[];
   private queueSummaryValue: QueueSummary;
@@ -321,12 +427,14 @@ class KernelRuntimeContext {
   }
 
   get childSessions(): ChildSessionSummary[] {
+    this.reconcileBackgroundChildren();
     return [...this.childSessionsValue.values()].sort((left, right) =>
       left.startedAt - right.startedAt || left.id.localeCompare(right.id),
-    );
+    ).map((entry) => projectBackgroundChildSummary(entry));
   }
 
   get parentCoordination(): ParentCoordinationState | undefined {
+    this.reconcileBackgroundChildren();
     return this.parentCoordinationValue;
   }
 
@@ -399,12 +507,13 @@ class KernelRuntimeContext {
     artifactIds?: string[];
     durationMs?: number;
   }): void {
+    const completedAt = params.completedAt ?? this.params.now();
     const results = this.asyncAgentResultsValue.get(params.targetAgentId) ?? [];
     results.push({
       sourceAgentId: params.sourceAgentId,
       childSessionId: params.childSessionId,
       result: params.result,
-      completedAt: params.completedAt ?? this.params.now(),
+      completedAt,
       toolBundleId: params.toolBundleId,
       resolvedToolIds: params.resolvedToolIds ?? [],
       resultContract: params.resultContract,
@@ -413,6 +522,20 @@ class KernelRuntimeContext {
       durationMs: params.durationMs,
     });
     this.asyncAgentResultsValue.set(params.targetAgentId, results);
+    const current = this.childSessionsValue.get(params.childSessionId);
+    if (current) {
+      this.replaceBackgroundChild(current.id, {
+        ...current,
+        deliveryStatus: "awaiting_pickup",
+        lifecyclePhase: "awaiting_pickup",
+        resultAvailability:
+          current.lifecyclePhase === "stalled" || current.resultAvailability === "visible_output"
+            ? "partial"
+            : "queued_for_parent",
+        updatedAt: completedAt,
+        completedAt: current.completedAt ?? completedAt,
+      });
+    }
     this.notifyBackgroundProgress(params.targetAgentId);
   }
 
@@ -439,6 +562,7 @@ class KernelRuntimeContext {
     for (const result of drained) {
       this.updateChildSessionDeliveryStatus(result.childSessionId, "consumed");
     }
+    this.syncParentCoordinationFromChildren();
     return drained;
   }
 
@@ -480,37 +604,47 @@ class KernelRuntimeContext {
   }
 
   registerBackgroundChild(parentAgentId: string, childAgentId: string): void {
-    const children = this.activeBackgroundChildrenByParentValue.get(parentAgentId) ?? new Set<string>();
-    children.add(childAgentId);
-    this.activeBackgroundChildrenByParentValue.set(parentAgentId, children);
+    this.setBackgroundChildRuntimeMetadata({ agentId: childAgentId, parentAgentId });
     this.notifyBackgroundProgress(parentAgentId);
   }
 
   completeBackgroundChild(parentAgentId: string, childAgentId: string): void {
-    const children = this.activeBackgroundChildrenByParentValue.get(parentAgentId);
-    if (!children) return;
-    children.delete(childAgentId);
-    if (children.size === 0) {
-      this.activeBackgroundChildrenByParentValue.delete(parentAgentId);
-    } else {
-      this.activeBackgroundChildrenByParentValue.set(parentAgentId, children);
-    }
     this.notifyBackgroundProgress(parentAgentId);
   }
 
   activeBackgroundChildCount(parentAgentId: string): number {
-    return this.activeBackgroundChildrenByParentValue.get(parentAgentId)?.size ?? 0;
+    this.reconcileBackgroundChildren();
+    return [...this.childSessionsValue.values()].filter((child) =>
+      child.parentAgentId === parentAgentId && isBackgroundLifecycleActive(child.lifecyclePhase)
+    ).length;
   }
 
   activeBackgroundChildIds(parentAgentId: string): string[] {
-    return [...(this.activeBackgroundChildrenByParentValue.get(parentAgentId) ?? new Set<string>())];
+    this.reconcileBackgroundChildren();
+    return [...this.childSessionsValue.values()]
+      .filter((child) =>
+        child.parentAgentId === parentAgentId && isBackgroundLifecycleActive(child.lifecyclePhase)
+      )
+      .map((child) => child.agentId);
+  }
+
+  stalledBackgroundChildren(parentAgentId: string): ChildSessionSummary[] {
+    this.reconcileBackgroundChildren();
+    return [...this.childSessionsValue.values()]
+      .filter((child) =>
+        child.parentAgentId === parentAgentId && child.lifecyclePhase === "stalled"
+      )
+      .sort((left, right) => left.startedAt - right.startedAt || left.id.localeCompare(right.id))
+      .map((entry) => projectBackgroundChildSummary(entry));
   }
 
   async waitForBackgroundProgress(agentId: string): Promise<void> {
+    this.reconcileBackgroundChildren();
     if (
       this.activeBackgroundChildCount(agentId) === 0 &&
       this.pendingAsyncAgentResultCount(agentId) === 0 &&
-      (this.agentMessagesQueueValue.get(agentId)?.length ?? 0) === 0
+      (this.agentMessagesQueueValue.get(agentId)?.length ?? 0) === 0 &&
+      this.stalledBackgroundChildren(agentId).length === 0
     ) {
       return;
     }
@@ -518,10 +652,28 @@ class KernelRuntimeContext {
       const waiters = this.backgroundProgressWaitersValue.get(agentId) ?? [];
       waiters.push(resolve);
       this.backgroundProgressWaitersValue.set(agentId, waiters);
+      const existingTimer = this.backgroundProgressTimersValue.get(agentId);
+      if (existingTimer) {
+        clearTimeout(existingTimer);
+      }
+      const nextStallDelay = this.nextBackgroundStallDelay(agentId);
+      if (nextStallDelay !== undefined) {
+        const timer = setTimeout(() => {
+          this.backgroundProgressTimersValue.delete(agentId);
+          this.reconcileBackgroundChildren();
+          this.notifyBackgroundProgress(agentId);
+        }, nextStallDelay);
+        this.backgroundProgressTimersValue.set(agentId, timer);
+      }
     });
   }
 
   private notifyBackgroundProgress(agentId: string): void {
+    const timer = this.backgroundProgressTimersValue.get(agentId);
+    if (timer) {
+      clearTimeout(timer);
+      this.backgroundProgressTimersValue.delete(agentId);
+    }
     const waiters = this.backgroundProgressWaitersValue.get(agentId) ?? [];
     if (waiters.length === 0) return;
     this.backgroundProgressWaitersValue.delete(agentId);
@@ -536,11 +688,13 @@ class KernelRuntimeContext {
   ): ChildSessionSummary | undefined {
     const current = this.childSessionsValue.get(childSessionId);
     if (!current || current.deliveryStatus === deliveryStatus) {
-      return current;
+      return current ? projectBackgroundChildSummary(current) : current;
     }
-    return this.updateChildSession({
+    return this.replaceBackgroundChild(childSessionId, {
       ...current,
       deliveryStatus,
+      lifecyclePhase: deliveryStatus === "consumed" ? "picked_up" : "awaiting_pickup",
+      resultAvailability: deliveryStatus === "consumed" ? "consumed" : "queued_for_parent",
       updatedAt: this.params.now(),
     });
   }
@@ -564,23 +718,75 @@ class KernelRuntimeContext {
 
   updateChildSession(summary: ChildSessionSummary): ChildSessionSummary {
     const parsed = ChildSessionSummarySchema.parse(summary);
-    this.childSessionsValue.set(parsed.id, parsed);
-    this.emit(
-      "child_session.updated",
-      { childSession: parsed },
-      { agentId: parsed.agentId, nodeId: parsed.agentId },
-    );
-    return parsed;
+    const current = this.childSessionsValue.get(parsed.id);
+    return this.replaceBackgroundChild(parsed.id, {
+      id: parsed.id,
+      agentId: parsed.agentId,
+      parentAgentId: current?.parentAgentId,
+      label: parsed.label,
+      sessionClass: parsed.sessionClass,
+      status: parsed.status,
+      lifecyclePhase: parsed.lifecyclePhase ?? defaultBackgroundLifecyclePhase({
+        status: parsed.status,
+        deliveryStatus: parsed.deliveryStatus,
+        currentPhase: current?.lifecyclePhase,
+        hasMeaningfulOutput: Boolean(parsed.lastMeaningfulOutputAt || parsed.lastMessage?.trim() || parsed.summary?.trim()),
+      }),
+      coordinationBarrier: current?.coordinationBarrier ?? "independent",
+      deliveryStatus: parsed.deliveryStatus,
+      resultAvailability: parsed.resultAvailability ?? current?.resultAvailability ?? "none",
+      summary: parsed.summary,
+      lastMessage: parsed.lastMessage,
+      artifactIds: parsed.artifactIds,
+      toolBundleId: parsed.toolBundleId,
+      resolvedToolIds: parsed.resolvedToolIds ?? [],
+      resultContract: parsed.resultContract,
+      usedToolCount: parsed.usedToolCount,
+      durationMs: parsed.durationMs,
+      replayRef: parsed.replayRef,
+      sourceSessionId: parsed.sourceSessionId,
+      sourceRunId: parsed.sourceRunId,
+      lastProgressAt: parsed.lastProgressAt,
+      lastMeaningfulOutputAt: parsed.lastMeaningfulOutputAt,
+      lastToolActivityAt: parsed.lastToolActivityAt,
+      stallReason: parsed.stallReason,
+      recoveryAttemptCount: parsed.recoveryAttemptCount ?? current?.recoveryAttemptCount ?? 0,
+      startedAt: parsed.startedAt,
+      updatedAt: parsed.updatedAt,
+      completedAt: parsed.completedAt,
+    });
   }
 
   childSession(agentId: string): ChildSessionSummary | undefined {
-    return [...this.childSessionsValue.values()].find((child) => child.agentId === agentId);
+    const child = [...this.childSessionsValue.values()].find((entry) => entry.agentId === agentId);
+    return child ? projectBackgroundChildSummary(child) : undefined;
+  }
+
+  setBackgroundChildRuntimeMetadata(params: {
+    agentId: string;
+    parentAgentId?: string;
+    coordinationBarrier?: "required" | "independent";
+  }): void {
+    const current = [...this.childSessionsValue.values()].find((entry) => entry.agentId === params.agentId);
+    if (!current) {
+      return;
+    }
+    this.childSessionsValue.set(current.id, {
+      ...current,
+      parentAgentId: params.parentAgentId ?? current.parentAgentId,
+      coordinationBarrier: params.coordinationBarrier ?? current.coordinationBarrier,
+    });
+    this.syncParentCoordinationFromChildren(current.status);
   }
 
   setParentCoordination(params: {
     phase: ParentCoordinationPhase;
     activeChildIds?: string[];
     waitingChildIds?: string[];
+    blockedByChildIds?: string[];
+    stalledChildIds?: string[];
+    recoverableChildIds?: string[];
+    partialResultChildIds?: string[];
     summary?: string;
     lastResumedAt?: number;
   }): ParentCoordinationState {
@@ -588,6 +794,10 @@ class KernelRuntimeContext {
       phase: params.phase,
       activeChildIds: params.activeChildIds ?? this.parentCoordinationValue?.activeChildIds ?? [],
       waitingChildIds: params.waitingChildIds ?? this.parentCoordinationValue?.waitingChildIds ?? [],
+      blockedByChildIds: params.blockedByChildIds ?? this.parentCoordinationValue?.blockedByChildIds ?? [],
+      stalledChildIds: params.stalledChildIds ?? this.parentCoordinationValue?.stalledChildIds ?? [],
+      recoverableChildIds: params.recoverableChildIds ?? this.parentCoordinationValue?.recoverableChildIds ?? [],
+      partialResultChildIds: params.partialResultChildIds ?? this.parentCoordinationValue?.partialResultChildIds ?? [],
       summary: params.summary ?? this.parentCoordinationValue?.summary,
       lastResumedAt: params.lastResumedAt ?? this.parentCoordinationValue?.lastResumedAt,
       updatedAt: this.params.now(),
@@ -595,6 +805,148 @@ class KernelRuntimeContext {
     this.parentCoordinationValue = next;
     this.emit("parent_coordination.updated", { coordination: next }, { agentId: ORA_ROOT_AGENT_ID, nodeId: ORA_ROOT_AGENT_ID });
     return next;
+  }
+
+  private replaceBackgroundChild(
+    childSessionId: string,
+    entry: BackgroundChildRegistryEntry,
+  ): ChildSessionSummary {
+    this.childSessionsValue.set(childSessionId, entry);
+    const summary = projectBackgroundChildSummary(entry);
+    this.emit(
+      "child_session.updated",
+      { childSession: summary },
+      { agentId: summary.agentId, nodeId: summary.agentId },
+    );
+    this.syncParentCoordinationFromChildren(summary.status);
+    return summary;
+  }
+
+  private reconcileBackgroundChildren(): void {
+    const now = this.params.now();
+    let changed = false;
+    for (const [id, current] of this.childSessionsValue.entries()) {
+      if (!isBackgroundLifecycleActive(current.lifecyclePhase)) {
+        continue;
+      }
+      const lastActivityAt = Math.max(
+        current.lastProgressAt ?? 0,
+        current.lastMeaningfulOutputAt ?? 0,
+        current.lastToolActivityAt ?? 0,
+        current.updatedAt,
+      );
+      if (now - lastActivityAt < BACKGROUND_CHILD_STALL_TIMEOUT_MS) {
+        continue;
+      }
+      changed = true;
+      this.childSessionsValue.set(id, {
+        ...current,
+        lifecyclePhase: "stalled",
+        resultAvailability: hasBackgroundChildConsumableOutput(current) ? "partial" : current.resultAvailability,
+        stallReason: current.stallReason ?? "no_progress_timeout",
+        updatedAt: now,
+      });
+      const summary = projectBackgroundChildSummary(this.childSessionsValue.get(id)!);
+      this.emit(
+        "child_session.updated",
+        { childSession: summary },
+        { agentId: summary.agentId, nodeId: summary.agentId },
+      );
+      if (current.parentAgentId) {
+        this.notifyBackgroundProgress(current.parentAgentId);
+      }
+    }
+    if (changed) {
+      this.syncParentCoordinationFromChildren();
+    }
+  }
+
+  private nextBackgroundStallDelay(parentAgentId: string): number | undefined {
+    const candidates = [...this.childSessionsValue.values()]
+      .filter((child) =>
+        child.parentAgentId === parentAgentId && isBackgroundLifecycleActive(child.lifecyclePhase)
+      )
+      .map((child) => {
+        const lastActivityAt = Math.max(
+          child.lastProgressAt ?? 0,
+          child.lastMeaningfulOutputAt ?? 0,
+          child.lastToolActivityAt ?? 0,
+          child.updatedAt,
+        );
+        return Math.max(0, BACKGROUND_CHILD_STALL_TIMEOUT_MS - (this.params.now() - lastActivityAt));
+      });
+    if (candidates.length === 0) {
+      return undefined;
+    }
+    return Math.min(...candidates);
+  }
+
+  private syncParentCoordinationFromChildren(
+    lastChildStatus?: ChildSessionSummary["status"],
+  ): void {
+    if (this.childSessionsValue.size === 0) {
+      return;
+    }
+    const coordination = deriveParentCoordinationUpdate({
+      children: [...this.childSessionsValue.values()].map((child) => ({
+        id: child.id,
+        agentId: child.agentId,
+        status: child.status,
+        lifecyclePhase: child.lifecyclePhase,
+        resultAvailability: child.resultAvailability,
+        stallReason: child.stallReason,
+        coordinationBarrier: child.coordinationBarrier,
+      })),
+      lastChildStatus:
+        lastChildStatus ??
+        [...this.childSessionsValue.values()].sort((left, right) => right.updatedAt - left.updatedAt)[0]?.status ??
+        "running",
+    });
+    this.setParentCoordination({
+      ...coordination,
+      ...(coordination.phase === "resuming_with_child_summaries" ? { lastResumedAt: this.params.now() } : {}),
+    });
+  }
+
+  private observeBackgroundChildEvent(event: OraEventEnvelope): void {
+    const agentId = event.agentId;
+    if (!agentId) {
+      return;
+    }
+    const current = [...this.childSessionsValue.values()].find((child) => child.agentId === agentId);
+    if (!current) {
+      return;
+    }
+    const next: BackgroundChildRegistryEntry = {
+      ...current,
+      updatedAt: Math.max(current.updatedAt, event.createdAt),
+      lastProgressAt: event.createdAt,
+    };
+    if (event.type === "tool.called") {
+      next.lastToolActivityAt = event.createdAt;
+    }
+    if (
+      event.type === "message.delta" ||
+      event.type === "token.delta" ||
+      event.type === "agent.message" ||
+      event.type === "artifact.exported" ||
+      event.type === "artifact.degraded"
+    ) {
+      next.lastMeaningfulOutputAt = event.createdAt;
+      if (current.status === "running" && current.deliveryStatus !== "awaiting_pickup") {
+        next.lifecyclePhase = "produced_output";
+        if (current.resultAvailability === "none") {
+          next.resultAvailability = "visible_output";
+        }
+      }
+    }
+    if (event.type === "recovery.applied" || event.type === "recovery.exhausted") {
+      next.recoveryAttemptCount = current.recoveryAttemptCount + 1;
+    }
+    if (event.type === "recovery.detected" && !next.stallReason) {
+      next.stallReason = "recovery_detected";
+    }
+    this.childSessionsValue.set(current.id, next);
   }
 
   appendArtifact(artifact: ArtifactRef): ArtifactRef {
@@ -689,6 +1041,7 @@ class KernelRuntimeContext {
       ...extra,
     });
     this.eventsValue.push(envelope);
+    this.observeBackgroundChildEvent(envelope);
     if (type === "plan_list.updated") {
       const planData = payloadSnapshot as { plan?: PlanListStep[] };
       if (planData.plan) {
@@ -889,17 +1242,49 @@ class KernelRuntimeContext {
 }
 
 export function deriveParentCoordinationUpdate(params: {
-  children: ReadonlyArray<Pick<ChildSessionSummary, "id" | "agentId" | "status">>;
-  barrierByAgentId: ReadonlyMap<string, "required" | "independent">;
+  children: ReadonlyArray<
+    Pick<ChildSessionSummary, "id" | "agentId" | "status" | "lifecyclePhase" | "resultAvailability" | "stallReason"> & {
+      coordinationBarrier?: "required" | "independent";
+    }
+  >;
   lastChildStatus: ChildSessionSummary["status"];
-}): Pick<ParentCoordinationState, "phase" | "activeChildIds" | "waitingChildIds" | "summary"> {
+}): Pick<
+  ParentCoordinationState,
+  "phase" | "activeChildIds" | "waitingChildIds" | "blockedByChildIds" | "stalledChildIds" | "recoverableChildIds" | "partialResultChildIds" | "summary"
+> {
   const activeChildren = params.children
-    .filter((child) => child.status === "queued" || child.status === "running");
+    .filter((child) => {
+      const phase = child.lifecyclePhase ?? defaultBackgroundLifecyclePhase({
+        status: child.status,
+        hasMeaningfulOutput: child.resultAvailability === "visible_output" || child.resultAvailability === "partial",
+      });
+      return isBackgroundLifecycleActive(phase);
+    });
   const activeChildIds = activeChildren.map((child) => child.id);
   const waitingChildIds = activeChildren
-    .filter((child) => params.barrierByAgentId.get(child.agentId) === "required")
+    .filter((child) => child.coordinationBarrier === "required")
     .map((child) => child.id);
-  const phase = waitingChildIds.length > 0
+  const stalledChildIds = params.children
+    .filter((child) => child.lifecyclePhase === "stalled")
+    .map((child) => child.id);
+  const blockedByChildIds = params.children
+    .filter((child) =>
+      child.coordinationBarrier === "required" &&
+      (waitingChildIds.includes(child.id) || child.lifecyclePhase === "stalled"),
+    )
+    .map((child) => child.id);
+  const recoverableChildIds = params.children
+    .filter((child) => child.lifecyclePhase === "stalled")
+    .map((child) => child.id);
+  const partialResultChildIds = params.children
+    .filter((child) =>
+      child.resultAvailability === "visible_output" ||
+      child.resultAvailability === "queued_for_parent" ||
+      child.resultAvailability === "consumed" ||
+      child.resultAvailability === "partial",
+    )
+    .map((child) => child.id);
+  const phase = blockedByChildIds.length > 0
     ? "waiting_on_required_children"
     : activeChildIds.length > 0
       ? "parallel_independent_work"
@@ -911,10 +1296,18 @@ export function deriveParentCoordinationUpdate(params: {
     phase,
     activeChildIds,
     waitingChildIds,
-    summary: waitingChildIds.length > 0
-      ? `正在等待 ${waitingChildIds.length} 个必需子任务`
+    blockedByChildIds,
+    stalledChildIds,
+    recoverableChildIds,
+    partialResultChildIds,
+    summary: blockedByChildIds.length > 0
+      ? stalledChildIds.length > 0
+        ? `有 ${stalledChildIds.length} 个子任务卡住，仍阻塞父流程。`
+        : `正在等待 ${waitingChildIds.length} 个必需子任务`
       : activeChildIds.length > 0
         ? `正在并行处理 ${activeChildIds.length} 个后台子任务`
+        : partialResultChildIds.length > 0
+          ? `子 Agent 结果已回流，父 Agent 可继续整合。`
         : "子 Agent 摘要已回流，父 Agent 恢复整合。",
   };
 }
@@ -1928,6 +2321,7 @@ export async function executeRuntimeKernel(
     }),
     activeBackgroundChildCount: (agentId) => kernelRuntimeContext.activeBackgroundChildCount(agentId),
     pendingAsyncResultCount: (agentId) => kernelRuntimeContext.pendingAsyncAgentResultCount(agentId),
+    stalledBackgroundChildren: (agentId) => kernelRuntimeContext.stalledBackgroundChildren(agentId),
     waitForBackgroundProgress: (agentId) => kernelRuntimeContext.waitForBackgroundProgress(agentId),
     ensureClarification,
     ensureClarifications,
@@ -2304,7 +2698,6 @@ export async function executeRuntimeKernel(
   const MAX_SPAWN_DEPTH = 3;
   let isNestedAgentSpawn = false;
   let subAgentCounter = 0;
-  const childCoordinationBarrier = new Map<string, "required" | "independent">();
   const CHILD_TOOL_BUNDLES: Record<AgentToolBundleId, ChildToolBundleDefinition> = {
     research_readonly: {
       toolIds: ["file.read", "file.list", "file.glob", "file.grep", "web.fetch", "web.search"],
@@ -2347,9 +2740,6 @@ export async function executeRuntimeKernel(
     durationMs?: number;
   }) => {
     const current = kernelRuntimeContext.childSession(params.agentId);
-    if (params.coordinationBarrier) {
-      childCoordinationBarrier.set(params.agentId, params.coordinationBarrier);
-    }
     const startedAt = current?.startedAt ?? now();
     const next = kernelRuntimeContext.updateChildSession({
       id: `${runId}:${params.agentId}`,
@@ -2380,14 +2770,9 @@ export async function executeRuntimeKernel(
           ? now()
           : undefined,
     });
-    const coordination = deriveParentCoordinationUpdate({
-      children: kernelRuntimeContext.childSessions,
-      barrierByAgentId: childCoordinationBarrier,
-      lastChildStatus: params.status,
-    });
-    kernelRuntimeContext.setParentCoordination({
-      ...coordination,
-      ...(coordination.phase === "resuming_with_child_summaries" ? { lastResumedAt: now() } : {}),
+    kernelRuntimeContext.setBackgroundChildRuntimeMetadata({
+      agentId: params.agentId,
+      coordinationBarrier: params.coordinationBarrier,
     });
     return next;
   };

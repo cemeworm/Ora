@@ -692,6 +692,28 @@ export const ChildSessionDeliveryStatusSchema = z.enum([
 ]);
 export type ChildSessionDeliveryStatus = z.infer<typeof ChildSessionDeliveryStatusSchema>;
 
+export const BackgroundChildLifecyclePhaseSchema = z.enum([
+  "queued",
+  "running",
+  "produced_output",
+  "awaiting_pickup",
+  "picked_up",
+  "succeeded",
+  "failed",
+  "cancelled",
+  "stalled",
+]);
+export type BackgroundChildLifecyclePhase = z.infer<typeof BackgroundChildLifecyclePhaseSchema>;
+
+export const BackgroundChildResultAvailabilitySchema = z.enum([
+  "none",
+  "visible_output",
+  "queued_for_parent",
+  "consumed",
+  "partial",
+]);
+export type BackgroundChildResultAvailability = z.infer<typeof BackgroundChildResultAvailabilitySchema>;
+
 export const ChildSessionReplayRefSchema = z.object({
   kind: z.enum(["event_range", "session_turn"]).default("event_range"),
   runId: z.string().min(1),
@@ -707,7 +729,9 @@ export const ChildSessionSummarySchema = z.object({
   label: z.string().min(1),
   sessionClass: ChildSessionClassSchema,
   status: ChildSessionStatusSchema,
+  lifecyclePhase: BackgroundChildLifecyclePhaseSchema.optional(),
   deliveryStatus: ChildSessionDeliveryStatusSchema.optional(),
+  resultAvailability: BackgroundChildResultAvailabilitySchema.optional(),
   summary: z.string().min(1).optional(),
   lastMessage: z.string().min(1).optional(),
   artifactIds: z.array(z.string().min(1)).default([]),
@@ -719,6 +743,11 @@ export const ChildSessionSummarySchema = z.object({
   replayRef: ChildSessionReplayRefSchema.optional(),
   sourceSessionId: z.string().min(1).optional(),
   sourceRunId: z.string().min(1).optional(),
+  lastProgressAt: z.number().int().nonnegative().optional(),
+  lastMeaningfulOutputAt: z.number().int().nonnegative().optional(),
+  lastToolActivityAt: z.number().int().nonnegative().optional(),
+  stallReason: z.string().min(1).optional(),
+  recoveryAttemptCount: z.number().int().nonnegative().default(0),
   startedAt: z.number().int().nonnegative(),
   updatedAt: z.number().int().nonnegative(),
   completedAt: z.number().int().nonnegative().optional(),
@@ -739,6 +768,10 @@ export const ParentCoordinationStateSchema = z.object({
   phase: ParentCoordinationPhaseSchema,
   activeChildIds: z.array(z.string().min(1)).default([]),
   waitingChildIds: z.array(z.string().min(1)).default([]),
+  blockedByChildIds: z.array(z.string().min(1)).default([]),
+  stalledChildIds: z.array(z.string().min(1)).default([]),
+  recoverableChildIds: z.array(z.string().min(1)).default([]),
+  partialResultChildIds: z.array(z.string().min(1)).default([]),
   summary: z.string().min(1).optional(),
   lastResumedAt: z.number().int().nonnegative().optional(),
   updatedAt: z.number().int().nonnegative(),

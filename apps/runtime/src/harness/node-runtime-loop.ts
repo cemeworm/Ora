@@ -1,6 +1,7 @@
 import type {
   ArtifactRef,
   CausalTaskState,
+  ChildSessionSummary,
   CompletionStopReason,
   ModeSpec,
   OraEventEnvelope,
@@ -175,6 +176,7 @@ export interface RunNodeRuntimeLoopDeps {
   drainPendingExternalInputs?: (agentId: string) => PendingExternalInputs;
   activeBackgroundChildCount?: (agentId: string) => number;
   pendingAsyncResultCount?: (agentId: string) => number;
+  stalledBackgroundChildren?: (agentId: string) => readonly ChildSessionSummary[];
   waitForBackgroundProgress?: (agentId: string) => Promise<void>;
   ensureClarification: (params: {
     id: string;
@@ -722,6 +724,7 @@ export async function runNodeRuntimeLoop(
     });
   const backgroundChildCount = () => deps.activeBackgroundChildCount?.(params.agentId) ?? 0;
   const pendingAsyncResultCount = () => deps.pendingAsyncResultCount?.(params.agentId) ?? 0;
+  const stalledBackgroundChildren = () => deps.stalledBackgroundChildren?.(params.agentId) ?? [];
   const toolRecoveryService = new RuntimeToolRecoveryService({
     agentId: params.agentId,
     nodeId: params.nodeId,
@@ -860,6 +863,7 @@ export async function runNodeRuntimeLoop(
       agentId: params.agentId,
       activeBackgroundChildCount: backgroundChildCount(),
       pendingAsyncResultCount: pendingAsyncResultCount(),
+      stalledBackgroundChildren: stalledBackgroundChildren(),
     });
     if (guardResult.allowComplete) {
       // Final-output guard: refuse to complete when the candidate answer is empty.
@@ -968,6 +972,7 @@ export async function runNodeRuntimeLoop(
     );
     if (
       (guardResult.reason === "pending_background_children" || guardResult.reason === "pending_background_results") &&
+      stalledBackgroundChildren().length === 0 &&
       pendingAsyncResultCount() === 0 &&
       backgroundChildCount() > 0
     ) {

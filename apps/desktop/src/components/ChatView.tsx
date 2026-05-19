@@ -264,11 +264,7 @@ export function deriveChildReplaySelection({
 export function deriveVisibleCollaborationChildren(
   snapshot?: Pick<OraStateSnapshot, "childSessions">,
 ): NonNullable<OraStateSnapshot["childSessions"]> {
-  return (snapshot?.childSessions ?? []).filter((child) =>
-    child.status === "queued" ||
-    child.status === "running" ||
-    child.deliveryStatus === "awaiting_pickup"
-  );
+  return (snapshot?.childSessions ?? []).filter((child) => isOverlayChildActive(child));
 }
 
 export function shouldShowCollaborationOverlay(
@@ -306,9 +302,12 @@ export function deriveOverlayChildTurnView(
 function isOverlayChildActive(
   child: NonNullable<OraStateSnapshot["childSessions"]>[number],
 ): boolean {
-  return child.status === "queued" ||
-    child.status === "running" ||
-    child.deliveryStatus === "awaiting_pickup";
+  const lifecyclePhase = effectiveOverlayChildLifecyclePhase(child);
+  return lifecyclePhase === "queued" ||
+    lifecyclePhase === "running" ||
+    lifecyclePhase === "produced_output" ||
+    lifecyclePhase === "awaiting_pickup" ||
+    lifecyclePhase === "stalled";
 }
 
 function deriveOverlayReplayChildSnapshot(
@@ -386,10 +385,7 @@ function deriveOverlayChildSnapshotFromParentReplay({
     childSessions: [],
     parentCoordination: undefined,
     artifacts: parentSnapshot.artifacts.filter((artifact) => artifactIds.has(artifact.id)),
-    activeAgents:
-      child.status === "queued" || child.status === "running" || child.deliveryStatus === "awaiting_pickup"
-        ? [child.agentId]
-        : [],
+    activeAgents: isOverlayChildActive(child) ? [child.agentId] : [],
     pendingClarifications: [],
     pendingApprovals: [],
     output: fallbackOutputText ? { text: fallbackOutputText } : undefined,
@@ -1185,6 +1181,7 @@ export function DesktopOverlayRail({
                         <span
                           className={collaborationStatusBadgeClassName(
                             child.status,
+                            child.lifecyclePhase,
                             child.deliveryStatus,
                           )}
                         >
@@ -1234,23 +1231,43 @@ export function DesktopOverlayRail({
   );
 }
 
-function deriveOverlayChildStatusLabel({
+function effectiveOverlayChildLifecyclePhase(
+  child: NonNullable<OraStateSnapshot["childSessions"]>[number],
+) {
+  if (child.lifecyclePhase) {
+    return child.lifecyclePhase;
+  }
+  if (child.deliveryStatus === "awaiting_pickup") {
+    return "awaiting_pickup" as const;
+  }
+  return child.status;
+}
+
+export function deriveOverlayChildStatusLabel({
   child,
   childTurnView,
 }: {
   child: NonNullable<OraStateSnapshot["childSessions"]>[number];
   childTurnView?: ReturnType<typeof derivePresentedAssistantTurnFromSnapshot>;
 }): string {
-  if (child.status === "succeeded" && child.deliveryStatus === "awaiting_pickup") {
-    return "待接收";
-  }
-  switch (child.status) {
+  const lifecyclePhase = effectiveOverlayChildLifecyclePhase(child);
+  switch (lifecyclePhase) {
     case "queued":
       return "排队中";
+    case "produced_output":
+      return "完善中";
     case "running":
-      return overlayChildHasMeaningfulVisibleContent({ child, childTurnView })
-        ? "完善中"
-        : "执行中";
+      return child.lifecyclePhase
+        ? "执行中"
+        : overlayChildHasMeaningfulVisibleContent({ child, childTurnView })
+          ? "完善中"
+          : "执行中";
+    case "awaiting_pickup":
+      return "待整合";
+    case "picked_up":
+      return "已接收";
+    case "stalled":
+      return "卡住";
     case "succeeded":
       return "已完成";
     case "failed":
@@ -1280,15 +1297,20 @@ function overlayChildHasMeaningfulVisibleContent({
 
 export function collaborationStatusBadgeClassName(
   status: NonNullable<OraStateSnapshot["childSessions"]>[number]["status"],
+  lifecyclePhase?: NonNullable<OraStateSnapshot["childSessions"]>[number]["lifecyclePhase"],
   deliveryStatus?: NonNullable<OraStateSnapshot["childSessions"]>[number]["deliveryStatus"],
 ) {
-  if (status === "succeeded" && deliveryStatus === "awaiting_pickup") {
+  const effectivePhase = lifecyclePhase ?? (
+    deliveryStatus === "awaiting_pickup" ? "awaiting_pickup" : status
+  );
+  if (effectivePhase === "awaiting_pickup") {
     return cn(
       FLOATING_OVERLAY_BADGE_BASE_CLASS,
       "border-emerald-300/55 bg-emerald-50/70 text-emerald-700",
     );
   }
-  switch (status) {
+  switch (effectivePhase) {
+    case "produced_output":
     case "running":
       return cn(
         FLOATING_OVERLAY_BADGE_BASE_CLASS,
@@ -1300,6 +1322,7 @@ export function collaborationStatusBadgeClassName(
         "bg-muted/65 text-muted-foreground",
       );
     case "failed":
+    case "stalled":
       return cn(
         FLOATING_OVERLAY_BADGE_BASE_CLASS,
         "border-destructive/25 bg-destructive/10 text-destructive",
