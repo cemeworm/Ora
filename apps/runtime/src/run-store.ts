@@ -497,6 +497,7 @@ export class LocalRunStore {
       modeRegistry: this,
       selfIterationRegistry: this,
       automationRegistry: this,
+      widgetRegistry: this,
       customAgentOverlay: (customAgentId) => this.customAgentStore.personaOverlay(customAgentId),
       customAgentOverlaysForMode: (modeSpec) => this.customAgentOverlaysForMode(modeSpec),
       systemAgentOverlaysForMode: (modeSpec) => this.systemAgentOverlaysForMode(modeSpec),
@@ -1351,6 +1352,10 @@ export class LocalRunStore {
   getWidget(params: unknown) {
     const { id } = params as { id: string };
     return this.widgetStore.get(id);
+  }
+
+  addTodoWidgetItem(params: unknown) {
+    return this.widgetStore.addTodoItem(params as Parameters<typeof this.widgetStore.addTodoItem>[0]);
   }
 
   createWidget(params: unknown) {

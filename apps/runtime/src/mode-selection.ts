@@ -4,6 +4,7 @@ import {
   DEFAULT_SKILL_TOOL_IDS,
   DEFAULT_WEB_TOOL_IDS,
   DEFAULT_PROVIDERS,
+  DelegationIntentPreferenceSchema,
   DelegationIntentSchema,
   EffectiveRunStrategySchema,
   ModeSpec,
@@ -44,9 +45,16 @@ import {
 const AUTO_MODE_ROUTER_CONFIDENCE_THRESHOLD = 0.55;
 const AUTO_MODE_ROUTER_MAX_TOKENS = 800;
 const AUTO_MODE_ROUTER_RECENT_MESSAGE_LIMIT = 6;
+const DELEGATION_CLASSIFIER_MAX_TOKENS = 240;
 const AutoModeRouterResponseSchema = z.object({
   modeId: z.string().min(1),
   taskIntent: TaskIntentSchema.optional(),
+  confidence: z.number().min(0).max(1),
+  reason: z.string().min(1),
+});
+const DelegationIntentClassifierResponseSchema = z.object({
+  preference: DelegationIntentPreferenceSchema,
+  requestedByUser: z.boolean(),
   confidence: z.number().min(0).max(1),
   reason: z.string().min(1),
 });
@@ -54,40 +62,6 @@ const ContextRouterMessageSchema = z.object({
   role: z.enum(["user", "assistant"]),
   content: z.string().min(1),
 });
-
-const EXPLICIT_NO_DELEGATION_PATTERNS = [
-  /不要(?:开|用|启用|调用)?子智能体/u,
-  /不要(?:开|用|启用|调用)?sub-?agents?/iu,
-  /不要(?:让|找).*(?:agent|智能体).*(?:帮忙|参与|协作)/iu,
-  /自己回答/u,
-  /不要委派/u,
-  /不要 delegation/iu,
-];
-
-const TEAM_COLLAB_PATTERNS = [
-  /agent team/iu,
-  /team mode/iu,
-  /子智能体/u,
-  /sub-?agents?/iu,
-  /多个\s*agents?/iu,
-  /并行.*(?:agent|智能体)/iu,
-  /分工.*(?:agent|智能体)/iu,
-  /团队协作/u,
-];
-
-const PREFER_DELEGATION_PATTERNS = [
-  /通过.*agent team.*(?:模式|方式).*(?:帮我|处理|研究|完成)/iu,
-  /请用.*agent team/iu,
-  /请用.*子智能体/iu,
-  /并行.*研究/u,
-  /多个.*agents?.*(?:一起|协作|并行)/iu,
-];
-
-const ALLOW_DELEGATION_PATTERNS = [
-  /可以.*子智能体/u,
-  /可以.*sub-?agents?/iu,
-  /也可以.*(?:agent|智能体).*(?:帮忙|协作)/iu,
-];
 
 export interface ModeSelectionDeps {
   modeStore: ModeSpecFileStore;
@@ -138,15 +112,18 @@ export async function resolveModeSelection(
   fullConfig: RunConfig;
 }> {
   const parsed = RunConfigSchema.parse(config ?? {});
-  const autoRoute = parsed.modeSelection === "auto" && input
-    ? await routeAutoMode(parsed, input, session, deps)
-    : undefined;
-  const effectiveMetadata = resolveDelegationIntentMetadata(
-    resolveAutoTaskIntentMetadata(parsed.metadata, autoRoute),
-    input,
-    session,
-    deps,
-  );
+  const [autoRoute, delegationIntentMetadata] = await Promise.all([
+    parsed.modeSelection === "auto" && input
+      ? routeAutoMode(parsed, input, session, deps)
+      : Promise.resolve(undefined),
+    input
+      ? resolveDelegationIntentMetadata(parsed, input, session, deps)
+      : Promise.resolve(undefined),
+  ]);
+  const effectiveMetadata = {
+    ...resolveAutoTaskIntentMetadata(parsed.metadata, autoRoute),
+    ...(delegationIntentMetadata ?? {}),
+  };
   const requestedModeId = autoRoute?.modeId
     ?? (typeof config?.modeId === "string" ? config.modeId : parsed.modeId ?? parsed.pattern);
   const modeSpec = deps.applySystemAgentOverridesToMode(deps.modeStore.resolve(requestedModeId, parsed.pattern));
@@ -619,11 +596,7 @@ async function routeAutoMode(
 
   let rawResponseText = "";
   try {
-    const toolProviderId = config.metadata?.toolModelProviderId;
-    const routerConfig = toolProviderId && toolProviderId !== "auto"
-      ? { ...config, providerId: toolProviderId as string }
-      : config;
-    const response = await invokeRunProvider(routerConfig, {
+    const response = await invokeRunProvider(resolveToolModelRunConfig(config), {
       system: [
         "You are Ora, Ora's root conversation agent and agent mode router.",
         "Choose exactly one modeId from the provided candidates for the next run.",
@@ -643,7 +616,7 @@ async function routeAutoMode(
         context: input.context ?? {},
         taskIntentMode: config.metadata.taskIntentMode,
         taskIntent: taskIntentFromMetadata(config.metadata),
-        recentMessages: resolveAutoRouterRecentMessages(input, session, deps),
+        recentMessages: resolveRecentMessages(input, session, deps),
         candidates,
         fallbackModeId,
       }),
@@ -704,74 +677,88 @@ function resolveAutoTaskIntentMetadata(
   };
 }
 
-function resolveDelegationIntentMetadata(
-  metadata: Record<string, unknown>,
+async function resolveDelegationIntentMetadata(
+  config: RunConfig,
   input: UserTaskInput | undefined,
   session: SessionSummary | undefined,
   deps: ModeSelectionDeps,
-): Record<string, unknown> {
+): Promise<Record<string, unknown> | undefined> {
   if (!input) {
-    return metadata;
+    return undefined;
   }
-  const delegationIntent = resolveDelegationIntent(input, session, deps);
-  if (!delegationIntent) {
-    return metadata;
+  const recentMessages = resolveRecentMessages(input, session, deps);
+  let rawResponseText = "";
+  try {
+    const response = await invokeRunProvider(resolveToolModelRunConfig(config), {
+      system: [
+        "You are Ora's delegation intent classifier.",
+        "Classify only the user's delegation preference for this turn.",
+        "Return only compact JSON with keys preference, requestedByUser, confidence, and reason.",
+        "preference must be one of none, allow, prefer.",
+        "Use prefer only when the user explicitly requests team collaboration, sub-agent coordination, splitting work, or parallel work.",
+        "Use allow only when the user explicitly permits sub-agent help but does not require it.",
+        "Use none when the user explicitly forbids delegation or when no delegation preference is expressed.",
+        "If the user explicitly says not to delegate, return preference none with requestedByUser true.",
+        "requestedByUser must be true only when the user explicitly expressed a delegation preference in the task or recentMessages.",
+        "Do not infer delegation preference from task difficulty or from what would be useful.",
+        "confidence must be a number from 0 to 1.",
+        "reason must be a short plain string under 120 characters.",
+        "Do not include markdown or extra text.",
+      ].join(" "),
+      prompt: JSON.stringify({
+        task: input.prompt,
+        projectId: input.projectId,
+        recentMessages,
+      }),
+      temperature: 0,
+      maxTokens: DELEGATION_CLASSIFIER_MAX_TOKENS,
+      toolChoice: "none",
+    });
+    rawResponseText = response.text;
+    const parsed = normalizeDelegationIntentClassifierResponse(
+      parseDelegationIntentClassifierResponse(response.text),
+    );
+    return {
+      delegationIntent: DelegationIntentSchema.parse({
+        requestedByUser: parsed.requestedByUser,
+        preference: parsed.preference,
+        reason: parsed.reason,
+        source: "classifier",
+      }),
+      delegationClassifier: {
+        status: "selected",
+        requestedByUser: parsed.requestedByUser,
+        preference: parsed.preference,
+        confidence: parsed.confidence,
+        reason: parsed.reason,
+      },
+    };
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    return {
+      delegationClassifier: {
+        status: "fallback",
+        confidence: 0,
+        reason: "Delegation classifier failed before producing a valid intent.",
+        error: errorMessage,
+        rawResponsePreview: rawResponseText.slice(0, 300),
+      },
+    };
   }
-  return {
-    ...metadata,
-    delegationIntent,
-  };
 }
 
-function resolveDelegationIntent(
-  input: UserTaskInput,
-  session: SessionSummary | undefined,
-  deps: ModeSelectionDeps,
-) {
-  void session;
-  void deps;
-  const combined = input.prompt;
-
-  if (EXPLICIT_NO_DELEGATION_PATTERNS.some((pattern) => pattern.test(combined))) {
-    return DelegationIntentSchema.parse({
-      requestedByUser: true,
-      preference: "none",
-      reason: "The user explicitly asked not to use delegation or sub-agents for this turn.",
-      source: "explicit_no_delegation",
-    });
+function normalizeDelegationIntentClassifierResponse(
+  response: z.infer<typeof DelegationIntentClassifierResponseSchema>,
+): z.infer<typeof DelegationIntentClassifierResponseSchema> {
+  if (!response.requestedByUser && response.preference !== "none") {
+    throw new Error(
+      `Delegation classifier returned preference '${response.preference}' without explicit user intent.`,
+    );
   }
-
-  if (PREFER_DELEGATION_PATTERNS.some((pattern) => pattern.test(combined))) {
-    return DelegationIntentSchema.parse({
-      requestedByUser: true,
-      preference: "prefer",
-      reason: "The user explicitly requested team-style collaboration or sub-agent coordination for this turn.",
-      source: /agent team|team mode/iu.test(combined) ? "explicit_team_collab" : "explicit_subagent_request",
-    });
-  }
-
-  if (ALLOW_DELEGATION_PATTERNS.some((pattern) => pattern.test(combined))) {
-    return DelegationIntentSchema.parse({
-      requestedByUser: true,
-      preference: "allow",
-      reason: "The user explicitly allowed sub-agent help for this turn.",
-      source: "explicit_subagent_request",
-    });
-  }
-
-  if (TEAM_COLLAB_PATTERNS.some((pattern) => pattern.test(combined))) {
-    return DelegationIntentSchema.parse({
-      requestedByUser: true,
-      preference: "prefer",
-      reason: "The user used explicit team-collaboration language that should bias the run toward delegation.",
-      source: "explicit_team_collab",
-    });
-  }
-
-  return undefined;
+  return response;
 }
 
-function resolveAutoRouterRecentMessages(
+function resolveRecentMessages(
   input: UserTaskInput,
   session: SessionSummary | undefined,
   deps: ModeSelectionDeps,
@@ -800,7 +787,7 @@ function parseAutoModeRouterResponse(text: string): z.infer<typeof AutoModeRoute
     return AutoModeRouterResponseSchema.parse(JSON.parse(jsonText));
   } catch (firstError) {
     // Retry with repaired JSON: fix common LLM JSON issues
-    const repaired = repairRouterJson(jsonText);
+    const repaired = repairJsonObjectText(jsonText);
     if (repaired) {
       try {
         return AutoModeRouterResponseSchema.parse(JSON.parse(repaired));
@@ -812,7 +799,25 @@ function parseAutoModeRouterResponse(text: string): z.infer<typeof AutoModeRoute
   }
 }
 
-function repairRouterJson(text: string): string | undefined {
+function parseDelegationIntentClassifierResponse(text: string): z.infer<typeof DelegationIntentClassifierResponseSchema> {
+  const trimmed = text.trim();
+  const jsonText = extractFirstJsonObject(trimmed) ?? trimmed;
+  try {
+    return DelegationIntentClassifierResponseSchema.parse(JSON.parse(jsonText));
+  } catch (firstError) {
+    const repaired = repairJsonObjectText(jsonText);
+    if (repaired) {
+      try {
+        return DelegationIntentClassifierResponseSchema.parse(JSON.parse(repaired));
+      } catch {
+        // fall through
+      }
+    }
+    throw firstError;
+  }
+}
+
+function repairJsonObjectText(text: string): string | undefined {
   // Fix trailing commas before } or ]
   let repaired = text.replace(/,(?=\s*[}\]])/g, "");
   // Fix unquoted keys (simple case: word:)
@@ -824,6 +829,13 @@ function repairRouterJson(text: string): string | undefined {
     repaired = repaired.replace(/'/g, "\"");
   }
   return repaired !== text ? repaired : undefined;
+}
+
+function resolveToolModelRunConfig(config: RunConfig): RunConfig {
+  const toolProviderId = config.metadata?.toolModelProviderId;
+  return toolProviderId && toolProviderId !== "auto"
+    ? { ...config, providerId: toolProviderId as string }
+    : config;
 }
 
 function extractFirstJsonObject(text: string): string | undefined {

@@ -35,6 +35,7 @@ import {
   CausalDecisionRecordSchema,
   type CompletionStopReason,
   type CustomAgentDetail,
+  type DelegationIntent,
   getPermissionProfile,
   ORA_ROOT_AGENT_ID,
   ORA_ROOT_AGENT_LABEL,
@@ -175,6 +176,7 @@ export interface RuntimeKernelOptions {
   modeRegistry?: import("./runtime-tool-executor.js").ModeRegistryTools;
   selfIterationRegistry?: import("./runtime-tool-executor.js").SelfIterationRegistryTools;
   automationRegistry?: import("./runtime-tool-executor.js").AutomationRegistryTools;
+  widgetRegistry?: import("./runtime-tool-executor.js").WidgetRegistryTools;
   forkedFrom?: { runId: string; checkpointId: string; eventSeq: number };
   conversationMessages?: ModelMessage[];
   turnIndex?: number;
@@ -761,6 +763,29 @@ export function deriveParentCoordinationUpdate(params: {
   };
 }
 
+export function buildDelegationGuidance(
+  delegationIntent: DelegationIntent | undefined,
+): string | undefined {
+  if (!delegationIntent || delegationIntent.preference === "none") {
+    return undefined;
+  }
+  if (delegationIntent.preference === "allow") {
+    return [
+      "Delegation guidance for this turn:",
+      "- The user explicitly allowed sub-agent help for this turn.",
+      "- You may use agent.spawn if delegation would materially improve the outcome.",
+      `- Reason: ${delegationIntent.reason}`,
+    ].join("\n");
+  }
+  return [
+    "Delegation guidance for this turn:",
+    "- The user explicitly requested team-style collaboration or sub-agent coordination for this turn.",
+    "- Even in single-agent mode, treat this as explicit permission to delegate.",
+    "- If the work can be split into substantial, self-contained subtasks, prefer using agent.spawn instead of doing everything locally.",
+    `- Reason: ${delegationIntent.reason}`,
+  ].join("\n");
+}
+
 function cloneRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return {};
@@ -949,6 +974,7 @@ export async function executeRuntimeKernel(
     modeRegistry: options.modeRegistry,
     selfIterationRegistry: options.selfIterationRegistry,
     automationRegistry: options.automationRegistry,
+    widgetRegistry: options.widgetRegistry,
     packageManager,
     searchProviderConfig: config.searchProvider,
     toolLimits: modeSpec.toolLimits,
@@ -956,6 +982,7 @@ export async function executeRuntimeKernel(
     permissionProfile,
     toolDefinitions: toolRegistry.listDefinitions(),
     signal: options.signal,
+    turnContext: input.context,
     postToolPolicyHooks,
   });
   const skills = skillRegistry.snapshot(modeSpec.family);
@@ -1597,27 +1624,7 @@ export async function executeRuntimeKernel(
     .join("\n\n") || undefined;
   const taskIntentContext = (() => {
     const taskIntent = config.metadata.taskIntent as TaskIntent | undefined;
-    const delegationIntent = delegationIntentFromMetadata(config.metadata);
-    const delegationContext = (() => {
-      if (!delegationIntent || delegationIntent.preference === "none") {
-        return undefined;
-      }
-      if (delegationIntent.preference === "allow") {
-        return [
-          "Delegation guidance for this turn:",
-          "- The user explicitly allowed sub-agent help for this turn.",
-          "- You may use agent.spawn if delegation would materially improve the outcome.",
-          `- Reason: ${delegationIntent.reason}`,
-        ].join("\n");
-      }
-      return [
-        "Delegation guidance for this turn:",
-        "- The user explicitly requested team-style collaboration or sub-agent coordination for this turn.",
-        "- Even in single-agent mode, treat this as explicit permission to delegate.",
-        "- If the work can be split into substantial, self-contained subtasks, prefer using agent.spawn instead of doing everything locally.",
-        `- Reason: ${delegationIntent.reason}`,
-      ].join("\n");
-    })();
+    const delegationContext = buildDelegationGuidance(delegationIntentFromMetadata(config.metadata));
     switch (taskIntent) {
       case "chat":
         return [

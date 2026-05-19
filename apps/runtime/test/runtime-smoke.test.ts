@@ -102,6 +102,157 @@ describe("Ora runtime smoke path", () => {
     expect(snapshot.output.text).not.toContain("prompt=请更新这个组件。");
   });
 
+  it("updates the selected todo widget through runtime widget tools", async () => {
+    const handle = createRuntimeMethodHandler(createTempStore());
+    const widget = await handle({
+      jsonrpc: "2.0",
+      id: "create-widget",
+      method: "widgets.create",
+      params: {
+        title: "任务清单",
+        kind: "todo",
+      },
+    }) as { id: string };
+    const dueDate = Date.parse("2026-05-19T17:00:00+08:00");
+    const previousFetch = globalThis.fetch;
+    const previousKey = process.env.WIDGET_TOOL_KEY;
+    process.env.WIDGET_TOOL_KEY = "test";
+    let providerCalls = 0;
+
+    const toolResponse = (id: string, name: string, args: Record<string, unknown>) => new Response(JSON.stringify({
+      choices: [{
+        finish_reason: "tool_calls",
+        message: {
+          content: null,
+          tool_calls: [{
+            id,
+            type: "function",
+            function: { name, arguments: JSON.stringify(args) },
+          }],
+        },
+      }],
+    }), { status: 200, headers: { "content-type": "application/json" } });
+
+    globalThis.fetch = (async (input, init) => {
+      const url = String(input);
+      if (!url.includes("widget-tool.test")) {
+        throw new Error(`Unexpected fetch ${url}`);
+      }
+      providerCalls += 1;
+      const body = JSON.parse(String(init?.body ?? "{}")) as {
+        tools?: unknown[];
+        messages?: Array<{ role: string; tool_call_id?: string; content?: string }>;
+      };
+      if (!body.tools?.length) {
+        return new Response(JSON.stringify({
+          choices: [{ message: { content: "买药提醒" } }],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      const hasToolResult = body.messages?.some((message) =>
+        message.role === "tool"
+        && message.tool_call_id === "call-add-selected-todo"
+      );
+      if (!hasToolResult) {
+        return toolResponse("call-add-selected-todo", "widgets__todo__addItem", {
+          title: "买药",
+          notes: "今天下午五点",
+          dueDate,
+        });
+      }
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: "我已经把“买药”加入当前选中的任务清单，并保留了“今天下午五点”这条时间信息，后续你还可以继续补充备注、截止时间或者完成状态。", tool_calls: [] } }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    try {
+      const run = await handle({
+        jsonrpc: "2.0",
+        id: "start-widget-tool-run",
+        method: "runs.start",
+        params: {
+          input: {
+            prompt: "提醒我今天下午五点买药",
+            context: {
+              selectedWidgetContext: {
+                id: widget.id,
+                title: "任务清单",
+                kind: "todo",
+                status: "active",
+                summary: "0 项待办未完成。",
+              },
+            },
+          },
+          config: {
+            modeId: SINGLE_AGENT_MODE_ID,
+            providerId: "widget-tool",
+            providerConfig: {
+              id: "widget-tool",
+              label: "Widget Tool",
+              type: "openai_compatible",
+              modelId: "widget-tool-model",
+              baseUrl: "https://widget-tool.test/v1",
+              apiKeyEnv: "WIDGET_TOOL_KEY",
+              capabilities: ["chat", "tool_use"],
+              headers: {},
+            },
+            metadata: {},
+            skillIds: [],
+            toolIds: ["widgets.getSelectedContext", "widgets.get", "widgets.todo.addItem"],
+          },
+        },
+      }) as { runId: string; status: string };
+
+      const snapshot = StateSnapshotSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: "state-widget-tool-run",
+        method: "runs.state",
+        params: { runId: run.runId },
+      }));
+      const widgetToolEvent = snapshot.events.find((event) =>
+        event.type === "tool.called"
+        && typeof event.payload === "object"
+        && event.payload !== null
+        && (event.payload as Record<string, unknown>).toolId === "widgets.todo.addItem"
+      );
+      const updatedWidget = await handle({
+        jsonrpc: "2.0",
+        id: "get-widget-after-run",
+        method: "widgets.get",
+        params: { id: widget.id },
+      }) as { state: { kind: string; items: Array<{ title: string; notes?: string; dueDate?: number }> } };
+
+      expect(run.status).toBe("succeeded");
+      expect(providerCalls).toBeGreaterThanOrEqual(2);
+      expect(snapshot.input.prompt).toBe("提醒我今天下午五点买药");
+      expect(widgetToolEvent?.payload).toMatchObject({
+        toolId: "widgets.todo.addItem",
+        providerCallId: "call-add-selected-todo",
+        status: "succeeded",
+      });
+      expect(snapshot.toolCalls.every((call) => call.toolId !== "widgets.todo.addItem") || snapshot.toolCalls.some((call) =>
+        call.providerCallId === "call-add-selected-todo"
+        && call.toolId === "widgets.todo.addItem"
+        && call.source === "provider_native"
+      )).toBe(true);
+      expect(snapshot.output.text).toContain("已经把“买药”加入当前选中的任务清单");
+      expect(updatedWidget.state.kind).toBe("todo");
+      expect(updatedWidget.state.items).toEqual([
+        expect.objectContaining({
+          title: "买药",
+          notes: "今天下午五点",
+          dueDate,
+        }),
+      ]);
+    } finally {
+      globalThis.fetch = previousFetch;
+      if (previousKey === undefined) {
+        delete process.env.WIDGET_TOOL_KEY;
+      } else {
+        process.env.WIDGET_TOOL_KEY = previousKey;
+      }
+    }
+  });
+
   it("exposes task flow aliases without changing session run behavior", async () => {
     const handle = createRuntimeMethodHandler(createTempStore());
     const session = await handle({

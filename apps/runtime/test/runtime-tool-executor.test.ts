@@ -795,6 +795,102 @@ describe("RuntimeToolExecutor", () => {
     expect(skillRequest.summary).toBe("我准备安装 Waza 的 think 技能。");
   });
 
+  it("uses selected widget context as the default target for todo widget tools", async () => {
+    const calls: Array<{ method: string; params: unknown }> = [];
+    const todoWidget = {
+      id: "widget-todo",
+      kind: "todo",
+      title: "任务清单",
+      state: { kind: "todo", items: [] },
+    };
+    const widgetRegistry = {
+      getWidget: (params: unknown) => {
+        calls.push({ method: "getWidget", params });
+        return todoWidget;
+      },
+      addTodoWidgetItem: (params: unknown) => {
+        calls.push({ method: "addTodoWidgetItem", params });
+        return {
+          ...todoWidget,
+          state: {
+            kind: "todo",
+            items: [{
+              id: "todo-1",
+              title: "买药",
+              notes: "今天下午五点",
+              dueDate: 1_770_000_000_000,
+            }],
+          },
+        };
+      },
+    };
+    const executor = new RuntimeToolExecutor({
+      toolDescriptors: MVP_TOOLS,
+      widgetRegistry,
+      turnContext: {
+        selectedWidgetContext: {
+          id: "widget-todo",
+          title: "任务清单",
+          kind: "todo",
+        },
+      },
+    });
+
+    const selected = await executor.execute({
+      tool: "widgets.getSelectedContext" as never,
+      args: {},
+    }) as { id: string; title: string };
+    const added = await executor.execute({
+      tool: "widgets.todo.addItem" as never,
+      args: {
+        title: "买药",
+        notes: "今天下午五点",
+        dueDate: 1_770_000_000_000,
+      },
+    }) as { state: { items: Array<{ title: string; dueDate?: number }> } };
+    const fetched = await executor.execute({
+      tool: "widgets.get" as never,
+      args: { id: "widget-todo" },
+    }) as { id: string };
+
+    expect(selected).toMatchObject({ id: "widget-todo", title: "任务清单" });
+    expect(added.state.items[0]).toMatchObject({ title: "买药", dueDate: 1_770_000_000_000 });
+    expect(fetched.id).toBe("widget-todo");
+    expect(calls).toContainEqual({
+      method: "addTodoWidgetItem",
+      params: {
+        widgetId: "widget-todo",
+        title: "买药",
+        notes: "今天下午五点",
+        dueDate: 1_770_000_000_000,
+      },
+    });
+  });
+
+  it("surfaces widget tool errors when the selected widget cannot accept todo items", async () => {
+    const executor = new RuntimeToolExecutor({
+      toolDescriptors: MVP_TOOLS,
+      widgetRegistry: {
+        getWidget: () => ({ id: "widget-feed" }),
+        addTodoWidgetItem: () => {
+          throw new Error("Widget is not a todo widget: widget-feed");
+        },
+      },
+      turnContext: {
+        selectedWidgetContext: {
+          id: "widget-feed",
+          title: "资讯订阅",
+          kind: "feed",
+        },
+      },
+    });
+
+    await expect(executor.execute({
+      tool: "widgets.todo.addItem" as never,
+      args: { title: "买药" },
+    })).rejects.toThrow("Widget is not a todo widget: widget-feed");
+  });
+
   it("runs natural shell commands and gates shell through permission profiles", async () => {
     const { workspace } = createWorkspace();
     const defaultExecutor = new RuntimeToolExecutor({

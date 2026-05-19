@@ -20,6 +20,7 @@ class CapturingRunKernelExecutionService extends RunKernelExecutionService {
       modeRegistry: {} as never,
       selfIterationRegistry: {} as never,
       automationRegistry: {} as never,
+      widgetRegistry: {} as never,
       customAgentOverlay: () => undefined,
       customAgentOverlaysForMode: () => ({}),
       systemAgentOverlaysForMode: () => ({}),

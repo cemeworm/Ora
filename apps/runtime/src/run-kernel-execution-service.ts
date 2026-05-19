@@ -13,6 +13,7 @@ import type {
   AutomationRegistryTools,
   ModeRegistryTools,
   SelfIterationRegistryTools,
+  WidgetRegistryTools,
 } from "./harness/runtime-tool-executor.js";
 import type { ModelMessage } from "./providers/index.js";
 import { TaskMemoryStore } from "./task-memory.js";
@@ -38,6 +39,7 @@ interface RunKernelExecutionServiceDeps {
   modeRegistry: ModeRegistryTools;
   selfIterationRegistry: SelfIterationRegistryTools;
   automationRegistry: AutomationRegistryTools;
+  widgetRegistry: WidgetRegistryTools;
   customAgentOverlay: (customAgentId?: string) => string | undefined;
   customAgentOverlaysForMode: (modeSpec: ModeSpec) => Record<string, string>;
   systemAgentOverlaysForMode: (modeSpec: ModeSpec) => Record<string, string>;
@@ -266,6 +268,7 @@ export class RunKernelExecutionService {
       modeRegistry: this.deps.modeRegistry,
       selfIterationRegistry: this.deps.selfIterationRegistry,
       automationRegistry: this.deps.automationRegistry,
+      widgetRegistry: this.deps.widgetRegistry,
       customAgentOverlay: this.deps.customAgentOverlay(config.customAgentId),
       customAgentOverlays: this.deps.customAgentOverlaysForMode(modeSpec),
       systemAgentOverlays: this.deps.systemAgentOverlaysForMode(modeSpec),

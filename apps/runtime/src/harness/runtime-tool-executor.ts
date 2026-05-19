@@ -20,6 +20,7 @@ import { genericApprovalRequest } from "./runtime-tool-approval.js";
 import { isRecord, workspaceRootPath } from "./runtime-tool-utils.js";
 import { webDocumentToolRuntimeFields } from "./runtime-web-document-tools.js";
 import { computerToolRuntimeFields } from "./runtime-computer-tools.js";
+import { widgetToolRuntimeFields } from "./runtime-widget-tools.js";
 import { type WorkspaceOperations, localWorkspaceOperations } from "./workspace-operations.js";
 import type { ComputerBackendManager } from "./computer-use/backend-manager.js";
 
@@ -71,6 +72,9 @@ export const IMPLEMENTED_RUNTIME_TOOL_IDS = [
   "automations.resume",
   "automations.delete",
   "automations.runNow",
+  "widgets.getSelectedContext",
+  "widgets.get",
+  "widgets.todo.addItem",
   "plan.update",
   "agent.spawn",
   "message.send",
@@ -120,6 +124,7 @@ export interface RuntimeToolExecutionContext {
   modeRegistry?: ModeRegistryTools;
   selfIterationRegistry?: SelfIterationRegistryTools;
   automationRegistry?: AutomationRegistryTools;
+  widgetRegistry?: WidgetRegistryTools;
   mcpConfigPaths?: string[];
   searchProvider: SearchProvider;
   packageManager?: PackageManager;
@@ -129,6 +134,8 @@ export interface RuntimeToolExecutionContext {
   allowRisky?: boolean;
   /** AbortSignal from the run-level AbortController. Tools should observe this and stop execution when aborted. */
   signal?: AbortSignal;
+  /** Read-only turn context for the active run, including selected widget context. */
+  turnContext?: Record<string, unknown>;
   /** Workspace operations adapter — pluggable backend for file/shell operations. */
   operations: WorkspaceOperations;
   /** Spawn a sub-agent and run it to completion. Returns the agent's text output. */
@@ -191,6 +198,7 @@ export interface RuntimeToolExecutorOptions {
   modeRegistry?: ModeRegistryTools;
   selfIterationRegistry?: SelfIterationRegistryTools;
   automationRegistry?: AutomationRegistryTools;
+  widgetRegistry?: WidgetRegistryTools;
   fetchImpl?: typeof fetch;
   mcpConfigPaths?: string[];
   searchProvider?: SearchProvider;
@@ -204,6 +212,7 @@ export interface RuntimeToolExecutorOptions {
   preToolPolicyHooks?: RuntimePreToolPolicyHook[];
   postToolPolicyHooks?: RuntimePostToolPolicyHook[];
   signal?: AbortSignal;
+  turnContext?: Record<string, unknown>;
   workspaceOperations?: WorkspaceOperations;
   computerBackendManager?: ComputerBackendManager;
 }
@@ -248,6 +257,11 @@ export interface AutomationRegistryTools {
   resumeAutomation(params: unknown): unknown;
   deleteAutomation(params: unknown): unknown;
   runAutomationNow(params: unknown): unknown;
+}
+
+export interface WidgetRegistryTools {
+  getWidget(params: unknown): unknown;
+  addTodoWidgetItem(params: unknown): unknown;
 }
 
 const IMPLEMENTED_TOOL_SET = new Set<string>(IMPLEMENTED_RUNTIME_TOOL_IDS);
@@ -409,6 +423,7 @@ export class RuntimeToolExecutor {
   private readonly modeRegistry?: ModeRegistryTools;
   private readonly selfIterationRegistry?: SelfIterationRegistryTools;
   private readonly automationRegistry?: AutomationRegistryTools;
+  private readonly widgetRegistry?: WidgetRegistryTools;
   private readonly mcpConfigPaths?: string[];
   private readonly searchProvider: SearchProvider;
   private readonly packageManager?: PackageManager;
@@ -419,6 +434,7 @@ export class RuntimeToolExecutor {
   private readonly preToolPolicyHooks: RuntimePreToolPolicyHook[];
   private readonly postToolPolicyHooks: RuntimePostToolPolicyHook[];
   private readonly signal?: AbortSignal;
+  private readonly turnContext?: Record<string, unknown>;
   private readonly workspaceOperations: WorkspaceOperations;
   private readonly computerBackendManager?: ComputerBackendManager;
   private spawnAgentCallback?: RuntimeToolExecutionContext["spawnAgent"];
@@ -431,6 +447,7 @@ export class RuntimeToolExecutor {
     this.modeRegistry = options.modeRegistry;
     this.selfIterationRegistry = options.selfIterationRegistry;
     this.automationRegistry = options.automationRegistry;
+    this.widgetRegistry = options.widgetRegistry;
     this.mcpConfigPaths = options.mcpConfigPaths;
     this.packageManager = options.packageManager;
     this.workspace = options.workspace;
@@ -438,6 +455,7 @@ export class RuntimeToolExecutor {
     this.taskIntent = options.taskIntent;
     this.permissionProfile = options.permissionProfile;
     this.signal = options.signal;
+    this.turnContext = options.turnContext;
     this.computerBackendManager = options.computerBackendManager;
     this.workspaceOperations = options.workspaceOperations ?? localWorkspaceOperations;
     this.searchProvider = options.searchProvider ?? createSearchProvider({
@@ -687,6 +705,7 @@ export class RuntimeToolExecutor {
       modeRegistry: this.modeRegistry,
       selfIterationRegistry: this.selfIterationRegistry,
       automationRegistry: this.automationRegistry,
+      widgetRegistry: this.widgetRegistry,
       mcpConfigPaths: this.mcpConfigPaths,
       searchProvider: this.searchProvider,
       packageManager: this.packageManager,
@@ -695,6 +714,7 @@ export class RuntimeToolExecutor {
       permissionProfile: this.permissionProfile,
       allowRisky: options.allowRisky,
       signal: this.signal,
+      turnContext: this.turnContext,
       operations: this.workspaceOperations,
       spawnAgent: this.spawnAgentCallback,
       enqueueMessage: this.enqueueMessageCallback,
@@ -770,6 +790,7 @@ function builtInToolRuntimeFields(toolId: string): Partial<RuntimeToolDefinition
     ...modeToolRuntimeFields(toolId),
     ...selfIterationToolRuntimeFields(toolId),
     ...automationToolRuntimeFields(toolId),
+    ...widgetToolRuntimeFields(toolId),
     ...planToolRuntimeFields(toolId),
     ...agentSpawnToolRuntimeFields(toolId),
     ...messageSendToolRuntimeFields(toolId),

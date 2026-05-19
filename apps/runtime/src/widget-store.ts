@@ -1,10 +1,12 @@
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { z } from "zod";
 import {
   WidgetCreateParamsSchema,
   WidgetIdParamsSchema,
   WidgetListParamsSchema,
+  WidgetTodoItemSchema,
   WidgetUpdateParamsSchema,
   WidgetVersionListParamsSchema,
   WidgetVersionRestoreParamsSchema,
@@ -37,6 +39,14 @@ type WidgetStoreFile = {
 const MAX_EVENTS = 1000;
 const MAX_VERSIONS_PER_WIDGET = 50;
 const STALE_THRESHOLD_MS = 14 * 24 * 60 * 60 * 1000; // 14 days
+
+const WidgetTodoAddItemParamsSchema = z.object({
+  widgetId: z.string().min(1),
+  title: z.string().min(1),
+  notes: z.string().optional(),
+  dueDate: z.number().int().nonnegative().optional(),
+  reminderAt: z.number().int().nonnegative().optional(),
+});
 
 export interface WidgetStoreDeps {
   rootDir: string;
@@ -326,6 +336,37 @@ export class WidgetStore {
     }
     this.save();
     return updated;
+  }
+
+  addTodoItem(params: unknown): Widget {
+    const parsed = WidgetTodoAddItemParamsSchema.parse(params);
+    const widget = this.get(parsed.widgetId);
+    if (!widget) {
+      throw new Error(`Widget not found: ${parsed.widgetId}`);
+    }
+    if (widget.kind !== "todo" || widget.state.kind !== "todo") {
+      throw new Error(`Widget is not a todo widget: ${parsed.widgetId}`);
+    }
+    const now = this.clock();
+    const item = WidgetTodoItemSchema.parse({
+      id: randomUUID(),
+      title: parsed.title.trim(),
+      notes: parsed.notes?.trim() ?? "",
+      dueDate: parsed.dueDate,
+      reminderAt: parsed.reminderAt,
+      createdAt: now,
+      updatedAt: now,
+    });
+    return this.update({
+      id: widget.id,
+      state: {
+        ...widget.state,
+        items: [...widget.state.items, item],
+        lastRefreshedAt: now,
+        lastError: undefined,
+        consecutiveFailures: 0,
+      },
+    });
   }
 
   archive(id: string): Widget {

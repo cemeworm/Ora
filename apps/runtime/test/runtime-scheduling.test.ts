@@ -106,6 +106,18 @@ describe("agentic runtime scheduling", () => {
       preference: "prefer",
       source: "explicit_team_collab",
     });
+    expect(delegationIntentFromMetadata({
+      delegationIntent: {
+        requestedByUser: false,
+        preference: "none",
+        reason: "No delegation preference was expressed.",
+        source: "classifier",
+      },
+    })).toMatchObject({
+      requestedByUser: false,
+      preference: "none",
+      source: "classifier",
+    });
     expect(delegationIntentFromMetadata({ delegationIntent: { preference: "invalid" } })).toBeUndefined();
 
     const singleAgent = MVP_MODES.find((mode) => mode.id === SINGLE_AGENT_MODE_ID)!;

@@ -1286,6 +1286,52 @@ const computerWindowParameters = {
   additionalProperties: false,
 };
 
+const widgetsGetSelectedContextParameters = {
+  type: "object",
+  properties: {},
+  additionalProperties: false,
+};
+
+const widgetsGetParameters = {
+  type: "object",
+  properties: {
+    id: {
+      type: "string",
+      description: "Widget id.",
+    },
+  },
+  required: ["id"],
+  additionalProperties: false,
+};
+
+const widgetsTodoAddItemParameters = {
+  type: "object",
+  properties: {
+    widgetId: {
+      type: "string",
+      description: "Optional target widget id. Defaults to the currently selected widget when omitted.",
+    },
+    title: {
+      type: "string",
+      description: "Todo title to add.",
+    },
+    notes: {
+      type: "string",
+      description: "Optional notes for the todo item.",
+    },
+    dueDate: {
+      type: "number",
+      description: "Optional due date as a millisecond timestamp.",
+    },
+    reminderAt: {
+      type: "number",
+      description: "Optional reminder time as a millisecond timestamp.",
+    },
+  },
+  required: ["title"],
+  additionalProperties: false,
+};
+
 export const MVP_TOOLS: ToolDescriptor[] = [
   { id: "file.read", label: "Read File", description: "Read file contents inside the selected project folder.", category: "file", riskLevel: "safe", parameters: fileReadParameters, requiresApproval: false, implemented: true, allowedForProfiles: [] },
   { id: "file.list", label: "List Files", description: "List files and directories inside the selected project folder.", category: "file", riskLevel: "safe", parameters: fileListParameters, requiresApproval: false, implemented: true, allowedForProfiles: [] },
@@ -1412,6 +1458,9 @@ export const MVP_TOOLS: ToolDescriptor[] = [
   { id: "automations.resume", label: "Resume Scheduled Task", description: "Resume an existing Ora scheduled task after user approval.", category: "internal", riskLevel: "requires_approval", parameters: { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: false }, requiresApproval: true, implemented: true, allowedForProfiles: [] },
   { id: "automations.delete", label: "Delete Scheduled Task", description: "Delete an Ora scheduled task after user approval. Running scheduled tasks cannot be deleted until the run finishes.", category: "internal", riskLevel: "requires_approval", parameters: { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: false }, requiresApproval: true, implemented: true, allowedForProfiles: [] },
   { id: "automations.runNow", label: "Run Scheduled Task Now", description: "Immediately start one run for an existing Ora scheduled task after user approval and record the run in task history.", category: "internal", riskLevel: "requires_approval", parameters: { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: false }, requiresApproval: true, implemented: true, allowedForProfiles: [] },
+  { id: "widgets.getSelectedContext", label: "Get Selected Widget Context", description: "Return the current turn's selected widget context, if the user selected a widget before sending the message.", category: "internal", riskLevel: "safe", parameters: widgetsGetSelectedContextParameters, requiresApproval: false, implemented: true, allowedForProfiles: [] },
+  { id: "widgets.get", label: "Get Widget", description: "Read one Ora widget by id, including its current persisted state.", category: "internal", riskLevel: "safe", parameters: widgetsGetParameters, requiresApproval: false, implemented: true, allowedForProfiles: [] },
+  { id: "widgets.todo.addItem", label: "Add Todo Item", description: "Add one todo item to a Todo widget. Use the currently selected widget when widgetId is omitted.", category: "internal", riskLevel: "low_risk", parameters: widgetsTodoAddItemParameters, requiresApproval: false, implemented: true, allowedForProfiles: [] },
   {
     id: "plan.update",
     label: "Update Plan",

@@ -99,6 +99,51 @@ describe("WidgetStore", () => {
       expect(updated.state.kind).toBe("todo"); // state preserved
     });
 
+    it("adds a todo item and persists structured time fields", () => {
+      const store = createStore();
+      const widget = store.create({ title: "Todo", kind: "todo" });
+      const dueDate = now + 60_000;
+
+      const updated = store.addTodoItem({
+        widgetId: widget.id,
+        title: "  买药  ",
+        notes: "  今天下午五点  ",
+        dueDate,
+      });
+
+      expect(updated.state.kind).toBe("todo");
+      expect(updated.state.items).toEqual([
+        expect.objectContaining({
+          title: "买药",
+          notes: "今天下午五点",
+          dueDate,
+          reminderAt: undefined,
+          createdAt: now,
+          updatedAt: now,
+        }),
+      ]);
+
+      const reloaded = createStore().get(widget.id);
+      expect(reloaded?.state.kind).toBe("todo");
+      expect(reloaded?.state.items).toEqual([
+        expect.objectContaining({
+          title: "买药",
+          notes: "今天下午五点",
+          dueDate,
+        }),
+      ]);
+    });
+
+    it("rejects adding todo items to non-todo widgets", () => {
+      const store = createStore();
+      const widget = store.create({ title: "Feed", kind: "feed" });
+
+      expect(() => store.addTodoItem({
+        widgetId: widget.id,
+        title: "买药",
+      })).toThrow(`Widget is not a todo widget: ${widget.id}`);
+    });
+
     it("archive does not delete state", () => {
       const store = createStore();
       const widget = store.create({ title: "Todo", kind: "todo" });
