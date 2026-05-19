@@ -1116,6 +1116,7 @@ impl RuntimeFacade {
             "projects.create" => self.projects_create(params.as_ref()),
             "projects.list" => self.projects_list(params.as_ref()),
             "projects.get" => self.projects_get(params.as_ref()),
+            "projects.archive" => self.projects_archive(params.as_ref()),
             "projects.files" => self.projects_files(params.as_ref()),
             "projects.file.read" => self.projects_file_read(params.as_ref()),
             "sessions.create" => self.sessions_create(params.as_ref()),
@@ -1445,7 +1446,14 @@ impl RuntimeFacade {
         let created_at = now_ms();
         let mut state = self.lock_state()?;
         if let Some(project_id) = project_id.as_deref() {
-            get_project(&state, project_id)?;
+            let project = get_project(&state, project_id)?;
+            if project.get("archivedAt").and_then(Value::as_u64).is_some() {
+                return Err(runtime_error(
+                    -32004,
+                    "Project is archived",
+                    Some(json!({ "projectId": project_id })),
+                ));
+            }
         }
         state.next_session_number += 1;
         let session_id = format!("session-{:04}", state.next_session_number);
@@ -1486,7 +1494,15 @@ impl RuntimeFacade {
             .find(|project| project["rootPath"].as_str() == Some(normalized_root_path.as_str()))
             .cloned()
         {
-            return Ok(existing);
+            if existing.get("archivedAt").and_then(Value::as_u64).is_none() {
+                return Ok(existing);
+            }
+            let mut restored = existing;
+            restored["archivedAt"] = Value::Null;
+            restored["updatedAt"] = json!(restored["updatedAt"].as_u64().unwrap_or(0).max(created_at));
+            let project_id = restored["projectId"].as_str().unwrap_or_default().to_string();
+            state.projects.insert(project_id, restored.clone());
+            return Ok(restored);
         }
         state.next_project_number += 1;
         let project_id = format!("project-{:04}", state.next_project_number);
@@ -1508,7 +1524,12 @@ impl RuntimeFacade {
             .and_then(Value::as_u64)
             .unwrap_or(500) as usize;
         let state = self.lock_state()?;
-        let mut projects = state.projects.values().cloned().collect::<Vec<Value>>();
+        let mut projects = state
+            .projects
+            .values()
+            .filter(|project| project.get("archivedAt").and_then(Value::as_u64).is_none())
+            .cloned()
+            .collect::<Vec<Value>>();
         projects.sort_by(|left, right| {
             let left_updated = left["updatedAt"].as_u64().unwrap_or(0);
             let right_updated = right["updatedAt"].as_u64().unwrap_or(0);
@@ -1523,6 +1544,42 @@ impl RuntimeFacade {
         });
         projects.truncate(limit);
         Ok(Value::Array(projects))
+    }
+
+    fn projects_archive(&self, params: Option<&Value>) -> Result<Value, RuntimeJsonRpcError> {
+        let project_id = require_project_id(params)?;
+        let mut state = self.lock_state()?;
+        let existing = get_project(&state, &project_id)?.clone();
+        let archived_at = existing
+            .get("archivedAt")
+            .and_then(Value::as_u64)
+            .unwrap_or_else(now_ms);
+
+        let session_ids = state
+            .sessions
+            .iter()
+            .filter(|(_, session)| {
+                session["projectId"].as_str() == Some(project_id.as_str())
+                    && session.get("archivedAt").and_then(Value::as_u64).is_none()
+            })
+            .map(|(session_id, _)| session_id.clone())
+            .collect::<Vec<String>>();
+
+        for session_id in session_ids {
+            if let Some(session) = state.sessions.get_mut(&session_id) {
+                session["archivedAt"] = json!(archived_at);
+                let updated_at = session["updatedAt"].as_u64().unwrap_or(0).max(archived_at);
+                session["updatedAt"] = json!(updated_at);
+            }
+        }
+
+        let mut project = existing;
+        project["archivedAt"] = json!(archived_at);
+        let updated_at = project["updatedAt"].as_u64().unwrap_or(0).max(archived_at);
+        project["updatedAt"] = json!(updated_at);
+        project["sessionCount"] = json!(0);
+        state.projects.insert(project_id, project.clone());
+        Ok(project)
     }
 
     fn projects_get(&self, params: Option<&Value>) -> Result<Value, RuntimeJsonRpcError> {
@@ -5070,17 +5127,10 @@ fn sync_project_summary(state: &mut FacadeState, project_id: &str) {
         .filter_map(|session| session["updatedAt"].as_u64())
         .max()
         .unwrap_or_else(|| existing["createdAt"].as_u64().unwrap_or_else(now_ms));
-    state.projects.insert(
-        project_id.to_string(),
-        json!({
-            "projectId": existing["projectId"],
-            "label": existing["label"],
-            "rootPath": existing["rootPath"],
-            "sessionCount": sessions.len(),
-            "createdAt": existing["createdAt"],
-            "updatedAt": updated_at,
-        }),
-    );
+    let mut next = existing;
+    next["sessionCount"] = json!(sessions.len());
+    next["updatedAt"] = json!(updated_at);
+    state.projects.insert(project_id.to_string(), next);
 }
 
 fn normalize_project_root_path(root_path: &str) -> String {

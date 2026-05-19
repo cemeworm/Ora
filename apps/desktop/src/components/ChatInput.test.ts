@@ -38,6 +38,20 @@ describe("chat input tray visibility", () => {
     });
   });
 
+  it("restores the composer after a declined plan decision clears the gate", () => {
+    expect(getComposerTrayVisibility({
+      isLoading: false,
+      clarificationCount: 0,
+      canSubmitClarifications: true,
+      hasPlanDecision: false,
+      canResolvePlanDecision: false,
+    })).toEqual({
+      showClarificationTray: false,
+      showPlanDecisionTray: false,
+      hideComposer: false,
+    });
+  });
+
   it("keeps the composer available for ordinary clarification resumes", () => {
     expect(getComposerTrayVisibility({
       isLoading: false,

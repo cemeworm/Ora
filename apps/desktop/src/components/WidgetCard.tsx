@@ -1,5 +1,5 @@
 import { Archive, CheckSquare, Clock3, ExternalLink, FileText, Newspaper, Pin, PinOff, Plus, RefreshCcw } from "lucide-react";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useState, type PointerEvent as ReactPointerEvent } from "react";
 import type { OraWidget } from "../lib/runtimeClient";
 import { cn } from "../lib/utils";
 
@@ -9,6 +9,11 @@ interface WidgetCardProps {
   widget: OraWidget;
   size?: WidgetCardSize;
   selected: boolean;
+  interactiveLayoutEnabled?: boolean;
+  layoutInteractionKind?: "drag" | "resize" | null;
+  layoutInteractionPending?: boolean;
+  onDragHandlePointerDown?: (event: ReactPointerEvent<HTMLElement>) => void;
+  onResizeHandlePointerDown?: (event: ReactPointerEvent<HTMLElement>) => void;
   onSelect: () => void;
   onOpenDetail: () => void;
   onTogglePin: () => void;
@@ -36,6 +41,11 @@ export function WidgetCard({
   widget,
   size = widget.layout.w > 1 || widget.layout.h > 1 ? "expanded" : "compact",
   selected,
+  interactiveLayoutEnabled = false,
+  layoutInteractionKind = null,
+  layoutInteractionPending = false,
+  onDragHandlePointerDown,
+  onResizeHandlePointerDown,
   onSelect,
   onOpenDetail,
   onTogglePin,
@@ -48,6 +58,8 @@ export function WidgetCard({
   const summary = widgetSummary(widget);
   const isTodo = widget.kind === "todo" && widget.state.kind === "todo";
   const isCompact = size === "compact";
+  const isDragging = layoutInteractionKind === "drag";
+  const isResizing = layoutInteractionKind === "resize";
 
   const [newTitle, setNewTitle] = useState("");
 
@@ -97,11 +109,29 @@ export function WidgetCard({
         isCompact ? "min-h-[180px] p-3.5" : "min-h-[180px] p-4",
         selected && "border-foreground/45 ring-2 ring-foreground/10",
         isError && "border-rose-200 bg-rose-50/50",
+        interactiveLayoutEnabled && "md:select-none",
+        isDragging && "md:z-10 md:scale-[1.01] md:border-bench-500/80 md:shadow-[0_22px_60px_rgba(23,23,23,0.14)]",
+        isResizing && "md:border-bench-500/80 md:shadow-[0_20px_54px_rgba(23,23,23,0.12)]",
+        layoutInteractionPending && "cursor-progress",
       )}
       data-widget-card-size={size}
     >
+      {(isDragging || isResizing) && (
+        <div className="pointer-events-none absolute left-3 top-3 z-10 inline-flex items-center gap-1 rounded-full bg-foreground px-2 py-1 text-[10px] font-semibold text-background shadow-sm">
+          <span>{widget.layout.w} × {widget.layout.h}</span>
+          <span>{isDragging ? "拖动中" : "调整中"}</span>
+        </div>
+      )}
       <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0 flex-1">
+        <div
+          className={cn(
+            "min-w-0 flex-1",
+            interactiveLayoutEnabled && "md:cursor-grab",
+            isDragging && "md:cursor-grabbing",
+          )}
+          onPointerDown={interactiveLayoutEnabled ? onDragHandlePointerDown : undefined}
+          data-widget-drag-handle={interactiveLayoutEnabled ? "true" : undefined}
+        >
           <div className="mb-2 flex items-center gap-2">
             <span className={cn(
               "inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md ring-1",
@@ -112,11 +142,6 @@ export function WidgetCard({
             <h3 className="flex-1 min-w-0 truncate text-[15px] font-semibold leading-5 text-foreground">
               {widget.title}
             </h3>
-            {!isCompact && (
-              <span className={cn("rounded-full px-2 py-0.5 text-[11px] font-semibold ring-1", meta.tone)}>
-                {meta.label}
-              </span>
-            )}
             {widget.layout.pinned && (
               <span className="inline-flex items-center gap-1 text-[11px] font-medium text-amber-700">
                 <Pin size={11} />
@@ -252,7 +277,7 @@ export function WidgetCard({
       )}
 
       {isCompact && (
-        <div className="absolute bottom-2 right-2 flex items-center gap-1 opacity-0 transition group-hover:opacity-100 group-focus-within:opacity-100">
+        <div className="absolute bottom-2 right-10 flex items-center gap-1 opacity-0 transition group-hover:opacity-100 group-focus-within:opacity-100">
           <WidgetActions
             pinned={widget.layout.pinned}
             onTogglePin={onTogglePin}
@@ -262,6 +287,24 @@ export function WidgetCard({
           />
         </div>
       )}
+      {interactiveLayoutEnabled && (
+        <button
+          type="button"
+          onPointerDown={onResizeHandlePointerDown}
+          onClick={(event) => event.stopPropagation()}
+          aria-label="调整组件大小"
+          className={cn(
+            "absolute bottom-1.5 right-1.5 hidden h-8 w-8 items-end justify-end rounded-md text-muted-foreground transition duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-foreground/15 md:flex",
+            "md:opacity-0 md:pointer-events-none md:translate-y-0.5",
+            "md:group-hover:pointer-events-auto md:group-hover:opacity-100 md:group-hover:translate-y-0",
+            "md:group-focus-within:pointer-events-auto md:group-focus-within:opacity-100 md:group-focus-within:translate-y-0",
+            "hover:bg-bench-100 hover:text-foreground",
+            isResizing && "bg-bench-100 text-foreground md:pointer-events-auto md:opacity-100 md:translate-y-0",
+          )}
+        >
+          <ResizeHandleGlyph />
+        </button>
+      )}
     </article>
   );
 }
@@ -270,6 +313,15 @@ function KindIcon({ kind }: { kind: OraWidget["kind"] }) {
   if (kind === "todo") return <CheckSquare size={14} />;
   if (kind === "feed") return <Newspaper size={14} />;
   return <FileText size={14} />;
+}
+
+function ResizeHandleGlyph() {
+  return (
+    <span className="pointer-events-none relative h-3.5 w-3.5">
+      <span className="absolute bottom-0 right-0 h-2.5 w-2.5 rounded-[2px] border-b-2 border-r-2 border-current/80" />
+      <span className="absolute bottom-1 right-1 h-2.5 w-2.5 rounded-[2px] border-b-2 border-r-2 border-current/55" />
+    </span>
+  );
 }
 
 function WidgetActions({

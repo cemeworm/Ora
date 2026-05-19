@@ -22,11 +22,15 @@ interface ChatMessagesProps {
   hasPlanDecisionTray?: boolean;
   hasPlanStepsTray?: boolean;
   bottomInsetPx?: number;
+  contentWidthClassName?: string;
   onOpenArtifact?: (artifactId: string) => void;
   onSubmitFeedback?: (message: ChatMessage, feedbackText: string) => Promise<void>;
   onAdoptBranchGroup?: (branchGroupId: string, runId: string) => void;
   projectRootPath?: string;
 }
+
+export const CHAT_SURFACE_WIDTH_CLASS =
+  "w-full max-w-[88rem] pl-4 pr-4 md:pl-6 md:pr-6 xl:pl-8 xl:pr-8";
 
 export function messageBottomPaddingPx({
   hasTray,
@@ -61,6 +65,7 @@ export function ChatMessages({
   hasPlanDecisionTray = false,
   hasPlanStepsTray = false,
   bottomInsetPx,
+  contentWidthClassName = CHAT_SURFACE_WIDTH_CLASS,
   onOpenArtifact,
   onSubmitFeedback,
   onAdoptBranchGroup,
@@ -85,10 +90,14 @@ export function ChatMessages({
   }, [chatMessages]);
 
   return (
-    <div ref={scrollRef} onScroll={handleScroll} className="min-h-0 w-full flex-1 overflow-y-auto overscroll-contain">
+    <div
+      ref={scrollRef}
+      onScroll={handleScroll}
+      className="h-full min-h-0 w-full flex-1 overflow-x-hidden overflow-y-auto overscroll-contain"
+    >
       <Conversation className="min-h-0 flex-1">
         <ConversationContent
-          className="mx-auto min-h-full w-full max-w-[88rem] gap-8 px-4 pt-8 md:px-6 xl:px-8"
+          className={`mx-auto min-h-full ${contentWidthClassName} gap-8 pt-8`}
           style={{ paddingBottom }}
         >
         {chatMessages.map((message) => {

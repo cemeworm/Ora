@@ -94,6 +94,15 @@ export interface PendingRunPreview {
   progressText?: string;
 }
 
+export interface AcceptedPlanDecisionTurnPreview {
+  sessionId: string;
+  runId: string;
+  decisionId: string;
+  createdAt: number;
+}
+
+export const ACCEPTED_PLAN_USER_TURN_COPY = "请按照上述计划开始执行";
+
 export interface LiveMessageDeltaPreview {
   runId: string;
   messageId: string;
@@ -1461,6 +1470,7 @@ export function adaptRenderableChatMessages(params: {
   pendingRun?: PendingRunPreview | undefined;
   liveMessageDeltas?: Record<string, LiveMessageDeltaPreview>;
   selectedSessionId?: string;
+  acceptedPlanDecisionTurns?: readonly AcceptedPlanDecisionTurnPreview[];
   baseMessages?: ChatMessage[];
 }): ChatMessage[] {
   const turnSnapshots = params.turnSnapshots ?? {};
@@ -1473,18 +1483,70 @@ export function adaptRenderableChatMessages(params: {
     turnSnapshots,
     params.liveMessageDeltas ?? {},
   );
+  const withAcceptedPlanDecisionTurns = injectAcceptedPlanDecisionTurns(
+    messages,
+    params.acceptedPlanDecisionTurns ?? [],
+    params.selectedSessionId,
+  );
   const pendingRun = params.pendingRun;
   if (!pendingRun || pendingRun.sessionId !== params.selectedSessionId) {
-    return messages;
+    return withAcceptedPlanDecisionTurns;
   }
   const runAlreadyMaterialized = pendingRunAlreadyMaterialized(
     pendingRun,
     turnSnapshots,
   );
   if (runAlreadyMaterialized) {
+    return withAcceptedPlanDecisionTurns;
+  }
+  return [...withAcceptedPlanDecisionTurns, ...adaptPendingRunMessages(pendingRun)];
+}
+
+function injectAcceptedPlanDecisionTurns(
+  messages: ChatMessage[],
+  acceptedPlanDecisionTurns: readonly AcceptedPlanDecisionTurnPreview[],
+  selectedSessionId: string | undefined,
+): ChatMessage[] {
+  if (!selectedSessionId || acceptedPlanDecisionTurns.length === 0) {
     return messages;
   }
-  return [...messages, ...adaptPendingRunMessages(pendingRun)];
+  const projectionByRunId = new Map(
+    acceptedPlanDecisionTurns
+      .filter((projection) => projection.sessionId === selectedSessionId)
+      .sort((left, right) => left.createdAt - right.createdAt)
+      .map((projection) => [projection.runId, projection] as const),
+  );
+  if (projectionByRunId.size === 0) {
+    return messages;
+  }
+  const next: ChatMessage[] = [];
+  for (const message of messages) {
+    next.push(message);
+    if (message.role !== "assistant") {
+      continue;
+    }
+    const runId = message.metadata?.runId ?? message.turn?.runId;
+    if (!runId) {
+      continue;
+    }
+    const projection = projectionByRunId.get(runId);
+    if (!projection) {
+      continue;
+    }
+    next.push({
+      id: `${projection.runId}:accepted-plan:${projection.decisionId}`,
+      role: "user",
+      content: ACCEPTED_PLAN_USER_TURN_COPY,
+      timestamp: formatClock(projection.createdAt),
+      metadata: {
+        runId: projection.runId,
+        turnIndex: message.metadata?.turnIndex,
+        pattern: message.metadata?.pattern,
+      },
+    });
+    projectionByRunId.delete(runId);
+  }
+  return next;
 }
 
 function pendingRunAlreadyMaterialized(

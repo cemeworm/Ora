@@ -101,7 +101,7 @@ Agent 的每次干预——直接回答、追问澄清、搜索、读上下文�
 
 [下载 Ora](https://github.com/cemeworm/Ora/releases/latest)
 
-打开 `Ora_*.dmg`，将 Ora 拖入 Applications 文件夹即可。首次打开时，macOS 可能提示"无法验证开发者"，在**系统设置 → 隐私与安全性**中点击"仍要打开"即可。
+打开 `Ora_*.dmg`，将 Ora 拖入 Applications 文件夹完成安装。首次打开时，macOS 可能提示"无法验证开发者"，在**系统设置 → 隐私与安全性**中点击"仍要打开"即可。
 
 ### 从源码构建
 

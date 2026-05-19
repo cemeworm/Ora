@@ -852,12 +852,14 @@ function WorkbenchInner() {
       turnSnapshots: activeSessionTurnSnapshots,
       pendingRun,
       liveMessageDeltas: state.liveMessageDeltaBuffer,
+      acceptedPlanDecisionTurns: Object.values(state.acceptedPlanDecisionTurnProjections),
       selectedSessionId: state.selectedSessionId,
       baseMessages: adapted,
     });
   }, [
     activeSessionTurnSnapshots,
     state.activeSessionDetail,
+    state.acceptedPlanDecisionTurnProjections,
     state.liveMessageDeltaBuffer,
     state.runLifecycle,
     state.selectedSessionId,

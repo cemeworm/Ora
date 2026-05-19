@@ -513,17 +513,13 @@ export function ProviderOnboardingStep({
                   type="button"
                   variant="outline"
                   className="h-11 w-full rounded-xl border-[#d7c4aa] bg-white/70 active:scale-95"
-                  asChild
+                  onClick={() => {
+                    void runtimeClient.openExternalUrl(activePreset.apiKeyUrl!);
+                  }}
                 >
-                  <a
-                    href={activePreset.apiKeyUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    <KeyRound size={15} />
-                    API 密钥页
-                    <ExternalLink size={13} />
-                  </a>
+                  <KeyRound size={15} />
+                  API 密钥页
+                  <ExternalLink size={13} />
                 </Button>
               </div>
             )}

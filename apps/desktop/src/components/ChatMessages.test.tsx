@@ -31,7 +31,7 @@ describe("ChatMessages bottom inset", () => {
   it("keeps the message list as the only scroll container", () => {
     const html = renderToStaticMarkup(<ChatMessages chatMessages={[]} />);
 
-    expect(html).toContain("overflow-y-auto overscroll-contain");
+    expect(html).toContain("h-full min-h-0 w-full flex-1 overflow-x-hidden overflow-y-auto overscroll-contain");
     expect(html).not.toContain("relative flex flex-1 flex-col overflow-y-auto");
   });
 
@@ -253,7 +253,7 @@ describe("ChatMessages bottom inset", () => {
     expect(html.match(/rounded-2xl bg-muted px-3\.5 py-2\.5/g)).toHaveLength(1);
   });
 
-  it("keeps accepted same-run plan decisions out of the message list as synthetic user turns", () => {
+  it("renders an accepted same-run plan decision as a synthetic user turn", () => {
     const createdAt = 1_714_000_000_000;
     const sessionId = "session-plan-ui";
     const runId = "run-plan-ui";
@@ -346,12 +346,21 @@ describe("ChatMessages bottom inset", () => {
         snapshot,
       },
     };
-    const resolving = workbenchReducer(state, {
+    const accepted = workbenchReducer(state, {
       type: "BEGIN_PLAN_DECISION_RESOLUTION",
       sessionId,
       decisionId: `${runId}:plan-decision`,
       status: "accepted",
       createdAt: createdAt + 25,
+    });
+    const resumed = workbenchReducer(accepted, {
+      type: "BEGIN_RUN_RESUME",
+      runId,
+      approvedActionIds: [],
+      resolvedClarificationIds: [],
+      planDecisionId: `${runId}:plan-decision`,
+      planDecisionStatus: "accepted",
+      updatedAt: createdAt + 30,
     });
 
     const messages = adaptRenderableChatMessages({
@@ -377,7 +386,8 @@ describe("ChatMessages bottom inset", () => {
         createdAt: createdAt + 20,
       }],
       turnSnapshots: { [runId]: snapshot },
-      pendingRun: getPendingRunState(resolving.runLifecycle),
+      pendingRun: getPendingRunState(resumed.runLifecycle),
+      acceptedPlanDecisionTurns: Object.values(resumed.acceptedPlanDecisionTurnProjections),
       selectedSessionId: sessionId,
     });
 
@@ -387,7 +397,7 @@ describe("ChatMessages bottom inset", () => {
 
     expect(html).toContain("任务计划");
     expect(html).toContain("Runtime status plan");
-    expect(html).not.toContain("请按照上述计划开始执行");
-    expect(html.match(/rounded-2xl bg-muted px-3\.5 py-2\.5/g)).toHaveLength(1);
+    expect(html).toContain("请按照上述计划开始执行");
+    expect(html.match(/rounded-2xl bg-muted px-3\.5 py-2\.5/g)).toHaveLength(2);
   });
 });

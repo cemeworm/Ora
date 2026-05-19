@@ -2,9 +2,14 @@ import { describe, expect, it } from "vitest";
 import type { OraWidget } from "../lib/runtimeClient";
 import {
   buildSelectedWidgetContext,
+  getCanvasMetrics,
   getWidgetCardSize,
+  layoutMapFromPlacements,
   layoutWidgetsForCanvas,
+  projectWidgetMoveLayout,
+  projectWidgetResizeLayout,
   selectedWidgetForSpaceContext,
+  sortWidgetsForCanvas,
   widgetContextLabel,
 } from "./SpaceDashboardView";
 
@@ -29,17 +34,22 @@ function widget(overrides: Partial<OraWidget>): OraWidget {
 }
 
 describe("SpaceDashboardView canvas layout", () => {
-  it("keeps the task list preset as a compact top-left card", () => {
+  it("keeps the task list preset as a wide top-left card", () => {
     const [placement] = layoutWidgetsForCanvas([
-      widget({ id: "tasklist", title: "任务清单", kind: "todo" }),
+      widget({
+        id: "tasklist",
+        title: "任务清单",
+        kind: "todo",
+        layout: { x: 0, y: 0, w: 2, h: 1, pinned: false },
+      }),
     ]);
 
     expect(placement).toMatchObject({
       colStart: 1,
       rowStart: 1,
-      colSpan: 1,
+      colSpan: 2,
       rowSpan: 1,
-      cardSize: "compact",
+      cardSize: "expanded",
     });
   });
 
@@ -50,14 +60,82 @@ describe("SpaceDashboardView canvas layout", () => {
 
   it("moves colliding default widgets to the next open canvas slot", () => {
     const placements = layoutWidgetsForCanvas([
-      widget({ id: "tasklist", title: "任务清单", kind: "todo" }),
+      widget({
+        id: "tasklist",
+        title: "任务清单",
+        kind: "todo",
+        layout: { x: 0, y: 0, w: 2, h: 1, pinned: false },
+      }),
       widget({ id: "notes", title: "随手记", kind: "artifact" }),
     ]);
 
     expect(placements.map((placement) => [placement.colStart, placement.rowStart])).toEqual([
       [1, 1],
-      [2, 1],
+      [3, 1],
     ]);
+  });
+
+  it("prioritizes the active widget when previewing collision reflow", () => {
+    const widgets = sortWidgetsForCanvas([
+      widget({ id: "a", title: "A", updatedAt: 10 }),
+      widget({ id: "b", title: "B", kind: "artifact", updatedAt: 20 }),
+    ]);
+    const placements = layoutWidgetsForCanvas(
+      widgets.map((item) => ({
+        ...item,
+        layout: { ...item.layout, x: 0, y: 0, w: 1, h: 1, pinned: false },
+      })),
+      { prioritizedWidgetId: "b" },
+    );
+
+    expect(placements.map((placement) => [placement.widget.id, placement.colStart, placement.rowStart])).toEqual([
+      ["b", 1, 1],
+      ["a", 2, 1],
+    ]);
+    expect(layoutMapFromPlacements(placements)).toMatchObject({
+      a: { x: 1, y: 0, w: 1, h: 1, pinned: false },
+      b: { x: 0, y: 0, w: 1, h: 1, pinned: false },
+    });
+  });
+
+  it("clamps projected drag layouts to the visible canvas bounds", () => {
+    const moved = projectWidgetMoveLayout({
+      clientX: 4_000,
+      clientY: -400,
+      containerLeft: 0,
+      containerTop: 0,
+      metrics: getCanvasMetrics(900),
+      originLayout: { x: 0, y: 0, w: 2, h: 2, pinned: false },
+      originPlacement: { colStart: 1, rowStart: 1, colSpan: 2, rowSpan: 2 },
+      pointerOffsetX: 40,
+      pointerOffsetY: 50,
+    });
+
+    expect(moved).toMatchObject({ x: 4, y: 0, w: 2, h: 2, pinned: false });
+  });
+
+  it("clamps projected resize layouts to canvas span limits", () => {
+    const grown = projectWidgetResizeLayout({
+      clientX: 9_999,
+      clientY: 9_999,
+      metrics: getCanvasMetrics(900),
+      startClientX: 0,
+      startClientY: 0,
+      originLayout: { x: 4, y: 1, w: 1, h: 2, pinned: false },
+      originPlacement: { colStart: 5, rowStart: 2, colSpan: 1, rowSpan: 2 },
+    });
+    const shrunk = projectWidgetResizeLayout({
+      clientX: -9_999,
+      clientY: -9_999,
+      metrics: getCanvasMetrics(900),
+      startClientX: 0,
+      startClientY: 0,
+      originLayout: { x: 1, y: 1, w: 3, h: 3, pinned: false },
+      originPlacement: { colStart: 2, rowStart: 2, colSpan: 3, rowSpan: 3 },
+    });
+
+    expect(grown).toMatchObject({ x: 4, y: 1, w: 2, h: 3, pinned: false });
+    expect(shrunk).toMatchObject({ x: 1, y: 1, w: 1, h: 1, pinned: false });
   });
 });
 

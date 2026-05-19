@@ -2,10 +2,11 @@ import { deriveSnapshotGateProjection, type ModeSelection } from "@cemeworm/shar
 import { useCallback, useMemo, useState } from "react";
 import { Bot, GitBranchPlus } from "lucide-react";
 import { ChatHeader } from "./ChatHeader";
-import { ChatMessages } from "./ChatMessages";
+import { CHAT_SURFACE_WIDTH_CLASS, ChatMessages } from "./ChatMessages";
 import { ChatInput } from "./ChatInput";
 import { Button } from "./ui/button";
 import { Select } from "./ui/select";
+import { cn } from "../lib/utils";
 import type {
   ActionRecord,
   AgentProfile,
@@ -26,6 +27,17 @@ import { translateCopy, type AppLanguage } from "../lib/i18n";
 import type { DesktopRunInteractionState } from "../lib/runInteractionState";
 
 const LOCAL_FILE_PREVIEW_MAX_BYTES = 256 * 1024;
+export const CHAT_VIEW_ROOT_CLASS =
+  "relative flex h-full min-h-0 w-full flex-col overflow-hidden bg-transparent";
+export const CHAT_VIEW_MAIN_CLASS =
+  "relative flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-hidden pt-12";
+export const CHAT_VIEW_CONTENT_ROW_CLASS =
+  "relative flex min-h-0 min-w-0 flex-1 overflow-hidden";
+export const CHAT_VIEW_MESSAGES_PANEL_CLASS =
+  "flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden";
+export const CHAT_VIEW_STABLE_CONTENT_WIDTH_CLASS =
+  "w-full max-w-[54rem] pl-4 pr-4 md:pl-6 md:pr-6 xl:pl-8 xl:pr-8";
+export const CHAT_VIEW_COLLABORATION_SHIFT_CLASS = "lg:-translate-x-8";
 
 interface ChatViewProps {
   activeMode: ModeCard;
@@ -216,6 +228,32 @@ export function deriveChildReplaySelection({
   return { runId: snapshot.runId, beatId };
 }
 
+export function deriveVisibleCollaborationChildren(
+  snapshot?: Pick<OraStateSnapshot, "childSessions">,
+): NonNullable<OraStateSnapshot["childSessions"]> {
+  return (snapshot?.childSessions ?? []).filter((child) =>
+    child.status === "queued" || child.status === "running"
+  );
+}
+
+export function shouldShowCollaborationOverlay(
+  snapshot?: Pick<OraStateSnapshot, "childSessions">,
+): boolean {
+  return deriveVisibleCollaborationChildren(snapshot).length > 0;
+}
+
+export function deriveChatSurfaceContentWidthClassName(
+  _hasCollaborationOverlay: boolean,
+): string {
+  return CHAT_VIEW_STABLE_CONTENT_WIDTH_CLASS;
+}
+
+export function deriveChatSurfaceShiftClassName(
+  hasCollaborationOverlay: boolean,
+): string {
+  return hasCollaborationOverlay ? CHAT_VIEW_COLLABORATION_SHIFT_CLASS : "";
+}
+
 export function ChatView({
   activeMode,
   activeSnapshot,
@@ -248,7 +286,6 @@ export function ChatView({
   detailDrawer,
   onSelectMode,
   onSelectModeSelection,
-  onSelectSession,
 }: ChatViewProps) {
   const { state, dispatch } = useWorkbench();
   const showWelcome = chatMessages.length === 0 && !runInteractionState.isProcessing;
@@ -299,6 +336,22 @@ export function ChatView({
       runInteractionState,
     }),
     [composerGateSnapshot, gateKind],
+  );
+  const visibleCollaborationChildren = useMemo(
+    () => deriveVisibleCollaborationChildren(activeSnapshot),
+    [activeSnapshot],
+  );
+  const showCollaborationOverlay = useMemo(
+    () => shouldShowCollaborationOverlay(activeSnapshot),
+    [activeSnapshot],
+  );
+  const chatSurfaceContentWidthClassName = useMemo(
+    () => deriveChatSurfaceContentWidthClassName(showCollaborationOverlay),
+    [showCollaborationOverlay],
+  );
+  const chatSurfaceShiftClassName = useMemo(
+    () => deriveChatSurfaceShiftClassName(showCollaborationOverlay),
+    [showCollaborationOverlay],
   );
   const branchGroups = state.activeSessionDetail?.branchGroups ?? [];
   const [branchPanelOpen, setBranchPanelOpen] = useState(false);
@@ -358,7 +411,7 @@ export function ChatView({
   }
 
   return (
-    <div className="relative flex h-full min-h-0 w-full bg-transparent">
+    <div className={CHAT_VIEW_ROOT_CLASS}>
       <ChatHeader
         busyCommand={busyCommand}
         selectedSession={selectedSession}
@@ -367,16 +420,7 @@ export function ChatView({
         detailDrawer={detailDrawer}
         language={state.language}
       />
-      <main className="flex min-h-0 w-full min-w-0 flex-1 flex-col pt-12">
-        {showWelcome && (
-          <div className="pointer-events-none absolute left-0 right-0 top-[calc(50%-160px)] z-10 flex justify-center px-6">
-            <div className="flex w-full max-w-container-md flex-col items-center gap-2 text-center">
-<div className="flex items-center gap-2 text-2xl font-bold">
-                <span>{getWelcomeGreeting(new Date(), state.language, projectLabel)}</span>
-              </div>
-            </div>
-          </div>
-        )}
+      <main className={CHAT_VIEW_MAIN_CLASS}>
         {branchPanelOpen && (
           <BranchComparisonPanel
             sessionId={selectedSession.id}
@@ -396,233 +440,178 @@ export function ChatView({
             }}
           />
         )}
-        <div className="flex min-h-0 flex-1">
-          <div className="min-h-0 min-w-0 flex-1">
-            <ChatMessages
-              chatMessages={chatMessages}
-              branchGroups={branchGroups}
-              turnSnapshots={turnSnapshots}
-              language={state.language}
-              actionRecords={actionRecords}
-              hasApprovalTray={hasApprovalTray}
-              hasClarificationTray={hasClarificationTray}
-              hasPlanDecisionTray={planDecisionPending}
-              hasPlanStepsTray={currentPlanSteps.length > 0}
-              bottomInsetPx={composerOverlayHeight}
-              projectRootPath={projectRootPath}
-              onOpenArtifact={onOpenArtifact}
-              onSubmitFeedback={onSubmitFeedback}
-              onAdoptBranchGroup={onAdoptBranchGroup}
-            />
+        <div className={CHAT_VIEW_CONTENT_ROW_CLASS}>
+          <div className={CHAT_VIEW_MESSAGES_PANEL_CLASS}>
+            <div
+              className={cn(
+                "relative flex min-h-0 flex-1 flex-col transition-transform duration-200 motion-reduce:transition-none",
+                chatSurfaceShiftClassName,
+              )}
+            >
+              {showWelcome && (
+                <div className="pointer-events-none absolute left-0 right-0 top-[calc(50%-160px)] z-10 flex justify-center">
+                  <div
+                    className={cn(
+                      "flex w-full flex-col items-center gap-2 text-center",
+                      chatSurfaceContentWidthClassName,
+                    )}
+                  >
+                    <div className="flex items-center gap-2 text-2xl font-bold">
+                      <span>{getWelcomeGreeting(new Date(), state.language, projectLabel)}</span>
+                    </div>
+                  </div>
+                </div>
+              )}
+              <ChatMessages
+                chatMessages={chatMessages}
+                branchGroups={branchGroups}
+                turnSnapshots={turnSnapshots}
+                language={state.language}
+                actionRecords={actionRecords}
+                hasApprovalTray={hasApprovalTray}
+                hasClarificationTray={hasClarificationTray}
+                hasPlanDecisionTray={planDecisionPending}
+                hasPlanStepsTray={currentPlanSteps.length > 0}
+                bottomInsetPx={composerOverlayHeight}
+                contentWidthClassName={chatSurfaceContentWidthClassName}
+                projectRootPath={projectRootPath}
+                onOpenArtifact={onOpenArtifact}
+                onSubmitFeedback={onSubmitFeedback}
+                onAdoptBranchGroup={onAdoptBranchGroup}
+              />
+              <ChatInput
+                sessionId={selectedSession.id}
+                composerPrompt={composerPrompt}
+                isLoading={isLoading}
+                runInteractionState={runInteractionState}
+                activeMode={activeMode}
+                modeOptions={modeCards}
+                selectedModeSelection={state.selectedModeSelection}
+                activeProvider={activeProvider}
+                contextState={chatInputContextState}
+                providerOptions={providerOptions}
+                skillOptions={state.skillRegistry?.skills ?? []}
+                selectedSkillIds={state.selectedSkillIds}
+                selectedCustomAgentId={selectedCustomAgentId}
+                projectFileAttachments={projectFileAttachments}
+                localFileAttachments={localFileAttachments}
+                approvalActions={attention?.kind === "needs_approval" ? pendingApprovalActions : []}
+                approvalDisabled={busyCommand !== undefined}
+                onApprove={onResumeRun}
+                onCancelApproval={onCancelRun}
+                clarificationQuestions={pendingClarifications}
+                onSubmitAllClarifications={onSubmitAllClarifications}
+                onModeChange={onSelectMode}
+                onModeSelectionChange={onSelectModeSelection}
+                onProviderChange={(providerId) =>
+                  dispatch({ type: "SET_PROVIDER", providerId })
+                }
+                onPromptChange={onComposerPromptChange}
+                onSelectedSkillIdsChange={(skillIds) =>
+                  dispatch({ type: "SET_SELECTED_SKILL_IDS", skillIds })
+                }
+                onRemoveProjectFileAttachment={(path) =>
+                  dispatch({
+                    type: "REMOVE_PROJECT_FILE_ATTACHMENT",
+                    sessionId: selectedSession.id,
+                    path,
+                  })
+                }
+                onRemoveLocalFileAttachment={(path) =>
+                  dispatch({
+                    type: "REMOVE_LOCAL_FILE_ATTACHMENT",
+                    sessionId: selectedSession.id,
+                    path,
+                  })
+                }
+                imageAttachments={imageAttachments}
+                onRemoveImageAttachment={(name) =>
+                  dispatch({
+                    type: "REMOVE_IMAGE_ATTACHMENT",
+                    sessionId: selectedSession.id,
+                    name,
+                  })
+                }
+                onAddImageAttachment={handleImagePasted}
+                permissionMode={state.permissionMode}
+                onPermissionModeChange={(mode) => dispatch({ type: "SET_PERMISSION_MODE", permissionMode: mode })}
+                taskIntent={state.taskIntent}
+                onTaskIntentChange={(ti) => dispatch({ type: "SET_TASK_INTENT", taskIntent: ti })}
+                planDecisionPending={planDecisionPending}
+                planSteps={currentPlanSteps}
+                onConfirmPlanDecision={onAcceptPlanDecisionAndStartImplementation}
+                onDeclinePlanDecision={() => onResolvePlanDecision("declined")}
+                onOverlayHeightChange={handleOverlayHeightChange}
+                contentWidthClassName={chatSurfaceContentWidthClassName}
+                onOpenLocalFiles={() => void openLocalFiles()}
+                onFilesDropped={handleFilesDropped}
+                onClearSelectedCustomAgent={onClearSelectedCustomAgent}
+                onStartRun={onStartRun}
+                onStopRun={onCancelRun}
+              />
+            </div>
           </div>
           <CollaborationPanel
-            snapshot={activeSnapshot}
-            onSelectSession={onSelectSession}
+            childSessions={visibleCollaborationChildren}
           />
         </div>
-        <ChatInput
-          sessionId={selectedSession.id}
-          composerPrompt={composerPrompt}
-          isLoading={isLoading}
-          runInteractionState={runInteractionState}
-          activeMode={activeMode}
-          modeOptions={modeCards}
-          selectedModeSelection={state.selectedModeSelection}
-          activeProvider={activeProvider}
-          contextState={chatInputContextState}
-          providerOptions={providerOptions}
-          skillOptions={state.skillRegistry?.skills ?? []}
-          selectedSkillIds={state.selectedSkillIds}
-          selectedCustomAgentId={selectedCustomAgentId}
-          projectFileAttachments={projectFileAttachments}
-          localFileAttachments={localFileAttachments}
-          approvalActions={attention?.kind === "needs_approval" ? pendingApprovalActions : []}
-          approvalDisabled={busyCommand !== undefined}
-          onApprove={onResumeRun}
-          onCancelApproval={onCancelRun}
-          clarificationQuestions={pendingClarifications}
-          onSubmitAllClarifications={onSubmitAllClarifications}
-          onModeChange={onSelectMode}
-          onModeSelectionChange={onSelectModeSelection}
-          onProviderChange={(providerId) =>
-            dispatch({ type: "SET_PROVIDER", providerId })
-          }
-          onPromptChange={onComposerPromptChange}
-          onSelectedSkillIdsChange={(skillIds) =>
-            dispatch({ type: "SET_SELECTED_SKILL_IDS", skillIds })
-          }
-          onRemoveProjectFileAttachment={(path) =>
-            dispatch({
-              type: "REMOVE_PROJECT_FILE_ATTACHMENT",
-              sessionId: selectedSession.id,
-              path,
-            })
-          }
-          onRemoveLocalFileAttachment={(path) =>
-            dispatch({
-              type: "REMOVE_LOCAL_FILE_ATTACHMENT",
-              sessionId: selectedSession.id,
-              path,
-            })
-          }
-          imageAttachments={imageAttachments}
-          onRemoveImageAttachment={(name) =>
-            dispatch({
-              type: "REMOVE_IMAGE_ATTACHMENT",
-              sessionId: selectedSession.id,
-              name,
-            })
-          }
-          onAddImageAttachment={handleImagePasted}
-          permissionMode={state.permissionMode}
-          onPermissionModeChange={(mode) => dispatch({ type: "SET_PERMISSION_MODE", permissionMode: mode })}
-          taskIntent={state.taskIntent}
-          onTaskIntentChange={(ti) => dispatch({ type: "SET_TASK_INTENT", taskIntent: ti })}
-          planDecisionPending={planDecisionPending}
-          planSteps={currentPlanSteps}
-          onConfirmPlanDecision={onAcceptPlanDecisionAndStartImplementation}
-          onDeclinePlanDecision={() => onResolvePlanDecision("declined")}
-          onOverlayHeightChange={handleOverlayHeightChange}
-          onOpenLocalFiles={() => void openLocalFiles()}
-          onFilesDropped={handleFilesDropped}
-          onClearSelectedCustomAgent={onClearSelectedCustomAgent}
-          onStartRun={onStartRun}
-          onStopRun={onCancelRun}
-        />
       </main>
     </div>
   );
 }
 
 function CollaborationPanel({
-  snapshot,
-  onSelectSession,
+  childSessions,
 }: {
-  snapshot?: OraStateSnapshot;
-  onSelectSession: (sessionId: string) => void | Promise<void>;
+  childSessions: NonNullable<OraStateSnapshot["childSessions"]>;
 }) {
-  const { dispatch } = useWorkbench();
-  const childSessions = snapshot?.childSessions ?? [];
-  const coordination = snapshot?.parentCoordination;
-  if (childSessions.length === 0 && !coordination) {
+  if (childSessions.length === 0) {
     return null;
   }
 
   return (
-    <aside className="hidden h-full w-[22rem] shrink-0 border-l border-border/60 bg-background/70 lg:flex lg:flex-col">
-      <div className="border-b border-border/60 px-4 py-3">
-        <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
-          <Bot className="h-4 w-4" />
-          <span>协作区</span>
-        </div>
-        <p className="mt-1 text-xs leading-5 text-muted-foreground">
-          {coordination
-            ? `父 Agent 阶段：${coordinationPhaseLabel(coordination.phase)}`
-            : "子 Agent 过程会保留在这里，不进入正文区。"}
-        </p>
-      </div>
-      <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-4">
-        {coordination ? (
-          <section className="rounded-xl border border-border/70 bg-card/70 p-3">
-            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">
-              Parent Coordination
-            </p>
-            <p className="mt-2 text-sm font-medium text-foreground">
-              {coordinationPhaseLabel(coordination.phase)}
-            </p>
-            {coordination.summary ? (
-              <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                {coordination.summary}
+    <div className="pointer-events-none absolute inset-x-0 top-6 z-20 hidden lg:block">
+      <div className={`mx-auto flex justify-end ${CHAT_SURFACE_WIDTH_CLASS}`}>
+        <section className="pointer-events-auto w-full max-w-sm rounded-3xl border border-border/70 bg-background/92 p-3 shadow-lift backdrop-blur-md">
+          <div className="flex items-center gap-2 px-1 pb-2">
+            <div className="flex h-8 w-8 items-center justify-center rounded-2xl bg-muted text-foreground">
+              <Bot className="h-4 w-4" />
+            </div>
+            <div className="min-w-0">
+              <p className="text-sm font-semibold text-foreground">
+                子代理运行中
               </p>
-            ) : null}
-            <p className="mt-2 text-xs text-muted-foreground">
-              活跃 {coordination.activeChildIds.length} · 等待 {coordination.waitingChildIds.length}
-            </p>
-          </section>
-        ) : null}
-        {childSessions.map((child) => {
-          const replaySelection = deriveChildReplaySelection({ snapshot, child });
-          return (
-            <section
-              key={child.id}
-              className="rounded-xl border border-border/70 bg-card/70 p-3"
-            >
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-semibold text-foreground">
-                    {child.label}
-                  </p>
-                  <p className="mt-1 text-[11px] uppercase tracking-[0.16em] text-muted-foreground">
-                    {child.sessionClass === "temporary_spawn" ? "temporary spawn" : "mode subagent"}
-                  </p>
+              <p className="text-xs text-muted-foreground">
+                {childSessions.length} 个任务正在协作执行
+              </p>
+            </div>
+          </div>
+          <div className="space-y-2">
+            {childSessions.map((child) => (
+              <section
+                key={child.id}
+                className="rounded-2xl border border-border/70 bg-card/80 p-3"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-semibold text-foreground">
+                      {child.label}
+                    </p>
+                    <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                      {child.summary ?? child.lastMessage ?? "正在等待子代理返回最新进展。"}
+                    </p>
+                  </div>
+                  <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-foreground">
+                    {childStatusLabel(child.status)}
+                  </span>
                 </div>
-                <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-foreground">
-                  {childStatusLabel(child.status)}
-                </span>
-              </div>
-              <p className="mt-2 text-xs leading-5 text-muted-foreground">
-                {child.summary ?? child.lastMessage ?? "等待子 Agent 返回结构化摘要。"}
-              </p>
-              <p className="mt-2 text-[11px] text-muted-foreground">
-                产物 {child.artifactIds.length}
-              </p>
-              {replaySelection || child.sourceSessionId ? (
-                <div className="mt-3 flex flex-wrap gap-2">
-                  {replaySelection ? (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={() => {
-                        dispatch({ type: "TOGGLE_DETAIL_DRAWER", drawer: "trails" });
-                        dispatch({ type: "SELECT_TURN", runId: replaySelection.runId, snapshot });
-                        if (replaySelection.beatId) {
-                          dispatch({ type: "SELECT_BEAT", beatId: replaySelection.beatId });
-                        }
-                      }}
-                    >
-                      查看完整回放
-                    </Button>
-                  ) : null}
-                  {child.sourceSessionId ? (
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => void onSelectSession(child.sourceSessionId!)}
-                    >
-                      打开来源对话
-                    </Button>
-                  ) : null}
-                </div>
-              ) : null}
-            </section>
-          );
-        })}
+              </section>
+            ))}
+          </div>
+        </section>
       </div>
-    </aside>
+    </div>
   );
-}
-
-function coordinationPhaseLabel(
-  phase: NonNullable<OraStateSnapshot["parentCoordination"]>["phase"],
-): string {
-  switch (phase) {
-    case "planning":
-      return "规划";
-    case "dispatching":
-      return "派发";
-    case "parallel_independent_work":
-      return "并行无依赖工作";
-    case "waiting_on_required_children":
-      return "等待必需子任务";
-    case "resuming_with_child_summaries":
-      return "吸收子任务摘要";
-    case "synthesizing":
-      return "综合输出";
-    default:
-      return phase;
-  }
 }
 
 function childStatusLabel(

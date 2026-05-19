@@ -1431,17 +1431,15 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
                             type="button"
                             variant="outline"
                             className="rounded-xl bg-white"
-                            asChild
+                            onClick={() => {
+                              void runtimeClient.openExternalUrl(
+                                activePreset.apiKeyUrl!,
+                              );
+                            }}
                           >
-                            <a
-                              href={activePreset.apiKeyUrl}
-                              target="_blank"
-                              rel="noreferrer"
-                            >
-                              <KeyRound size={15} />
-                              API Keys
-                              <ExternalLink size={13} />
-                            </a>
+                            <KeyRound size={15} />
+                            API Keys
+                            <ExternalLink size={13} />
                           </Button>
                         )}
                         <Button

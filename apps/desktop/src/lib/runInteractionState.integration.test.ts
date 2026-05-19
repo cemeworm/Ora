@@ -9,7 +9,7 @@ import { deriveRunInteractionState } from "./runInteractionState";
 import type { OraSessionDetail, OraSessionSummary, OraStateSnapshot } from "./runtimeClient";
 import type { PendingRunState, RunLifecycle } from "./state";
 import type { DeriveRunInteractionStateParams } from "./runInteractionState";
-import { deriveProjectedGateTrays, resolveComposerGateSnapshot } from "../components/ChatView";
+import { deriveComposerPlanDecisionState, deriveProjectedGateTrays, resolveComposerGateSnapshot } from "../components/ChatView";
 import { getComposerTrayVisibility } from "../components/ChatInput";
 
 type RunStatus =
@@ -388,6 +388,93 @@ describe("runInteractionState cross-surface consistency", () => {
     expect(trays.clarificationQuestions.map((item) => item.id)).toEqual(["c1"]);
     expect(composer).toEqual({
       showClarificationTray: true,
+      showPlanDecisionTray: false,
+      hideComposer: false,
+    });
+  });
+
+  it("declined plan decision clears the tray and restores composer input across surfaces", () => {
+    const planDecisionId = "decision-1";
+    const pendingSnapshot = activeSnapshot({
+      status: "succeeded",
+      attention: {
+        kind: "needs_plan_decision",
+        blocking: true,
+        sourceRunId: "run-1",
+        reason: "plan_decision_required",
+        planDecisionId,
+        pendingActionIds: [],
+        pendingToolCallIds: [],
+        pendingClarificationIds: [],
+      },
+      planDecisions: [{
+        id: planDecisionId,
+        runId: "run-1",
+        sessionId: "session-1",
+        status: "pending",
+        createdAt: 1001,
+      }],
+    });
+    const resolvedSnapshot = activeSnapshot({
+      status: "succeeded",
+      attention: {
+        kind: "idle",
+        blocking: false,
+        sourceRunId: "run-1",
+        pendingActionIds: [],
+        pendingToolCallIds: [],
+        pendingClarificationIds: [],
+      },
+      planDecisions: [{
+        id: planDecisionId,
+        runId: "run-1",
+        sessionId: "session-1",
+        status: "declined",
+        createdAt: 1001,
+        resolvedAt: 1002,
+      }],
+    });
+
+    const before = derive({
+      selectedSessionId: "session-1",
+      activeSnapshot: pendingSnapshot,
+    });
+    const after = derive({
+      selectedSessionId: "session-1",
+      activeSnapshot: resolvedSnapshot,
+    });
+    const beforePlanDecision = deriveComposerPlanDecisionState({
+      sessionId: "session-1",
+      activeSnapshot: pendingSnapshot,
+    });
+    const afterPlanDecision = deriveComposerPlanDecisionState({
+      sessionId: "session-1",
+      activeSnapshot: resolvedSnapshot,
+    });
+    const beforeComposer = getComposerTrayVisibility({
+      isLoading: before.isProcessing,
+      clarificationCount: 0,
+      canSubmitClarifications: true,
+      hasPlanDecision: beforePlanDecision.planDecisionPending,
+      canResolvePlanDecision: before.status === "decision_needed",
+    });
+    const afterComposer = getComposerTrayVisibility({
+      isLoading: after.isProcessing,
+      clarificationCount: 0,
+      canSubmitClarifications: true,
+      hasPlanDecision: afterPlanDecision.planDecisionPending,
+      canResolvePlanDecision: after.status === "decision_needed",
+    });
+
+    expect(before.status).toBe("decision_needed");
+    expect(beforeComposer).toEqual({
+      showClarificationTray: false,
+      showPlanDecisionTray: true,
+      hideComposer: true,
+    });
+    expect(after.status).toBe("done");
+    expect(afterComposer).toEqual({
+      showClarificationTray: false,
       showPlanDecisionTray: false,
       hideComposer: false,
     });

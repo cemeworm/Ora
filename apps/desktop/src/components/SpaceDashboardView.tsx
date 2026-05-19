@@ -1,8 +1,19 @@
-import { useState, useEffect, useCallback, useMemo, type CSSProperties } from "react";
+import {
+  useState,
+  useEffect,
+  useCallback,
+  useMemo,
+  useRef,
+  type CSSProperties,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import type { OraWidget, OraModeSpec } from "../lib/runtimeClient";
 import { WidgetCard } from "./WidgetCard";
 import { ChatInput, type ChatInputContextChip } from "./ChatInput";
-import { getActiveChatProvider } from "./ChatView";
+import {
+  CHAT_VIEW_STABLE_CONTENT_WIDTH_CLASS,
+  getActiveChatProvider,
+} from "./ChatView";
 import { runnableProviderOptions } from "../lib/providerOptions";
 import { useWorkbench } from "../lib/state";
 import { deriveRunInteractionState } from "../lib/runInteractionState";
@@ -16,6 +27,9 @@ import { ArtifactWidgetDetail } from "./ArtifactWidgetDetail";
 
 const CANVAS_COLUMNS = 6;
 const MAX_WIDGET_ROW_SPAN = 3;
+const CANVAS_GRID_GAP_PX = 16;
+const CANVAS_ROW_HEIGHT_PX = 180;
+const DESKTOP_CANVAS_MIN_WIDTH_PX = 768;
 
 interface CanvasWidgetPlacement {
   widget: OraWidget;
@@ -24,6 +38,28 @@ interface CanvasWidgetPlacement {
   colSpan: number;
   rowSpan: number;
   cardSize: "compact" | "expanded";
+}
+
+type WidgetLayoutOverrideMap = Record<string, OraWidget["layout"]>;
+type LayoutInteractionKind = "drag" | "resize";
+
+interface LayoutInteraction {
+  kind: LayoutInteractionKind;
+  widgetId: string;
+  pointerId: number;
+  startClientX: number;
+  startClientY: number;
+  originLayout: OraWidget["layout"];
+  originPlacement: Pick<CanvasWidgetPlacement, "colStart" | "rowStart" | "colSpan" | "rowSpan">;
+  pointerOffsetX: number;
+  pointerOffsetY: number;
+}
+
+interface CanvasMetrics {
+  columnWidth: number;
+  columnStride: number;
+  rowHeight: number;
+  rowStride: number;
 }
 
 function toModeCard(mode: OraModeSpec): ModeCard {
@@ -49,8 +85,14 @@ export function SpaceDashboardView() {
   const [detailWidgetId, setDetailWidgetId] = useState<string | undefined>();
   const [composerPrompt, setComposerPrompt] = useState("");
   const [composerOverlayHeight, setComposerOverlayHeight] = useState(0);
+  const [layoutOverrides, setLayoutOverrides] = useState<WidgetLayoutOverrideMap>({});
+  const [activeInteraction, setActiveInteraction] = useState<LayoutInteraction | null>(null);
+  const [isSavingLayout, setIsSavingLayout] = useState(false);
   const { runtimeClient: client, actions } = useRunActions();
   const { state: workbench, dispatch } = useWorkbench();
+  const canvasGridRef = useRef<HTMLDivElement | null>(null);
+  const layoutOverridesRef = useRef<WidgetLayoutOverrideMap>({});
+  const suppressSelectionUntilRef = useRef(0);
 
   const refresh = useCallback(async () => {
     try {
@@ -60,6 +102,8 @@ export function SpaceDashboardView() {
         list = await client.listWidgets();
       }
       setWidgets(list);
+      layoutOverridesRef.current = {};
+      setLayoutOverrides({});
       return list;
     } catch (err) {
       console.error("Failed to load widgets", err);
@@ -139,6 +183,187 @@ export function SpaceDashboardView() {
     }
   }, [detailWidgetId, selectedWidgetId, widgets]);
 
+  const setLayoutOverridesState = useCallback((next: WidgetLayoutOverrideMap) => {
+    layoutOverridesRef.current = next;
+    setLayoutOverrides(next);
+  }, []);
+
+  const effectiveWidgets = useMemo(
+    () => widgets.map((widget) => ({
+      ...widget,
+      layout: layoutOverrides[widget.id] ?? widget.layout,
+    })),
+    [layoutOverrides, widgets],
+  );
+  const sortedWidgets = useMemo(
+    () => sortWidgetsForCanvas(effectiveWidgets),
+    [effectiveWidgets],
+  );
+  const canvasPlacements = useMemo(
+    () => layoutWidgetsForCanvas(sortedWidgets, {
+      prioritizedWidgetId: activeInteraction?.widgetId,
+    }),
+    [activeInteraction?.widgetId, sortedWidgets],
+  );
+  const placementById = useMemo(
+    () => new Map(canvasPlacements.map((placement) => [placement.widget.id, placement])),
+    [canvasPlacements],
+  );
+
+  const commitLayoutChanges = useCallback(async (prioritizedWidgetId: string, nextOverrides?: WidgetLayoutOverrideMap) => {
+    const overrides = nextOverrides ?? layoutOverridesRef.current;
+    const mergedWidgets = widgets.map((widget) => ({
+      ...widget,
+      layout: overrides[widget.id] ?? widget.layout,
+    }));
+    const finalPlacements = layoutWidgetsForCanvas(sortWidgetsForCanvas(mergedWidgets), {
+      prioritizedWidgetId,
+    });
+    const nextLayouts = layoutMapFromPlacements(finalPlacements);
+    const changedWidgets = widgets.filter((widget) => {
+      const nextLayout = nextLayouts[widget.id];
+      return nextLayout && !widgetLayoutsEqual(widget.layout, nextLayout);
+    });
+
+    setActiveInteraction(null);
+
+    if (changedWidgets.length === 0) {
+      setLayoutOverridesState({});
+      return;
+    }
+
+    setIsSavingLayout(true);
+    try {
+      await Promise.all(changedWidgets.map((widget) =>
+        client.updateWidget({ id: widget.id, layout: nextLayouts[widget.id] }),
+      ));
+      await refresh();
+    } catch (err) {
+      console.error("Failed to persist widget layout", err);
+      setLayoutOverridesState({});
+    } finally {
+      setIsSavingLayout(false);
+    }
+  }, [client, refresh, setLayoutOverridesState, widgets]);
+
+  useEffect(() => {
+    if (!activeInteraction) return undefined;
+
+    const previousCursor = document.body.style.cursor;
+    const previousUserSelect = document.body.style.userSelect;
+    document.body.style.cursor = activeInteraction.kind === "drag" ? "grabbing" : "nwse-resize";
+    document.body.style.userSelect = "none";
+
+    const updateDraftLayout = (clientX: number, clientY: number) => {
+      const containerRect = canvasGridRef.current?.getBoundingClientRect();
+      if (!containerRect || containerRect.width <= 0) return activeInteraction.originLayout;
+      const metrics = getCanvasMetrics(containerRect.width);
+      return activeInteraction.kind === "drag"
+        ? projectWidgetMoveLayout({
+            clientX,
+            clientY,
+            containerLeft: containerRect.left,
+            containerTop: containerRect.top,
+            metrics,
+            originLayout: activeInteraction.originLayout,
+            originPlacement: activeInteraction.originPlacement,
+            pointerOffsetX: activeInteraction.pointerOffsetX,
+            pointerOffsetY: activeInteraction.pointerOffsetY,
+          })
+        : projectWidgetResizeLayout({
+            clientX,
+            clientY,
+            metrics,
+            startClientX: activeInteraction.startClientX,
+            startClientY: activeInteraction.startClientY,
+            originLayout: activeInteraction.originLayout,
+            originPlacement: activeInteraction.originPlacement,
+          });
+    };
+
+    const handlePointerMove = (moveEvent: globalThis.PointerEvent) => {
+      if (moveEvent.pointerId !== activeInteraction.pointerId) return;
+      const nextLayout = updateDraftLayout(moveEvent.clientX, moveEvent.clientY);
+      const nextOverrides = {
+        ...layoutOverridesRef.current,
+        [activeInteraction.widgetId]: nextLayout,
+      };
+      setLayoutOverridesState(nextOverrides);
+    };
+
+    const handlePointerUp = (pointerEvent: globalThis.PointerEvent) => {
+      if (pointerEvent.pointerId !== activeInteraction.pointerId) return;
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousUserSelect;
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+      window.removeEventListener("pointercancel", handlePointerUp);
+
+      const nextLayout = updateDraftLayout(pointerEvent.clientX, pointerEvent.clientY);
+      const nextOverrides = {
+        ...layoutOverridesRef.current,
+        [activeInteraction.widgetId]: nextLayout,
+      };
+      setLayoutOverridesState(nextOverrides);
+      void commitLayoutChanges(activeInteraction.widgetId, nextOverrides);
+    };
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp);
+    window.addEventListener("pointercancel", handlePointerUp);
+
+    return () => {
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousUserSelect;
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+      window.removeEventListener("pointercancel", handlePointerUp);
+    };
+  }, [activeInteraction, commitLayoutChanges, setLayoutOverridesState]);
+
+  const beginLayoutInteraction = useCallback((
+    kind: LayoutInteractionKind,
+    widget: OraWidget,
+    event: ReactPointerEvent<HTMLElement>,
+  ) => {
+    if (isSavingLayout || !isDesktopCanvasInteractionEnabled()) return;
+    const placement = placementById.get(widget.id);
+    const shell = event.currentTarget.closest("[data-widget-shell-id]");
+    if (!placement || !(shell instanceof HTMLElement)) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    suppressSelectionUntilRef.current = Date.now() + 250;
+
+    const widgetRect = shell.getBoundingClientRect();
+    const nextOverrides = {
+      ...layoutOverridesRef.current,
+      [widget.id]: widget.layout,
+    };
+    setLayoutOverridesState(nextOverrides);
+    setActiveInteraction({
+      kind,
+      widgetId: widget.id,
+      pointerId: event.pointerId,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      originLayout: widget.layout,
+      originPlacement: {
+        colStart: placement.colStart,
+        rowStart: placement.rowStart,
+        colSpan: placement.colSpan,
+        rowSpan: placement.rowSpan,
+      },
+      pointerOffsetX: event.clientX - widgetRect.left,
+      pointerOffsetY: event.clientY - widgetRect.top,
+    });
+  }, [isSavingLayout, placementById, setLayoutOverridesState]);
+
+  const handleWidgetSelection = useCallback((widgetId: string) => {
+    if (Date.now() < suppressSelectionUntilRef.current || isSavingLayout) return;
+    setSelectedWidgetId((prev) => (prev === widgetId ? undefined : widgetId));
+  }, [isSavingLayout]);
+
   function renderChatInput() {
     return (
       <ChatInput
@@ -183,6 +408,7 @@ export function SpaceDashboardView() {
           dispatch({ type: "SET_TASK_INTENT", taskIntent: ti })
         }
         onOverlayHeightChange={setComposerOverlayHeight}
+        contentWidthClassName={CHAT_VIEW_STABLE_CONTENT_WIDTH_CLASS}
         onStartRun={() => {
           if (!workbench.selectedSessionId || !composerPrompt.trim()) return;
           const prompt = composerPrompt;
@@ -251,17 +477,6 @@ export function SpaceDashboardView() {
     );
   }
 
-  const sortedWidgets = [...widgets].sort((a, b) => {
-    if (a.layout.y !== b.layout.y) return a.layout.y - b.layout.y;
-    if (a.layout.x !== b.layout.x) return a.layout.x - b.layout.x;
-    if (isTasklistWidget(a) !== isTasklistWidget(b)) {
-      return isTasklistWidget(a) ? -1 : 1;
-    }
-    if (a.layout.pinned !== b.layout.pinned) return a.layout.pinned ? -1 : 1;
-    return b.updatedAt - a.updatedAt;
-  });
-  const canvasPlacements = layoutWidgetsForCanvas(sortedWidgets);
-
   if (widgets.length === 0) {
     return (
       <div className="relative h-full min-h-0 overflow-hidden">
@@ -286,9 +501,16 @@ export function SpaceDashboardView() {
         className="h-full overflow-y-auto px-4 pt-4 sm:px-6 lg:px-7"
         style={{ paddingBottom: bottomPad }}
       >
-        <div className="flex flex-col gap-4 md:grid md:auto-rows-[180px] md:grid-cols-6 md:gap-4">
+        <div
+          ref={canvasGridRef}
+          className="flex flex-col gap-4 md:grid md:auto-rows-[180px] md:grid-cols-6 md:gap-4"
+        >
           {canvasPlacements.map((placement) => {
             const widget = placement.widget;
+            const interactionKind =
+              activeInteraction?.widgetId === widget.id
+                ? activeInteraction.kind
+                : null;
             const placementStyle = {
               gridColumn: `${placement.colStart} / span ${placement.colSpan}`,
               gridRow: `${placement.rowStart} / span ${placement.rowSpan}`,
@@ -297,6 +519,7 @@ export function SpaceDashboardView() {
             return (
               <div
                 key={widget.id}
+                data-widget-shell-id={widget.id}
                 className="min-h-[180px] md:min-h-0"
                 style={placementStyle}
               >
@@ -304,11 +527,16 @@ export function SpaceDashboardView() {
                   widget={widget}
                   size={placement.cardSize}
                   selected={widget.id === selectedWidgetId}
-                  onSelect={() =>
-                    setSelectedWidgetId((prev) =>
-                      prev === widget.id ? undefined : widget.id,
-                    )
+                  interactiveLayoutEnabled
+                  layoutInteractionKind={interactionKind}
+                  layoutInteractionPending={isSavingLayout}
+                  onDragHandlePointerDown={(event) =>
+                    beginLayoutInteraction("drag", widget, event)
                   }
+                  onResizeHandlePointerDown={(event) =>
+                    beginLayoutInteraction("resize", widget, event)
+                  }
+                  onSelect={() => handleWidgetSelection(widget.id)}
                   onOpenDetail={() => {
                     setSelectedWidgetId(widget.id);
                     setDetailWidgetId(widget.id);
@@ -341,10 +569,27 @@ export function getWidgetCardSize(layout: OraWidget["layout"]): "compact" | "exp
   return layout.w > 1 || layout.h > 1 ? "expanded" : "compact";
 }
 
-export function layoutWidgetsForCanvas(widgets: OraWidget[]): CanvasWidgetPlacement[] {
-  const occupied = new Set<string>();
+export function sortWidgetsForCanvas(widgets: OraWidget[]): OraWidget[] {
+  return [...widgets].sort((a, b) => {
+    if (a.layout.y !== b.layout.y) return a.layout.y - b.layout.y;
+    if (a.layout.x !== b.layout.x) return a.layout.x - b.layout.x;
+    if (isTasklistWidget(a) !== isTasklistWidget(b)) {
+      return isTasklistWidget(a) ? -1 : 1;
+    }
+    if (a.layout.pinned !== b.layout.pinned) return a.layout.pinned ? -1 : 1;
+    return b.updatedAt - a.updatedAt;
+  });
+}
 
-  return widgets.map((widget) => {
+export function layoutWidgetsForCanvas(
+  widgets: OraWidget[],
+  options: { prioritizedWidgetId?: string } = {},
+): CanvasWidgetPlacement[] {
+  const occupied = new Set<string>();
+  const placements = new Map<string, CanvasWidgetPlacement>();
+  const placementOrder = prioritizeWidgets(widgets, options.prioritizedWidgetId);
+
+  for (const widget of placementOrder) {
     const colSpan = clampInt(widget.layout.w, 1, CANVAS_COLUMNS);
     const rowSpan = clampInt(widget.layout.h, 1, MAX_WIDGET_ROW_SPAN);
     const desiredCol = clampInt(widget.layout.x + 1, 1, CANVAS_COLUMNS - colSpan + 1);
@@ -359,15 +604,135 @@ export function layoutWidgetsForCanvas(widgets: OraWidget[]): CanvasWidgetPlacem
 
     markCanvasPosition(occupied, position.colStart, position.rowStart, colSpan, rowSpan);
 
-    return {
+    placements.set(widget.id, {
       widget,
       colStart: position.colStart,
       rowStart: position.rowStart,
       colSpan,
       rowSpan,
       cardSize: getWidgetCardSize(widget.layout),
-    };
+    });
+  }
+
+  return widgets.map((widget) => placements.get(widget.id) ?? {
+    widget,
+    colStart: clampInt(widget.layout.x + 1, 1, CANVAS_COLUMNS),
+    rowStart: Math.max(1, widget.layout.y + 1),
+    colSpan: clampInt(widget.layout.w, 1, CANVAS_COLUMNS),
+    rowSpan: clampInt(widget.layout.h, 1, MAX_WIDGET_ROW_SPAN),
+    cardSize: getWidgetCardSize(widget.layout),
   });
+}
+
+export function layoutMapFromPlacements(
+  placements: readonly CanvasWidgetPlacement[],
+): Record<string, OraWidget["layout"]> {
+  return Object.fromEntries(
+    placements.map((placement) => [placement.widget.id, widgetLayoutFromPlacement(placement)]),
+  );
+}
+
+export function widgetLayoutFromPlacement(
+  placement: Pick<CanvasWidgetPlacement, "widget" | "colStart" | "rowStart" | "colSpan" | "rowSpan">,
+): OraWidget["layout"] {
+  return {
+    ...placement.widget.layout,
+    x: placement.colStart - 1,
+    y: placement.rowStart - 1,
+    w: placement.colSpan,
+    h: placement.rowSpan,
+  };
+}
+
+export function widgetLayoutsEqual(a: OraWidget["layout"], b: OraWidget["layout"]): boolean {
+  return a.x === b.x
+    && a.y === b.y
+    && a.w === b.w
+    && a.h === b.h
+    && a.pinned === b.pinned;
+}
+
+export function getCanvasMetrics(containerWidth: number): CanvasMetrics {
+  const safeWidth = Math.max(containerWidth, CANVAS_COLUMNS);
+  const columnWidth = Math.max(
+    1,
+    (safeWidth - CANVAS_GRID_GAP_PX * (CANVAS_COLUMNS - 1)) / CANVAS_COLUMNS,
+  );
+  return {
+    columnWidth,
+    columnStride: columnWidth + CANVAS_GRID_GAP_PX,
+    rowHeight: CANVAS_ROW_HEIGHT_PX,
+    rowStride: CANVAS_ROW_HEIGHT_PX + CANVAS_GRID_GAP_PX,
+  };
+}
+
+export function projectWidgetMoveLayout({
+  clientX,
+  clientY,
+  containerLeft,
+  containerTop,
+  metrics,
+  originLayout,
+  originPlacement,
+  pointerOffsetX,
+  pointerOffsetY,
+}: {
+  clientX: number;
+  clientY: number;
+  containerLeft: number;
+  containerTop: number;
+  metrics: CanvasMetrics;
+  originLayout: OraWidget["layout"];
+  originPlacement: Pick<CanvasWidgetPlacement, "colStart" | "rowStart" | "colSpan" | "rowSpan">;
+  pointerOffsetX: number;
+  pointerOffsetY: number;
+}): OraWidget["layout"] {
+  const left = clientX - containerLeft - pointerOffsetX;
+  const top = clientY - containerTop - pointerOffsetY;
+  const colStart = clampInt(
+    Math.round(left / metrics.columnStride) + 1,
+    1,
+    CANVAS_COLUMNS - originPlacement.colSpan + 1,
+  );
+  const rowStart = Math.max(1, Math.round(top / metrics.rowStride) + 1);
+
+  return {
+    ...originLayout,
+    x: colStart - 1,
+    y: rowStart - 1,
+    w: originPlacement.colSpan,
+    h: originPlacement.rowSpan,
+  };
+}
+
+export function projectWidgetResizeLayout({
+  clientX,
+  clientY,
+  metrics,
+  startClientX,
+  startClientY,
+  originLayout,
+  originPlacement,
+}: {
+  clientX: number;
+  clientY: number;
+  metrics: CanvasMetrics;
+  startClientX: number;
+  startClientY: number;
+  originLayout: OraWidget["layout"];
+  originPlacement: Pick<CanvasWidgetPlacement, "colStart" | "rowStart" | "colSpan" | "rowSpan">;
+}): OraWidget["layout"] {
+  const deltaColumns = Math.round((clientX - startClientX) / metrics.columnStride);
+  const deltaRows = Math.round((clientY - startClientY) / metrics.rowStride);
+  return {
+    ...originLayout,
+    w: clampInt(
+      originPlacement.colSpan + deltaColumns,
+      1,
+      CANVAS_COLUMNS - originPlacement.colStart + 1,
+    ),
+    h: clampInt(originPlacement.rowSpan + deltaRows, 1, MAX_WIDGET_ROW_SPAN),
+  };
 }
 
 export function selectedWidgetForSpaceContext(
@@ -434,6 +799,20 @@ function markCanvasPosition(
 
 function clampInt(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, Math.trunc(value)));
+}
+
+function prioritizeWidgets(
+  widgets: readonly OraWidget[],
+  prioritizedWidgetId?: string,
+): OraWidget[] {
+  if (!prioritizedWidgetId) return [...widgets];
+  const prioritized = widgets.find((widget) => widget.id === prioritizedWidgetId);
+  if (!prioritized) return [...widgets];
+  return [prioritized, ...widgets.filter((widget) => widget.id !== prioritizedWidgetId)];
+}
+
+function isDesktopCanvasInteractionEnabled(): boolean {
+  return typeof window === "undefined" || window.innerWidth >= DESKTOP_CANVAS_MIN_WIDTH_PX;
 }
 
 function isTasklistWidget(widget: OraWidget): boolean {

@@ -1,5 +1,5 @@
 import { MVP_MODES, ORA_ROOT_AGENT_ID } from "@cemeworm/shared";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createRuntimeClient } from "./runtimeClient";
 
 function expectedBrowserFallbackSystemAgentIds(): string[] {
@@ -12,6 +12,10 @@ function expectedBrowserFallbackSystemAgentIds(): string[] {
 }
 
 describe("desktop runtime client agent catalog", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("bootstraps the workbench in one browser-fallback call", async () => {
     const client = createRuntimeClient();
     const session = await client.createSession();
@@ -121,6 +125,56 @@ describe("desktop runtime client agent catalog", () => {
     await expect(client.findDuplicateWidget("任务清单", "todo")).resolves.toBeNull();
   });
 
+  it("archives projects and revives archived duplicates in browser fallback", async () => {
+    const client = createRuntimeClient();
+    const created = await client.createProject({
+      sourceKind: "local_folder",
+      rootPath: "/tmp/mock-project",
+      label: "mock-project",
+    });
+
+    await client.createSession({ projectId: created.projectId });
+    await client.createSession({ projectId: created.projectId });
+
+    const archived = await client.archiveProject(created.projectId);
+    expect(archived.archivedAt).toBeDefined();
+    expect((await client.listProjects()).some((project) => project.projectId === created.projectId)).toBe(false);
+    expect(await client.listSessions()).toEqual([]);
+
+    const restored = await client.createProject({
+      sourceKind: "local_folder",
+      rootPath: "/tmp/mock-project/",
+    });
+    expect(restored.projectId).toBe(created.projectId);
+    expect(restored.archivedAt).toBeUndefined();
+    expect((await client.listProjects())[0]?.projectId).toBe(created.projectId);
+  });
+
+  it("persists widget layout updates in browser fallback", async () => {
+    const client = createRuntimeClient();
+    const created = await client.createWidget({
+      title: "周报面板",
+      kind: "artifact",
+      layout: { x: 0, y: 0, w: 1, h: 1, pinned: false },
+      state: {
+        kind: "artifact",
+        title: "周报面板",
+        content: "",
+        format: "markdown",
+        versions: [],
+        consecutiveFailures: 0,
+      },
+    });
+
+    const updated = await client.updateWidget({
+      id: created.id,
+      layout: { x: 4, y: 2, w: 2, h: 3, pinned: false },
+    });
+
+    expect(updated.layout).toEqual({ x: 4, y: 2, w: 2, h: 3, pinned: false });
+    expect((await client.getWidget(created.id)).layout).toEqual({ x: 4, y: 2, w: 2, h: 3, pinned: false });
+  });
+
   it("lists provider models in browser fallback", async () => {
     const client = createRuntimeClient();
 
@@ -155,6 +209,39 @@ describe("desktop runtime client agent catalog", () => {
       status: "ok",
       authoritative: false,
     });
+  });
+
+  it("opens external urls with window.open in browser fallback", async () => {
+    const client = createRuntimeClient();
+    const openSpy = vi.fn(() => null);
+    const originalWindow = (globalThis as typeof globalThis & {
+      window?: { open: typeof openSpy };
+    }).window;
+    (globalThis as typeof globalThis & {
+      window?: { open: typeof openSpy };
+    }).window = {
+      open: openSpy,
+    };
+
+    try {
+      await client.openExternalUrl("https://platform.openai.com/api-keys");
+    } finally {
+      if (originalWindow) {
+        (globalThis as typeof globalThis & {
+          window?: { open: typeof openSpy };
+        }).window = originalWindow;
+      } else {
+        delete (globalThis as typeof globalThis & {
+          window?: { open: typeof openSpy };
+        }).window;
+      }
+    }
+
+    expect(openSpy).toHaveBeenCalledWith(
+      "https://platform.openai.com/api-keys",
+      "_blank",
+      "noopener,noreferrer",
+    );
   });
 
   it("exposes built-in agents and applies global overrides in browser fallback", async () => {

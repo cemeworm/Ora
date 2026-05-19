@@ -326,6 +326,20 @@ export function isDisposableEmptySession(state: WorkbenchState, sessionId: strin
   return true;
 }
 
+export function shouldSelectFallbackAfterProjectArchive(
+  state: Pick<WorkbenchState, "selectedSessionId" | "sessions">,
+  projectId: string,
+): boolean {
+  if (!state.selectedSessionId) {
+    return false;
+  }
+  return state.sessions.some(
+    (session) =>
+      session.sessionId === state.selectedSessionId &&
+      session.projectId === projectId,
+  );
+}
+
 async function pickProjectDirectory(): Promise<string | null> {
   if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
     const { open } = await import("@tauri-apps/plugin-dialog");
@@ -726,6 +740,61 @@ export function useRunActions() {
     }
   }
 
+  async function archiveProject(projectId: string) {
+    dispatch({ type: "SET_BUSY_COMMAND", command: "Archive project" });
+    const shouldSelectFallback = shouldSelectFallbackAfterProjectArchive(
+      state,
+      projectId,
+    );
+    try {
+      await runtimeClient.archiveProject(projectId);
+      const [projects, sessions] = await Promise.all([
+        runtimeClient.listProjects(),
+        runtimeClient.listSessions(),
+      ]);
+      if (!shouldSelectFallback) {
+        dispatch({
+          type: "SET_COLLECTIONS",
+          projects,
+          sessions,
+          feedback: "Archived project.",
+        });
+        return;
+      }
+
+      const fallbackSession = sessions[0] ?? await runtimeClient.createSession();
+      const refreshedSessions =
+        fallbackSession === sessions[0]
+          ? sessions
+          : await runtimeClient.listSessions();
+      const refreshedProjects =
+        fallbackSession === sessions[0]
+          ? projects
+          : await runtimeClient.listProjects();
+      const detail = await runtimeClient.getSession(fallbackSession.sessionId);
+      dispatch({
+        type: "HYDRATE_SESSION",
+        projects: refreshedProjects,
+        sessions: refreshedSessions,
+        detail,
+        feedback: "Archived project.",
+      });
+    } catch (error) {
+      const feedback =
+        error instanceof Error ? error.message : "Project archive failed.";
+      try {
+        const [projects, sessions] = await Promise.all([
+          runtimeClient.listProjects(),
+          runtimeClient.listSessions(),
+        ]);
+        dispatch({ type: "SET_COLLECTIONS", projects, sessions, feedback });
+      } catch {
+        dispatch({ type: "SET_COMMAND_FEEDBACK", feedback });
+        dispatch({ type: "SET_BUSY_COMMAND", command: undefined });
+      }
+    }
+  }
+
   async function refreshCurrentSession(snapshot?: OraStateSnapshot, feedback?: string) {
     const sessionId = snapshot?.sessionId ?? state.selectedSessionId;
     if (!sessionId) return;
@@ -1085,10 +1154,14 @@ export function useRunActions() {
         projects: state.projects,
         sessions: state.sessions,
         detail,
-        feedback: status === "accepted" ? "Plan accepted." : "Plan decision dismissed.",
+        feedback:
+          status === "accepted"
+            ? "Plan accepted."
+            : "Plan declined. Add your revision to continue.",
       });
       if (status === "declined") {
         dispatch({ type: "SET_TASK_INTENT", taskIntent: currentTaskIntent });
+        return true;
       }
       if (!state.selectedTurnRunId) {
         return false;
@@ -1400,6 +1473,7 @@ export function useRunActions() {
       prefetchSessions,
       ensureInitialSession,
       archiveSession,
+      archiveProject,
       selectSession,
       selectTurn,
       startRun,

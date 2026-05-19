@@ -47,6 +47,30 @@ function renderWidget(widget: OraWidget, size: "compact" | "expanded") {
   );
 }
 
+function renderInteractiveWidget(
+  widget: OraWidget,
+  size: "compact" | "expanded",
+  interactionKind: "drag" | "resize" | null = null,
+) {
+  return renderToStaticMarkup(
+    <WidgetCard
+      widget={widget}
+      size={size}
+      selected={false}
+      interactiveLayoutEnabled
+      layoutInteractionKind={interactionKind}
+      onDragHandlePointerDown={vi.fn()}
+      onResizeHandlePointerDown={vi.fn()}
+      onSelect={vi.fn()}
+      onOpenDetail={vi.fn()}
+      onTogglePin={vi.fn()}
+      onArchive={vi.fn()}
+      onRefresh={vi.fn()}
+      onUpdate={vi.fn()}
+    />,
+  );
+}
+
 describe("WidgetCard density", () => {
   it("renders compact todo cards without the inline add input", () => {
     const html = renderWidget(todoWidget({ x: 0, y: 0, w: 1, h: 1, pinned: false }), "compact");
@@ -62,5 +86,25 @@ describe("WidgetCard density", () => {
 
     expect(html).toContain('data-widget-card-size="expanded"');
     expect(html).toContain("placeholder=\"添加...\"");
+  });
+
+  it("renders drag and resize affordances when interactive layout is enabled", () => {
+    const idleHtml = renderInteractiveWidget(
+      todoWidget({ x: 1, y: 0, w: 2, h: 2, pinned: false }),
+      "expanded",
+      null,
+    );
+    const activeHtml = renderInteractiveWidget(
+      todoWidget({ x: 1, y: 0, w: 2, h: 2, pinned: false }),
+      "expanded",
+      "resize",
+    );
+
+    expect(idleHtml).toContain("调整组件大小");
+    expect(idleHtml).toContain("md:opacity-0");
+    expect(idleHtml).toContain("md:group-hover:opacity-100");
+    expect(activeHtml).toContain("调整中");
+    expect(activeHtml).toContain("2 × 2");
+    expect(activeHtml).not.toContain(">待办<");
   });
 });

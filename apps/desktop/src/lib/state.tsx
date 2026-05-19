@@ -228,6 +228,13 @@ export interface PendingPlanDecisionResolution {
   createdAt: number;
 }
 
+export interface AcceptedPlanDecisionTurnProjection {
+  sessionId: string;
+  runId: string;
+  decisionId: string;
+  createdAt: number;
+}
+
 export interface WorkbenchState {
   selectedPattern: CoordinationPattern;
   selectedModeId: string;
@@ -275,6 +282,7 @@ export interface WorkbenchState {
   preservedSettledSessionId: string | undefined;
   liveMessageDeltaBuffer: LiveMessageDeltaBuffer;
   pendingPlanDecisionResolution: PendingPlanDecisionResolution | undefined;
+  acceptedPlanDecisionTurnProjections: Record<string, AcceptedPlanDecisionTurnProjection>;
   isLoading: boolean;
   busyCommand: string | undefined;
   commandFeedback: string;
@@ -480,6 +488,7 @@ export const initialWorkbenchState: WorkbenchState = {
   preservedSettledSessionId: undefined,
   liveMessageDeltaBuffer: {},
   pendingPlanDecisionResolution: undefined,
+  acceptedPlanDecisionTurnProjections: {},
   isLoading: false,
   busyCommand: undefined,
   commandFeedback:
@@ -502,6 +511,24 @@ function replaceSessionSummary(
     session,
     ...sessions.filter((item) => item.sessionId !== session.sessionId),
   ];
+}
+
+function reconcileProjectSidebarState(
+  state: Pick<WorkbenchState, "selectedProjectId" | "expandedProjectIds">,
+  projects: readonly OraProjectSummary[],
+): Pick<WorkbenchState, "selectedProjectId" | "expandedProjectIds"> {
+  const visibleProjectIds = new Set(projects.map((project) => project.projectId));
+  return {
+    selectedProjectId:
+      state.selectedProjectId && visibleProjectIds.has(state.selectedProjectId)
+        ? state.selectedProjectId
+        : undefined,
+    expandedProjectIds: Object.fromEntries(
+      Object.entries(state.expandedProjectIds).filter(([projectId]) =>
+        visibleProjectIds.has(projectId),
+      ),
+    ),
+  };
 }
 
 function snapshotMatchesSessionSummary(
@@ -2525,6 +2552,49 @@ function markSnapshotCancelRequested(
   });
 }
 
+function acceptedPlanDecisionTurnProjectionKey(params: {
+  sessionId: string;
+  runId: string;
+  decisionId: string;
+}): string {
+  return `${params.sessionId}:${params.runId}:${params.decisionId}`;
+}
+
+function upsertAcceptedPlanDecisionTurnProjection(
+  projections: Record<string, AcceptedPlanDecisionTurnProjection>,
+  projection: AcceptedPlanDecisionTurnProjection | undefined,
+): Record<string, AcceptedPlanDecisionTurnProjection> {
+  if (!projection) {
+    return projections;
+  }
+  const key = acceptedPlanDecisionTurnProjectionKey(projection);
+  if (projections[key]) {
+    return projections;
+  }
+  return {
+    ...projections,
+    [key]: projection,
+  };
+}
+
+function removeAcceptedPlanDecisionTurnProjection(
+  projections: Record<string, AcceptedPlanDecisionTurnProjection>,
+  params: { sessionId: string; decisionId: string },
+): Record<string, AcceptedPlanDecisionTurnProjection> {
+  let changed = false;
+  const nextEntries = Object.entries(projections).filter(([, projection]) => {
+    const shouldKeep = !(
+      projection.sessionId === params.sessionId &&
+      projection.decisionId === params.decisionId
+    );
+    if (!shouldKeep) {
+      changed = true;
+    }
+    return shouldKeep;
+  });
+  return changed ? Object.fromEntries(nextEntries) : projections;
+}
+
 function applyCancelRequestedToSessionDetail(
   detail: OraSessionDetail | undefined,
   snapshot: OraStateSnapshot | undefined,
@@ -2744,10 +2814,15 @@ export function workbenchReducer(
         state.selectedSessionId &&
         action.detail.session.sessionId !== state.selectedSessionId
       ) {
+        const projectSidebarState = reconcileProjectSidebarState(
+          state,
+          action.projects,
+        );
         return {
           ...state,
           projects: action.projects,
           sessions,
+          ...projectSidebarState,
           sessionLiveSnapshotsById: cacheSessionLiveSnapshot(
             state.sessionLiveSnapshotsById,
             effectiveSnapshot,
@@ -2765,6 +2840,10 @@ export function workbenchReducer(
         snapshot: effectiveSnapshot,
       });
       const pendingRun = preservePendingRun ? currentPendingRun : undefined;
+      const projectSidebarState = reconcileProjectSidebarState(
+        state,
+        action.projects,
+      );
       const nextState = {
         ...state,
         projects: action.projects,
@@ -2772,10 +2851,10 @@ export function workbenchReducer(
         selectedProjectId: action.detail.session.projectId,
         expandedProjectIds: action.detail.session.projectId
           ? {
-              ...state.expandedProjectIds,
+              ...projectSidebarState.expandedProjectIds,
               [action.detail.session.projectId]: true,
             }
-          : state.expandedProjectIds,
+          : projectSidebarState.expandedProjectIds,
         activeSessionDetail: normalizedDetail,
         sessionLiveSnapshotsById: cacheSessionLiveSnapshot(
           state.sessionLiveSnapshotsById,
@@ -2839,6 +2918,7 @@ export function workbenchReducer(
           state,
           action.sessions,
         ),
+        ...reconcileProjectSidebarState(state, action.projects),
         commandFeedback: action.feedback ?? state.commandFeedback,
         busyCommand: undefined,
       };
@@ -2917,7 +2997,11 @@ export function workbenchReducer(
       };
 
     case "SET_PROJECTS":
-      return { ...state, projects: action.projects };
+      return {
+        ...state,
+        projects: action.projects,
+        ...reconcileProjectSidebarState(state, action.projects),
+      };
 
     case "SET_MODES": {
       const selectedMode = resolveSelectedMode(
@@ -3588,18 +3672,43 @@ export function workbenchReducer(
           updatedAt: action.updatedAt,
         },
       );
+      const acceptedPlanDecisionProjection =
+        action.planDecisionId && action.planDecisionStatus === "accepted"
+          ? upsertAcceptedPlanDecisionTurnProjection(
+              state.acceptedPlanDecisionTurnProjections,
+              (() => {
+                const sessionId =
+                  activeSnapshot?.sessionId ??
+                  getActiveSnapshot(state.runLifecycle)?.sessionId ??
+                  state.selectedSessionId;
+                if (!sessionId) {
+                  return undefined;
+                }
+                return {
+                  sessionId,
+                  runId: action.runId,
+                  decisionId: action.planDecisionId,
+                  createdAt: action.updatedAt,
+                } satisfies AcceptedPlanDecisionTurnProjection;
+              })(),
+            )
+          : state.acceptedPlanDecisionTurnProjections;
       return {
         ...state,
         sessionLiveSnapshotsById: cacheSessionLiveSnapshot(
           state.sessionLiveSnapshotsById,
           activeSnapshot,
         ),
+        acceptedPlanDecisionTurnProjections: acceptedPlanDecisionProjection,
         runLifecycle: runLifecycleFromSnapshot(activeSnapshot, {
           fallbackSessionId: state.selectedSessionId,
         }),
         selectedTurnRunId: action.runId,
         isLoading: true,
-        commandFeedback: "Approval submitted. Continuing run.",
+        commandFeedback:
+          action.planDecisionStatus === "accepted"
+            ? "Plan accepted. Continuing run."
+            : "Approval submitted. Continuing run.",
       };
     }
 
@@ -3798,6 +3907,13 @@ export function workbenchReducer(
       if (!pendingResolution || !matches) {
         return {
           ...state,
+          acceptedPlanDecisionTurnProjections: removeAcceptedPlanDecisionTurnProjection(
+            state.acceptedPlanDecisionTurnProjections,
+            {
+              sessionId: action.sessionId,
+              decisionId: action.decisionId,
+            },
+          ),
           commandFeedback: action.feedback,
           busyCommand: undefined,
         };
@@ -3805,6 +3921,13 @@ export function workbenchReducer(
       return {
         ...state,
         pendingPlanDecisionResolution: undefined,
+        acceptedPlanDecisionTurnProjections: removeAcceptedPlanDecisionTurnProjection(
+          state.acceptedPlanDecisionTurnProjections,
+          {
+            sessionId: action.sessionId,
+            decisionId: action.decisionId,
+          },
+        ),
         isLoading: false,
         busyCommand: undefined,
         commandFeedback: action.feedback,

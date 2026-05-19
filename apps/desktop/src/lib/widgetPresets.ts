@@ -5,7 +5,7 @@ const TASKLIST_PRESET_KEY = "ora.widgets.presets.tasklist.v1";
 const TASKLIST_DEFAULTS = {
   title: "任务清单",
   kind: "todo" as const,
-  layout: { x: 0, y: 0, w: 1, h: 1, pinned: false },
+  layout: { x: 0, y: 0, w: 2, h: 1, pinned: false },
 } satisfies Partial<OraWidgetCreateParams>;
 
 export interface PresetClient {

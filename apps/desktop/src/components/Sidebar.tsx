@@ -42,7 +42,7 @@ import {
   type SidebarSearchResult,
 } from "../lib/sessionSearch";
 import { useRunActions } from "../lib/useRunActions";
-import { translateCopy } from "../lib/i18n";
+import { translateCopy, type AppLanguage } from "../lib/i18n";
 import { cn } from "../lib/utils";
 import type { RunStatus } from "../types";
 import { Dialog, DialogContent } from "./ui/dialog";
@@ -202,17 +202,28 @@ function ReleaseUpdatePill() {
 
   useEffect(() => {
     let cancelled = false;
-    void checkOraReleaseUpdate().then((nextStatus) => {
-      if (!cancelled) {
-        setStatus(nextStatus);
+    void (async () => {
+      try {
+        const { check } = await import("@tauri-apps/plugin-updater");
+        const nextStatus = await checkOraReleaseUpdate(check);
+        if (!cancelled) {
+          setStatus(nextStatus);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setStatus({
+            available: false,
+            error: error instanceof Error ? error.message : "Ora updater check failed.",
+          });
+        }
       }
-    });
+    })();
     return () => {
       cancelled = true;
     };
   }, []);
 
-  if (!status.available || !status.releaseUrl) return null;
+  if (!status.available) return null;
 
   const installUpdate = async () => {
     if (installState !== "idle" && installState !== "failed") return;
@@ -248,7 +259,9 @@ function ReleaseUpdatePill() {
       setInstallError(
         error instanceof Error ? error.message : "Ora update failed.",
       );
-      await getSharedRuntimeClient().openExternalUrl(status.releaseUrl!);
+      if (status.releaseUrl) {
+        await getSharedRuntimeClient().openExternalUrl(status.releaseUrl);
+      }
     }
   };
 
@@ -456,6 +469,73 @@ const SessionRow = memo(function SessionRow({
   );
 });
 
+export const ProjectArchiveButton = memo(function ProjectArchiveButton({
+  projectLabel,
+  language,
+  confirmOpen,
+  onArchiveRequest,
+  onArchiveCancel,
+  onArchiveConfirm,
+}: {
+  projectLabel: string;
+  language: AppLanguage;
+  confirmOpen: boolean;
+  onArchiveRequest: () => void;
+  onArchiveCancel: () => void;
+  onArchiveConfirm: () => void;
+}) {
+  const archiveLabel = translateCopy(language, "Archive project");
+  return (
+    <>
+      <button
+        type="button"
+        onClick={(event) => {
+          event.stopPropagation();
+          onArchiveRequest();
+        }}
+        className={cn(
+          SIDEBAR_ACTION_BUTTON_CLASS,
+          "opacity-0 hover:bg-background/85 hover:text-foreground focus-visible:opacity-100 group-hover/project:opacity-100",
+          confirmOpen && "opacity-100",
+        )}
+        title={archiveLabel}
+        aria-label={translateCopy(language, `Archive ${projectLabel}`)}
+      >
+        <Archive size={13} />
+      </button>
+      {confirmOpen && (
+        <div
+          className="absolute right-0 top-[calc(100%+4px)] z-30 w-56 rounded-lg border border-border bg-popover p-2 text-popover-foreground shadow-lift"
+          onClick={(event) => event.stopPropagation()}
+        >
+          <div className="px-2 pb-2 pt-1 text-[12px] font-medium text-foreground">
+            {translateCopy(
+              language,
+              "Archive this project and all its chats?",
+            )}
+          </div>
+          <div className="flex justify-end gap-1">
+            <button
+              type="button"
+              onClick={onArchiveCancel}
+              className="h-7 rounded-md px-2 text-[12px] text-muted-foreground transition hover:bg-sidebar-accent hover:text-sidebar-accent-foreground active:scale-95"
+            >
+              {translateCopy(language, "Cancel")}
+            </button>
+            <button
+              type="button"
+              onClick={onArchiveConfirm}
+              className="h-7 rounded-md bg-foreground px-2 text-[12px] font-medium text-background transition hover:bg-foreground/85 active:scale-95"
+            >
+              {translateCopy(language, "Archive")}
+            </button>
+          </div>
+        </div>
+      )}
+    </>
+  );
+});
+
 function SessionSearchDialog({
   open,
   query,
@@ -651,6 +731,9 @@ export const Sidebar = memo(function Sidebar({
   >({});
   const [navigationExpanded, setNavigationExpanded] = useState(false);
   const [confirmArchiveSessionId, setConfirmArchiveSessionId] = useState<
+    string | undefined
+  >();
+  const [confirmArchiveProjectId, setConfirmArchiveProjectId] = useState<
     string | undefined
   >();
   const [sessionSearchOpen, setSessionSearchOpen] = useState(false);
@@ -975,7 +1058,7 @@ export const Sidebar = memo(function Sidebar({
                         key={project.projectId}
                         className="group/project rounded-lg"
                       >
-                        <div className="flex items-center">
+                        <div className="group/project relative flex items-center gap-1">
                           <button
                             type="button"
                             onClick={() => {
@@ -1012,13 +1095,32 @@ export const Sidebar = memo(function Sidebar({
                               {project.label}
                             </div>
                           </button>
+                          <ProjectArchiveButton
+                            projectLabel={project.label}
+                            language={sidebarState.language}
+                            confirmOpen={
+                              confirmArchiveProjectId === project.projectId
+                            }
+                            onArchiveRequest={() => {
+                              setConfirmArchiveSessionId(undefined);
+                              setConfirmArchiveProjectId(project.projectId);
+                            }}
+                            onArchiveCancel={() =>
+                              setConfirmArchiveProjectId(undefined)
+                            }
+                            onArchiveConfirm={() => {
+                              setConfirmArchiveProjectId(undefined);
+                              void actions.archiveProject(project.projectId);
+                            }}
+                          />
                           <button
                             type="button"
-                            onClick={() =>
+                            onClick={() => {
+                              setConfirmArchiveProjectId(undefined);
                               void actions.createProjectSession(
                                 project.projectId,
-                              )
-                            }
+                              );
+                            }}
                             className={cn(
                               SIDEBAR_ACTION_BUTTON_CLASS,
                               "opacity-0 group-hover/project:opacity-100 focus-visible:opacity-100",
@@ -1056,9 +1158,10 @@ export const Sidebar = memo(function Sidebar({
                                       onPrefetch={() =>
                                         void actions.prefetchSession(session.id)
                                       }
-                                      onArchiveRequest={() =>
-                                        setConfirmArchiveSessionId(session.id)
-                                      }
+                                      onArchiveRequest={() => {
+                                        setConfirmArchiveProjectId(undefined);
+                                        setConfirmArchiveSessionId(session.id);
+                                      }}
                                       onArchiveCancel={() =>
                                         setConfirmArchiveSessionId(undefined)
                                       }
@@ -1155,9 +1258,10 @@ export const Sidebar = memo(function Sidebar({
                           onPrefetch={() =>
                             void actions.prefetchSession(session.id)
                           }
-                          onArchiveRequest={() =>
-                            setConfirmArchiveSessionId(session.id)
-                          }
+                          onArchiveRequest={() => {
+                            setConfirmArchiveProjectId(undefined);
+                            setConfirmArchiveSessionId(session.id);
+                          }}
                           onArchiveCancel={() =>
                             setConfirmArchiveSessionId(undefined)
                           }

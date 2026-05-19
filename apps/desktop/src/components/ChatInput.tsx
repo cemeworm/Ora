@@ -46,6 +46,7 @@ import { ApprovalRequestCard } from "./ApprovalRequestCard";
 import { ClarificationPanel } from "./ClarificationPanel";
 import { PlanDecisionPanel } from "./PlanDecisionPanel";
 import { PlanStepsTray } from "./PlanStepsTray";
+import { CHAT_SURFACE_WIDTH_CLASS } from "./ChatMessages";
 import type { OraStateSnapshot } from "../lib/runtimeClient";
 import type { DesktopRunInteractionState } from "../lib/runInteractionState";
 
@@ -104,6 +105,7 @@ interface ChatInputProps {
   onConfirmPlanDecision?: () => void | boolean | Promise<void | boolean>;
   onDeclinePlanDecision?: () => void | boolean | Promise<void | boolean>;
   onOverlayHeightChange?: (height: number) => void;
+  contentWidthClassName?: string;
   onStartRun: () => void;
   onStopRun: () => void;
 }
@@ -240,6 +242,7 @@ export function ChatInput({
   onConfirmPlanDecision,
   onDeclinePlanDecision,
   onOverlayHeightChange,
+  contentWidthClassName = CHAT_SURFACE_WIDTH_CLASS,
   onStartRun,
   onStopRun,
 }: ChatInputProps) {
@@ -598,7 +601,12 @@ export function ChatInput({
       ref={overlayRef}
       className="pointer-events-none absolute bottom-0 left-0 right-0 z-30 flex justify-center"
     >
-      <div className="pointer-events-none relative w-full max-w-[88rem] px-4 md:px-6 xl:px-8">
+      <div
+        className={cn(
+          "pointer-events-none relative mx-auto",
+          contentWidthClassName,
+        )}
+      >
         {showSkillPicker && (
           <div
             ref={skillPickerRef}

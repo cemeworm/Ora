@@ -2,13 +2,14 @@ import { describe, expect, it } from "vitest";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
+  ProjectArchiveButton,
   SessionStatusBadge,
   sidebarStatusForSession,
   statusFromSession,
   visibleSidebarSessions,
 } from "./Sidebar";
 import { translateCopy } from "../lib/i18n";
-import { checkOraReleaseUpdate, isReleaseNewer } from "../lib/releaseUpdate";
+import { checkOraReleaseUpdate } from "../lib/releaseUpdate";
 import type { OraSessionSummary, OraStateSnapshot } from "../lib/runtimeClient";
 
 function sessionSummary(
@@ -212,30 +213,7 @@ describe("sidebar session status", () => {
 });
 
 describe("sidebar release update check", () => {
-  it("detects a newer patch release", () => {
-    expect(isReleaseNewer("0.1.1", "0.1.0")).toBe(true);
-  });
-
-  it("accepts a leading v in GitHub release tags", () => {
-    expect(isReleaseNewer("v0.1.1", "0.1.0")).toBe(true);
-  });
-
-  it("does not show equal releases as updates", () => {
-    expect(isReleaseNewer("v0.1.0", "0.1.0")).toBe(false);
-  });
-
-  it("returns no update for malformed release data", async () => {
-    const fetchRelease = async () => ({
-      ok: true,
-      json: async () => ({ tag_name: "", html_url: "" }),
-    });
-
-    await expect(checkOraReleaseUpdate(fetchRelease, "0.1.0")).resolves.toMatchObject({
-      available: false,
-    });
-  });
-
-  it("returns update metadata for a newer GitHub release", async () => {
+  it("returns no update when updater has no installable release", async () => {
     const fetchRelease = async () => ({
       ok: true,
       json: async () => ({
@@ -244,10 +222,58 @@ describe("sidebar release update check", () => {
       }),
     });
 
-    await expect(checkOraReleaseUpdate(fetchRelease, "0.1.0")).resolves.toMatchObject({
-      available: true,
+    await expect(checkOraReleaseUpdate(async () => null, fetchRelease)).resolves.toMatchObject({
+      available: false,
       latestVersion: "v0.1.1",
       releaseUrl: "https://github.com/cemeworm/Ora/releases/tag/v0.1.1",
+    });
+  });
+
+  it("returns update metadata from the updater when installable", async () => {
+    const fetchRelease = async () => ({
+      ok: true,
+      json: async () => ({
+        tag_name: "v9.9.9",
+        html_url: "https://github.com/cemeworm/Ora/releases/tag/v9.9.9",
+      }),
+    });
+
+    await expect(checkOraReleaseUpdate(async () => ({ version: "0.1.1" }), fetchRelease)).resolves.toMatchObject({
+      available: true,
+      latestVersion: "0.1.1",
+      releaseUrl: "https://github.com/cemeworm/Ora/releases/tag/v9.9.9",
+    });
+  });
+
+  it("still reports an installable update when release-page metadata fetch fails", async () => {
+    const fetchRelease = async () => ({
+      ok: false,
+      json: async () => ({}),
+    });
+
+    await expect(checkOraReleaseUpdate(async () => ({ version: "0.1.1" }), fetchRelease)).resolves.toMatchObject({
+      available: true,
+      latestVersion: "0.1.1",
+      error: "GitHub release check failed.",
+    });
+  });
+
+  it("keeps updater failure from showing a false positive pill", async () => {
+    const fetchRelease = async () => ({
+      ok: true,
+      json: async () => ({
+        tag_name: "v0.1.1",
+        html_url: "https://github.com/cemeworm/Ora/releases/tag/v0.1.1",
+      }),
+    });
+
+    await expect(checkOraReleaseUpdate(async () => {
+      throw new Error("latest.json not found");
+    }, fetchRelease)).resolves.toMatchObject({
+      available: false,
+      latestVersion: "v0.1.1",
+      releaseUrl: "https://github.com/cemeworm/Ora/releases/tag/v0.1.1",
+      error: "latest.json not found",
     });
   });
 });
@@ -304,9 +330,28 @@ describe("sidebar session sorting by lastUserMessageAt", () => {
 });
 
 describe("sidebar archive copy", () => {
+  it("renders project archive confirmation in the project action slot", () => {
+    const html = renderToStaticMarkup(createElement(ProjectArchiveButton, {
+      projectLabel: "Alpha",
+      language: "en",
+      confirmOpen: true,
+      onArchiveRequest: () => {},
+      onArchiveCancel: () => {},
+      onArchiveConfirm: () => {},
+    }));
+
+    expect(html).toContain("Archive this project and all its chats?");
+    expect(html).toContain("Archive project");
+  });
+
   it("localizes archive confirmation copy", () => {
     expect(translateCopy("zh", "Archive this chat?")).toBe("归档这个对话？");
     expect(translateCopy("zh", "Archive")).toBe("归档");
+    expect(translateCopy("zh", "Archive project")).toBe("归档项目");
+    expect(translateCopy("zh", "Archive this project and all its chats?")).toBe(
+      "归档这个项目及其全部对话？",
+    );
+    expect(translateCopy("zh", "Archived project.")).toBe("已归档项目。");
     expect(translateCopy("zh", "Archive current channel session")).toBe(
       "归档 当前渠道会话",
     );

@@ -591,6 +591,9 @@ export function createRuntimeClient() {
     async listProjects(): Promise<OraProjectSummary[]> {
       return call<OraProjectSummary[]>("projects.list");
     },
+    async archiveProject(projectId: string): Promise<OraProjectSummary> {
+      return call<OraProjectSummary>("projects.archive", { projectId });
+    },
     async getProject(projectId: string): Promise<OraProjectDetail> {
       return call<OraProjectDetail>("projects.get", { projectId });
     },
@@ -1616,9 +1619,13 @@ class LocalJsonRpcRuntime {
       case "projects.create":
         return this.createProject(params);
       case "projects.list":
-        return [...this.projects.values()].sort((a, b) => b.updatedAt - a.updatedAt || a.projectId.localeCompare(b.projectId));
+        return [...this.projects.values()]
+          .filter((project) => project.archivedAt === undefined)
+          .sort((a, b) => b.updatedAt - a.updatedAt || a.projectId.localeCompare(b.projectId));
       case "projects.get":
         return this.getProjectDetail(params);
+      case "projects.archive":
+        return this.archiveProject(params);
       case "projects.files":
         return this.listProjectFiles(params);
       case "projects.file.read":
@@ -2648,6 +2655,9 @@ class LocalJsonRpcRuntime {
     if (projectId && !this.projects.has(projectId)) {
       throw new Error(`Project not found: ${projectId}`);
     }
+    if (projectId && this.projects.get(projectId)?.archivedAt !== undefined) {
+      throw new Error(`Project is archived: ${projectId}`);
+    }
     const sessionId = `session-${String(this.nextSessionNumber++).padStart(4, "0")}`;
     const now = Date.now();
     const session: OraSessionSummary = {
@@ -2684,6 +2694,35 @@ class LocalJsonRpcRuntime {
       this.syncProjectSummary(session.projectId);
     }
     return session;
+  }
+
+  private archiveProject(params: unknown): OraProjectSummary {
+    if (!isRecord(params) || typeof params.projectId !== "string") {
+      throw new Error("Missing projectId");
+    }
+    const existing = this.projects.get(params.projectId);
+    if (!existing) {
+      throw new Error(`Project not found: ${params.projectId}`);
+    }
+    const archivedAt = existing.archivedAt ?? Date.now();
+    for (const session of this.sessions.values()) {
+      if (session.projectId !== params.projectId || session.archivedAt !== undefined) {
+        continue;
+      }
+      this.sessions.set(session.sessionId, {
+        ...session,
+        archivedAt,
+        updatedAt: Math.max(session.updatedAt, archivedAt),
+      });
+    }
+    const project: OraProjectSummary = {
+      ...existing,
+      sessionCount: 0,
+      archivedAt,
+      updatedAt: Math.max(existing.updatedAt, archivedAt),
+    };
+    this.projects.set(project.projectId, project);
+    return project;
   }
 
   private createAutomation(params: unknown): OraAutomation {
@@ -3042,7 +3081,16 @@ class LocalJsonRpcRuntime {
       const existing = [...this.projects.values()].find(
         (proj) => proj.sourceKind === "ora_project" && proj.label === label,
       );
-      if (existing) return existing;
+      if (existing) {
+        if (existing.archivedAt === undefined) return existing;
+        const restored: OraProjectSummary = {
+          ...existing,
+          archivedAt: undefined,
+          updatedAt: Math.max(existing.updatedAt, now),
+        };
+        this.projects.set(restored.projectId, restored);
+        return restored;
+      }
       const project: OraProjectSummary = {
         projectId,
         label,
@@ -3067,7 +3115,16 @@ class LocalJsonRpcRuntime {
     const existing = [...this.projects.values()].find(
       (proj) => proj.sourceKind === "local_folder" && proj.rootPath === rootPath,
     );
-    if (existing) return existing;
+    if (existing) {
+      if (existing.archivedAt === undefined) return existing;
+      const restored: OraProjectSummary = {
+        ...existing,
+        archivedAt: undefined,
+        updatedAt: Math.max(existing.updatedAt, now),
+      };
+      this.projects.set(restored.projectId, restored);
+      return restored;
+    }
 
     const label =
       typeof p.label === "string" && p.label.trim()
@@ -5622,6 +5679,7 @@ class LocalJsonRpcRuntime {
       ...project,
       sessionCount: sessions.length,
       updatedAt: sessions.reduce((max, session) => Math.max(max, session.updatedAt), project.createdAt),
+      archivedAt: project.archivedAt,
     });
   }
 

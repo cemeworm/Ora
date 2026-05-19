@@ -5,6 +5,7 @@ import {
   buildDesktopRunContext,
   getSelectedInteractiveSnapshot,
   isDisposableEmptySession,
+  shouldSelectFallbackAfterProjectArchive,
   shouldEnableClarificationPreflight,
   stableViewModelCacheKey,
   toolIdsForRun,
@@ -345,5 +346,23 @@ describe("desktop run actions", () => {
     }), "session-empty")).toBe(false);
 
     expect(isDisposableEmptySession(stateWithSession({}, { status: "running" }), "session-empty")).toBe(false);
+  });
+
+  it("selects a fallback chat only when the archived project owns the selected session", () => {
+    expect(shouldSelectFallbackAfterProjectArchive(stateWithSession({
+      selectedSessionId: "session-project",
+      sessions: [
+        sessionSummary("session-project", { projectId: "project-1" }),
+        sessionSummary("session-other"),
+      ],
+    }), "project-1")).toBe(true);
+
+    expect(shouldSelectFallbackAfterProjectArchive(stateWithSession({
+      selectedSessionId: "session-other",
+      sessions: [
+        sessionSummary("session-project", { projectId: "project-1" }),
+        sessionSummary("session-other"),
+      ],
+    }), "project-1")).toBe(false);
   });
 });

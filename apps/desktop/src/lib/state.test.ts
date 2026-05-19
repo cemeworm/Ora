@@ -3388,6 +3388,7 @@ describe("desktop workbench state", () => {
         decisionId: "run-plan:plan-decision",
         status: "accepted",
       });
+      expect(next.acceptedPlanDecisionTurnProjections).toEqual({});
       expect(next.isLoading).toBe(true);
       expect(next.busyCommand).toBe("Accept plan");
       expect(next.commandFeedback).toBe("Plan accepted. Continuing run.");
@@ -3407,9 +3408,56 @@ describe("desktop workbench state", () => {
         decisionId: "run-plan:plan-decision",
         status: "declined",
       });
+      expect(next.acceptedPlanDecisionTurnProjections).toEqual({});
       expect(next.isLoading).toBe(true);
       expect(next.busyCommand).toBe("Decline plan");
       expect(next.commandFeedback).toBe("Plan decision submitted. Adjust the plan.");
+    });
+
+    it("projects an accepted plan decision into a synthetic user turn during same-run resume", () => {
+      const sessionId = "session-plan";
+      const runId = "run-plan";
+      const state = {
+        ...initialWorkbenchState,
+        selectedSessionId: sessionId,
+        runLifecycle: {
+          stage: "settled",
+          runId,
+          sessionId,
+          prompt: "Plan the runtime work",
+          createdAt: 1_714_000_000_000,
+          snapshot: testSnapshot({
+            runId,
+            sessionId,
+            planDecisions: [{
+              id: "run-plan:plan-decision",
+              runId,
+              sessionId,
+              status: "pending",
+              createdAt: 1_714_000_000_000,
+            }],
+          }),
+        },
+      } satisfies WorkbenchState;
+
+      const next = workbenchReducer(state, {
+        type: "BEGIN_RUN_RESUME",
+        runId,
+        approvedActionIds: [],
+        resolvedClarificationIds: [],
+        planDecisionId: "run-plan:plan-decision",
+        planDecisionStatus: "accepted",
+        updatedAt: 1_714_000_000_100,
+      });
+
+      expect(getPendingRunState(next.runLifecycle)).toBeUndefined();
+      expect(Object.values(next.acceptedPlanDecisionTurnProjections)).toEqual([{
+        sessionId,
+        runId,
+        decisionId: "run-plan:plan-decision",
+        createdAt: 1_714_000_000_100,
+      }]);
+      expect(next.commandFeedback).toBe("Plan accepted. Continuing run.");
     });
 
     it("clears accepted plan decision busy state when hydration returns the resolved snapshot", () => {
@@ -3455,14 +3503,18 @@ describe("desktop workbench state", () => {
       expect(next.commandFeedback).toBe("Plan accepted.");
     });
 
-    it("rolls back failed accepted plan decisions", () => {
-      const state = workbenchReducer(initialWorkbenchState, {
-        type: "BEGIN_PLAN_DECISION_RESOLUTION",
-        sessionId: "session-plan",
-        decisionId: "run-plan:plan-decision",
-        status: "accepted",
-        createdAt: 1_714_000_000_100,
-      });
+    it("rolls back failed accepted plan decisions and removes the synthetic user turn projection", () => {
+      const state = {
+        ...initialWorkbenchState,
+        acceptedPlanDecisionTurnProjections: {
+          "session-plan:run-plan:run-plan:plan-decision": {
+            sessionId: "session-plan",
+            runId: "run-plan",
+            decisionId: "run-plan:plan-decision",
+            createdAt: 1_714_000_000_100,
+          },
+        },
+      } satisfies WorkbenchState;
 
       const next = workbenchReducer(state, {
         type: "ROLLBACK_PLAN_DECISION_RESOLUTION",
@@ -3473,6 +3525,7 @@ describe("desktop workbench state", () => {
 
       expect(getPendingRunState(next.runLifecycle)).toBeUndefined();
       expect(next.pendingPlanDecisionResolution).toBeUndefined();
+      expect(next.acceptedPlanDecisionTurnProjections).toEqual({});
       expect(next.isLoading).toBe(false);
       expect(next.commandFeedback).toBe("Plan decision update failed.");
     });

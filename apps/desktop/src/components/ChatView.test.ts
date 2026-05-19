@@ -1,12 +1,22 @@
 import { describe, expect, it } from "vitest";
 import {
+  CHAT_VIEW_COLLABORATION_SHIFT_CLASS,
+  CHAT_VIEW_CONTENT_ROW_CLASS,
+  CHAT_VIEW_MAIN_CLASS,
+  CHAT_VIEW_MESSAGES_PANEL_CLASS,
+  CHAT_VIEW_ROOT_CLASS,
+  CHAT_VIEW_STABLE_CONTENT_WIDTH_CLASS,
   deriveChildReplaySelection,
+  deriveChatSurfaceContentWidthClassName,
+  deriveChatSurfaceShiftClassName,
+  deriveVisibleCollaborationChildren,
   deriveComposerPlanDecisionState,
   deriveCurrentComposerPlanSteps,
   deriveProjectedGateTrays,
   getActiveChatProvider,
   getChatInputContextState,
   resolveComposerGateSnapshot,
+  shouldShowCollaborationOverlay,
 } from "./ChatView";
 
 describe("chat view provider selection", () => {
@@ -351,6 +361,102 @@ describe("chat view collaboration panel replay selection", () => {
   });
 });
 
+describe("chat view collaboration overlay visibility", () => {
+  it("shows only queued and running child sessions in the floating overlay", () => {
+    expect(deriveVisibleCollaborationChildren({
+      childSessions: [
+        childSession("queued-child", "queued"),
+        childSession("running-child", "running"),
+        childSession("done-child", "succeeded"),
+        childSession("failed-child", "failed"),
+      ],
+    } as any)).toMatchObject([
+      { id: "queued-child", status: "queued" },
+      { id: "running-child", status: "running" },
+    ]);
+  });
+
+  it("hides the overlay when there are no active child sessions", () => {
+    expect(shouldShowCollaborationOverlay({
+      childSessions: [
+        childSession("done-child", "succeeded"),
+        childSession("failed-child", "failed"),
+      ],
+      parentCoordination: {
+        phase: "waiting_on_required_children",
+        activeChildIds: [],
+        waitingChildIds: ["done-child"],
+      },
+    } as any)).toBe(false);
+  });
+
+  it("shows the overlay once at least one child is queued or running", () => {
+    expect(shouldShowCollaborationOverlay({
+      childSessions: [
+        childSession("done-child", "succeeded"),
+        childSession("running-child", "running"),
+      ],
+    } as any)).toBe(true);
+  });
+
+  it("keeps a stable overlay-aware content width even when the overlay is visible", () => {
+    expect(deriveChatSurfaceContentWidthClassName(true)).toContain(
+      CHAT_VIEW_STABLE_CONTENT_WIDTH_CLASS,
+    );
+  });
+
+  it("keeps the same stable content width when no collaboration overlay is shown", () => {
+    expect(deriveChatSurfaceContentWidthClassName(false)).toContain(
+      CHAT_VIEW_STABLE_CONTENT_WIDTH_CLASS,
+    );
+    expect(deriveChatSurfaceContentWidthClassName(false)).toBe(
+      deriveChatSurfaceContentWidthClassName(true),
+    );
+  });
+
+  it("does not shift the content rail when the overlay is hidden", () => {
+    expect(deriveChatSurfaceShiftClassName(false)).not.toContain(
+      CHAT_VIEW_COLLABORATION_SHIFT_CLASS,
+    );
+  });
+
+  it("shifts the content rail left on desktop when the overlay is visible", () => {
+    expect(deriveChatSurfaceShiftClassName(true)).toContain(
+      CHAT_VIEW_COLLABORATION_SHIFT_CLASS,
+    );
+  });
+});
+
+describe("chat view layout classes", () => {
+  it("keeps the chat view root as a clipped column layout", () => {
+    expect(CHAT_VIEW_ROOT_CLASS).toContain("flex-col");
+    expect(CHAT_VIEW_ROOT_CLASS).toContain("min-h-0");
+    expect(CHAT_VIEW_ROOT_CLASS).toContain("overflow-hidden");
+  });
+
+  it("keeps the main chat column clipped and positioned for the composer overlay", () => {
+    expect(CHAT_VIEW_MAIN_CLASS).toContain("relative");
+    expect(CHAT_VIEW_MAIN_CLASS).toContain("flex-col");
+    expect(CHAT_VIEW_MAIN_CLASS).toContain("min-h-0");
+    expect(CHAT_VIEW_MAIN_CLASS).toContain("overflow-hidden");
+  });
+
+  it("keeps the content row height-constrained so the message area can scroll", () => {
+    expect(CHAT_VIEW_CONTENT_ROW_CLASS).toContain("flex");
+    expect(CHAT_VIEW_CONTENT_ROW_CLASS).toContain("min-h-0");
+    expect(CHAT_VIEW_CONTENT_ROW_CLASS).toContain("min-w-0");
+    expect(CHAT_VIEW_CONTENT_ROW_CLASS).toContain("flex-1");
+    expect(CHAT_VIEW_CONTENT_ROW_CLASS).toContain("overflow-hidden");
+  });
+
+  it("keeps the chat messages inside a dedicated non-scrolling flex column wrapper", () => {
+    expect(CHAT_VIEW_MESSAGES_PANEL_CLASS).toContain("flex");
+    expect(CHAT_VIEW_MESSAGES_PANEL_CLASS).toContain("flex-col");
+    expect(CHAT_VIEW_MESSAGES_PANEL_CLASS).toContain("min-h-0");
+    expect(CHAT_VIEW_MESSAGES_PANEL_CLASS).toContain("overflow-hidden");
+  });
+});
+
 function contextState(totalTokens: number) {
   return {
     activeTokenUsage: {
@@ -363,6 +469,22 @@ function contextState(totalTokens: number) {
     compactedHistory: [],
     compactedThroughTurnIndex: 0,
     compactionCount: 0,
+  };
+}
+
+function childSession(
+  id: string,
+  status: "queued" | "running" | "succeeded" | "failed",
+) {
+  return {
+    id,
+    agentId: id,
+    label: id,
+    sessionClass: "temporary_spawn" as const,
+    status,
+    startedAt: 1,
+    updatedAt: 1,
+    artifactIds: [],
   };
 }
 
