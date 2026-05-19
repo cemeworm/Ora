@@ -1009,7 +1009,7 @@ internal:    user.clarify, plan.update, agent.spawn, message.send
 - `AbortSignal` 贯通（shell/web/MCP/document，shell abort 时 kill process tree）
 
 **扩展与呈现**：
-- `agent.spawn` 工具（同步/异步子 agent，最大深度 3 层，上下文继承）
+- `agent.spawn` 工具（同步/异步子 agent，runtime 内部保留最大深度计数；`inherit_context` 当前只注入父 prompt）
 - `skills.patch` 工具（分层模糊匹配、动态 approval、并行批量审批）
 - Image 内容块支持（粘贴截图 → base64 data URL → provider 图像内容块）
 - Middleware 管道（context compaction, tool recovery, clarification batching, dangling repair）
@@ -1018,7 +1018,32 @@ internal:    user.clarify, plan.update, agent.spawn, message.send
 - 审批文案中英文自动切换
 - `RuntimeToolDefinitionV2` 内部形状（resultPreview、prepareArguments、continuationHandler）
 
-### 17.3 当前实现的保守边界
+### 17.3 `agent.spawn` / `message.send` 的运行时语义
+
+这两个工具都属于 agent coordination 语义，但它们的回传方式不同：
+
+- `agent.spawn`
+  - `prompt` 是子任务主体，必须自包含；它不是“自动共享父对话”的开关。
+  - `agent_type` 提供时会复用现有 agent profile；未提供时，runtime 会基于 root profile 注册一个 synthetic subagent。
+  - `system_prompt` 会覆盖默认 profile system prompt。
+  - `tool_ids` 会把子 agent 的可用工具收窄到给定集合，再经过 runtime boundary 过滤。
+- `message.send`
+  - 不会立刻驱动目标 agent 执行。
+  - 它会同时做两件事：发出 `agent.message` 事件供 UI / snapshot 可见，以及把消息写入目标 agent 的消息队列，供后续 prompt 注入。
+
+`agent.spawn` 的返回语义也要和 UI 文案区分开：
+
+- 默认同步模式：subagent 输出文本会直接作为本次 `agent.spawn` tool result 返回给父 agent。
+- `run_in_background: true`：当前 tool result 只会返回 `async_launched`；真正的 subagent 结果不会回填到当前 tool result。
+- 异步结果会先进入 async result 队列，后续任一 agent 再进入 `callAgent()` 时，由 runtime 注入到 `<async-results>`。
+
+当前实现边界：
+
+- `inherit_context` 的实现弱于字面文案：当前只会把父 agent 最近一次任务 prompt 注入 `<inherited-context>`，不会自动继承完整 conversation，也不会把 `lastCallAgentSystem` 一起继承。
+- runtime 内部确实保留 `MAX_SPAWN_DEPTH` 计数，但 nested subagent 当前还受 `isNestedAgentSpawn` 工具边界约束，默认拿不到 `agent.spawn` 工具，因此不能把“可继续 spawn 到 3 层”当成当前已开放能力。
+- 需要完整时序、child session 与 UI 投影细节时，参见 [ora-runtime-loop.md](/Users/quintenchen/developer/ora/docs/ora-runtime-loop.md) 中的“动态 subagent 调用链路”。
+
+### 17.4 当前实现的保守边界
 
 1. **预留工具仍可能没有 schema**：implemented tools 的 JSON Schema 已补齐；`file.delete`、`model.handoff`、`message.publish`、`shared_state.write`、`export.report` 等未实现预留工具仍为 `{}`
 2. **`file.apply_patch` 不等于完整 git patch**：支持 unified diff 修改与新文件创建，显式拒绝 rename/delete patch；多文件 patch 要求同目标文件只有一个 patch block
@@ -1029,7 +1054,7 @@ internal:    user.clarify, plan.update, agent.spawn, message.send
 7. **WorkspaceOperations 尚未全面替换旧实现**：executor context 已携带 adapter，部分 file tool 仍直接使用本地 fs/path helper
 8. **Renderer registry 只是描述层**：desktop 已有 tool renderer registry 和 approval preview shape，但具体 Trails/ApprovalCard 的富 UI 渲染仍需接线
 9. **Recovery policy 仅基于 mode 的 runtime atom**：`recovery_policy` 和 `tool_error_boundary` 是两个独立的 atom
-10. **`agent.spawn` 的递归边界**：最大深度 3 层 + `isNestedAgentSpawn` 双重保护；异步 spawn 队列无持久化，进程重启会丢失
+10. **`agent.spawn` 的递归边界**：runtime 内部保留最大深度 3 层计数，但 nested subagent 当前还会被 `isNestedAgentSpawn` 工具边界阻止再次调用 `agent.spawn`；异步 spawn 队列无持久化，进程重启会丢失
 11. **搜索路径作用域语义**：`file.grep`/`file.glob` 的 bare glob/include 已做 scoped 匹配，但 `workspace-operations.ts` 尚未同步同语义
 
 ## 18. 未来迭代方向

@@ -516,11 +516,99 @@ orchestrator 负责计划和协调，实际代码修改必须落到 builder 阶�
 - 子 agent 复用现有 `callAgent()` / `runNodeRuntimeLoop()` 基础设施，与 mode driver 编排的 agent 使用相同的执行路径。
 - 同步模式（默认）：父 agent 等待子 agent 完成，子 agent 的输出文本作为 tool result 返回。
 - 异步模式（`run_in_background: true`）：父 agent 继续执行，子 agent 完成后通过通知注入。
-- 子 agent 也可以 spawn 自己的子 agent，最大深度 3 层（`MAX_SPAWN_DEPTH`）。
-- 子 agent 可继承父 agent 的上下文，或通过内联 profile 定制工具集和 persona。
+- runtime 内部保留最大深度计数（`MAX_SPAWN_DEPTH = 3`），但当前 nested subagent 会受 `isNestedAgentSpawn` 工具边界约束，默认不能再次调用 `agent.spawn`。
+- 子 agent 可选择注入父 agent 最近一次任务 prompt；并非自动继承父 agent 的完整对话。也可以通过内联 profile 定制工具集和 persona。
 - Agent 间可通过 `message.send` 工具发送消息，实现通信协调。
 
 这与 mode driver delegation 是互补关系：mode driver 提供模式级别的结构性编排，`agent.spawn` 提供运行时级别的动态灵活性。
+
+### 动态 subagent 调用链路
+
+这里需要区分两类 subagent：
+
+- **mode driver 固定 subagent**：例如 `orchestrator_subagent` family 中的 `researcher` / `reviewer`，由 mode topology 和 node owner 预先定义。
+- **runtime tool 动态 subagent**：由运行中的 agent 通过 `agent.spawn` 临时创建，属于 agent-as-tool delegation。
+
+动态 spawn 的真实调用链是：
+
+1. 父 agent 在 model-tool loop 中产出 `agent.spawn` tool call。
+2. `runtime-tool-executor` 解析 `description`、`prompt`、`agent_type`、`run_in_background`、`inherit_context`、`system_prompt`、`tool_ids`。
+3. `runtime-kernel.setSpawnAgent()` 校验 profile、分配 `effectiveAgentId`，并写入 `child_session.updated` / `parent_coordination.updated`。
+4. 无论是 mode driver 固定 subagent，还是 `agent.spawn` 动态 subagent，最终都统一进入 `callAgent() -> runNodeRuntimeLoop()`。
+
+子 agent 的“目标”不是独立 `goal` 字段，而是由以下输入共同表达：
+
+- `description`：短标题，主要用于 child session / UI 展示。
+- `prompt`：子任务主体，必须是自包含描述。
+- `agent_type`：可选，指定复用现有 agent profile；未提供时会走 root profile 的 synthetic subagent。
+- `system_prompt`：可选，覆盖默认 profile system prompt。
+- `tool_ids`：可选，收窄子 agent 可用工具。
+
+上下文继承的当前实现也需要精确理解：
+
+- 默认不会把父 agent 的完整 conversation 自动共享给子 agent。
+- `inherit_context: true` 时，当前实现只会把父 agent 最近一次 `lastCallAgentPrompt` 包进 `<inherited-context>` 后再拼接到子任务 prompt 前面。
+- `lastCallAgentSystem` 当前虽然会被记录，但不会一起注入子 agent；因此 `inherit_context` 的实际能力弱于字面文案。
+
+回传路径分成三条：
+
+- **同步回传**：子 agent 输出文本直接作为本次 `agent.spawn` 的 tool result 返回给父 agent。
+- **异步回传**：`run_in_background: true` 时，后台结果先写入 async result 队列，后续任一 agent 再进入 `callAgent()` 时会被注入 `<async-results>`。
+- **消息回传**：`message.send` 和 `emitAgentMessage` 都会把内容写入目标 agent 的消息队列，目标 agent 下次执行时注入 `<agent-messages>`。
+
+```mermaid
+sequenceDiagram
+    participant Parent as Parent Agent
+    participant Loop as Model / Tool Loop
+    participant Spawn as agent.spawn
+    participant Exec as Runtime Tool Executor
+    participant Kernel as Runtime Kernel
+    participant Sub as Subagent
+    participant MsgQ as Message Queue
+    participant AsyncQ as Async Result Queue
+    participant Snap as Snapshot / Events
+    actor UI as UI
+
+    Parent->>Loop: Produce tool call
+    Loop->>Spawn: agent.spawn(args)
+    Spawn->>Exec: execute(args, context)
+    Exec->>Kernel: spawnAgent(...)
+    Kernel->>Snap: child_session.updated
+    Kernel->>Snap: parent_coordination.updated
+    Snap-->>UI: Project child session / coordination state
+
+    alt Synchronous spawn
+        Kernel->>Sub: callAgent() -> runNodeRuntimeLoop()
+        Sub-->>Kernel: text result
+        Kernel-->>Exec: return text
+        Exec-->>Spawn: tool result
+        Spawn-->>Loop: tool result
+        Loop-->>Parent: Continue with subagent output
+    else Background spawn (run_in_background = true)
+        Kernel-->>Exec: { status: async_launched }
+        Exec-->>Spawn: async_launched
+        Spawn-->>Loop: async_launched
+        Loop-->>Parent: Continue without waiting
+        Kernel->>Sub: drainAsyncSpawnQueue() later
+        Sub-->>Kernel: text result
+        Kernel->>AsyncQ: enqueueAsyncAgentResult()
+        Note over AsyncQ,Parent: On next callAgent(), runtime injects<br/>results into &lt;async-results&gt;
+    end
+
+    opt Message delivery path
+        Parent->>Loop: message.send(...) or emitAgentMessage(...)
+        Loop->>Kernel: enqueueAgentMessage(...)
+        Kernel->>MsgQ: write queued message
+        Kernel->>Snap: agent.message
+        Snap-->>UI: Render agent message transcript/event
+        Note over MsgQ,Sub: On target agent's next callAgent(), runtime injects<br/>messages into &lt;agent-messages&gt;
+    end
+```
+
+图中有两个实现事实需要特别注意：
+
+- `agent.spawn` 动态 subagent 和 mode driver 固定 subagent 最终复用同一个 `callAgent() -> runNodeRuntimeLoop()` 执行通道。
+- runtime 内部虽然保留 `MAX_SPAWN_DEPTH` 计数，但当前 nested spawn 还会被 `isNestedAgentSpawn` 工具边界拦住，因此 subagent 默认不能继续调用 `agent.spawn`。
 
 ### 消息架构统一
 
