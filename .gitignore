@@ -10,6 +10,9 @@ target/
 .claude/
 tasks/
 apps/desktop/src-tauri/resources/runtime-sidecar/
+apps/desktop/src-tauri/resources/build-meta.json
+latest.json
+.pnpm-store/
 apps/desktop/src-tauri/resources/langfuse/*
 !apps/desktop/src-tauri/resources/langfuse/.keep
 AGENTS.md

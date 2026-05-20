@@ -44,6 +44,10 @@ import {
   saveDesktopToolModelSettings,
   type DesktopToolModelSettings,
 } from "../lib/toolModelSettings";
+import {
+  loadDesktopBuildInfo,
+  type DesktopBuildInfo,
+} from "../lib/desktopBuildInfo";
 import { useRunActions } from "../lib/useRunActions";
 import type { OraChannelConfig, OraLongTermMemoryProfile, OraProviderConfig, OraProviderModelsResult } from "../lib/runtimeClient";
 import { cn } from "../lib/utils";
@@ -429,6 +433,17 @@ function channelStateLabel(channel: OraChannelConfig | undefined, runtimeImpleme
   return runtimeImplemented ? "已配置" : "已保存，适配器待实现";
 }
 
+function buildInfoValue(value: string | undefined) {
+  return value && value.trim().length > 0 ? value.trim() : "Unavailable";
+}
+
+function shortCommit(commit: string | undefined) {
+  if (!commit || commit.trim().length === 0) {
+    return "Unavailable";
+  }
+  return commit.slice(0, 12);
+}
+
 export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
   const { state, dispatch } = useWorkbench();
   const { runtimeClient } = useRunActions();
@@ -448,6 +463,8 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
   const [searchSettings, setSearchSettings] = useState<DesktopSearchSettings>(
     () => loadDesktopSearchSettings(),
   );
+  const [desktopBuildInfo, setDesktopBuildInfo] = useState<DesktopBuildInfo>();
+  const [desktopBuildInfoLoading, setDesktopBuildInfoLoading] = useState(false);
   const [toolModelSettings, setToolModelSettings] = useState<DesktopToolModelSettings>(
     () => loadDesktopToolModelSettings(),
   );
@@ -600,6 +617,28 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
     }
     return [...namespaces].sort((left, right) => left.localeCompare(right));
   }, [memoryRecords, activeSnapshot?.profiles]);
+
+  useEffect(() => {
+    if (!open || activeSection !== "general") {
+      return;
+    }
+    let cancelled = false;
+    setDesktopBuildInfoLoading(true);
+    void loadDesktopBuildInfo()
+      .then((info) => {
+        if (!cancelled) {
+          setDesktopBuildInfo(info);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setDesktopBuildInfoLoading(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeSection, open]);
 
   useEffect(() => {
     if (!open || activeSection !== "memory") {
@@ -1263,6 +1302,59 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
                         ))}
                       </Select>
                     </div>
+                  </section>
+                  <section className="rounded-[22px] bg-card p-5 shadow-pane ring-1 ring-inset ring-bench-200">
+                    <div className="flex flex-wrap items-start justify-between gap-4">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <Activity size={18} />
+                          <h3 className="text-sm font-semibold">Desktop Build</h3>
+                        </div>
+                        <p className="mt-1 text-xs text-bench-500">
+                          快速确认当前安装包对应的版本、tag、commit 和构建来源。
+                        </p>
+                      </div>
+                      {desktopBuildInfoLoading && (
+                        <span className="rounded-full bg-bench-50 px-2.5 py-1 text-[11px] font-medium text-bench-600 ring-1 ring-inset ring-bench-200">
+                          读取中
+                        </span>
+                      )}
+                    </div>
+                    <dl className="mt-4 grid gap-3 sm:grid-cols-2">
+                      <div className="rounded-2xl bg-bench-50/70 px-3 py-2.5 ring-1 ring-inset ring-bench-200">
+                        <dt className="text-[11px] uppercase tracking-[0.14em] text-bench-500">Version</dt>
+                        <dd className="mt-1 font-mono text-sm text-bench-900">
+                          {buildInfoValue(desktopBuildInfo?.version)}
+                        </dd>
+                      </div>
+                      <div className="rounded-2xl bg-bench-50/70 px-3 py-2.5 ring-1 ring-inset ring-bench-200">
+                        <dt className="text-[11px] uppercase tracking-[0.14em] text-bench-500">Release Tag</dt>
+                        <dd className="mt-1 font-mono text-sm text-bench-900">
+                          {buildInfoValue(desktopBuildInfo?.tag)}
+                        </dd>
+                      </div>
+                      <div className="rounded-2xl bg-bench-50/70 px-3 py-2.5 ring-1 ring-inset ring-bench-200">
+                        <dt className="text-[11px] uppercase tracking-[0.14em] text-bench-500">Commit</dt>
+                        <dd
+                          className="mt-1 font-mono text-sm text-bench-900"
+                          title={desktopBuildInfo?.commit}
+                        >
+                          {shortCommit(desktopBuildInfo?.commit)}
+                        </dd>
+                      </div>
+                      <div className="rounded-2xl bg-bench-50/70 px-3 py-2.5 ring-1 ring-inset ring-bench-200">
+                        <dt className="text-[11px] uppercase tracking-[0.14em] text-bench-500">Workflow</dt>
+                        <dd className="mt-1 font-mono text-sm text-bench-900">
+                          {buildInfoValue(desktopBuildInfo?.workflow)}
+                        </dd>
+                      </div>
+                      <div className="rounded-2xl bg-bench-50/70 px-3 py-2.5 ring-1 ring-inset ring-bench-200 sm:col-span-2">
+                        <dt className="text-[11px] uppercase tracking-[0.14em] text-bench-500">Built At</dt>
+                        <dd className="mt-1 font-mono text-sm text-bench-900">
+                          {buildInfoValue(desktopBuildInfo?.builtAt)}
+                        </dd>
+                      </div>
+                    </dl>
                   </section>
                 </>
               )}

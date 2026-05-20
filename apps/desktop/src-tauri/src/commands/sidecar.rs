@@ -86,6 +86,20 @@ struct FacadeState {
     next_session_number: u64,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DesktopBuildInfo {
+    pub version: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub built_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workflow: Option<String>,
+}
+
 pub struct RuntimeSidecarManager {
     configured_command: Option<RuntimeCommandSpec>,
     process_spawn_available: Mutex<bool>,
@@ -979,6 +993,19 @@ pub async fn runtime_json_rpc(
     } else {
         facade.handle_runtime_json_rpc(request)
     })
+}
+
+#[tauri::command]
+pub fn desktop_build_info(app: AppHandle) -> Result<DesktopBuildInfo, String> {
+    let resource_dir = app
+        .path()
+        .resource_dir()
+        .map_err(|error| format!("Failed to resolve resource dir: {error}"))?;
+    let build_meta_path = resource_dir.join("build-meta.json");
+    let raw = fs::read_to_string(&build_meta_path)
+        .map_err(|error| format!("Failed to read {}: {error}", build_meta_path.display()))?;
+    serde_json::from_str::<DesktopBuildInfo>(&raw)
+        .map_err(|error| format!("Failed to parse {}: {error}", build_meta_path.display()))
 }
 
 #[tauri::command]

@@ -1,12 +1,12 @@
 {
   "name": "@ora/desktop",
   "private": true,
-  "version": "0.3.2",
+  "version": "0.3.3",
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 1420",
     "build": "tsc && vite build",
-    "build:bundle": "pnpm --filter @ora/runtime package:sidecar && pnpm build",
+    "build:bundle": "node ./scripts/generate-build-meta.mjs && pnpm --filter @ora/runtime package:sidecar && pnpm build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "preview": "vite preview --host 127.0.0.1 --port 4173",

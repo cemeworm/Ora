@@ -26,6 +26,7 @@ fn main() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            commands::sidecar::desktop_build_info,
             commands::sidecar::runtime_sidecar_status,
             commands::sidecar::preview_sidecar_command,
             commands::sidecar::provider_secret_status,
