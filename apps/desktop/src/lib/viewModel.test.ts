@@ -3704,7 +3704,7 @@ describe("desktop session view model", () => {
     expect(new Set(assistant?.turn?.agentMessages.map((message) => message.fromAgentId))).toEqual(new Set(["debate_agent"]));
   });
 
-  it("marks transcript turns as the primary surface and suppresses duplicate body output", () => {
+  it("routes transcript turns through the timeline surface and suppresses duplicate body output", () => {
     const createdAt = 1_714_000_000_000;
     const finalVerdict = "最终裁决：采用方案A。";
     const snapshot = {
@@ -3819,10 +3819,14 @@ describe("desktop session view model", () => {
     ).find((message) => message.role === "assistant");
 
     expect(assistant?.turn?.presentation).toMatchObject({
-      primarySurface: "stage_transcript",
+      primarySurface: "timeline",
       showStandaloneBody: false,
     });
-    expect(assistant?.turn?.presentation?.transcriptTakeaway).toBeUndefined();
+    expect(assistant?.turn?.timelineItems).toContainEqual(expect.objectContaining({
+      kind: "agent_message",
+      content: finalVerdict,
+      fromAgentLabel: "Moderator",
+    }));
   });
 
   it("keeps orchestrator subagent handoff content out of the public chat timeline", () => {
@@ -4009,6 +4013,506 @@ describe("desktop session view model", () => {
     expect(assistant?.turn?.processSteps?.some((step) =>
       step.eventType === "tool.called" && step.contextLabel === "apps/desktop/src/components/ChatInput.tsx"
     )).toBe(false);
+  });
+
+  it("projects mode-stage child sessions into additional assistant messages while keeping the root summary first", () => {
+    const createdAt = 1_714_000_000_000;
+    const runId = "run-mode-stage-mainline";
+    const sessionId = "session-mode-stage-mainline";
+    const snapshot = {
+      runId,
+      sessionId,
+      turnIndex: 1,
+      status: "succeeded",
+      pattern: "orchestrator_subagent",
+      modeId: DEERFLOW_HARNESS_MODE_ID,
+      input: { prompt: "fix the code", createdAt, context: {} },
+      config: {
+        modeId: DEERFLOW_HARNESS_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["orchestrator", "builder", "reviewer"],
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-mode-stage-mainline-test",
+        skillIds: [],
+        toolIds: [],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [
+        { id: "orchestrator", label: "Orchestrator", role: "Coordinate", modelRef: "local/smoke-model", toolPolicyId: "code.default", memoryNamespaces: ["session"], budget: { maxTokens: 1000, maxToolCalls: 0, maxRuntimeMs: 1000 } },
+        { id: "builder", label: "Builder", role: "Build", modelRef: "local/smoke-model", toolPolicyId: "code.default", memoryNamespaces: ["session"], budget: { maxTokens: 1000, maxToolCalls: 0, maxRuntimeMs: 1000 } },
+        { id: "reviewer", label: "Reviewer", role: "Review", modelRef: "local/smoke-model", toolPolicyId: "code.default", memoryNamespaces: ["session"], budget: { maxTokens: 1000, maxToolCalls: 0, maxRuntimeMs: 1000 } },
+      ],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [
+        {
+          id: `${runId}:evt-builder`,
+          runId,
+          seq: 1,
+          type: "message.delta",
+          agentId: "builder",
+          createdAt: createdAt + 1,
+          pattern: "orchestrator_subagent",
+          payload: {
+            role: "assistant",
+            messageId: `${runId}:builder`,
+            content: "Builder 已完成代码修改。",
+            audience: "collaboration",
+          },
+        },
+        {
+          id: `${runId}:evt-reviewer`,
+          runId,
+          seq: 2,
+          type: "message.delta",
+          agentId: "reviewer",
+          createdAt: createdAt + 2,
+          pattern: "orchestrator_subagent",
+          payload: {
+            role: "assistant",
+            messageId: `${runId}:reviewer`,
+            content: "Reviewer 已完成代码审查。",
+            audience: "collaboration",
+          },
+        },
+      ],
+      agentMessages: [
+        {
+          id: `${runId}:agent-message:builder`,
+          runId,
+          createdAt: createdAt + 1,
+          fromAgentId: "builder",
+          toAgentIds: ["reviewer"],
+          threadId: "mode-stage:build",
+          nodeId: "build",
+          planItemId: "build",
+          kind: "reply",
+          status: "done",
+          content: "接下来交给 Reviewer。\n\nBuilder 已完成代码修改。",
+          artifactIds: [],
+        },
+        {
+          id: `${runId}:agent-message:reviewer`,
+          runId,
+          createdAt: createdAt + 2,
+          fromAgentId: "reviewer",
+          toAgentIds: ["orchestrator"],
+          threadId: "mode-stage:review",
+          nodeId: "review",
+          planItemId: "review",
+          kind: "reply",
+          status: "done",
+          content: "接下来交给 Orchestrator。\n\nReviewer 已完成代码审查。",
+          artifactIds: [],
+        },
+      ],
+      childSessions: [
+        {
+          id: `${runId}:builder`,
+          agentId: "builder",
+          label: "Builder",
+          sessionClass: "mode_subagent",
+          delegationKind: "mode_stage",
+          authoritySource: "mode_stage",
+          status: "succeeded",
+          startedAt: createdAt + 1,
+          updatedAt: createdAt + 1,
+          artifactIds: [],
+          replayRef: { kind: "event_range", runId, fromSeq: 1, toSeq: 1 },
+        },
+        {
+          id: `${runId}:reviewer`,
+          agentId: "reviewer",
+          label: "Reviewer",
+          sessionClass: "mode_subagent",
+          delegationKind: "mode_stage",
+          authoritySource: "mode_stage",
+          status: "succeeded",
+          startedAt: createdAt + 2,
+          updatedAt: createdAt + 2,
+          artifactIds: [],
+          replayRef: { kind: "event_range", runId, fromSeq: 2, toSeq: 2 },
+        },
+      ],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 0, completed: 2, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      output: { text: "Orchestrator 已完成最终总结。" },
+      updatedAt: createdAt + 3,
+    } as unknown as OraStateSnapshot;
+
+    const messages = adaptChatMessages(
+      [{
+        id: `${runId}:user`,
+        sessionId,
+        runId,
+        turnIndex: 1,
+        role: "user",
+        content: "fix the code",
+        pattern: "orchestrator_subagent",
+        modeId: DEERFLOW_HARNESS_MODE_ID,
+        createdAt,
+      }],
+      { [runId]: snapshot },
+    );
+    const assistantMessages = messages.filter((message) => message.role === "assistant");
+
+    expect(assistantMessages).toHaveLength(3);
+    expect(assistantMessages.map((message) => message.content)).toEqual([
+      "Orchestrator 已完成最终总结。",
+      "Builder 已完成代码修改。",
+      "Reviewer 已完成代码审查。",
+    ]);
+    expect(assistantMessages[0]?.turn?.currentAgentLabel).toBe("Orchestrator");
+    expect(assistantMessages[1]?.turn?.currentAgentLabel).toBe("Builder");
+    expect(assistantMessages[2]?.turn?.currentAgentLabel).toBe("Reviewer");
+    expect(assistantMessages[0]?.metadata?.runId).toBe(runId);
+    expect(assistantMessages[1]?.metadata?.runId).toBe(`${runId}:builder`);
+    expect(assistantMessages[2]?.metadata?.runId).toBe(`${runId}:reviewer`);
+  });
+
+  it("suppresses the empty parent placeholder when mode-stage child messages already cover the in-progress turn", () => {
+    const createdAt = 1_714_000_000_000;
+    const runId = "run-mode-stage-placeholder";
+    const sessionId = "session-mode-stage-placeholder";
+    const snapshot = {
+      runId,
+      sessionId,
+      turnIndex: 1,
+      status: "running",
+      pattern: "orchestrator_subagent",
+      modeId: DEERFLOW_HARNESS_MODE_ID,
+      input: { prompt: "continue", createdAt, context: {} },
+      config: {
+        modeId: DEERFLOW_HARNESS_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["orchestrator", "builder"],
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-mode-stage-placeholder-test",
+        skillIds: [],
+        toolIds: [],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [
+        { id: "orchestrator", label: "Orchestrator", role: "Coordinate", modelRef: "local/smoke-model", toolPolicyId: "code.default", memoryNamespaces: ["session"], budget: { maxTokens: 1000, maxToolCalls: 0, maxRuntimeMs: 1000 } },
+        { id: "builder", label: "Builder", role: "Build", modelRef: "local/smoke-model", toolPolicyId: "code.default", memoryNamespaces: ["session"], budget: { maxTokens: 1000, maxToolCalls: 0, maxRuntimeMs: 1000 } },
+      ],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [{
+        id: `${runId}:evt-builder`,
+        runId,
+        seq: 1,
+        type: "message.delta",
+        agentId: "builder",
+        createdAt: createdAt + 1,
+        pattern: "orchestrator_subagent",
+        payload: {
+          role: "assistant",
+          messageId: `${runId}:builder`,
+          content: "Builder 正在继续实现。",
+          audience: "collaboration",
+        },
+      }],
+      agentMessages: [],
+      childSessions: [{
+        id: `${runId}:builder`,
+        agentId: "builder",
+        label: "Builder",
+        sessionClass: "mode_subagent",
+        delegationKind: "mode_stage",
+        authoritySource: "mode_stage",
+        status: "running",
+        startedAt: createdAt + 1,
+        updatedAt: createdAt + 1,
+        artifactIds: [],
+        replayRef: { kind: "event_range", runId, fromSeq: 1, toSeq: 1 },
+      }],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 1, completed: 0, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      updatedAt: createdAt + 1,
+    } as unknown as OraStateSnapshot;
+
+    const assistantMessages = adaptChatMessages(
+      [{
+        id: `${runId}:user`,
+        sessionId,
+        runId,
+        turnIndex: 1,
+        role: "user",
+        content: "continue",
+        pattern: "orchestrator_subagent",
+        modeId: DEERFLOW_HARNESS_MODE_ID,
+        createdAt,
+      }],
+      { [runId]: snapshot },
+    ).filter((message) => message.role === "assistant");
+
+    expect(assistantMessages).toHaveLength(1);
+    expect(assistantMessages[0]?.content).toBe("Builder 正在继续实现。");
+    expect(assistantMessages[0]?.turn?.currentAgentLabel).toBe("Builder");
+  });
+
+  it("keeps a running mode-stage child visible with a status placeholder before any summary text arrives", () => {
+    const createdAt = 1_714_000_000_000;
+    const runId = "run-mode-stage-no-summary";
+    const sessionId = "session-mode-stage-no-summary";
+    const snapshot = {
+      runId,
+      sessionId,
+      turnIndex: 1,
+      status: "running",
+      pattern: "orchestrator_subagent",
+      modeId: DEERFLOW_HARNESS_MODE_ID,
+      input: { prompt: "continue", createdAt, context: {} },
+      config: {
+        modeId: DEERFLOW_HARNESS_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["orchestrator", "builder"],
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-mode-stage-no-summary-test",
+        skillIds: [],
+        toolIds: [],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [
+        { id: "orchestrator", label: "Orchestrator", role: "Coordinate", modelRef: "local/smoke-model", toolPolicyId: "code.default", memoryNamespaces: ["session"], budget: { maxTokens: 1000, maxToolCalls: 0, maxRuntimeMs: 1000 } },
+        { id: "builder", label: "Builder", role: "Build", modelRef: "local/smoke-model", toolPolicyId: "code.default", memoryNamespaces: ["session"], budget: { maxTokens: 1000, maxToolCalls: 0, maxRuntimeMs: 1000 } },
+      ],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [],
+      agentMessages: [],
+      childSessions: [{
+        id: `${runId}:builder`,
+        agentId: "builder",
+        label: "Builder",
+        sessionClass: "mode_subagent",
+        delegationKind: "mode_stage",
+        authoritySource: "mode_stage",
+        status: "running",
+        startedAt: createdAt + 1,
+        updatedAt: createdAt + 1,
+        artifactIds: [],
+      }],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 1, completed: 0, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      updatedAt: createdAt + 1,
+    } as unknown as OraStateSnapshot;
+
+    const assistantMessages = adaptChatMessages(
+      [{
+        id: `${runId}:user`,
+        sessionId,
+        runId,
+        turnIndex: 1,
+        role: "user",
+        content: "continue",
+        pattern: "orchestrator_subagent",
+        modeId: DEERFLOW_HARNESS_MODE_ID,
+        createdAt,
+      }],
+      { [runId]: snapshot },
+    ).filter((message) => message.role === "assistant");
+
+    expect(assistantMessages).toHaveLength(1);
+    expect(assistantMessages[0]?.content).toBe("Builder 正在执行任务。");
+    expect(assistantMessages[0]?.turn?.timelineItems?.[0]).toMatchObject({
+      kind: "assistant_text",
+      content: "Builder 正在执行任务。",
+    });
+  });
+
+  it("keeps non-transcript child coordination chatter out of mode-stage mainline messages", () => {
+    const createdAt = 1_714_000_000_000;
+    const runId = "run-mode-stage-private-chatter";
+    const sessionId = "session-mode-stage-private-chatter";
+    const snapshot = {
+      runId,
+      sessionId,
+      turnIndex: 1,
+      status: "succeeded",
+      pattern: "orchestrator_subagent",
+      modeId: DEERFLOW_HARNESS_MODE_ID,
+      input: { prompt: "continue", createdAt, context: {} },
+      config: {
+        modeId: DEERFLOW_HARNESS_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["orchestrator", "builder", "reviewer"],
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-mode-stage-private-chatter-test",
+        skillIds: [],
+        toolIds: [],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [
+        { id: "orchestrator", label: "Orchestrator", role: "Coordinate", modelRef: "local/smoke-model", toolPolicyId: "code.default", memoryNamespaces: ["session"], budget: { maxTokens: 1000, maxToolCalls: 0, maxRuntimeMs: 1000 } },
+        { id: "builder", label: "Builder", role: "Build", modelRef: "local/smoke-model", toolPolicyId: "code.default", memoryNamespaces: ["session"], budget: { maxTokens: 1000, maxToolCalls: 0, maxRuntimeMs: 1000 } },
+        { id: "reviewer", label: "Reviewer", role: "Review", modelRef: "local/smoke-model", toolPolicyId: "code.default", memoryNamespaces: ["session"], budget: { maxTokens: 1000, maxToolCalls: 0, maxRuntimeMs: 1000 } },
+      ],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [{
+        id: `${runId}:evt-builder`,
+        runId,
+        seq: 1,
+        type: "message.delta",
+        agentId: "builder",
+        createdAt: createdAt + 1,
+        pattern: "orchestrator_subagent",
+        payload: {
+          role: "assistant",
+          messageId: `${runId}:builder`,
+          content: "Builder 已完成代码修改。",
+          audience: "collaboration",
+        },
+      }],
+      agentMessages: [
+        {
+          id: `${runId}:agent-message:builder-public`,
+          runId,
+          createdAt: createdAt + 1,
+          fromAgentId: "builder",
+          toAgentIds: ["reviewer"],
+          threadId: "mode-stage:build",
+          nodeId: "build",
+          planItemId: "build",
+          kind: "reply",
+          status: "done",
+          content: "接下来交给 Reviewer。\n\nBuilder 已完成代码修改。",
+          artifactIds: [],
+          transcript: {
+            kind: "stage_transcript",
+            groupId: "chain",
+            groupLabel: "Build Chain",
+            stageId: "build",
+            stageLabel: "Build",
+            sequence: 0,
+            speakerLabel: "Builder",
+            speakerId: "builder",
+            stance: "neutral",
+            status: "done",
+            layout: "stack",
+          },
+        },
+        {
+          id: `${runId}:agent-message:builder-private`,
+          runId,
+          createdAt: createdAt + 2,
+          fromAgentId: "builder",
+          toAgentIds: ["reviewer"],
+          threadId: "mode-stage:build",
+          nodeId: "build",
+          planItemId: "build",
+          kind: "mention",
+          status: "sent",
+          content: "Reviewer，请顺手检查一下边界条件。",
+          artifactIds: [],
+        },
+      ],
+      childSessions: [{
+        id: `${runId}:builder`,
+        agentId: "builder",
+        label: "Builder",
+        sessionClass: "mode_subagent",
+        delegationKind: "mode_stage",
+        authoritySource: "mode_stage",
+        status: "succeeded",
+        startedAt: createdAt + 1,
+        updatedAt: createdAt + 2,
+        artifactIds: [],
+        replayRef: { kind: "event_range", runId, fromSeq: 1, toSeq: 1 },
+      }],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 0, completed: 1, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      updatedAt: createdAt + 3,
+    } as unknown as OraStateSnapshot;
+
+    const assistantMessages = adaptChatMessages(
+      [{
+        id: `${runId}:user`,
+        sessionId,
+        runId,
+        turnIndex: 1,
+        role: "user",
+        content: "continue",
+        pattern: "orchestrator_subagent",
+        modeId: DEERFLOW_HARNESS_MODE_ID,
+        createdAt,
+      }],
+      { [runId]: snapshot },
+    ).filter((message) => message.role === "assistant");
+
+    expect(assistantMessages).toHaveLength(2);
+    const builderMessage = assistantMessages[1];
+    expect(builderMessage?.content).toBe("Builder 已完成代码修改。");
+    expect(builderMessage?.turn?.timelineItems).toContainEqual(expect.objectContaining({
+      kind: "agent_message",
+      content: "接下来交给 Reviewer。\n\nBuilder 已完成代码修改。",
+    }));
+    expect(builderMessage?.turn?.timelineItems).not.toContainEqual(expect.objectContaining({
+      kind: "agent_message",
+      content: "Reviewer，请顺手检查一下边界条件。",
+    }));
   });
 
   it("keeps Code Development main-agent handoff content visible in the turn timeline", () => {

@@ -46,7 +46,6 @@ import {
 import { MarkdownContent } from "./MarkdownContent";
 import { PlanCard } from "./PlanCard";
 import { SourcesPopover } from "./SourcesPopover";
-import { StageTranscript } from "./StageTranscript";
 import {
   Dialog,
   DialogContent,
@@ -81,10 +80,6 @@ export const AssistantTurnCard = memo(function AssistantTurnCard({
   const isCompact = density === "compact";
   const processSteps = turn?.processSteps ?? [];
   const clarificationExchanges = turn?.clarificationExchanges ?? [];
-  const agentMessages = turn?.agentMessages ?? [];
-  const stageTranscriptMessages = agentMessages.filter(
-    (message) => message.transcript,
-  );
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [feedbackText, setFeedbackText] = useState("");
   const [feedbackError, setFeedbackError] = useState<string | undefined>(
@@ -100,7 +95,6 @@ export const AssistantTurnCard = memo(function AssistantTurnCard({
   const bodyContent = presentation?.bodyContent ?? content;
   const timelineItems = presentation?.visibleTimelineItems ?? [];
   const hasTimeline = timelineItems.length > 0;
-  const hasStageTranscript = stageTranscriptMessages.length > 0;
   const visibleArtifacts = turn?.artifacts.filter(isContentArtifact) ?? [];
   const fileChanges = turn?.fileChanges ?? [];
   const artifactPathMap = useMemo(() => {
@@ -201,14 +195,6 @@ export const AssistantTurnCard = memo(function AssistantTurnCard({
             >
               {currentAgentLabel}
             </p>
-          ) : null}
-
-          {hasStageTranscript ? (
-            <StageTranscript
-              messages={stageTranscriptMessages}
-              reviewGate={turn?.reviewGate}
-              takeaway={presentation?.transcriptTakeaway}
-            />
           ) : null}
 
           {turn?.reviewGate ? (

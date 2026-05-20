@@ -350,6 +350,8 @@ projectAssistantTextFromSnapshot(snapshot)
 - child agent 若被标记为 `collaboration`，其 delta 只进入协作区、Trails 和按需回放
 - `childSessions` / `parentCoordination` 是协作区和历史语义视图的共享权威字段
 - `childSessions` 现在还会携带 `lifecyclePhase`、`deliveryStatus`、`resultAvailability`、`stallReason` 等背景协作语义，不再只靠正文长度推测 child 状态
+- 主聊天区与运行进度允许展示低频公开里程碑，例如父级成功发起 `agent.spawn`、child 开始执行、结果回流、blocked spawn、失败或卡住
+- 这些公开里程碑仍然是父级投影，不等于把 child transcript 提升进正文；child 的内部 `message.delta`、协作消息和细粒度工具细节继续留在协作区、Trails 或按需回放
 
 这不是 ledger 的替代层。ledger 负责保存和重建 `output`、event batch、tool/gate facts；assistant text projection 只负责在读取时解释这些事实。
 
@@ -609,6 +611,7 @@ desktop UI 如果从自己的本地状态推断 runtime 状态（比如"上一�
 | node 是否阻塞 | `topology.nodes.find(n => n.agentId === id)?.status === "blocked"` | 不应从 UI 本地的 node 状态缓存推断 |
 | plan 是否已完成 | `planList.every(s => s.status === "completed")` | 不应从文本中猜测"看起来计划做完了" |
 | gate 是否已解决 | `snapshot.planDecisions` 的 `status`、`pendingClarifications` 的长度 | 不应从"之前见过 gate.opened"推断 |
+| resume 后是否可以视为终态 | 已经过 `RunResumeFinalizationService` 收口的 snapshot：gate resolution 已 materialize、continuation 已关闭、`activeFrameId` 已清空 | 不应看到“回答像是结束了”就直接把 run 渲染成完成 |
 | approval-required 是否等于 failure | `snapshot.attention.kind === "needs_approval"`（不等于 failure） | 不应因 approval interrupt error text 存在而将其渲染为 run/tool failure；Trails summary / diagnostics 优先展示 gate 语义 |
 
 ### 7.3 snapshotSource 标记

@@ -1,7 +1,6 @@
 import type {
   AssistantTurnAttachment,
   AssistantTurnPresentation,
-  TurnAgentConversationMessage,
   TurnClarificationExchange,
   TurnTimelineItem,
 } from "../types";
@@ -26,103 +25,28 @@ export function deriveAssistantTurnPresentation(params: {
     bodyContent,
     isPlaceholder,
   );
-  const hasTranscript = turn.agentMessages.some((message) => Boolean(message.transcript));
   const hasPlan = Boolean(turn.hasProposedPlan && turn.planContent);
-  const timelineContainsAssistantBody = visibleTimelineItems.some((item) =>
-    item.kind === "assistant_text" || item.kind === "final_text",
-  );
-  const transcriptTakeaway = hasTranscript
-    ? resolveTranscriptTakeaway(turn.agentMessages, bodyContent)
-    : undefined;
+  const timelineContainsBody = visibleTimelineItems.some((item) => {
+    if (item.kind === "assistant_text" || item.kind === "final_text") {
+      return true;
+    }
+    return item.kind === "agent_message" && isComparableDuplicate(bodyContent, item.content);
+  });
 
   return {
-    primarySurface: hasTranscript
-      ? "stage_transcript"
-      : hasPlan
-        ? "plan"
-        : visibleTimelineItems.length > 0
-          ? "timeline"
-          : "body",
+    primarySurface: hasPlan
+      ? "plan"
+      : visibleTimelineItems.length > 0
+        ? "timeline"
+        : "body",
     bodyContent,
     showStandaloneBody: Boolean(
       bodyContent.trim() &&
       !turn.proposedPlanStatus &&
-      !hasTranscript &&
-      !(visibleTimelineItems.length > 0 && timelineContainsAssistantBody),
+      !(visibleTimelineItems.length > 0 && timelineContainsBody),
     ),
-    transcriptTakeaway,
     visibleTimelineItems,
   };
-}
-
-function resolveTranscriptTakeaway(
-  messages: TurnAgentConversationMessage[],
-  bodyContent: string,
-): string | undefined {
-  const normalizedBody = normalizeComparableText(bodyContent);
-  if (!normalizedBody) {
-    return undefined;
-  }
-
-  const transcriptMessages = messages.filter((message) => message.transcript);
-  if (transcriptMessages.length === 0) {
-    return undefined;
-  }
-
-  const explicitNever = transcriptMessages.some((message) => message.transcript?.layout?.supplementalBody === "never");
-  const summaryCandidates = transcriptSummaryCandidates(transcriptMessages);
-  const duplicatesSummary = summaryCandidates.some((message) =>
-    isComparableDuplicate(bodyContent, message.content),
-  );
-
-  if (duplicatesSummary || explicitNever) {
-    return undefined;
-  }
-
-  return bodyContent;
-}
-
-function transcriptSummaryCandidates(
-  messages: TurnAgentConversationMessage[],
-): TurnAgentConversationMessage[] {
-  const summaryStageIds = new Set(
-    messages.flatMap((message) => message.transcript?.layout?.summaryStageIds ?? []),
-  );
-  if (summaryStageIds.size > 0) {
-    const matched = messages.filter((message) =>
-      summaryStageIds.has(message.transcript?.stageId ?? ""),
-    );
-    if (matched.length > 0) {
-      return matched;
-    }
-  }
-
-  const summaryStances = new Set(
-    messages.flatMap((message) => message.transcript?.layout?.summaryStances ?? []),
-  );
-  if (summaryStances.size > 0) {
-    const matched = messages.filter((message) =>
-      summaryStances.has(message.transcript?.stance ?? ""),
-    );
-    if (matched.length > 0) {
-      return matched;
-    }
-  }
-
-  const synthesisLike = messages.filter((message) => {
-    const transcript = message.transcript;
-    if (!transcript) {
-      return false;
-    }
-    const stageId = transcript.stageId.toLowerCase();
-    const stance = transcript.stance.toLowerCase();
-    return stageId.includes("synthesis") || stance === "moderator" || stance === "ora";
-  });
-  if (synthesisLike.length > 0) {
-    return synthesisLike;
-  }
-
-  return messages.length > 0 ? [messages[messages.length - 1]!] : [];
 }
 
 function isComparableDuplicate(left: string, right: string): boolean {

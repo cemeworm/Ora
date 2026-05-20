@@ -1341,6 +1341,9 @@ export function adaptChatMessages(
         });
       }
 
+      const modeStageMessages = turn.snapshot
+        ? deriveModeStageMainlineMessages(turn.snapshot, turnSnapshots, turn.turnIndex)
+        : [];
       const storedContent = !turn.snapshot ? turn.assistant?.content : undefined;
       const storedPlan = storedContent ? parseProposedPlan(storedContent) : undefined;
       const canDisplayStoredPlan = storedPlan
@@ -1391,7 +1394,22 @@ export function adaptChatMessages(
           }
         : assistantTurn;
 
-      if (turn.assistant || presentedAssistantTurn) {
+      const suppressParentPlaceholder = Boolean(
+        turn.snapshot &&
+        modeStageMessages.length > 0 &&
+        shouldSuppressParentAssistantPlaceholderMessage({
+          snapshot: turn.snapshot,
+          content: assistantContent,
+          turn: presentedAssistantTurn,
+        }),
+      );
+      const shouldEmitAssistant = turn.assistant || presentedAssistantTurn
+        ? !(
+          suppressParentPlaceholder
+        )
+        : false;
+
+      if (shouldEmitAssistant) {
         messages.push({
           id: turn.assistant?.id ?? `${turn.runId}:assistant-pending`,
           role: "assistant",
@@ -1413,9 +1431,391 @@ export function adaptChatMessages(
             (!presentedAssistantTurn || presentedAssistantTurn.status === "running"),
         });
       }
+      messages.push(...modeStageMessages);
 
       return messages;
     });
+}
+
+function shouldSuppressParentAssistantPlaceholderMessage({
+  snapshot,
+  content,
+  turn,
+}: {
+  snapshot: OraStateSnapshot;
+  content: string | undefined;
+  turn: AssistantTurnAttachment | undefined;
+}): boolean {
+  if (!turn) {
+    return false;
+  }
+  const normalizedContent = (content ?? "").trim();
+  const placeholder = placeholderAssistantCopy(snapshot).trim();
+  if (normalizedContent && normalizedContent !== placeholder) {
+    return false;
+  }
+  return normalizedContent === placeholder &&
+    (turn.timelineItems?.length ?? 0) === 0 &&
+    (turn.processSteps?.length ?? 0) === 0 &&
+    (turn.planList?.length ?? 0) === 0 &&
+    (turn.approvalCount ?? 0) === 0 &&
+    (turn.clarificationCount ?? 0) === 0 &&
+    !turn.hasProposedPlan;
+}
+
+function deriveModeStageMainlineMessages(
+  snapshot: OraStateSnapshot,
+  turnSnapshots: Record<string, OraStateSnapshot | undefined>,
+  turnIndex: number,
+): ChatMessage[] {
+  const messages: ChatMessage[] = [];
+  for (const child of modeStageChildSessions(snapshot)) {
+    const projected = deriveModeStageProjectedTurn(snapshot, child, turnSnapshots);
+    if (!projected) {
+      continue;
+    }
+    messages.push({
+      id: `${child.id}:assistant-mainline`,
+      role: "assistant",
+      content: projected.content,
+      timestamp: formatClock(projected.timestamp),
+      metadata: {
+        runId: child.id,
+        turnIndex,
+        pattern: snapshot.pattern,
+        agentId: child.agentId,
+      },
+      turn: projected.turn,
+    });
+  }
+  return messages;
+}
+
+function modeStageChildSessions(
+  snapshot: Pick<OraStateSnapshot, "childSessions">,
+): NonNullable<OraStateSnapshot["childSessions"]> {
+  return [...(snapshot.childSessions ?? [])]
+    .filter((child) => isModeStageChildSession(child))
+    .sort((left, right) =>
+      (left.startedAt ?? left.updatedAt) - (right.startedAt ?? right.updatedAt) ||
+      left.updatedAt - right.updatedAt,
+    );
+}
+
+function isModeStageChildSession(
+  child: NonNullable<OraStateSnapshot["childSessions"]>[number],
+): boolean {
+  return child.authoritySource === "mode_stage" || child.delegationKind === "mode_stage";
+}
+
+function deriveModeStageProjectedTurn(
+  parentSnapshot: OraStateSnapshot,
+  child: NonNullable<OraStateSnapshot["childSessions"]>[number],
+  turnSnapshots: Record<string, OraStateSnapshot | undefined>,
+): { content: string; turn: AssistantTurnAttachment; timestamp: number } | undefined {
+  const childSnapshot = resolveModeStageChildSnapshot(parentSnapshot, child, turnSnapshots);
+  if (childSnapshot) {
+    const childView = derivePresentedAssistantTurnFromSnapshot(childSnapshot);
+    return {
+      content: childView.content,
+      turn: childView.turn,
+      timestamp: child.updatedAt,
+    };
+  }
+
+  const content = bestAvailableModeStageSummaryText(child) ?? modeStageStatusPlaceholderText(child);
+  const status = adaptRunStatus(child.status);
+  const assistantTurn: AssistantTurnAttachment = {
+    runId: child.id,
+    turnIndex: parentSnapshot.turnIndex ?? 1,
+    status,
+    pattern: parentSnapshot.pattern,
+    currentAgentLabel: child.label,
+    liveProgressText: undefined,
+    processSteps: [],
+    timelineItems: [{
+      id: `${child.id}:timeline:summary`,
+      kind: "assistant_text",
+      content,
+      timestamp: formatElapsed(parentSnapshot.input.createdAt ?? parentSnapshot.updatedAt, child.updatedAt),
+      agentId: child.agentId,
+      agentLabel: child.label,
+    }],
+    clarificationExchanges: undefined,
+    planList: [],
+    agentMessages: [],
+    artifacts: [],
+    fileChanges: [],
+    sources: [],
+    todos: [],
+    approvalCount: 0,
+    clarificationCount: 0,
+    hasProposedPlan: false,
+    proposedPlanStatus: undefined,
+    planContent: undefined,
+    activeLoadingTarget: status === "running"
+      ? { kind: "timeline", itemId: `${child.id}:timeline:summary` }
+      : undefined,
+    reviewGate: undefined,
+  };
+  return {
+    content,
+    turn: {
+      ...assistantTurn,
+      presentation: deriveAssistantTurnPresentation({
+        content,
+        turn: assistantTurn,
+      }),
+    },
+    timestamp: child.updatedAt,
+  };
+}
+
+function bestAvailableModeStageSummaryText(
+  child: NonNullable<OraStateSnapshot["childSessions"]>[number],
+): string | undefined {
+  const candidates = [child.lastMessage, child.summary];
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim()) {
+      return candidate.trim();
+    }
+  }
+  return undefined;
+}
+
+function modeStageStatusPlaceholderText(
+  child: NonNullable<OraStateSnapshot["childSessions"]>[number],
+): string {
+  switch (child.lifecyclePhase) {
+    case "queued":
+      return `${child.label} 已进入编排队列。`;
+    case "produced_output":
+      return `${child.label} 已产出阶段结果，等待后续交接。`;
+    case "awaiting_pickup":
+      return `${child.label} 已完成，等待编排器接收。`;
+    case "stalled":
+      return `${child.label} 暂时卡住，正在等待恢复。`;
+    case "picked_up":
+      return `${child.label} 的结果已被编排器接收。`;
+  }
+  switch (child.status) {
+    case "queued":
+      return `${child.label} 已进入编排队列。`;
+    case "running":
+      return `${child.label} 正在执行任务。`;
+    case "succeeded":
+      return `${child.label} 已完成当前阶段。`;
+    case "failed":
+      return `${child.label} 执行失败。`;
+    case "cancelled":
+      return `${child.label} 已取消。`;
+  }
+}
+
+function resolveModeStageChildSnapshot(
+  parentSnapshot: OraStateSnapshot,
+  child: NonNullable<OraStateSnapshot["childSessions"]>[number],
+  turnSnapshots: Record<string, OraStateSnapshot | undefined>,
+): OraStateSnapshot | undefined {
+  const direct = turnSnapshots[child.id];
+  if (direct?.runId === child.id) {
+    return direct;
+  }
+  return deriveModeStageChildSnapshotFromParentReplay(parentSnapshot, child);
+}
+
+function deriveModeStageChildSnapshotFromParentReplay(
+  parentSnapshot: OraStateSnapshot,
+  child: NonNullable<OraStateSnapshot["childSessions"]>[number],
+): OraStateSnapshot | undefined {
+  const replayRef = child.replayRef;
+  if (!replayRef || replayRef.kind !== "event_range" || replayRef.runId !== parentSnapshot.runId) {
+    return undefined;
+  }
+  const fromSeq = typeof replayRef.fromSeq === "number" ? replayRef.fromSeq : 0;
+  const toSeq = modeStageReplayUpperBound(parentSnapshot, child, replayRef);
+  const childEvents = parentSnapshot.events
+    .filter((event) =>
+      event.runId === parentSnapshot.runId &&
+      event.seq >= fromSeq &&
+      event.seq <= toSeq &&
+      isModeStageReplayChildEvent(event, child)
+    )
+    .map((event) => sanitizeModeStageReplayChildEvent(event, child.id));
+  const childAgentMessages = (parentSnapshot.agentMessages ?? [])
+    .filter((message) =>
+      message.fromAgentId === child.agentId &&
+      isPublicModeStageAgentMessage(message)
+    )
+    .map((message) => ({
+      ...message,
+      runId: child.id,
+      toAgentIds: [...message.toAgentIds],
+      artifactIds: [...message.artifactIds],
+    }));
+  const artifactIds = new Set(child.artifactIds);
+  for (const message of childAgentMessages) {
+    for (const artifactId of message.artifactIds) {
+      artifactIds.add(artifactId);
+    }
+  }
+  for (const event of childEvents) {
+    if (!isRecord(event.payload)) {
+      continue;
+    }
+    const payloadArtifactId = event.payload.artifactId;
+    if (typeof payloadArtifactId === "string" && payloadArtifactId.trim()) {
+      artifactIds.add(payloadArtifactId);
+    }
+  }
+  const fallbackOutputText = deriveModeStageFallbackOutput(child, childEvents);
+  const hasReplayMaterial =
+    childEvents.length > 0 ||
+    childAgentMessages.length > 0 ||
+    artifactIds.size > 0 ||
+    Boolean(fallbackOutputText);
+  if (!hasReplayMaterial) {
+    return undefined;
+  }
+
+  const referencedAgentIds = new Set<string>([child.agentId]);
+  for (const event of childEvents) {
+    if (typeof event.agentId === "string" && event.agentId.trim()) {
+      referencedAgentIds.add(event.agentId);
+    }
+    if (typeof event.nodeId === "string" && event.nodeId.trim()) {
+      referencedAgentIds.add(event.nodeId);
+    }
+  }
+  for (const message of childAgentMessages) {
+    referencedAgentIds.add(message.fromAgentId);
+    for (const agentId of message.toAgentIds) {
+      referencedAgentIds.add(agentId);
+    }
+  }
+
+  return {
+    ...parentSnapshot,
+    runId: child.id,
+    sessionId: child.sourceSessionId ?? parentSnapshot.sessionId,
+    status: child.status,
+    profiles: parentSnapshot.profiles.filter((profile) => referencedAgentIds.has(profile.id)),
+    events: childEvents,
+    agentMessages: childAgentMessages,
+    childSessions: [],
+    parentCoordination: undefined,
+    artifacts: parentSnapshot.artifacts.filter((artifact) => artifactIds.has(artifact.id)),
+    activeAgents: child.status === "running" ? [child.agentId] : [],
+    pendingClarifications: [],
+    pendingApprovals: [],
+    output: fallbackOutputText ? { text: fallbackOutputText } : undefined,
+    updatedAt: child.updatedAt,
+  };
+}
+
+function modeStageReplayUpperBound(
+  parentSnapshot: OraStateSnapshot,
+  child: NonNullable<OraStateSnapshot["childSessions"]>[number],
+  replayRef: NonNullable<NonNullable<OraStateSnapshot["childSessions"]>[number]["replayRef"]>,
+): number {
+  const persistedToSeq = typeof replayRef.toSeq === "number"
+    ? replayRef.toSeq
+    : Number.MAX_SAFE_INTEGER;
+  if (child.status !== "running") {
+    return persistedToSeq;
+  }
+  let latestSeq: number | undefined;
+  for (const event of parentSnapshot.events) {
+    if (event.runId !== parentSnapshot.runId || !isModeStageReplayChildEvent(event, child)) {
+      continue;
+    }
+    latestSeq = event.seq;
+  }
+  if (latestSeq === undefined) {
+    return persistedToSeq;
+  }
+  return persistedToSeq === Number.MAX_SAFE_INTEGER
+    ? latestSeq
+    : Math.max(persistedToSeq, latestSeq);
+}
+
+function isModeStageReplayChildEvent(
+  event: OraStateSnapshot["events"][number],
+  child: NonNullable<OraStateSnapshot["childSessions"]>[number],
+): boolean {
+  if (event.agentId === child.agentId || event.nodeId === child.agentId) {
+    return true;
+  }
+  if (
+    event.type === "child_session.updated" &&
+    isRecord(event.payload) &&
+    isRecord(event.payload.childSession)
+  ) {
+    return event.payload.childSession.id === child.id ||
+      event.payload.childSession.agentId === child.agentId;
+  }
+  if (
+    event.type === "agent.message" &&
+    isRecord(event.payload) &&
+    isRecord(event.payload.message)
+  ) {
+    return event.payload.message.fromAgentId === child.agentId;
+  }
+  return false;
+}
+
+function isPublicModeStageAgentMessage(
+  message: OraStateSnapshot["agentMessages"][number],
+): boolean {
+  return Boolean(message.transcript) && !isInternalAgentMessage(message);
+}
+
+function sanitizeModeStageReplayChildEvent(
+  event: OraStateSnapshot["events"][number],
+  childRunId: string,
+): OraStateSnapshot["events"][number] {
+  if (event.type !== "message.delta" || !isRecord(event.payload)) {
+    return {
+      ...event,
+      runId: childRunId,
+      payload: cloneModeStagePayload(event.payload),
+    };
+  }
+  const payload = { ...event.payload };
+  delete payload.visibility;
+  delete payload.audience;
+  delete payload.surface;
+  delete payload.public;
+  return {
+    ...event,
+    runId: childRunId,
+    payload,
+  };
+}
+
+function cloneModeStagePayload<T>(payload: T): T {
+  if (!isRecord(payload) && !Array.isArray(payload)) {
+    return payload;
+  }
+  return JSON.parse(JSON.stringify(payload)) as T;
+}
+
+function deriveModeStageFallbackOutput(
+  child: NonNullable<OraStateSnapshot["childSessions"]>[number],
+  events: OraStateSnapshot["events"],
+): string | undefined {
+  const hasAssistantDelta = events.some((event) =>
+    event.type === "message.delta" &&
+    event.agentId === child.agentId &&
+    isRecord(event.payload) &&
+    event.payload.role === "assistant" &&
+    typeof event.payload.content === "string" &&
+    event.payload.content.trim().length > 0
+  );
+  if (hasAssistantDelta) {
+    return undefined;
+  }
+  return bestAvailableModeStageSummaryText(child);
 }
 
 export function adaptPendingRunMessages(
@@ -3024,7 +3424,6 @@ function deriveTimelineItems(
 
   for (const [index, message] of (snapshot.agentMessages ?? []).entries()) {
     if (
-      message.transcript ||
       message.kind === "status" ||
       (message.kind === "handoff" && message.toAgentIds.length === 0) ||
       isInternalAgentMessage(message) ||

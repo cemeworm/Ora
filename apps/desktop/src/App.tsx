@@ -1161,12 +1161,10 @@ function WorkbenchInner() {
             onInterruptRun={actions.interruptRun}
             onReplaySelection={actions.replaySelection}
             onResumeRun={actions.resumeRun}
-            onAcceptPlanDecisionAndStartImplementation={() =>
-              void actions.acceptPlanDecisionAndStartImplementation()
+            onAcceptPlanDecisionAndStartImplementation={
+              actions.acceptPlanDecisionAndStartImplementation
             }
-            onResolvePlanDecision={(status) =>
-              void actions.resolvePlanDecision(status)
-            }
+            onResolvePlanDecision={actions.resolvePlanDecision}
             onCancelRun={actions.cancelRun}
             onOpenArtifact={(artifactId) =>
               dispatch({ type: "OPEN_ARTIFACT_PANEL", artifactId })
