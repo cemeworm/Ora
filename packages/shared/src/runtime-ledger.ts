@@ -1307,16 +1307,17 @@ function reconcileSnapshotRuntimeFields(snapshot: StateSnapshot, gates: readonly
   }
   const step1 = replayFromEvents(snapshot);
   const step2 = projectGateResolutionEvents(step1, gates, snapshot);
-  const step3 = reconcilePostGateApprovals(step2, gates, snapshot);
+  const step3 = reconcilePostGateClarifications(step2, gates, snapshot);
+  const step4 = reconcilePostGateApprovals(step3, gates, snapshot);
   return StateSnapshotSchema.parse({
     ...snapshot,
-    actions: step3.actions,
-    toolCalls: step3.toolCalls,
-    toolResults: step3.toolResults,
-    conversation: step3.conversation,
-    continuation: step3.continuation,
-    artifacts: step3.artifacts,
-    events: step3.events,
+    actions: step4.actions,
+    toolCalls: step4.toolCalls,
+    toolResults: step4.toolResults,
+    conversation: step4.conversation,
+    continuation: step4.continuation,
+    artifacts: step4.artifacts,
+    events: step4.events,
   });
 }
 
@@ -1424,6 +1425,69 @@ function projectGateResolutionEvents(
   }
 
   return { ...state, events };
+}
+
+function reconcilePostGateClarifications(
+  state: ReconciledState, gates: readonly RuntimeGateProjection[], snapshot: StateSnapshot,
+): ReconciledState {
+  const resolvedIds = new Set(
+    gates.filter((gate) => gate.status === "resolved" && gate.kind === "clarification")
+      .flatMap((gate) => gate.pendingClarificationIds),
+  );
+  if (resolvedIds.size === 0) {
+    return state;
+  }
+
+  let activeFrameId = state.continuation.activeFrameId;
+  let changed = false;
+  const continuation = {
+    ...state.continuation,
+    frames: state.continuation.frames.map((frame) => {
+      if (frame.reason !== "clarification_required") {
+        return frame;
+      }
+      const newlyResolvedIds = frame.pendingClarificationIds.filter((id) => resolvedIds.has(id));
+      if (newlyResolvedIds.length === 0) {
+        if (
+          activeFrameId === frame.id &&
+          (frame.status === "completed" || frame.status === "failed")
+        ) {
+          activeFrameId = undefined;
+          changed = true;
+        }
+        return frame;
+      }
+
+      changed = true;
+      const pendingClarificationIds = frame.pendingClarificationIds.filter((id) => !resolvedIds.has(id));
+      const status = pendingClarificationIds.length === 0 &&
+        (frame.status === "paused" || frame.status === "awaiting_model" || frame.status === "resuming")
+        ? "completed" as const
+        : frame.status;
+      if (activeFrameId === frame.id && (status === "completed" || status === "failed")) {
+        activeFrameId = undefined;
+      }
+      return {
+        ...frame,
+        status,
+        pendingClarificationIds,
+        resolvedClarificationIds: [...new Set([...frame.resolvedClarificationIds, ...newlyResolvedIds])],
+        updatedAt: snapshot.updatedAt,
+      };
+    }),
+  };
+
+  if (!changed) {
+    return state;
+  }
+
+  return {
+    ...state,
+    continuation: {
+      ...continuation,
+      activeFrameId,
+    },
+  };
 }
 
 function reconcilePostGateApprovals(

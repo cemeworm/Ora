@@ -528,7 +528,23 @@ describe("runtime session ledger projection", () => {
         artifactIds: [],
       }],
       toolCalls: [],
-      continuation: { frames: [] },
+      continuation: {
+        activeFrameId: "run-1:continuation:0",
+        frames: [{
+          id: "run-1:continuation:0",
+          runId: "run-1",
+          status: "paused",
+          reason: "clarification_required",
+          conversationCursor: 0,
+          pendingActionIds: [],
+          pendingToolCallIds: [],
+          pendingClarificationIds: ["clarification-1"],
+          approvedActionIds: [],
+          resolvedClarificationIds: [],
+          createdAt: BASE_TIME + 3,
+          updatedAt: BASE_TIME + 3,
+        }],
+      },
       conversation: [],
       toolResults: [],
       policyDecisions: [],
@@ -647,6 +663,15 @@ describe("runtime session ledger projection", () => {
 
     expect(snapshot?.pendingClarifications).toEqual([]);
     expect(snapshot?.pendingApprovals).toEqual([]);
+    expect(snapshot?.continuation.activeFrameId).toBeUndefined();
+    expect(snapshot?.continuation.frames).toEqual([
+      expect.objectContaining({
+        id: "run-1:continuation:0",
+        status: "completed",
+        pendingClarificationIds: [],
+        resolvedClarificationIds: ["clarification-1"],
+      }),
+    ]);
     expect(projectedResolutions).toEqual([
       expect.objectContaining({
         type: "clarification.resolved",

@@ -58,16 +58,205 @@ export const AgentResultContractSchema = z.enum([
 ]);
 export type AgentResultContract = z.infer<typeof AgentResultContractSchema>;
 
+export const AgentSpawnContractSourceSchema = z.enum([
+  "explicit",
+  "inferred",
+]);
+export type AgentSpawnContractSource = z.infer<typeof AgentSpawnContractSourceSchema>;
+
+export const AgentSpawnAffordanceSchema = z.enum([
+  "repo_read",
+  "repo_search",
+  "repo_explore",
+  "web_read",
+  "shell_execute",
+  "workspace_write",
+]);
+export type AgentSpawnAffordance = z.infer<typeof AgentSpawnAffordanceSchema>;
+
+export const AgentSpawnSubjectKindSchema = z.enum([
+  "url",
+  "file",
+  "artifact",
+  "entity",
+  "topic",
+  "document",
+]);
+export type AgentSpawnSubjectKind = z.infer<typeof AgentSpawnSubjectKindSchema>;
+
+export const AgentSpawnSubjectNormalizationSchema = z.enum([
+  "auto",
+  "none",
+  "url_canonical",
+  "path_canonical",
+  "casefold",
+]);
+export type AgentSpawnSubjectNormalization = z.infer<typeof AgentSpawnSubjectNormalizationSchema>;
+
+export const AgentSpawnSubjectSchema = z.object({
+  kind: AgentSpawnSubjectKindSchema,
+  value: z.string().min(1),
+  normalization: AgentSpawnSubjectNormalizationSchema.default("auto"),
+  normalizedValue: z.string().min(1).optional(),
+  label: z.string().min(1).optional(),
+});
+export type AgentSpawnSubject = z.infer<typeof AgentSpawnSubjectSchema>;
+
+export const AgentSpawnResourceBindingValueKindSchema = z.enum([
+  "url",
+  "file",
+  "artifact",
+  "document",
+]);
+export type AgentSpawnResourceBindingValueKind = z.infer<typeof AgentSpawnResourceBindingValueKindSchema>;
+
+export const AgentSpawnResourceHandleKindSchema = z.enum([
+  "artifact",
+  "browser_session",
+  "browser_snapshot",
+  "child_session",
+  "run",
+]);
+export type AgentSpawnResourceHandleKind = z.infer<typeof AgentSpawnResourceHandleKindSchema>;
+
+export const AgentSpawnResourceBindingSchema = z.discriminatedUnion("locator", [
+  z.object({
+    locator: z.literal("value"),
+    kind: AgentSpawnResourceBindingValueKindSchema,
+    value: z.string().min(1),
+    normalization: AgentSpawnSubjectNormalizationSchema.default("auto"),
+    normalizedValue: z.string().min(1).optional(),
+    required: z.boolean().default(true),
+    label: z.string().min(1).optional(),
+  }),
+  z.object({
+    locator: z.literal("handle"),
+    handleKind: AgentSpawnResourceHandleKindSchema,
+    handleId: z.string().min(1),
+    required: z.boolean().default(true),
+    label: z.string().min(1).optional(),
+    metadata: z.record(z.unknown()).default({}),
+  }),
+]);
+export type AgentSpawnResourceBinding = z.infer<typeof AgentSpawnResourceBindingSchema>;
+
+export const AgentSpawnSideEffectPolicySchema = z.enum([
+  "none",
+  "draft_artifact",
+  "workspace_mutation",
+  "external_mutation",
+]);
+export type AgentSpawnSideEffectPolicy = z.infer<typeof AgentSpawnSideEffectPolicySchema>;
+
+export const AgentSpawnResultRuleSchema = z.enum([
+  "subject_match_required",
+  "resource_binding_match_required",
+  "source_reference_required",
+]);
+export type AgentSpawnResultRule = z.infer<typeof AgentSpawnResultRuleSchema>;
+
+export const AgentSpawnValidationPolicySchema = z.enum([
+  "enforce",
+  "diagnostics_only",
+]);
+export type AgentSpawnValidationPolicy = z.infer<typeof AgentSpawnValidationPolicySchema>;
+
+export const AgentSpawnContractSchema = z.object({
+  source: AgentSpawnContractSourceSchema.default("explicit"),
+  requiredAffordances: z.array(AgentSpawnAffordanceSchema).default([]),
+  subject: AgentSpawnSubjectSchema.optional(),
+  resourceBindings: z.array(AgentSpawnResourceBindingSchema).default([]),
+  sideEffectPolicy: AgentSpawnSideEffectPolicySchema.optional(),
+  resultRules: z.array(AgentSpawnResultRuleSchema).default([]),
+  validationPolicy: AgentSpawnValidationPolicySchema.optional(),
+});
+export type AgentSpawnContract = z.infer<typeof AgentSpawnContractSchema>;
+
+export const AgentSpawnContractViolationCodeSchema = z.enum([
+  "missing_required_affordance",
+  "subject_unbound",
+  "resource_binding_missing",
+  "side_effect_not_allowed",
+  "subject_mismatch",
+  "resource_binding_mismatch",
+  "source_reference_missing",
+  "unexpected_workspace_mutation",
+]);
+export type AgentSpawnContractViolationCode = z.infer<typeof AgentSpawnContractViolationCodeSchema>;
+
+export const AgentSpawnContractViolationSchema = z.object({
+  code: AgentSpawnContractViolationCodeSchema,
+  message: z.string().min(1),
+});
+export type AgentSpawnContractViolation = z.infer<typeof AgentSpawnContractViolationSchema>;
+
+export const AgentSpawnResultValidationStatusSchema = z.enum([
+  "passed",
+  "failed",
+]);
+export type AgentSpawnResultValidationStatus = z.infer<typeof AgentSpawnResultValidationStatusSchema>;
+
+export const AgentSpawnResultValidationEffectSchema = z.enum([
+  "none",
+  "warning",
+  "blocked",
+]);
+export type AgentSpawnResultValidationEffect = z.infer<typeof AgentSpawnResultValidationEffectSchema>;
+
+export const AgentSpawnObservedHandleSchema = z.object({
+  handleKind: AgentSpawnResourceHandleKindSchema,
+  handleId: z.string().min(1),
+});
+export type AgentSpawnObservedHandle = z.infer<typeof AgentSpawnObservedHandleSchema>;
+
+export const AgentSpawnResultValidationSchema = z.object({
+  status: AgentSpawnResultValidationStatusSchema,
+  policy: AgentSpawnValidationPolicySchema.default("enforce"),
+  effect: AgentSpawnResultValidationEffectSchema.default("none"),
+  violations: z.array(AgentSpawnContractViolationSchema).default([]),
+  observedUrls: z.array(z.string().min(1)).default([]),
+  observedPaths: z.array(z.string().min(1)).default([]),
+  observedHandles: z.array(AgentSpawnObservedHandleSchema).default([]),
+});
+export type AgentSpawnResultValidation = z.infer<typeof AgentSpawnResultValidationSchema>;
+
+export const ToolFamilySchema = z.enum([
+  "explore",
+  "execute",
+  "coordinate",
+  "environment",
+  "evolve",
+]);
+export type ToolFamily = z.infer<typeof ToolFamilySchema>;
+
+export const ToolVisibilityPresetIdSchema = z.enum([
+  "root_default",
+  "coding_root",
+  "builder_write",
+  "review_readonly",
+  "research_readonly",
+  "repo_forensics",
+  "system_evolution",
+]);
+export type ToolVisibilityPresetId = z.infer<typeof ToolVisibilityPresetIdSchema>;
+
+export type ToolVisibilityDecisionSource =
+  | "explicit_override"
+  | "bundle_preset"
+  | "resolver_default"
+  | "legacy_fallback";
+
 // ---------------------------------------------------------------------------
 // Tool Descriptor Schemas
 // ---------------------------------------------------------------------------
 
-export const ToolDescriptorSchema = z.object({
+const ToolDescriptorBaseSchema = z.object({
   id: z.string().min(1),
   label: z.string().min(1),
   description: z.string().min(1),
   category: z.enum(["file", "shell", "network", "mcp", "model", "export", "internal", "package"]),
   riskLevel: z.enum(["safe", "low_risk", "requires_approval"]),
+  family: ToolFamilySchema.optional(),
   parameters: z.record(z.unknown()).default({}),
   promptSnippet: z.string().min(1).optional(),
   promptGuidelines: z.array(z.string().min(1)).optional(),
@@ -76,7 +265,412 @@ export const ToolDescriptorSchema = z.object({
   implemented: z.boolean().default(true),
   allowedForProfiles: z.array(z.string().min(1)).default([]),
 });
-export type ToolDescriptor = z.infer<typeof ToolDescriptorSchema>;
+export type ToolDescriptorInput = z.input<typeof ToolDescriptorBaseSchema>;
+export type ToolDescriptor = z.output<typeof ToolDescriptorBaseSchema> & { family: ToolFamily };
+
+export function inferToolFamilyForDescriptor(tool: Pick<ToolDescriptorInput, "id" | "category">): ToolFamily {
+  if (
+    tool.id === "plan.update" ||
+    tool.id === "user.clarify" ||
+    tool.id === "agent.spawn" ||
+    tool.id === "agent.wait" ||
+    tool.id === "message.send"
+  ) {
+    return "coordinate";
+  }
+  if (
+    tool.id.startsWith("skills.") ||
+    tool.id.startsWith("modes.") ||
+    tool.id.startsWith("selfIteration.") ||
+    tool.id.startsWith("automations.") ||
+    tool.id.startsWith("package.")
+  ) {
+    return "evolve";
+  }
+  if (
+    tool.id.startsWith("web.") ||
+    tool.id.startsWith("mcp.") ||
+    tool.id.startsWith("computer.") ||
+    tool.id.startsWith("widgets.")
+  ) {
+    return "environment";
+  }
+  if (tool.id === "document.extract") {
+    return "explore";
+  }
+  if (tool.id.startsWith("file.") || tool.id === "shell.execute") {
+    return "execute";
+  }
+  if (tool.category === "network" || tool.category === "mcp" || tool.category === "export") {
+    return "environment";
+  }
+  if (tool.category === "package") {
+    return "evolve";
+  }
+  return "explore";
+}
+
+export function normalizeToolDescriptor(tool: ToolDescriptorInput): ToolDescriptor {
+  const parsed = ToolDescriptorBaseSchema.parse(tool);
+  return {
+    ...parsed,
+    family: parsed.family ?? inferToolFamilyForDescriptor(parsed),
+  };
+}
+
+export const ToolDescriptorSchema = ToolDescriptorBaseSchema.transform((descriptor) =>
+  normalizeToolDescriptor(descriptor)
+);
+
+export interface ToolVisibilityPresetDefinition {
+  id: ToolVisibilityPresetId;
+  label: string;
+  allowedFamilies: ToolFamily[];
+  toolIds: string[];
+  blockedToolIds?: string[];
+}
+
+export const TOOL_VISIBILITY_PRESETS: Record<ToolVisibilityPresetId, ToolVisibilityPresetDefinition> = {
+  root_default: {
+    id: "root_default",
+    label: "Root Default",
+    allowedFamilies: ["explore", "coordinate", "execute", "environment"],
+    toolIds: ["repo.explore", "file.read", "file.list", "file.glob", "file.grep", "plan.update", "agent.spawn", "agent.wait", "message.send", "web.fetch", "web.search"],
+    blockedToolIds: ["file.write", "file.patch", "file.apply_patch", "shell.execute"],
+  },
+  coding_root: {
+    id: "coding_root",
+    label: "Coding Root",
+    allowedFamilies: ["explore", "coordinate", "execute"],
+    toolIds: ["repo.explore", "file.read", "file.list", "file.glob", "file.grep", "plan.update", "agent.wait", "message.send"],
+    blockedToolIds: ["file.write", "file.patch", "file.apply_patch", "shell.execute"],
+  },
+  builder_write: {
+    id: "builder_write",
+    label: "Builder Write",
+    allowedFamilies: ["execute", "explore", "coordinate"],
+    toolIds: ["repo.explore", "file.read", "file.list", "file.glob", "file.grep", "file.write", "file.patch", "file.apply_patch", "shell.execute"],
+  },
+  review_readonly: {
+    id: "review_readonly",
+    label: "Review Read Only",
+    allowedFamilies: ["explore", "execute", "environment"],
+    toolIds: ["repo.explore", "file.read", "file.list", "file.glob", "file.grep", "web.fetch"],
+    blockedToolIds: ["file.write", "file.patch", "file.apply_patch", "shell.execute"],
+  },
+  research_readonly: {
+    id: "research_readonly",
+    label: "Research Read Only",
+    allowedFamilies: ["explore", "execute", "environment"],
+    toolIds: ["repo.explore", "file.read", "file.list", "file.glob", "file.grep", "web.fetch", "web.search"],
+    blockedToolIds: ["file.write", "file.patch", "file.apply_patch", "shell.execute"],
+  },
+  repo_forensics: {
+    id: "repo_forensics",
+    label: "Repo Forensics",
+    allowedFamilies: ["explore", "execute", "environment"],
+    toolIds: ["repo.explore", "file.read", "file.list", "file.glob", "file.grep", "shell.execute", "web.fetch", "web.search"],
+    blockedToolIds: ["file.write", "file.patch", "file.apply_patch"],
+  },
+  system_evolution: {
+    id: "system_evolution",
+    label: "System Evolution",
+    allowedFamilies: ["evolve"],
+    toolIds: [
+      "skills.list",
+      "skills.get",
+      "skills.checkName",
+      "skills.create",
+      "skills.update",
+      "skills.setEnabled",
+      "skills.patch",
+      "modes.list",
+      "modes.generateDraft",
+      "modes.refineDraft",
+      "modes.validate",
+      "modes.applyDraft",
+      "selfIteration.list",
+      "selfIteration.get",
+      "selfIteration.scan",
+      "selfIteration.evaluate",
+      "selfIteration.apply",
+      "automations.list",
+      "automations.get",
+      "automations.previewSchedule",
+      "automations.create",
+      "automations.update",
+      "automations.pause",
+      "automations.resume",
+      "automations.delete",
+      "automations.runNow",
+      "package.list",
+      "package.buildCandidate",
+      "package.verify",
+      "package.promote",
+      "package.switch",
+      "package.rollback",
+    ],
+  },
+};
+
+const TOOL_VISIBILITY_MUTATION_IDS = new Set([
+  "file.write",
+  "file.patch",
+  "file.apply_patch",
+  "shell.execute",
+]);
+
+export function visibleToolIdsForPreset(
+  presetId: ToolVisibilityPresetId,
+  availableToolIds: readonly string[] = [],
+): string[] {
+  const available = new Set(availableToolIds);
+  const preset = TOOL_VISIBILITY_PRESETS[presetId];
+  return preset.toolIds.filter((toolId) => available.has(toolId));
+}
+
+export function isLegacyDefaultAgentModeToolIds(toolIds: readonly string[]): boolean {
+  const requested = [...new Set(toolIds)];
+  if (requested.length !== DEFAULT_AGENT_MODE_TOOL_IDS.length) {
+    return false;
+  }
+  const defaults = new Set(DEFAULT_AGENT_MODE_TOOL_IDS);
+  return requested.every((toolId) => defaults.has(toolId));
+}
+
+export interface ResolveToolVisibilityParams {
+  availableToolIds: readonly string[];
+  toolDescriptors: readonly Pick<ToolDescriptor, "id" | "family">[];
+  explicitToolIds?: readonly string[];
+  presetId?: ToolVisibilityPresetId;
+  taskIntent?: "chat" | "plan" | "implement";
+  hardBlockedToolIds?: readonly string[];
+  defaultDecisionSource?: Exclude<ToolVisibilityDecisionSource, "explicit_override">;
+}
+
+export interface ToolVisibilityResolution {
+  visibleToolIds: string[];
+  hiddenToolIds: string[];
+  decisionSource: ToolVisibilityDecisionSource;
+  appliedConstraints: string[];
+  presetId?: ToolVisibilityPresetId;
+}
+
+export function resolveToolVisibility(params: ResolveToolVisibilityParams): ToolVisibilityResolution {
+  const available = [...new Set(params.availableToolIds)];
+  const availableSet = new Set(available);
+  const appliedConstraints: string[] = [];
+  let decisionSource: ToolVisibilityDecisionSource = params.defaultDecisionSource ?? "resolver_default";
+  let resolved = available;
+
+  if (params.explicitToolIds) {
+    const explicit = new Set(params.explicitToolIds);
+    resolved = available.filter((toolId) => explicit.has(toolId));
+    appliedConstraints.push("explicit_tool_ids");
+    decisionSource = "explicit_override";
+  } else if (params.presetId) {
+    resolved = visibleToolIdsForPreset(params.presetId, available);
+    appliedConstraints.push(`preset:${params.presetId}`);
+  }
+
+  if (params.taskIntent === "chat" || params.taskIntent === "plan") {
+    resolved = resolved.filter((toolId) => !TOOL_VISIBILITY_MUTATION_IDS.has(toolId));
+    appliedConstraints.push(`task_intent:${params.taskIntent}`);
+  }
+
+  const hardBlocked = new Set(params.hardBlockedToolIds ?? []);
+  if (hardBlocked.size > 0) {
+    resolved = resolved.filter((toolId) => !hardBlocked.has(toolId));
+    appliedConstraints.push("hard_boundary");
+  }
+
+  resolved = [...new Set(resolved)].filter((toolId) => availableSet.has(toolId));
+  const visibleSet = new Set(resolved);
+  const hiddenToolIds = available.filter((toolId) => !visibleSet.has(toolId));
+
+  return {
+    visibleToolIds: resolved,
+    hiddenToolIds,
+    decisionSource: params.presetId || params.explicitToolIds ? decisionSource : "legacy_fallback",
+    appliedConstraints,
+    presetId: params.presetId,
+  };
+}
+
+export const RepoExploreKindSchema = z.enum([
+  "locate",
+  "understand",
+  "trace",
+  "compare",
+  "verify",
+]);
+export type RepoExploreKind = z.infer<typeof RepoExploreKindSchema>;
+
+export const RepoExploreScopeSchema = z.object({
+  paths: z.array(z.string().min(1)).default([]),
+  includeGlobs: z.array(z.string().min(1)).default([]),
+  excludeGlobs: z.array(z.string().min(1)).default([]),
+  languageHints: z.array(z.string().min(1)).default([]),
+  limit: z.number().int().positive().max(500).optional(),
+});
+export type RepoExploreScope = z.infer<typeof RepoExploreScopeSchema>;
+
+export const RepoExploreRequestSchema = z.object({
+  goal: z.string().min(1),
+  kind: RepoExploreKindSchema,
+  subject: z.string().min(1),
+  question: z.string().min(1).optional(),
+  scope: RepoExploreScopeSchema.optional(),
+  evidenceBudget: z.number().int().positive().max(20).optional(),
+  preferFreshness: z.boolean().optional(),
+});
+export type RepoExploreRequest = z.infer<typeof RepoExploreRequestSchema>;
+
+export const RepoExploreResultStatusSchema = z.enum([
+  "answered",
+  "insufficient_evidence",
+  "needs_escalation",
+]);
+export type RepoExploreResultStatus = z.infer<typeof RepoExploreResultStatusSchema>;
+
+export const RepoExploreEvidenceKindSchema = z.enum([
+  "file",
+  "symbol",
+  "config",
+  "test",
+  "callsite",
+]);
+export type RepoExploreEvidenceKind = z.infer<typeof RepoExploreEvidenceKindSchema>;
+
+export const RepoExploreEvidenceRelevanceSchema = z.enum([
+  "primary",
+  "supporting",
+]);
+export type RepoExploreEvidenceRelevance = z.infer<typeof RepoExploreEvidenceRelevanceSchema>;
+
+export const RepoExploreEvidenceItemSchema = z.object({
+  path: z.string().min(1),
+  kind: RepoExploreEvidenceKindSchema.default("file"),
+  summary: z.string().min(1),
+  lineStart: z.number().int().positive().optional(),
+  lineEnd: z.number().int().positive().optional(),
+  snippet: z.string().min(1).optional(),
+  relevance: RepoExploreEvidenceRelevanceSchema.default("supporting"),
+});
+export type RepoExploreEvidenceItem = z.infer<typeof RepoExploreEvidenceItemSchema>;
+
+export const RepoExploreGapTypeSchema = z.enum([
+  "missing_signal",
+  "ambiguous_match",
+  "scope_too_broad",
+  "needs_runtime_execution",
+  "needs_external_context",
+]);
+export type RepoExploreGapType = z.infer<typeof RepoExploreGapTypeSchema>;
+
+export const RepoExploreGapSchema = z.object({
+  type: RepoExploreGapTypeSchema,
+  summary: z.string().min(1),
+});
+export type RepoExploreGap = z.infer<typeof RepoExploreGapSchema>;
+
+export const RepoExploreNextActionKindSchema = z.enum([
+  "file.read",
+  "agent.spawn",
+  "preset_upgrade",
+  "web.search",
+  "none",
+]);
+export type RepoExploreNextActionKind = z.infer<typeof RepoExploreNextActionKindSchema>;
+
+export const RepoExploreNextActionSchema = z.object({
+  kind: RepoExploreNextActionKindSchema,
+  target: z.string().min(1).optional(),
+  reason: z.string().min(1),
+});
+export type RepoExploreNextAction = z.infer<typeof RepoExploreNextActionSchema>;
+
+export const RepoExploreResponseSchema = z.object({
+  status: RepoExploreResultStatusSchema,
+  kind: RepoExploreKindSchema,
+  summary: z.string().min(1),
+  answer: z.string().min(1),
+  evidence: z.array(RepoExploreEvidenceItemSchema).default([]),
+  relatedPaths: z.array(z.string().min(1)).default([]),
+  gaps: z.array(RepoExploreGapSchema).default([]),
+  nextActions: z.array(RepoExploreNextActionSchema).default([]),
+  metadata: z.record(z.unknown()).default({}),
+});
+export type RepoExploreResponse = z.infer<typeof RepoExploreResponseSchema>;
+
+export const RepoExploreTelemetryPayloadSchema = z.object({
+  kind: RepoExploreKindSchema,
+  status: RepoExploreResultStatusSchema,
+  scopePathCount: z.number().int().nonnegative(),
+  scopeIncludeGlobCount: z.number().int().nonnegative(),
+  relatedPathCount: z.number().int().nonnegative(),
+  evidenceCount: z.number().int().nonnegative(),
+  gapCount: z.number().int().nonnegative(),
+  nextActionKinds: z.array(RepoExploreNextActionKindSchema).default([]),
+  usedPreset: z.string().min(1).optional(),
+  taskIntent: z.enum(["chat", "plan", "implement"]).optional(),
+  modeId: z.string().min(1).optional(),
+  agentId: z.string().min(1).optional(),
+  toolCallId: z.string().min(1).optional(),
+  actionId: z.string().min(1).optional(),
+  hadShellEscalationHint: z.boolean().default(false),
+  durationMs: z.number().int().nonnegative().optional(),
+  resultPreviewKind: z.string().min(1).optional(),
+  usedFallbackReadPath: z.boolean().optional(),
+});
+export type RepoExploreTelemetryPayload = z.infer<typeof RepoExploreTelemetryPayloadSchema>;
+
+export const AgentSpawnPreflightStatusSchema = z.enum([
+  "ready",
+  "degraded",
+  "blocked",
+]);
+export type AgentSpawnPreflightStatus = z.infer<typeof AgentSpawnPreflightStatusSchema>;
+
+export const AgentSpawnCapabilityGroupSchema = z.enum([
+  "repo_read",
+  "repo_search",
+  "repo_explore",
+  "repo_patch",
+  "repo_apply_patch",
+  "repo_shell_execute",
+]);
+export type AgentSpawnCapabilityGroup = z.infer<typeof AgentSpawnCapabilityGroupSchema>;
+
+export const AgentSpawnDegradationReasonSchema = z.enum([
+  "repo_explore_unavailable_fallback_read",
+  "apply_patch_unavailable_fallback_patch",
+  "shell_execute_unavailable_shallow_forensics",
+  "builder_write_without_patch_capability",
+  "repo_read_surface_unavailable",
+]);
+export type AgentSpawnDegradationReason = z.infer<typeof AgentSpawnDegradationReasonSchema>;
+
+export const AgentSpawnPreflightResultSchema = z.object({
+  requestedPreset: AgentToolBundleIdSchema,
+  resolvedPreset: ToolVisibilityPresetIdSchema,
+  status: AgentSpawnPreflightStatusSchema,
+  resolvedToolIds: z.array(z.string().min(1)).default([]),
+  missingToolIds: z.array(z.string().min(1)).default([]),
+  missingCapabilities: z.array(AgentSpawnCapabilityGroupSchema).default([]),
+  appliedDegradations: z.array(AgentSpawnDegradationReasonSchema).default([]),
+  recommendedAlternativePreset: AgentToolBundleIdSchema.optional(),
+});
+export type AgentSpawnPreflightResult = z.infer<typeof AgentSpawnPreflightResultSchema>;
+
+export const AgentSpawnPreflightTelemetrySchema = AgentSpawnPreflightResultSchema.extend({
+  modeId: z.string().min(1).optional(),
+  taskIntent: z.enum(["chat", "plan", "implement"]).optional(),
+  parentAgentId: z.string().min(1).optional(),
+  nestedSpawn: z.boolean().default(false),
+  spawnContract: AgentSpawnContractSchema.optional(),
+});
+export type AgentSpawnPreflightTelemetry = z.infer<typeof AgentSpawnPreflightTelemetrySchema>;
 
 export const ToolRegistrySchema = z.object({
   tools: z.array(ToolDescriptorSchema),
@@ -92,8 +686,8 @@ export const ToolPermissionEnum = z.enum(["allow", "deny", "ask"]);
 export type ToolPermission = z.infer<typeof ToolPermissionEnum>;
 
 export const PermissionProfileRuleSchema = z.object({
-  category: ToolDescriptorSchema.shape.category,
-  riskLevel: ToolDescriptorSchema.shape.riskLevel,
+  category: ToolDescriptorBaseSchema.shape.category,
+  riskLevel: ToolDescriptorBaseSchema.shape.riskLevel,
   permission: ToolPermissionEnum,
 });
 export type PermissionProfileRule = z.infer<typeof PermissionProfileRuleSchema>;
@@ -687,6 +1281,64 @@ const fileGrepParameters = {
     limit: positiveLimitParameter("Maximum number of matching lines to return."),
   },
   required: ["pattern"],
+  additionalProperties: false,
+};
+
+const repoExploreParameters = {
+  type: "object",
+  properties: {
+    goal: {
+      type: "string",
+      description: "What you are trying to learn from the repository.",
+    },
+    kind: {
+      type: "string",
+      enum: RepoExploreKindSchema.options,
+      description: "Explore intent: locate, understand, trace, compare, or verify.",
+    },
+    subject: {
+      type: "string",
+      description: "Primary symbol, path fragment, component, request, or concept to inspect.",
+    },
+    question: {
+      type: "string",
+      description: "Optional narrower question to answer while exploring.",
+    },
+    scope: {
+      type: "object",
+      properties: {
+        paths: {
+          type: "array",
+          items: workspacePathParameter,
+          description: "Optional workspace-relative paths to search within first.",
+        },
+        includeGlobs: {
+          type: "array",
+          items: { type: "string" },
+          description: "Optional glob patterns that narrow searched files.",
+        },
+        excludeGlobs: {
+          type: "array",
+          items: { type: "string" },
+          description: "Optional glob patterns to exclude from search.",
+        },
+        languageHints: {
+          type: "array",
+          items: { type: "string" },
+          description: "Optional language or ecosystem hints such as ts, tsx, py, go, or rust.",
+        },
+        limit: positiveLimitParameter("Optional maximum number of candidate paths to consider."),
+      },
+      additionalProperties: false,
+      description: "Optional scoped search settings.",
+    },
+    evidenceBudget: positiveLimitParameter("Maximum evidence items to return, capped by the runtime."),
+    preferFreshness: {
+      type: "boolean",
+      description: "Whether newer or more central matches should be preferred when ranking evidence.",
+    },
+  },
+  required: ["goal", "kind", "subject"],
   additionalProperties: false,
 };
 
@@ -1348,11 +2000,29 @@ const widgetsTodoAddItemParameters = {
   additionalProperties: false,
 };
 
-export const MVP_TOOLS: ToolDescriptor[] = [
+const MVP_TOOL_DEFINITIONS: ToolDescriptorInput[] = [
   { id: "file.read", label: "Read File", description: "Read file contents inside the selected project folder.", category: "file", riskLevel: "safe", parameters: fileReadParameters, requiresApproval: false, implemented: true, allowedForProfiles: [] },
   { id: "file.list", label: "List Files", description: "List files and directories inside the selected project folder.", category: "file", riskLevel: "safe", parameters: fileListParameters, requiresApproval: false, implemented: true, allowedForProfiles: [] },
   { id: "file.glob", label: "Glob Files", description: "Find project files by glob pattern.", category: "file", riskLevel: "safe", parameters: fileGlobParameters, requiresApproval: false, implemented: true, allowedForProfiles: [] },
   { id: "file.grep", label: "Search Files", description: "Search project file contents for a literal pattern.", category: "file", riskLevel: "safe", parameters: fileGrepParameters, requiresApproval: false, implemented: true, allowedForProfiles: [] },
+  {
+    id: "repo.explore",
+    label: "Explore Repository",
+    description: "Answer repository understanding questions with structured evidence across relevant files, symbols, callsites, config, and tests.",
+    category: "file",
+    family: "explore",
+    riskLevel: "safe",
+    parameters: repoExploreParameters,
+    promptSnippet: "Use repo.explore as the preferred read-only entry for locate, understand, trace, compare, and verify questions about the local repository.",
+    promptGuidelines: [
+      "Use repo.explore before stitching together multiple file.list, file.glob, file.grep, and file.read calls when the task is repository understanding.",
+      "Provide a clear goal, kind, and subject; optionally narrow scope with paths or includeGlobs.",
+      "If repo.explore returns needs_escalation, follow its nextActions instead of pretending the answer is complete.",
+    ],
+    requiresApproval: false,
+    implemented: true,
+    allowedForProfiles: [],
+  },
   { id: "file.write", label: "Write File", description: "Write content to a local project file.", category: "file", riskLevel: "requires_approval", parameters: fileWriteParameters, requiresApproval: true, implemented: true, allowedForProfiles: [] },
   { id: "file.patch", label: "Patch File", description: "Replace exact strings in a local project file.", category: "file", riskLevel: "requires_approval", parameters: filePatchParameters, requiresApproval: true, implemented: true, allowedForProfiles: [] },
   { id: "file.apply_patch", label: "Apply Patch", description: "Apply a unified diff patch to one or more local project files.", category: "file", riskLevel: "requires_approval", parameters: fileApplyPatchParameters, requiresApproval: true, implemented: true, allowedForProfiles: [] },
@@ -1523,6 +2193,50 @@ export const MVP_TOOLS: ToolDescriptor[] = [
         tool_bundle: { type: "string", enum: AgentToolBundleIdSchema.options, description: "Maintained tool bundle for the sub-agent. Prefer this over hand-authoring tool_ids so the child gets a role-appropriate tool set." },
         tool_ids: { type: "array", items: { type: "string" }, description: "Custom tool IDs for the sub-agent. If not provided, uses the default agent profile's tools." },
         result_contract: { type: "string", enum: AgentResultContractSchema.options, description: "What kind of result the parent expects back from the sub-agent. Use plan_only only when a structured plan is explicitly desired." },
+        spawn_contract: {
+          type: "object",
+          description: "Optional runtime-enforced delegation contract. Use this when the child must stay bound to a specific subject, resource, affordance set, or side-effect envelope.",
+          properties: {
+            required_affordances: { type: "array", items: { type: "string", enum: AgentSpawnAffordanceSchema.options }, description: "Capabilities the child must actually have for this task to be valid, such as shell_execute or web_read." },
+            subject: {
+              type: "object",
+              description: "The concrete task subject the child must stay bound to.",
+              properties: {
+                kind: { type: "string", enum: AgentSpawnSubjectKindSchema.options },
+                value: { type: "string" },
+                normalization: { type: "string", enum: AgentSpawnSubjectNormalizationSchema.options },
+                normalized_value: { type: "string" },
+                label: { type: "string" },
+              },
+              required: ["kind", "value"],
+              additionalProperties: false,
+            },
+            resource_bindings: {
+              type: "array",
+              description: "Explicit resource references the child is allowed or required to use.",
+              items: {
+                type: "object",
+                properties: {
+                  locator: { type: "string", enum: ["value", "handle"] },
+                  kind: { type: "string", enum: AgentSpawnResourceBindingValueKindSchema.options },
+                  value: { type: "string" },
+                  normalization: { type: "string", enum: AgentSpawnSubjectNormalizationSchema.options },
+                  normalized_value: { type: "string" },
+                  handle_kind: { type: "string", enum: AgentSpawnResourceHandleKindSchema.options },
+                  handle_id: { type: "string" },
+                  required: { type: "boolean" },
+                  label: { type: "string" },
+                },
+                required: ["locator"],
+                additionalProperties: false,
+              },
+            },
+            side_effect_policy: { type: "string", enum: AgentSpawnSideEffectPolicySchema.options, description: "What side effects, if any, the child is allowed to trigger." },
+            result_rules: { type: "array", items: { type: "string", enum: AgentSpawnResultRuleSchema.options }, description: "Extra result validation rules enforced before the child result is returned to the parent." },
+            validation_policy: { type: "string", enum: AgentSpawnValidationPolicySchema.options, description: "How runtime should react when result-side validation fails. Preflight structural blockers always remain enforced." },
+          },
+          additionalProperties: false,
+        },
       },
       required: ["description", "prompt"],
       additionalProperties: false,
@@ -1533,6 +2247,7 @@ export const MVP_TOOLS: ToolDescriptor[] = [
       "Write prompts that include all necessary context — file paths, line numbers, error messages.",
       "State what \"done\" looks like for the sub-agent.",
       "Prefer tool_bundle over raw tool_ids so the child gets a maintained, role-appropriate tool surface.",
+      "When the child must stay on one document, URL, or artifact, provide spawn_contract.subject and any required_affordances instead of relying on prompt wording alone.",
       "Do not spawn agents for trivial lookups that a single tool call can handle.",
     ],
     requiresApproval: false,
@@ -1721,6 +2436,10 @@ export const MVP_TOOLS: ToolDescriptor[] = [
   },
 ];
 
+export const MVP_TOOLS: ToolDescriptor[] = MVP_TOOL_DEFINITIONS.map((tool) =>
+  normalizeToolDescriptor(tool)
+);
+
 export const DEFAULT_AGENT_MODE_TOOL_IDS = MVP_TOOLS
   .map((tool) => tool.id);
 
@@ -1739,7 +2458,7 @@ export class ToolRegistryBuilder {
     return builder;
   }
 
-  register(descriptor: ToolDescriptor): void {
+  register(descriptor: ToolDescriptorInput): void {
     const validated = ToolDescriptorSchema.parse(descriptor);
     this.tools.set(validated.id, validated);
   }

@@ -48,6 +48,11 @@ export const EvaluationMetricIdSchema = z.enum([
   "counterfactual_lift",
   "task_success_rate",
   "llm_judge_score",
+  "visible_surface_shrinkage",
+  "explore_first_score",
+  "atomic_tool_hops",
+  "first_locate_success",
+  "shell_explore_restraint",
 ]);
 export type EvaluationMetricId = z.infer<typeof EvaluationMetricIdSchema>;
 

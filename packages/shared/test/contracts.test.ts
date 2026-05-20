@@ -417,6 +417,11 @@ describe("Ora shared contracts", () => {
     expect(EvaluationMetricIdSchema.parse("tool_efficiency")).toBe("tool_efficiency");
     expect(EvaluationMetricIdSchema.parse("coordination_overhead")).toBe("coordination_overhead");
     expect(EvaluationMetricIdSchema.parse("recovery_overhead")).toBe("recovery_overhead");
+    expect(EvaluationMetricIdSchema.parse("visible_surface_shrinkage")).toBe("visible_surface_shrinkage");
+    expect(EvaluationMetricIdSchema.parse("explore_first_score")).toBe("explore_first_score");
+    expect(EvaluationMetricIdSchema.parse("atomic_tool_hops")).toBe("atomic_tool_hops");
+    expect(EvaluationMetricIdSchema.parse("first_locate_success")).toBe("first_locate_success");
+    expect(EvaluationMetricIdSchema.parse("shell_explore_restraint")).toBe("shell_explore_restraint");
   });
 
   it("validates provider model discovery contracts", () => {

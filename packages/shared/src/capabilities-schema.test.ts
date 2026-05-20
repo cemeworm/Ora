@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { MVP_TOOLS } from "./capabilities.js";
+import {
+  MVP_TOOLS,
+  RepoExploreRequestSchema,
+  RepoExploreResponseSchema,
+  resolveToolVisibility,
+  visibleToolIdsForPreset,
+} from "./capabilities.js";
 
 describe("MVP_TOOLS parameter schemas", () => {
   const implementedTools = MVP_TOOLS.filter((t) => t.implemented);
@@ -113,5 +119,63 @@ describe("MVP_TOOLS parameter schemas", () => {
         expect(required).toContain("id");
       }
     }
+  });
+
+  it("normalizes every tool descriptor with a tool family", () => {
+    for (const tool of MVP_TOOLS) {
+      expect(tool.family).toBeDefined();
+    }
+  });
+
+  it("resolves root_default to a narrow visible surface", () => {
+    const availableToolIds = MVP_TOOLS.map((tool) => tool.id);
+    const resolution = resolveToolVisibility({
+      availableToolIds,
+      toolDescriptors: MVP_TOOLS,
+      presetId: "root_default",
+      defaultDecisionSource: "resolver_default",
+    });
+
+    expect(resolution.visibleToolIds).toEqual(visibleToolIdsForPreset("root_default", availableToolIds));
+    expect(resolution.visibleToolIds).toContain("repo.explore");
+    expect(resolution.visibleToolIds).not.toContain("shell.execute");
+    expect(resolution.visibleToolIds).not.toContain("skills.create");
+    expect(resolution.hiddenToolIds).toContain("shell.execute");
+  });
+
+  it("repo.explore request and response contracts parse the phase-1 shape", () => {
+    const request = RepoExploreRequestSchema.parse({
+      goal: "Find the auth entrypoint",
+      kind: "trace",
+      subject: "authMiddleware",
+      scope: {
+        paths: ["apps/runtime/src"],
+        includeGlobs: ["**/*.ts"],
+      },
+      evidenceBudget: 4,
+    });
+    const response = RepoExploreResponseSchema.parse({
+      status: "answered",
+      kind: "trace",
+      summary: "trace answered — 2 evidence items across 2 paths",
+      answer: "Found the middleware wiring.",
+      evidence: [
+        {
+          path: "apps/runtime/src/server.ts",
+          kind: "callsite",
+          summary: "Matched repository evidence for authMiddleware at line 12.",
+          lineStart: 12,
+          lineEnd: 12,
+          relevance: "primary",
+        },
+      ],
+      relatedPaths: ["apps/runtime/src/server.ts"],
+      gaps: [],
+      nextActions: [{ kind: "none", reason: "Enough evidence." }],
+      metadata: {},
+    });
+
+    expect(request.kind).toBe("trace");
+    expect(response.evidence[0]?.kind).toBe("callsite");
   });
 });

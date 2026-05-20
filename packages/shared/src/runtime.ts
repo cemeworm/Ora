@@ -3,7 +3,15 @@ import { ActionRecordSchema, OraToolCallEnvelopeSchema, PlanItemSchema, PlanList
 import { CausalTaskStateSchema } from "./interventions.js";
 import { RuntimeToolResultPreviewSchema } from "./actions.js";
 export { RuntimeToolResultPreviewSchema };
-import { AgentResultContractSchema, AgentToolBundleIdSchema, SearchProviderConfigSchema } from "./capabilities.js";
+import {
+  AgentSpawnContractSchema,
+  AgentResultContractSchema,
+  AgentSpawnPreflightResultSchema,
+  AgentSpawnResultValidationSchema,
+  AgentToolBundleIdSchema,
+  SearchProviderConfigSchema,
+  ToolVisibilityPresetIdSchema,
+} from "./capabilities.js";
 import { MemoryRecordSchema } from "./memory.js";
 import { ModeSpecSchema, ModeTranscriptLayoutSchema } from "./modes.js";
 import { PermissionModeSchema } from "./config.js";
@@ -549,7 +557,9 @@ export const OraEventTypeSchema = z.enum([
   "clarification.resolved",
   "approval.required",
   "approval.resolved",
+  "agent_spawn_preflight.completed",
   "tool.called",
+  "tool.repo_explore.completed",
   "tool.repaired",
   "message.delta",
   "agent.message",
@@ -737,11 +747,25 @@ export const ChildSessionReplayRefSchema = z.object({
 });
 export type ChildSessionReplayRef = z.infer<typeof ChildSessionReplayRefSchema>;
 
+export const ChildSessionDelegationKindSchema = z.enum([
+  "mode_stage",
+  "dynamic_spawn",
+]);
+export type ChildSessionDelegationKind = z.infer<typeof ChildSessionDelegationKindSchema>;
+
+export const ChildSessionAuthoritySourceSchema = z.enum([
+  "mode_stage",
+  "dynamic_spawn",
+]);
+export type ChildSessionAuthoritySource = z.infer<typeof ChildSessionAuthoritySourceSchema>;
+
 export const ChildSessionSummarySchema = z.object({
   id: z.string().min(1),
   agentId: z.string().min(1),
   label: z.string().min(1),
   sessionClass: ChildSessionClassSchema,
+  delegationKind: ChildSessionDelegationKindSchema.optional(),
+  authoritySource: ChildSessionAuthoritySourceSchema.optional(),
   status: ChildSessionStatusSchema,
   lifecyclePhase: BackgroundChildLifecyclePhaseSchema.optional(),
   deliveryStatus: ChildSessionDeliveryStatusSchema.optional(),
@@ -750,7 +774,12 @@ export const ChildSessionSummarySchema = z.object({
   lastMessage: z.string().min(1).optional(),
   artifactIds: z.array(z.string().min(1)).default([]),
   toolBundleId: AgentToolBundleIdSchema.optional(),
+  requestedToolPreset: ToolVisibilityPresetIdSchema.optional(),
+  resolvedToolPreset: ToolVisibilityPresetIdSchema.optional(),
   resolvedToolIds: z.array(z.string().min(1)).optional(),
+  spawnContract: AgentSpawnContractSchema.optional(),
+  spawnPreflight: AgentSpawnPreflightResultSchema.optional(),
+  spawnValidation: AgentSpawnResultValidationSchema.optional(),
   resultContract: AgentResultContractSchema.optional(),
   usedToolCount: z.number().int().nonnegative().optional(),
   durationMs: z.number().int().nonnegative().optional(),
