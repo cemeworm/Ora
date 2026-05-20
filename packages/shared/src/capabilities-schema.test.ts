@@ -143,6 +143,23 @@ describe("MVP_TOOLS parameter schemas", () => {
     expect(resolution.hiddenToolIds).toContain("shell.execute");
   });
 
+  it("resolves single_agent_implement to a writable root surface", () => {
+    const availableToolIds = MVP_TOOLS.map((tool) => tool.id);
+    const resolution = resolveToolVisibility({
+      availableToolIds,
+      toolDescriptors: MVP_TOOLS,
+      presetId: "single_agent_implement",
+      defaultDecisionSource: "resolver_default",
+    });
+
+    expect(resolution.visibleToolIds).toEqual(visibleToolIdsForPreset("single_agent_implement", availableToolIds));
+    expect(resolution.visibleToolIds).toContain("file.write");
+    expect(resolution.visibleToolIds).toContain("file.apply_patch");
+    expect(resolution.visibleToolIds).toContain("shell.execute");
+    expect(resolution.visibleToolIds).toContain("agent.spawn");
+    expect(resolution.visibleToolIds).not.toContain("skills.create");
+  });
+
   it("repo.explore request and response contracts parse the phase-1 shape", () => {
     const request = RepoExploreRequestSchema.parse({
       goal: "Find the auth entrypoint",

@@ -6,8 +6,14 @@ export const DEFAULT_WEB_TOOL_IDS = ["web.fetch", "web.search"] as const;
 export type DefaultWebToolId = typeof DEFAULT_WEB_TOOL_IDS[number];
 export const DEFAULT_SKILL_TOOL_IDS = ["skills.list", "skills.get", "skills.checkName", "skills.create", "skills.update", "skills.setEnabled", "skills.patch"] as const;
 
-export function withDefaultWebToolIds(toolIds: readonly string[] = [], options: { disabled?: boolean } = {}): string[] {
-  const withSkillTools = [...new Set([...toolIds, ...DEFAULT_SKILL_TOOL_IDS])];
+export function withDefaultWebToolIds(
+  toolIds: readonly string[] = [],
+  options: { disabled?: boolean; includeSkillTools?: boolean } = {},
+): string[] {
+  const includeSkillTools = options.includeSkillTools ?? true;
+  const withSkillTools = includeSkillTools
+    ? [...new Set([...toolIds, ...DEFAULT_SKILL_TOOL_IDS])]
+    : [...new Set(toolIds)];
   if (options.disabled) {
     return withSkillTools.filter((toolId) => !DEFAULT_WEB_TOOL_IDS.includes(toolId as DefaultWebToolId));
   }
@@ -232,6 +238,7 @@ export type ToolFamily = z.infer<typeof ToolFamilySchema>;
 export const ToolVisibilityPresetIdSchema = z.enum([
   "root_default",
   "coding_root",
+  "single_agent_implement",
   "builder_write",
   "review_readonly",
   "research_readonly",
@@ -344,6 +351,28 @@ export const TOOL_VISIBILITY_PRESETS: Record<ToolVisibilityPresetId, ToolVisibil
     allowedFamilies: ["explore", "coordinate", "execute"],
     toolIds: ["repo.explore", "file.read", "file.list", "file.glob", "file.grep", "plan.update", "agent.wait", "message.send"],
     blockedToolIds: ["file.write", "file.patch", "file.apply_patch", "shell.execute"],
+  },
+  single_agent_implement: {
+    id: "single_agent_implement",
+    label: "Single Agent Implement",
+    allowedFamilies: ["explore", "coordinate", "execute", "environment"],
+    toolIds: [
+      "repo.explore",
+      "file.read",
+      "file.list",
+      "file.glob",
+      "file.grep",
+      "file.write",
+      "file.patch",
+      "file.apply_patch",
+      "shell.execute",
+      "plan.update",
+      "agent.spawn",
+      "agent.wait",
+      "message.send",
+      "web.fetch",
+      "web.search",
+    ],
   },
   builder_write: {
     id: "builder_write",

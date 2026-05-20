@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { ActionRiskLevelSchema, DEFAULT_MODE_RECOVERY_POLICY, ModeRecoveryPolicySchema } from "./actions.js";
-import { DEFAULT_AGENT_MODE_TOOL_IDS } from "./capabilities.js";
+import { DEFAULT_AGENT_MODE_TOOL_IDS, visibleToolIdsForPreset } from "./capabilities.js";
 import { AgentProfileSchema, BuiltInCoordinationPatternSchema, CODE_DEVELOPMENT_MODE_ID, COMPLETION_POLICY_PRESETS, CoordinationPatternSchema, DEBATE_MODE_ID, DEEP_RESEARCH_MODE_ID, DEERFLOW_HARNESS_MODE_ID, DEFAULT_MODE_RUNTIME_POLICY, DYNAMIC_ORCHESTRATOR_MODE_ID, MODE_STUDIO_BUILDER_MODE_ID, ModeCompletionPolicySchema, ModeIdSchema, ModeRuntimePolicySchema, ORA_ROOT_AGENT_ID, ORA_ROOT_AGENT_LABEL, ORA_SELF_BUILDER_MODE_ID, ResourceBudgetSchema, REVIEW_CRITIQUE_MODE_ID, SINGLE_AGENT_MODE_ID, completionPolicyForPreset } from "./primitives.js";
 import type { AgentProfile, BuiltInCoordinationPattern, CoordinationPattern, ModeCompletionPolicy, ModeRuntimePolicy, ResourceBudget } from "./primitives.js";
 import { TopologyEdgeSchema, TopologyNodeSchema } from "./topology.js";
@@ -2111,6 +2111,7 @@ function createDynamicOrchestratorModeSpec(): ModeSpec {
 
 function createSingleAgentModeSpec(): ModeSpec {
   const now = 0;
+  const singleAgentToolIds = visibleToolIdsForPreset("single_agent_implement", DEFAULT_AGENT_MODE_TOOL_IDS);
   return autoLayoutModeSpec(ModeSpecSchema.parse({
     id: SINGLE_AGENT_MODE_ID,
     family: "orchestrator_subagent",
@@ -2143,7 +2144,7 @@ function createSingleAgentModeSpec(): ModeSpec {
       supportsEventRouting: false,
       approvalMode: "high_risk_only",
       skillIds: [],
-      toolIds: [...DEFAULT_AGENT_MODE_TOOL_IDS],
+      toolIds: singleAgentToolIds,
     },
     runtimeAtoms: defaultRuntimeAtomsForFamily("orchestrator_subagent"),
     editorConstraints: {

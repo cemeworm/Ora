@@ -128,6 +128,8 @@ import {
   ProjectSummarySchema,
   ProviderConfigSchema,
   ProviderModelSchema,
+  SINGLE_AGENT_MODE_ID,
+  visibleToolIdsForPreset,
   ProviderModelsParamsSchema,
   ProviderModelsResultSchema,
   ProviderRegistrySchema,
@@ -236,9 +238,14 @@ describe("Ora shared contracts", () => {
       expect(["off", "standard", "deep"]).toContain(mode.runtimePolicy.thinking);
       expect(["fast", "balanced", "deep"]).toContain(mode.runtimePolicy.budgetProfile);
       if (mode.visibility !== "internal") {
-        expect(mode.capabilityFlags.toolIds).toEqual(DEFAULT_AGENT_MODE_TOOL_IDS);
+        const expectedToolIds = mode.id === SINGLE_AGENT_MODE_ID
+          ? visibleToolIdsForPreset("single_agent_implement", DEFAULT_AGENT_MODE_TOOL_IDS)
+          : DEFAULT_AGENT_MODE_TOOL_IDS;
+        expect(mode.capabilityFlags.toolIds).toEqual(expectedToolIds);
         for (const toolId of DEFAULT_SKILL_TOOL_IDS) {
-          expect(mode.capabilityFlags.toolIds).toContain(toolId);
+          if (mode.id !== SINGLE_AGENT_MODE_ID) {
+            expect(mode.capabilityFlags.toolIds).toContain(toolId);
+          }
         }
         for (const toolId of DEFAULT_WEB_TOOL_IDS) {
           expect(mode.capabilityFlags.toolIds).toContain(toolId);
@@ -256,6 +263,11 @@ describe("Ora shared contracts", () => {
     expect(singleAgent.nodes.map((node) => node.id)).toEqual(["respond"]);
     expect(singleAgent.nodes[0]!.template).toBe("synthesize");
     expect(singleAgent.profiles.map((profile) => profile.id)).toEqual(["ora"]);
+    expect(singleAgent.capabilityFlags.toolIds).toContain("file.write");
+    expect(singleAgent.capabilityFlags.toolIds).toContain("file.apply_patch");
+    expect(singleAgent.capabilityFlags.toolIds).toContain("shell.execute");
+    expect(singleAgent.capabilityFlags.toolIds).toContain("agent.spawn");
+    expect(singleAgent.capabilityFlags.toolIds).not.toContain("skills.create");
 
     const debate = MVP_MODES.find((mode) => mode.id === DEBATE_MODE_ID)!;
     expect(debate.systemPreset).toBe(true);
