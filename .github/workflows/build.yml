@@ -91,6 +91,7 @@ jobs:
       - name: Verify updater release assets
         shell: bash
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ inputs.tag_name }}
         run: |
           chmod +x .github/scripts/verify-updater-assets.sh

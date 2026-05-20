@@ -4,6 +4,20 @@ set -euo pipefail
 TAG="${TAG:?TAG is required}"
 MANIFEST_URL="${MANIFEST_URL:-https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/latest.json}"
 RELEASE_API_URL="${RELEASE_API_URL:-https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}}"
+API_JSON="release.json"
+
+curl_json() {
+  if [ -n "${GH_TOKEN:-}" ]; then
+    curl -s \
+      -H "Authorization: Bearer ${GH_TOKEN}" \
+      -H "Accept: application/vnd.github+json" \
+      "$1"
+  else
+    curl -s \
+      -H "Accept: application/vnd.github+json" \
+      "$1"
+  fi
+}
 
 echo "Checking updater manifest: $MANIFEST_URL"
 HTTP_CODE="$(curl -s -L -o latest.json -w '%{http_code}' "$MANIFEST_URL")"
@@ -43,10 +57,18 @@ for key in matching_keys:
 PY
 
 echo "Checking release asset inventory"
-curl -s "$RELEASE_API_URL" | jq -e '
-  .assets | map(.name) as $names
+curl_json "$RELEASE_API_URL" > "$API_JSON"
+
+jq -e '
+  if (.assets | type) != "array" then
+    error(.message // "release API response is missing assets")
+  else
+    .
+  end
+  | .assets as $assets
+  | ($assets | map(.name)) as $names
   | ($names | index("latest.json")) != null
-  and (map(select(test("\\.app\\.tar\\.gz$"))) | length) > 0
-  and (map(select(test("\\.app\\.tar\\.gz\\.sig$"))) | length) > 0
-  and (map(select(test("\\.dmg$"))) | length) > 0
-' > /dev/null
+  and (($names | map(select(test("\\.app\\.tar\\.gz$"))) | length) > 0)
+  and (($names | map(select(test("\\.app\\.tar\\.gz\\.sig$"))) | length) > 0)
+  and (($names | map(select(test("\\.dmg$"))) | length) > 0)
+ ' "$API_JSON" > /dev/null
