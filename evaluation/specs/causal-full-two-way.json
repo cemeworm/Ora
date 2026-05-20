@@ -19,9 +19,7 @@
       "tool_efficiency",
       "agentic_cost_score"
     ],
-    "metadata": {
-      "retrofitCausalDecisions": true
-    }
+    "metadata": { "retrofitCausalDecisions": true }
   },
   "configs": [
     {
@@ -29,23 +27,10 @@
       "label": "Record Only",
       "runConfig": {
         "pattern": "solo_agent",
-        "modeSelection": "auto",
         "providerId": "deepseek",
         "modelRef": "deepseek-v4-flash",
         "causalInterventionLevel": "record_only",
-        "metadata": { "evaluationBatch": "causal-full-three-way" }
-      }
-    },
-    {
-      "id": "causal-advisory",
-      "label": "Advisory",
-      "runConfig": {
-        "pattern": "solo_agent",
-        "modeSelection": "auto",
-        "providerId": "deepseek",
-        "modelRef": "deepseek-v4-flash",
-        "causalInterventionLevel": "advisory",
-        "metadata": { "evaluationBatch": "causal-full-three-way" }
+        "metadata": { "evaluationBatch": "causal-full-two-way" }
       }
     },
     {
@@ -53,16 +38,15 @@
       "label": "Enforcing",
       "runConfig": {
         "pattern": "solo_agent",
-        "modeSelection": "auto",
         "providerId": "deepseek",
         "modelRef": "deepseek-v4-flash",
         "causalInterventionLevel": "enforcing",
-        "metadata": { "evaluationBatch": "causal-full-three-way" }
+        "metadata": { "evaluationBatch": "causal-full-two-way" }
       }
     }
   ],
   "metadata": {
     "retrofitCausalDecisions": true,
-    "description": "Full three-way comparison: record_only vs advisory vs enforcing on all 101 causal intervention cases."
+    "description": "Two-way: record_only vs enforcing on 101 cases."
   }
 }
