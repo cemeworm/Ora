@@ -1,4 +1,5 @@
 import { useEffect, type HTMLAttributes, type MouseEvent, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { cn } from "../../lib/utils";
 
 export function Dialog({ open, onOpenChange, children }: { open: boolean; onOpenChange?: (open: boolean) => void; children: ReactNode }) {
@@ -22,7 +23,7 @@ export function Dialog({ open, onOpenChange, children }: { open: boolean; onOpen
   }, [open, onOpenChange]);
 
   if (!open) return null;
-  return (
+  const overlay = (
     <div
       className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 p-4 backdrop-blur-[2px]"
       onClick={() => onOpenChange?.(false)}
@@ -30,6 +31,10 @@ export function Dialog({ open, onOpenChange, children }: { open: boolean; onOpen
       {children}
     </div>
   );
+  if (typeof document === "undefined") {
+    return overlay;
+  }
+  return createPortal(overlay, document.body);
 }
 
 export function DialogContent({ className, onClick, ...props }: HTMLAttributes<HTMLDivElement>) {

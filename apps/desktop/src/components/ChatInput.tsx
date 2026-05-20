@@ -29,6 +29,7 @@ import {
   type ReactNode,
 } from "react";
 import { Button } from "./ui/button";
+import { Dialog, DialogContent } from "./ui/dialog";
 import { cn } from "../lib/utils";
 import type { ActionRecord, ModeCard, TurnPlanListStep } from "../types";
 import type { OraProviderConfig, OraSkillRegistry } from "../lib/runtimeClient";
@@ -893,6 +894,8 @@ export function ChatInput({
   const [skillListExpanded, setSkillListExpanded] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
   const [skillPickerIndex, setSkillPickerIndex] = useState(0);
+  const [previewImage, setPreviewImage] =
+    useState<ComposerImageAttachment | null>(null);
   const externallySelectedSkills = useMemo(
     () =>
       selectedSkillIds
@@ -985,6 +988,7 @@ export function ChatInput({
       sessionIdRef.current = sessionId;
       pendingSelectionRef.current = null;
       setSelectionBookmark(null);
+      setPreviewImage(null);
       setSegments(
         buildComposerSegments({
           composerPrompt,
@@ -1007,6 +1011,20 @@ export function ChatInput({
         : next;
     });
   }, [sessionId, composerPrompt, externallySelectedSkills, contextChips]);
+
+  useEffect(() => {
+    if (!previewImage) {
+      return;
+    }
+    const stillExists = imageAttachments.some(
+      (image) =>
+        image.name === previewImage.name &&
+        image.dataUrl === previewImage.dataUrl,
+    );
+    if (!stillExists) {
+      setPreviewImage(null);
+    }
+  }, [imageAttachments, previewImage]);
 
   useLayoutEffect(() => {
     const target = editorRef.current;
@@ -1659,11 +1677,14 @@ export function ChatInput({
             <div
               className={cn(
                 "relative",
-                hasFileChips ? "min-h-[148px]" : "min-h-[96px]",
+                hasFileChips ? "min-h-[156px]" : "min-h-[96px]",
               )}
             >
               {hasFileChips && (
-                <div className="absolute left-3 right-3  z-10 flex max-h-16 flex-wrap items-center gap-1.5 overflow-y-auto pr-1">
+                <div
+                  data-testid="composer-attachment-rail"
+                  className="absolute left-3 right-3 top-3 z-10 flex max-h-16 flex-wrap items-center gap-1.5 overflow-y-auto pr-1"
+                >
                   {projectFileAttachments.map((file) => (
                     <button
                       key={`${file.projectId}:${file.path}`}
@@ -1695,23 +1716,39 @@ export function ChatInput({
                     </button>
                   ))}
                   {imageAttachments.map((img) => (
-                    <button
+                    <div
                       key={`image:${img.name}`}
-                      type="button"
-                      onClick={() => onRemoveImageAttachment(img.name)}
-                      className="inline-flex h-7 max-w-[240px] items-center gap-1.5 rounded-full border border-border bg-background/80 pl-1 pr-2.5 text-xs font-medium text-muted-foreground shadow-[0_1px_2px_rgba(23,23,23,0.04)] transition hover:bg-accent hover:text-accent-foreground active:scale-95"
-                      title={`Remove ${img.name}`}
+                      className="inline-flex h-7 max-w-[240px] items-stretch overflow-hidden rounded-full border border-border bg-background/80 text-xs font-medium text-muted-foreground shadow-[0_1px_2px_rgba(23,23,23,0.04)]"
                     >
-                      <img
-                        src={img.dataUrl}
-                        alt={img.name}
-                        className="h-5 w-5 rounded-full object-cover"
-                      />
-                      <span className="truncate text-foreground">
-                        {img.name}
-                      </span>
-                      <X size={11} />
-                    </button>
+                      <button
+                        type="button"
+                        onClick={() => setPreviewImage(img)}
+                        className="inline-flex min-w-0 flex-1 items-center gap-1.5 pl-1 pr-1.5 transition hover:bg-accent hover:text-accent-foreground"
+                        title={`Preview ${img.name}`}
+                        aria-label={`Preview ${img.name}`}
+                      >
+                        <img
+                          src={img.dataUrl}
+                          alt={img.name}
+                          className="h-5 w-5 rounded-full object-cover"
+                        />
+                        <span className="truncate text-foreground">
+                          {img.name}
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onRemoveImageAttachment(img.name);
+                        }}
+                        className="flex h-7 w-7 shrink-0 items-center justify-center transition hover:bg-accent hover:text-accent-foreground active:scale-95"
+                        title={`Remove ${img.name}`}
+                        aria-label={`Remove ${img.name}`}
+                      >
+                        <X size={11} />
+                      </button>
+                    </div>
                   ))}
                 </div>
               )}
@@ -1728,7 +1765,7 @@ export function ChatInput({
                   interactivity.canEditText
                     ? "cursor-text"
                     : "cursor-not-allowed opacity-60",
-                  hasFileChips ? "min-h-[116px] pt-12" : "min-h-[96px] pt-4",
+                  hasFileChips ? "min-h-[124px] pt-14" : "min-h-[96px] pt-4",
                 )}
                 style={{ height: "auto" }}
                 onInput={parseAndCommitEditorState}
@@ -2108,6 +2145,37 @@ export function ChatInput({
             </div>
           </div>
         )}
+        <Dialog
+          open={Boolean(previewImage)}
+          onOpenChange={(open) => {
+            if (!open) {
+              setPreviewImage(null);
+            }
+          }}
+        >
+          <DialogContent
+            className="relative max-h-[calc(100vh-2rem)] max-w-[calc(100vw-2rem)] border-0 bg-transparent p-0 shadow-none"
+            data-testid="composer-image-preview-dialog"
+          >
+            {previewImage ? (
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setPreviewImage(null)}
+                  aria-label="Close image preview"
+                  className="absolute right-3 top-3 z-10 inline-flex h-10 w-10 items-center justify-center rounded-full border border-white/20 bg-black/55 text-white shadow-lg transition hover:bg-black/70 active:scale-95"
+                >
+                  <X size={16} />
+                </button>
+                <img
+                  src={previewImage.dataUrl}
+                  alt={previewImage.name}
+                  className="max-h-[calc(100vh-2rem)] max-w-[calc(100vw-2rem)] rounded-xl object-contain"
+                />
+              </div>
+            ) : null}
+          </DialogContent>
+        </Dialog>
         <p className="pb-3 pt-2 text-center text-[11px] text-muted-foreground">
           Ora may be wrong, check the results before adoption.
         </p>

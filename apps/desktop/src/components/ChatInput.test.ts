@@ -9,7 +9,7 @@ import {
 } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ChatInput,
   getComposerTrayVisibility,
@@ -161,6 +161,20 @@ function getEditor(container: HTMLElement) {
   ) as HTMLDivElement | null;
   expect(editor).toBeTruthy();
   return editor!;
+}
+
+function getAttachmentRail(container: HTMLElement) {
+  const rail = container.querySelector(
+    '[data-testid="composer-attachment-rail"]',
+  ) as HTMLDivElement | null;
+  expect(rail).toBeTruthy();
+  return rail!;
+}
+
+function getImagePreviewDialog() {
+  return document.body.querySelector(
+    '[data-testid="composer-image-preview-dialog"]',
+  ) as HTMLDivElement | null;
 }
 
 function getTextSegments(editor: HTMLElement) {
@@ -999,5 +1013,229 @@ describe("ChatInput content editable chips", () => {
     dispatchComposition(editor, "compositionend", "你");
 
     expect(startRunCount).toBe(0);
+  });
+
+  it("adds top spacing for attachment chips when images are present", () => {
+    const { container } = renderElement(
+      createElement(
+        ChatInput as any,
+        createBaseProps({
+          imageAttachments: [
+            {
+              dataUrl: "data:image/png;base64,preview",
+              mimeType: "image/png",
+              name: "image.png",
+              sizeBytes: 128,
+            },
+          ],
+        }),
+      ),
+    );
+
+    const rail = getAttachmentRail(container);
+    const editor = getEditor(container);
+
+    expect(rail.className).toContain("top-3");
+    expect(editor.className).toContain("pt-14");
+    expect(editor.className).toContain("min-h-[124px]");
+  });
+
+  it("opens an image preview dialog without removing the image when the chip body is clicked", () => {
+    const onRemoveImageAttachment = vi.fn();
+    const { container } = renderElement(
+      createElement(
+        ChatInput as any,
+        createBaseProps({
+          imageAttachments: [
+            {
+              dataUrl: "data:image/png;base64,preview",
+              mimeType: "image/png",
+              name: "image.png",
+              sizeBytes: 128,
+            },
+          ],
+          onRemoveImageAttachment,
+        }),
+      ),
+    );
+
+    const previewButton = container.querySelector(
+      'button[aria-label="Preview image.png"]',
+    ) as HTMLButtonElement | null;
+    expect(previewButton).toBeTruthy();
+
+    act(() => {
+      previewButton!.click();
+    });
+
+    const dialog = getImagePreviewDialog();
+    expect(onRemoveImageAttachment).not.toHaveBeenCalled();
+    expect(dialog).toBeTruthy();
+    expect(dialog?.querySelector('img[alt="image.png"]')).toBeTruthy();
+    expect(container.contains(dialog)).toBe(false);
+  });
+
+  it("removes the image without opening the preview dialog when the chip X is clicked", () => {
+    const onRemoveImageAttachment = vi.fn();
+    const { container } = renderElement(
+      createElement(
+        ChatInput as any,
+        createBaseProps({
+          imageAttachments: [
+            {
+              dataUrl: "data:image/png;base64,preview",
+              mimeType: "image/png",
+              name: "image.png",
+              sizeBytes: 128,
+            },
+          ],
+          onRemoveImageAttachment,
+        }),
+      ),
+    );
+
+    const removeButton = container.querySelector(
+      'button[aria-label="Remove image.png"]',
+    ) as HTMLButtonElement | null;
+    expect(removeButton).toBeTruthy();
+
+    act(() => {
+      removeButton!.click();
+    });
+
+    expect(onRemoveImageAttachment).toHaveBeenCalledWith("image.png");
+    expect(getImagePreviewDialog()).toBeNull();
+  });
+
+  it("closes the preview dialog on Escape, close button, and backdrop click", () => {
+    const { container } = renderElement(
+      createElement(
+        ChatInput as any,
+        createBaseProps({
+          imageAttachments: [
+            {
+              dataUrl: "data:image/png;base64,preview",
+              mimeType: "image/png",
+              name: "image.png",
+              sizeBytes: 128,
+            },
+          ],
+        }),
+      ),
+    );
+
+    const previewButton = container.querySelector(
+      'button[aria-label="Preview image.png"]',
+    ) as HTMLButtonElement | null;
+    expect(previewButton).toBeTruthy();
+
+    act(() => {
+      previewButton!.click();
+    });
+    expect(getImagePreviewDialog()).toBeTruthy();
+
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    });
+    expect(getImagePreviewDialog()).toBeNull();
+
+    act(() => {
+      previewButton!.click();
+    });
+
+    let dialog = getImagePreviewDialog();
+    expect(dialog).toBeTruthy();
+
+    const closeButton = document.body.querySelector(
+      'button[aria-label="Close image preview"]',
+    ) as HTMLButtonElement | null;
+    expect(closeButton).toBeTruthy();
+
+    act(() => {
+      closeButton!.click();
+    });
+    expect(getImagePreviewDialog()).toBeNull();
+
+    act(() => {
+      previewButton!.click();
+    });
+
+    dialog = getImagePreviewDialog();
+    expect(dialog).toBeTruthy();
+
+    act(() => {
+      dialog!.parentElement?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+    expect(getImagePreviewDialog()).toBeNull();
+  });
+
+  it("keeps pasted image attachment creation working", () => {
+    const onAddImageAttachment = vi.fn();
+    const OriginalFileReader = globalThis.FileReader;
+
+    class MockFileReader {
+      result: string | ArrayBuffer | null = null;
+      onload:
+        | ((this: FileReader, ev: ProgressEvent<FileReader>) => unknown)
+        | null = null;
+
+      readAsDataURL(_file: File) {
+        this.result = "data:image/png;base64,mock-image";
+        this.onload?.call(
+          this as unknown as FileReader,
+          new ProgressEvent("load") as ProgressEvent<FileReader>,
+        );
+      }
+    }
+
+    globalThis.FileReader = MockFileReader as unknown as typeof FileReader;
+
+    try {
+      const { container } = renderElement(
+        createElement(
+          ChatInput as any,
+          createBaseProps({
+            onAddImageAttachment,
+          }),
+        ),
+      );
+
+      const editor = getEditor(container);
+      const file = new File(["image-bytes"], "clipboard.png", {
+        type: "image/png",
+      });
+      const pasteEvent = new Event("paste", {
+        bubbles: true,
+        cancelable: true,
+      });
+
+      Object.defineProperty(pasteEvent, "clipboardData", {
+        value: {
+          items: [
+            {
+              kind: "file",
+              type: "image/png",
+              getAsFile: () => file,
+            },
+          ],
+          getData: () => "",
+        },
+      });
+
+      act(() => {
+        editor.dispatchEvent(pasteEvent);
+      });
+
+      expect(onAddImageAttachment).toHaveBeenCalledWith({
+        dataUrl: "data:image/png;base64,mock-image",
+        mimeType: "image/png",
+        name: "clipboard.png",
+        sizeBytes: file.size,
+      });
+    } finally {
+      globalThis.FileReader = OriginalFileReader;
+    }
   });
 });
