@@ -5,10 +5,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   LongTermMemoryProfileSchema,
   RunConfigSchema,
+  type RunConfig,
   SINGLE_AGENT_MODE_ID,
   getModePreset,
   type ModeSpec,
 } from "@cemeworm/shared";
+import type { ModelMessage } from "../src/providers/index.js";
 import { FileLongTermMemoryStore, LongTermMemoryManager } from "../src/memory.js";
 import { ScenarioStore } from "../src/memory-scenarios.js";
 import { withMemoryPrompt, type ModeSelectionDeps } from "../src/mode-selection.js";
@@ -228,12 +230,89 @@ describe("withMemoryPrompt provider admission", () => {
     expect(result.metadata.memoryPromptOverlay).toBeUndefined();
     expect(result.metadata.activeMemory).toBeUndefined();
   });
+
+  it("honors queryMode=message and skips session history loading", async () => {
+    const memory = new LongTermMemoryManager(new FileLongTermMemoryStore(tempDir));
+    memory.saveProfile(LongTermMemoryProfileSchema.parse({
+      lastUpdated: "2026-05-18T00:00:00.000Z",
+      user: {
+        workContext: {
+          summary: "User is modifying the Ora runtime memory system.",
+          updatedAt: "2026-05-18T00:00:00.000Z",
+        },
+      },
+      facts: [],
+    }));
+
+    const buildConversationMessages = vi.fn<() => ModelMessage[]>(() => [
+      { role: "user", content: "历史消息" },
+    ]);
+    const buildRecentConversationMessages = vi.fn<() => ModelMessage[]>(() => [
+      { role: "user", content: "最近消息" },
+    ]);
+
+    const result = await withMemoryPrompt(
+      testConfig(),
+      { prompt: "继续修 memory queryMode。", context: {}, createdAt: Date.now() },
+      testSession("session-1", "Test Session"),
+      createDeps(memory, "deterministic", undefined, {
+        queryMode: "message",
+        buildConversationMessages,
+        buildRecentConversationMessages,
+      }),
+    );
+
+    expect(buildConversationMessages).not.toHaveBeenCalled();
+    expect(buildRecentConversationMessages).not.toHaveBeenCalled();
+    expect(String(result.metadata.memoryPromptOverlay)).toContain("Ora runtime memory system");
+  });
+
+  it("honors queryMode=recent and prefers bounded recent history", async () => {
+    const memory = new LongTermMemoryManager(new FileLongTermMemoryStore(tempDir));
+    memory.saveProfile(LongTermMemoryProfileSchema.parse({
+      lastUpdated: "2026-05-18T00:00:00.000Z",
+      user: {
+        workContext: {
+          summary: "Use the Ora memory workflow for runtime changes.",
+          updatedAt: "2026-05-18T00:00:00.000Z",
+        },
+      },
+      facts: [],
+    }));
+
+    const buildConversationMessages = vi.fn<() => ModelMessage[]>(() => [
+      { role: "user", content: "全量历史" },
+    ]);
+    const buildRecentConversationMessages = vi.fn((sessionId: string, currentPrompt: string, maxMessages: number): ModelMessage[] => [
+      { role: "user", content: `${sessionId}:${currentPrompt}:${maxMessages}` },
+    ]);
+
+    await withMemoryPrompt(
+      testConfig(),
+      { prompt: "沿用刚才的 runtime memory workflow。", context: {}, createdAt: Date.now() },
+      testSession("session-2", "Recent Session"),
+      createDeps(memory, "deterministic", undefined, {
+        queryMode: "recent",
+        buildConversationMessages,
+        buildRecentConversationMessages,
+      }),
+    );
+
+    expect(buildRecentConversationMessages).toHaveBeenCalledTimes(1);
+    expect(buildRecentConversationMessages).toHaveBeenCalledWith("session-2", "沿用刚才的 runtime memory workflow。", 6);
+    expect(buildConversationMessages).not.toHaveBeenCalled();
+  });
 });
 
 function createDeps(
   longTermMemory: LongTermMemoryManager,
   admissionMode: "deterministic" | "provider" | "provider_fallback",
   scenarioStore?: ScenarioStore,
+  overrides?: {
+    queryMode?: "message" | "recent" | "full";
+    buildConversationMessages?: () => ModelMessage[];
+    buildRecentConversationMessages?: (sessionId: string, currentPrompt: string, maxMessages: number) => ModelMessage[];
+  },
 ): ModeSelectionDeps {
   const baseMode = getModePreset(SINGLE_AGENT_MODE_ID);
   if (!baseMode) {
@@ -246,6 +325,7 @@ function createDeps(
       ...baseMode.memoryPolicy,
       enabled: true,
       admissionMode,
+      queryMode: overrides?.queryMode ?? baseMode.memoryPolicy.queryMode,
       injectionMaxFacts: 12,
     },
   };
@@ -257,7 +337,33 @@ function createDeps(
     skillRegistry: {} as ModeSelectionDeps["skillRegistry"],
     longTermMemory,
     applySystemAgentOverridesToMode: (input) => input,
-    buildConversationMessages: () => [],
+    buildConversationMessages: overrides?.buildConversationMessages ?? (() => []),
+    buildRecentConversationMessages: overrides?.buildRecentConversationMessages,
     scenarioStore,
+  };
+}
+
+function testConfig(): RunConfig {
+  return RunConfigSchema.parse({
+    pattern: "single_agent",
+    modeId: SINGLE_AGENT_MODE_ID,
+    profileIds: [],
+    skillIds: [],
+    toolIds: [],
+    approvalMode: "high_risk_only",
+    patternOptions: {},
+    metadata: {},
+    deterministicSeed: "test-seed",
+  });
+}
+
+function testSession(sessionId: string, title: string) {
+  const now = Date.now();
+  return {
+    sessionId,
+    title,
+    turnCount: 0,
+    createdAt: now,
+    updatedAt: now,
   };
 }

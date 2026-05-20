@@ -2615,28 +2615,19 @@ export class LocalRunStore {
     params: unknown,
     createRun: (params: { input: UserTaskInput; config: Partial<RunConfig> }) => Promise<StateSnapshot>
   ) {
-    const evalSession = this.createSession({});
-    const evalSessionId = evalSession.sessionId;
-
-    try {
-      const detail = await this.evaluationStore.startRun(params, async (runParams) => {
-        return createRun({
-          input: runParams.input,
-          config: {
-            ...runParams.config,
-            metadata: {
-              ...(runParams.config?.metadata ?? {}),
-              evalSessionId,
-            },
-          },
-        });
+    const detail = await this.evaluationStore.startRun(params, async (runParams) => {
+      const snapshot = await createRun({
+        input: runParams.input,
+        config: runParams.config,
       });
+      if (snapshot.sessionId) {
+        this.archiveSession({ sessionId: snapshot.sessionId });
+      }
+      return snapshot;
+    });
 
-      this.queueSelfIterationCurator("evaluation_run_completed");
-      return detail;
-    } finally {
-      this.archiveSession({ sessionId: evalSessionId });
-    }
+    this.queueSelfIterationCurator("evaluation_run_completed");
+    return detail;
   }
 
   listEvaluationRuns(params: unknown = {}) {
@@ -2918,6 +2909,8 @@ export class LocalRunStore {
       applySystemAgentOverridesToMode: (modeSpec) => this.applySystemAgentOverridesToMode(modeSpec),
       buildConversationMessages: (sessionId, currentPrompt) =>
         this.buildConversationMessages(sessionId, currentPrompt),
+      buildRecentConversationMessages: (sessionId, currentPrompt, maxMessages) =>
+        this.buildRecentConversationMessages(sessionId, currentPrompt, maxMessages),
       memoryIndexStore: this.memoryIndexStore,
       embeddingProvider: this.cachedEmbeddingProvider ?? undefined,
       journal: this.journal,
@@ -4458,6 +4451,76 @@ export class LocalRunStore {
     return cachedMessages;
   }
 
+  private buildRecentConversationMessages(
+    sessionId: string,
+    currentPrompt: string,
+    maxMessages: number,
+    excludeRunId?: string,
+  ): ModelMessage[] {
+    if (maxMessages <= 0) {
+      return currentPrompt.trim()
+        ? [{ role: "user", content: currentPrompt.trim() }]
+        : [];
+    }
+
+    const session = this.sessions.get(sessionId);
+    const contextState = normalizeContextState(session?.contextState);
+    const priorTurns = this.runsForSession(sessionId);
+    const messages: ModelMessage[] = [];
+
+    if (currentPrompt.trim()) {
+      messages.push({ role: "user", content: currentPrompt.trim() });
+    }
+
+    let remaining = Math.max(0, maxMessages - messages.length);
+    for (let index = priorTurns.length - 1; index >= 0 && remaining > 0; index -= 1) {
+      const turn = priorTurns[index]!;
+      if (turn.runId === excludeRunId) {
+        continue;
+      }
+      if (turn.turnIndex <= contextState.compactedThroughTurnIndex) {
+        continue;
+      }
+
+      const prompt = promptWithTurnLocalMetadata(
+        turn.input.prompt,
+        turnLocalMetadataPrompt({
+          createdAt: turn.input.createdAt,
+          context: turn.input.context,
+        }),
+      );
+      const turnMessages: ModelMessage[] = [];
+      if (prompt) {
+        turnMessages.push({ role: "user", content: prompt });
+      }
+      if (turn.conversation.length > 0) {
+        turnMessages.push(...priorTurnConversationMessages(turn.conversation));
+      }
+      const assistant = assistantTextForRun(turn);
+      if (assistant) {
+        const reasoningContent = assistantReasoningContentForRun(turn);
+        turnMessages.push({
+          role: "assistant",
+          content: assistant,
+          ...(reasoningContent ? { reasoningContent } : {}),
+        });
+      }
+      if (turnMessages.length === 0) {
+        continue;
+      }
+
+      const selected = turnMessages.slice(-remaining);
+      messages.unshift(...selected);
+      remaining = Math.max(0, maxMessages - messages.length);
+    }
+
+    if (remaining > 0) {
+      messages.unshift(...contextMessages(contextState).slice(-remaining));
+    }
+
+    return messages;
+  }
+
   private buildConversationMessagesFromCachedRuns(sessionId: string, currentPrompt: string, excludeRunId?: string): ModelMessage[] {
     const session = this.sessions.get(sessionId);
     const contextState = normalizeContextState(session?.contextState);
@@ -4793,8 +4856,7 @@ export class LocalRunStore {
       },
     });
     const detail = await this.startEvaluationRun(spec, async ({ input, config }) => {
-      const sessionId = config?.metadata?.evalSessionId as string | undefined;
-      const handle = await this.startRun({ input, config, sessionId });
+      const handle = await this.startRun({ input, config });
       return this.getRunState({ runId: handle.runId });
     });
     const scorecard = detail.run.scorecard;
@@ -4930,8 +4992,7 @@ export class LocalRunStore {
       });
 
       const detail = await this.startEvaluationRun(spec, async ({ input, config }) => {
-        const sessionId = config?.metadata?.evalSessionId as string | undefined;
-        const handle = await this.startRun({ input, config, sessionId });
+        const handle = await this.startRun({ input, config });
         return this.getRunState({ runId: handle.runId });
       });
 
@@ -5026,8 +5087,7 @@ export class LocalRunStore {
     });
 
     const detail = await this.startEvaluationRun(spec, async ({ input, config }) => {
-      const sessionId = config?.metadata?.evalSessionId as string | undefined;
-      const handle = await this.startRun({ input, config, sessionId });
+      const handle = await this.startRun({ input, config });
       return this.getRunState({ runId: handle.runId });
     });
 

@@ -45,6 +45,7 @@ import {
 const AUTO_MODE_ROUTER_CONFIDENCE_THRESHOLD = 0.55;
 const AUTO_MODE_ROUTER_MAX_TOKENS = 800;
 const AUTO_MODE_ROUTER_RECENT_MESSAGE_LIMIT = 6;
+const ACTIVE_MEMORY_RECENT_MESSAGE_LIMIT = 6;
 const DELEGATION_CLASSIFIER_MAX_TOKENS = 240;
 const AutoModeRouterResponseSchema = z.object({
   modeId: z.string().min(1),
@@ -69,6 +70,7 @@ export interface ModeSelectionDeps {
   longTermMemory: LongTermMemoryManager;
   applySystemAgentOverridesToMode: (modeSpec: ModeSpec) => ModeSpec;
   buildConversationMessages: (sessionId: string, currentPrompt: string) => ModelMessage[];
+  buildRecentConversationMessages?: (sessionId: string, currentPrompt: string, maxMessages: number) => ModelMessage[];
   memoryIndexStore?: import("./memory-index.js").MemoryIndexStore;
   embeddingProvider?: import("./memory-index.js").EmbeddingProvider;
   journal?: import("./memory-journal.js").ShortTermMemoryJournal;
@@ -339,7 +341,7 @@ export async function withMemoryPrompt(
   if (!input?.prompt) {
     return config;
   }
-  const recentMessages = session ? deps.buildConversationMessages(session.sessionId, input.prompt) : [];
+  const recentMessages = resolveMemoryRecentMessages(policy, input.prompt, session, deps);
   const scenarioCandidates = collectScenarioCandidates(deps, input.projectId);
   const activeMemoryRequest = {
     memory: deps.longTermMemory.get(),
@@ -488,6 +490,30 @@ export async function withMemoryPrompt(
       ...(overlay ? { memoryPromptOverlay: overlay } : {}),
     },
   });
+}
+
+function resolveMemoryRecentMessages(
+  policy: ReturnType<typeof resolveMemoryPolicy>,
+  prompt: string,
+  session: SessionSummary | undefined,
+  deps: ModeSelectionDeps,
+): ModelMessage[] {
+  if (!session) {
+    return [];
+  }
+
+  switch (policy.queryMode) {
+    case "message":
+      return [];
+    case "recent":
+      return deps.buildRecentConversationMessages
+        ? deps.buildRecentConversationMessages(session.sessionId, prompt, ACTIVE_MEMORY_RECENT_MESSAGE_LIMIT)
+        : deps.buildConversationMessages(session.sessionId, prompt).slice(-ACTIVE_MEMORY_RECENT_MESSAGE_LIMIT);
+    case "full":
+      return deps.buildConversationMessages(session.sessionId, prompt);
+    default:
+      return [];
+  }
 }
 
 function collectScenarioCandidates(

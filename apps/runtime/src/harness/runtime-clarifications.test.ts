@@ -34,14 +34,19 @@ describe("runtime clarifications language handling", () => {
           label: "Intent Clarification Test",
           type: "openai_compatible",
           modelId: "intent-clarification-model",
+          enabled: true,
           baseUrl: "https://intent-clarification.test/v1",
           apiKeyEnv: "TEST_INTENT_CLARIFICATION_KEY",
           capabilities: ["chat"],
+          dropParams: [],
           headers: {},
         },
         approvalMode: "auto",
+        permissionMode: "default",
         patternOptions: {},
         metadata: {},
+        causalInterventionLevel: "record_only",
+        deterministicSeed: "test",
       });
 
       expect(result?.question).toContain("which environment should I use");

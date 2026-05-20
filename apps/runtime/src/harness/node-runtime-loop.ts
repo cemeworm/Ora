@@ -729,7 +729,7 @@ export async function runNodeRuntimeLoop(
     deps.toolCalls().some((call) =>
       call.agentId === params.agentId
       && call.toolId === "agent.spawn"
-      && (call.status === "succeeded" || call.status === "completed")
+      && (call.status === "succeeded" || call.status === "repaired")
     );
   const toolRecoveryService = new RuntimeToolRecoveryService({
     agentId: params.agentId,

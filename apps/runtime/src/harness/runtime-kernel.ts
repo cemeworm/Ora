@@ -2776,6 +2776,7 @@ export async function executeRuntimeKernel(
       resultContract: params.resultContract ?? current?.resultContract,
       usedToolCount: params.usedToolCount ?? current?.usedToolCount,
       durationMs: params.durationMs ?? current?.durationMs,
+      recoveryAttemptCount: current?.recoveryAttemptCount ?? 0,
       replayRef: {
         kind: "event_range",
         runId,

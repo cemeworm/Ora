@@ -1,7 +1,7 @@
 import { ORA_ROOT_AGENT_ID, orderedEnabledModeLayers, orderedEnabledModeNodes, type ModeNodeSpec, type ModeSpec, type ModeStageSpec } from "@cemeworm/shared";
 import type { PatternExecutionContext, PatternExecutionResult } from "./execution-context.js";
 import type { ModeExecutionInput } from "./mode-driver-registry.js";
-import { asText, dispatchNodeTemplate, initializeQueueSummary, interpolate, modeUsesSingleOwner, nodeCustomAgentId, nodeInstructions, nodeSystemPrompt, primaryOwnerAgentId, promptTemplate, publicAgentMessageContent, runtimeFallbackPrompt, titleForNode } from "./driver-utils.js";
+import { asText, completeQueueSummary, dispatchNodeTemplate, initializeQueueSummary, interpolate, modeUsesSingleOwner, nodeCustomAgentId, nodeInstructions, nodeSystemPrompt, primaryOwnerAgentId, promptTemplate, publicAgentMessageContent, runtimeFallbackPrompt, titleForNode } from "./driver-utils.js";
 import { runGenericModeNode, runModeLayer } from "./generic-node-executor.js";
 import { containsCompleteProposedPlan, finishPlanModeAfterProposedPlan, type ExecutionBag, type OrchestratorSubagentBag, DELEGATION_PLAN_INSTRUCTION, parseDelegationPlan, parseReviewGateVerdict, type DelegationPlan, writeBag } from "./mode-driver-helpers.js";
 
@@ -345,11 +345,7 @@ async function executeStagedTranscriptMode(input: ModeExecutionInput): Promise<P
         context.setPlanStatus(finalNode.id, "done");
       }
 
-      context.setQueueSummary({
-        pending: 0,
-        inProgress: 0,
-        completed: totalActiveNodes,
-      });
+      completeQueueSummary(context, totalActiveNodes);
 
       const degradedText = stageOutputs.at(-1)?.content ?? asText(gatedReviewVerdict.output);
       return {

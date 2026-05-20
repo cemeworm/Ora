@@ -423,3 +423,14 @@ export function initializeQueueSummary(
     topics: family === "message_bus" ? ["task.input", "task.findings", "task.response"] : [],
   });
 }
+
+export function completeQueueSummary(
+  context: PatternExecutionContext,
+  totalActiveNodes: number,
+): void {
+  context.setQueueSummary({
+    pending: 0,
+    inProgress: 0,
+    completed: totalActiveNodes,
+  });
+}

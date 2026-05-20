@@ -309,6 +309,12 @@ describe("runtime kernel architecture guards", () => {
     expect(transitionSource).toContain("this.reducer = new NodeLoopReducer");
   });
 
+  it("treats repaired agent.spawn calls as collaboration evidence", () => {
+    const source = readSource("src/harness/node-runtime-loop.ts");
+
+    expect(source).toContain('call.status === "succeeded" || call.status === "repaired"');
+  });
+
   it("keeps built-in mode family executors outside the public driver registry", () => {
     const source = readSource("src/patterns/driver-registry.ts");
 

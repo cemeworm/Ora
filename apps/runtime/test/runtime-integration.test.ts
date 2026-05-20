@@ -1585,7 +1585,8 @@ describe("LocalRunStore", () => {
   });
 
   it("imports datasets and runs evaluations through the runtime contract", async () => {
-    const handle = createRuntimeMethodHandler(createStore());
+    const store = createStore();
+    const handle = createRuntimeMethodHandler(store);
     const dataset = EvaluationDatasetDetailSchema.parse(await handle({
       jsonrpc: "2.0",
       id: 1,
@@ -1815,6 +1816,130 @@ describe("LocalRunStore", () => {
     expect(detail.attempts[0]?.observations.trace).toMatchObject({
       toolCallCount: 1,
     });
+  });
+
+  it("does not inject a shared eval session into evaluation attempts", async () => {
+    const store = createStore();
+    const dataset = EvaluationDatasetDetailSchema.parse(store.importEvaluationDataset({
+      name: "Eval Session Isolation Dataset",
+      sourceFileName: "eval-session-isolation.json",
+      sourceFormat: "json",
+      content: JSON.stringify([
+        {
+          id: "case-1",
+          prompt: "Trace case 1",
+          expected: {
+            structured: {
+              assertions: [
+                { type: "exists", path: "trace.events[?(@.type=='agent.started')]" },
+              ],
+            },
+          },
+        },
+        {
+          id: "case-2",
+          prompt: "Trace case 2",
+          expected: {
+            structured: {
+              assertions: [
+                { type: "exists", path: "trace.events[?(@.type=='agent.started')]" },
+              ],
+            },
+          },
+        },
+      ]),
+    }));
+
+    const seenEvalSessionIds: Array<string | undefined> = [];
+    const returnedSessionIds: string[] = [];
+
+    const detail = EvaluationRunDetailSchema.parse(await store.startEvaluationRun({
+      datasetId: dataset.dataset.id,
+      objective: {
+        kind: "assertions",
+        target: "trace.events",
+        metrics: ["assertion_pass_rate"],
+      },
+      repetitions: 1,
+      concurrency: 1,
+      configs: [{
+        id: "trace",
+        label: "Trace",
+        runConfig: { pattern: "orchestrator_subagent", modelRef: "local/smoke-model" },
+      }],
+      metadata: {},
+    }, async ({ input, config }) => {
+      seenEvalSessionIds.push(config.metadata?.evalSessionId as string | undefined);
+      const index = returnedSessionIds.length + 1;
+      const runId = `run-eval-isolation-${index}`;
+      const sessionId = `session-eval-isolation-${index}`;
+      returnedSessionIds.push(sessionId);
+
+      return StateSnapshotSchema.parse({
+        runId,
+        sessionId,
+        status: "succeeded",
+        pattern: "orchestrator_subagent",
+        modeId: "orchestrator_subagent",
+        input,
+        config: {
+          pattern: "orchestrator_subagent",
+          profileIds: [],
+          skillIds: [],
+          toolIds: [],
+          modelRef: "local/smoke-model",
+          approvalMode: "high_risk_only",
+          patternOptions: {},
+          metadata: config.metadata ?? {},
+          deterministicSeed: "eval-session-isolation",
+        },
+        topology: { nodes: [], edges: [] },
+        profiles: [],
+        memory: [],
+        plan: [],
+        todos: [],
+        actions: [],
+        toolCalls: [],
+        toolResults: [],
+        policyDecisions: [],
+        checkpoints: [],
+        events: [
+          {
+            id: `${runId}:evt-0`,
+            runId,
+            seq: 0,
+            type: "agent.started",
+            createdAt: FIXED_TIME,
+            pattern: "orchestrator_subagent",
+            agentId: "researcher",
+            nodeId: "researcher",
+            payload: { title: "Research" },
+          },
+          {
+            id: `${runId}:evt-1`,
+            runId,
+            seq: 1,
+            type: "run.done",
+            createdAt: FIXED_TIME,
+            pattern: "orchestrator_subagent",
+            payload: {},
+          },
+        ],
+        artifacts: [],
+        activeAgents: [],
+        queueSummary: {},
+        sharedStateSummary: {},
+        busStats: {},
+        pendingClarifications: [],
+        pendingApprovals: [],
+        output: { text: "done" },
+        updatedAt: FIXED_TIME,
+      });
+    }));
+
+    expect(detail.attempts).toHaveLength(2);
+    expect(seenEvalSessionIds).toEqual([undefined, undefined]);
+    expect(new Set(returnedSessionIds).size).toBe(2);
   });
 
   it("persists evaluation history in sqlite runtime storage", async () => {
