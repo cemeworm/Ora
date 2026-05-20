@@ -1,5 +1,5 @@
 {
-  "datasetId": "dataset-0003",
+  "datasetId": "dataset-0002",
   "profileId": "orchestration",
   "repetitions": 1,
   "concurrency": 1,
@@ -17,7 +17,12 @@
       "counterfactual_lift",
       "token_efficiency",
       "tool_efficiency",
-      "agentic_cost_score"
+      "agentic_cost_score",
+      "visible_surface_shrinkage",
+      "explore_first_score",
+      "atomic_tool_hops",
+      "first_locate_success",
+      "shell_explore_restraint"
     ],
     "metadata": {
       "retrofitCausalDecisions": true

@@ -17,7 +17,12 @@
       "counterfactual_lift",
       "token_efficiency",
       "tool_efficiency",
-      "agentic_cost_score"
+      "agentic_cost_score",
+      "visible_surface_shrinkage",
+      "explore_first_score",
+      "atomic_tool_hops",
+      "first_locate_success",
+      "shell_explore_restraint"
     ],
     "metadata": {
       "retrofitCausalDecisions": true

@@ -126,6 +126,18 @@ evaluation/
 
 核心功能是因果 A/B 对比流水线：对同一数据集在两个代码版本上运行评估，生成量化对比报告。
 
+### Tool-System 指标
+
+Visibility resolver phase-1 现在额外暴露 5 个工具系统质量指标：
+
+- `visible_surface_shrinkage`: root resolver 是否显著收窄默认 visible surface
+- `explore_first_score`: 任务是否先进入高层 Explore 入口，而不是直接落到底层执行
+- `atomic_tool_hops`: `file.read/list/glob/grep` 这类原子 hop 是否仍然过多
+- `first_locate_success`: 第一次 `repo.explore` 是否就拿到了可用定位证据
+- `shell_explore_restraint`: `shell.execute` 是否仍被当作默认探索入口
+
+这些指标会进入 evaluation metric 聚合，也会驱动 report 里的 resolver-aware recommended actions。
+
 ### 快速开始
 
 ```bash
