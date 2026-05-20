@@ -15,6 +15,9 @@
     "version:check": "node scripts/version-sync.mjs --check"
   },
   "pnpm": {
+    "overrides": {
+      "@tauri-apps/api": "2.10.1"
+    },
     "onlyBuiltDependencies": [
       "better-sqlite3"
     ]
