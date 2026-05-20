@@ -730,7 +730,12 @@ function observationTypeForEvent(type: string): "span" | "event" | "tool" | "gen
   if (type === "message.delta" || type === "token.delta") {
     return "generation";
   }
-  if (type === "action.updated" || type.startsWith("approval.")) {
+  if (
+    type === "action.updated"
+    || type.startsWith("approval.")
+    || type === "agent_spawn_preflight.completed"
+    || type === "tool.repo_explore.completed"
+  ) {
     return "tool";
   }
   if (type === "checkpoint.created") {

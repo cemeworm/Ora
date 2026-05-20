@@ -222,7 +222,13 @@ function createResponsesPayload(config: ProviderConfig, request: Parameters<Mode
   const deltaMessages = request.providerCache?.openaiDeltaMessages;
   const canUseContinuation = Boolean(previousResponseId && deltaMessages?.length);
   const input = canUseContinuation
-    ? buildResponsesInput({ ...request, messages: deltaMessages, system: undefined, providerCache: undefined })
+    ? buildResponsesInput({
+        ...request,
+        messages: deltaMessages,
+        system: undefined,
+        providerCache: undefined,
+        cacheDiagnosticsContext: undefined,
+      })
     : buildResponsesInput(request);
   const body = appendIfDefined(
     {
@@ -256,7 +262,12 @@ function createChatCompletionsPayload(config: ProviderConfig, request: Parameter
       system: request.system,
       instructions,
       stableSystemPrefix: request.providerCache?.stableSystemPrefix,
-    }),
+      derivedContextBlocks: request.cacheDiagnosticsContext?.derivedContextBlocks,
+      stablePrefixRole: "system",
+    }).map((message) => ({
+      role: message.role,
+      content: message.content,
+    })),
     ...dialog.map((message) => {
       if (message.role === "tool") {
         if (!message.toolCallId) return undefined;

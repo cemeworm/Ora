@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { RunConfigSchema } from "@cemeworm/shared";
+import { CODE_DEVELOPMENT_MODE_ID, RunConfigSchema } from "@cemeworm/shared";
 import { buildDelegationGuidance } from "../src/harness/runtime-kernel.js";
 
 describe("runtime kernel delegation guidance", () => {
@@ -144,12 +144,43 @@ describe("runtime kernel delegation guidance", () => {
       },
     }), "ora-sub-1")).toBeUndefined();
   });
+
+  it("does not expose agent.spawn guidance for code development root runs", () => {
+    expect(buildDelegationGuidance(config({
+      modeId: CODE_DEVELOPMENT_MODE_ID,
+      delegationIntent: {
+        requestedByUser: true,
+        preference: "prefer",
+        reason: "The user asked for team-style collaboration.",
+        source: "explicit_team_collab",
+      },
+      effectiveStrategy: {
+        sourceModeId: CODE_DEVELOPMENT_MODE_ID,
+        sourceModeSelection: "manual",
+        thinking: "standard",
+        reasoningEffort: "medium",
+        budgetProfile: "balanced",
+        budget: { maxTokens: 18000, maxToolCalls: 256, maxRuntimeMs: 300000, maxCostUsd: 3 },
+        planning: "light",
+        planningEnabled: true,
+        delegation: "preferred",
+        delegationEnabled: true,
+        delegationRequestedByUser: true,
+        providerThinkingEnabled: true,
+        providerPolicyStatus: "applied",
+      },
+    }))).toBeUndefined();
+  });
 });
 
-function config(params: { delegationIntent?: Record<string, unknown>; effectiveStrategy?: Record<string, unknown> }) {
+function config(params: {
+  modeId?: string;
+  delegationIntent?: Record<string, unknown>;
+  effectiveStrategy?: Record<string, unknown>;
+}) {
   return RunConfigSchema.parse({
     pattern: "orchestrator_subagent",
-    modeId: "single_agent",
+    modeId: params.modeId ?? "single_agent",
     toolIds: ["agent.spawn"],
     effectiveStrategy: params.effectiveStrategy,
     metadata: params.delegationIntent ? { delegationIntent: params.delegationIntent } : {},

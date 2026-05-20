@@ -1,4 +1,5 @@
 import type { AgentProfile, SkillDescriptor, UserTaskInput } from "@cemeworm/shared";
+import type { DerivedContextBlock } from "../providers/types.js";
 import type { PromptSectionCache } from "./prompt-cache.js";
 
 export type AgentPromptSectionId =
@@ -15,10 +16,12 @@ export type AgentPromptSectionId =
   | "clarification_context"
   | "memory_context"
   | "task_intent_context"
+  | "model_state_context"
   | "skills_guidance"
   | "available_skills"
   | "tool_protocol"
   | "skills"
+  | "compression_state_context"
   | "mcp_deferred_tools"
   | "computer_use_context";
 
@@ -42,9 +45,11 @@ export interface AgentPromptContextInput {
   clarificationContext?: string;
   memoryContext?: string;
   taskIntentContext?: string;
+  modelStateContext?: string;
   availableSkills?: readonly SkillDescriptor[];
   toolProtocol?: string;
   skillSnippets?: string[];
+  compressionStateContext?: string;
   toolIds?: readonly string[];
   cache?: PromptSectionCache;
 }
@@ -52,7 +57,12 @@ export interface AgentPromptContextInput {
 export interface BuiltAgentPromptContext {
   system: string;
   stablePrefix: string;
+  volatileSuffix: string;
   sections: AgentPromptSection[];
+  derivedContextBlocks: readonly DerivedContextBlock[];
+  cacheDiagnosticsContext: {
+    derivedContextBlocks: readonly DerivedContextBlock[];
+  };
 }
 
 export function buildAgentPromptContext(input: AgentPromptContextInput): BuiltAgentPromptContext {
@@ -69,11 +79,13 @@ export function buildAgentPromptContext(input: AgentPromptContextInput): BuiltAg
     cachedSection(cache, "turn_local_metadata_guidance", "Turn-local Metadata Guidance", cache?.hashInput(input.turnLocalMetadataGuidance), () => input.turnLocalMetadataGuidance),
     cachedSection(cache, "tool_protocol", "Tool Protocol", cache?.hashInput(input.toolProtocol), () => input.toolProtocol),
     cachedSection(cache, "skills_guidance", "Skills Guidance", "static:v1", () => skillsGuidanceSection()),
-    cachedSection(cache, "available_skills", "Available Skills", cache?.hashInput(input.availableSkills), () => availableSkillsSection(input.availableSkills)),
-    ...skillSections(input.skillSnippets),
     cachedSection(cache, "mcp_deferred_tools", "MCP / Deferred Tools", cache?.hashInput(input.toolIds), () => mcpDeferredToolsSection(input.toolIds)),
     cachedSection(cache, "computer_use_context", "Computer Use Context", cache?.hashInput(input.toolIds), () => computerUseContextSection(input.toolIds)),
-    promptSection("task_intent_context", "Task Intent", input.taskIntentContext),
+    promptSection("task_intent_context", "Task Mode Block", input.taskIntentContext),
+    cachedSection(cache, "model_state_context", "Model State Block", cache?.hashInput(input.modelStateContext), () => input.modelStateContext),
+    cachedSection(cache, "available_skills", "Available Skills Block", cache?.hashInput(input.availableSkills), () => availableSkillsSection(input.availableSkills)),
+    activatedSkillsSection(input.skillSnippets),
+    cachedSection(cache, "compression_state_context", "Compression State Block", cache?.hashInput(input.compressionStateContext), () => input.compressionStateContext),
     promptSection("workspace_context", "Workspace Context", input.workspaceContext),
     promptSection("stage_instructions", "Stage Instructions", input.stageSystem),
     promptSection("temporal_context", "Temporal Context", input.temporalContext),
@@ -82,9 +94,19 @@ export function buildAgentPromptContext(input: AgentPromptContextInput): BuiltAg
   ].filter((section): section is AgentPromptSection => Boolean(section));
 
   const stablePrefix = stablePromptPrefix(sections);
+  const volatileSuffix = sections
+    .filter((section) => !STABLE_PROMPT_PREFIX_SECTION_IDS.has(section.id))
+    .map((section) => section.content)
+    .join("\n\n");
+  const derivedContextBlocks = buildDerivedContextBlocks(sections);
   return {
     sections,
     stablePrefix,
+    volatileSuffix,
+    derivedContextBlocks,
+    cacheDiagnosticsContext: {
+      derivedContextBlocks,
+    },
     system: sections.map((section) => section.content).join("\n\n"),
   };
 }
@@ -176,15 +198,15 @@ function profileSection(
 }
 
 const SKILL_METADATA_BUDGET_CHARS = 8000;
-const SKILL_DESCRIPTION_TRUNCATED_WARNING =
-  "Skill descriptions were shortened to fit the skills context budget. Codex can still see every skill, but some descriptions are shorter.";
 
-function sortByTelemetry(skills: SkillDescriptor[]): SkillDescriptor[] {
-  return [...skills].sort((a, b) => (b.telemetry?.useCount ?? 0) - (a.telemetry?.useCount ?? 0));
+function sortSkillsDeterministically(skills: readonly SkillDescriptor[]): SkillDescriptor[] {
+  return [...skills].sort((left, right) =>
+    stableSkillKey(left).localeCompare(stableSkillKey(right))
+  );
 }
 
 function availableSkillsSection(skills: readonly SkillDescriptor[] | undefined): string | undefined {
-  const enabled = (skills ?? []).filter((skill) => skill.enabled);
+  const enabled = sortSkillsDeterministically((skills ?? []).filter((skill) => skill.enabled));
   if (enabled.length === 0) {
     return undefined;
   }
@@ -209,17 +231,14 @@ function availableSkillsSection(skills: readonly SkillDescriptor[] | undefined):
     return buildSkillSystemBlock(usageRule, fullBody);
   }
 
-  // From L2 onward: sort by telemetry useCount (descending)
-  const ranked = sortByTelemetry(enabled);
-
-  // Level 2: truncated descriptions — distribute budget equally, telemetry-ordered
+  // Level 2: truncated descriptions — distribute budget equally with deterministic ordering
   // overhead includes all XML tags (including <description></description> wrapping)
   const descChars = enabled.reduce((sum, s) => sum + s.description.length, 0);
   const overhead = fullCost - descChars;
   const availableForDescriptions = budget - overhead;
-  const perSkillChars = Math.max(20, Math.floor(availableForDescriptions / ranked.length));
+  const perSkillChars = Math.max(20, Math.floor(availableForDescriptions / enabled.length));
 
-  const truncatedBody = ranked
+  const truncatedBody = enabled
     .map((skill) => renderSkillEntry(skill, truncateDescription(skill.description, perSkillChars)))
     .join("\n");
 
@@ -227,9 +246,9 @@ function availableSkillsSection(skills: readonly SkillDescriptor[] | undefined):
     return buildSkillSystemBlock(usageRule, truncatedBody);
   }
 
-  // Level 3: telemetry-priority top-N — only active skills, truncated descriptions, by useCount
-  const active = ranked.filter((s) => s.lifecycle !== "stale" && s.lifecycle !== "archived");
-  const l3Skills = active.length > 0 ? active : ranked;
+  // Level 3: prefer active skills only while keeping deterministic ordering.
+  const active = enabled.filter((s) => s.lifecycle !== "stale" && s.lifecycle !== "archived");
+  const l3Skills = active.length > 0 ? active : enabled;
   const l3FullBody = l3Skills.map((skill) => renderSkillEntry(skill, skill.description)).join("\n");
   const l3FullCost = byteLength(l3FullBody);
   const l3DescChars = l3Skills.reduce((sum, s) => sum + s.description.length, 0);
@@ -244,15 +263,15 @@ function availableSkillsSection(skills: readonly SkillDescriptor[] | undefined):
     return buildSkillSystemBlock(usageRule, l3Body);
   }
 
-  // Level 4: minimal — name + location only, telemetry-ordered
-  const minimalEntries = ranked.map((skill) => renderSkillEntry(skill, ""));
+  // Level 4: minimal — name + location only, deterministically ordered
+  const minimalEntries = enabled.map((skill) => renderSkillEntry(skill, ""));
   const minimalBody = minimalEntries.join("\n");
 
   if (byteLength(minimalBody) <= budget) {
     return buildSkillSystemBlock(usageRule, minimalBody);
   }
 
-  // Level 5: omit skills that don't fit (highest telemetry first)
+  // Level 5: omit skills that still do not fit after deterministic truncation.
   const kept: string[] = [];
   for (const entry of minimalEntries) {
     const tentative = kept.length > 0 ? kept.join("\n") + "\n" + entry : entry;
@@ -344,19 +363,24 @@ function operatingProtocolSection(): string {
   ].join("\n");
 }
 
-function skillSections(snippets: string[] | undefined): AgentPromptSection[] {
-  if (!snippets || snippets.length === 0) {
-    return [];
-  }
-  return snippets
+function activatedSkillsSection(snippets: string[] | undefined): AgentPromptSection | undefined {
+  const content = (snippets ?? [])
     .map((snippet) => snippet.trim())
     .filter(Boolean)
-    .map((snippet) => ({
-      id: "skills" as const,
-      title: "Skill Instructions",
-      content: snippet,
-    }));
+    .join("\n\n");
+  return promptSection("skills", "Activated Skills Block", content);
 }
+
+const DERIVED_CONTEXT_BLOCK_SPECS: Readonly<Record<
+  Extract<AgentPromptSectionId, "task_intent_context" | "model_state_context" | "available_skills" | "skills" | "compression_state_context">,
+  { blockId: string; placement: DerivedContextBlock["placement"] }
+>> = {
+  task_intent_context: { blockId: "task_mode", placement: "volatile_suffix" },
+  model_state_context: { blockId: "model_state", placement: "volatile_suffix" },
+  available_skills: { blockId: "available_skills", placement: "volatile_suffix" },
+  skills: { blockId: "activated_skills", placement: "volatile_suffix" },
+  compression_state_context: { blockId: "compression_state", placement: "volatile_suffix" },
+};
 
 const STABLE_PROMPT_PREFIX_SECTION_IDS = new Set<AgentPromptSectionId>([
   "custom_persona",
@@ -368,12 +392,8 @@ const STABLE_PROMPT_PREFIX_SECTION_IDS = new Set<AgentPromptSectionId>([
   "turn_local_metadata_guidance",
   "tool_protocol",
   "skills_guidance",
-  "available_skills",
-  "skills",
   "mcp_deferred_tools",
   "computer_use_context",
-  "task_intent_context",
-  "temporal_context",
 ]);
 
 function stablePromptPrefix(sections: readonly AgentPromptSection[]): string {
@@ -388,6 +408,33 @@ function escapeXml(value: string): string {
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
+}
+
+function buildDerivedContextBlocks(
+  sections: readonly AgentPromptSection[],
+): DerivedContextBlock[] {
+  return sections.flatMap((section) => {
+    if (!(section.id in DERIVED_CONTEXT_BLOCK_SPECS)) {
+      return [];
+    }
+    const spec = DERIVED_CONTEXT_BLOCK_SPECS[
+      section.id as keyof typeof DERIVED_CONTEXT_BLOCK_SPECS
+    ];
+    return [{
+      id: spec.blockId,
+      title: section.title,
+      content: section.content,
+      placement: spec.placement,
+    } satisfies DerivedContextBlock];
+  });
+}
+
+function stableSkillKey(skill: SkillDescriptor): string {
+  return [
+    skill.name.trim().toLowerCase(),
+    skill.id.trim().toLowerCase(),
+    (skill.path ?? skill.category).trim().toLowerCase(),
+  ].join("::");
 }
 
 function mcpDeferredToolsSection(toolIds: readonly string[] | undefined): string | undefined {

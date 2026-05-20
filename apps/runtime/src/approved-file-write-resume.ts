@@ -535,6 +535,7 @@ export async function completeApprovedToolContinuation(
     content: finalText,
   });
   const output = { text: finalText };
+  updateContinuationStatus("completed");
 
   // Shared terminal-state integrity gate: refuse to emit run.done if any
   // open gates, pending approvals/clarifications, or active continuation
@@ -562,7 +563,6 @@ export async function completeApprovedToolContinuation(
   }
 
   append("run.done", { status: "succeeded", output });
-  updateContinuationStatus("completed");
   return {
     kind: "completed",
     snapshot: deps.attachTraceMetadata(StateSnapshotSchema.parse({

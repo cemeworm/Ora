@@ -4,6 +4,7 @@ import type {
   OraEventEnvelope,
   PatternDefinition,
   RunConfig,
+  SessionContextState,
   StateSnapshot,
   UserTaskInput
 } from "@cemeworm/shared";
@@ -35,6 +36,7 @@ interface KernelLifecycleBaseParams {
   systemAgentOverlays?: Record<string, string>;
   customAgentContexts?: Record<string, Pick<CustomAgentDetail, "model" | "skillIds" | "toolIds"> & { overlay: string }>;
   conversationMessages: ModelMessage[];
+  sessionContextState?: SessionContextState;
   forkedFrom?: { runId: string; checkpointId: string; eventSeq: number };
   streamProvider?: boolean;
   onEvent?: (event: OraEventEnvelope) => void;
@@ -102,6 +104,7 @@ function kernelOptions(params: KernelLifecycleBaseParams & CancellableKernelLife
     customAgentContexts: params.customAgentContexts,
     forkedFrom: params.forkedFrom,
     conversationMessages: params.conversationMessages,
+    sessionContextState: params.sessionContextState,
     turnIndex: params.turnIndex,
     streamProvider: params.streamProvider,
     signal: params.signal,

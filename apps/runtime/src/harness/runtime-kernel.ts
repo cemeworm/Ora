@@ -2,16 +2,27 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
+  CODE_DEVELOPMENT_MODE_ID,
   type ActionRiskLevel,
   type ActionRecord,
+  type AgentSpawnAffordance,
+  type AgentSpawnContract,
+  AgentSpawnContractSchema,
+  type AgentSpawnContractViolation,
+  type AgentSpawnPreflightResult,
+  AgentSpawnPreflightTelemetrySchema,
+  type AgentSpawnResultValidation,
+  AgentSpawnResultValidationSchema,
   type AgentResultContract,
   type AgentConversationMessage,
   AgentConversationMessageSchema,
   type AgentToolBundleId,
   type BackgroundChildLifecyclePhase,
   type BackgroundChildResultAvailability,
+  type ChildSessionAuthoritySource,
   type ChildSessionClass,
   type ChildSessionDeliveryStatus,
+  type ChildSessionDelegationKind,
   type ChildSessionSummary,
   ChildSessionSummarySchema,
   type ParentCoordinationPhase,
@@ -25,6 +36,7 @@ import {
   type PatternDefinition,
   type QueueSummary,
   type RunConfig,
+  type SessionContextState,
   type SharedStateSummary,
   type StateSnapshot,
   type ToolRegistry,
@@ -104,7 +116,6 @@ import {
   createResumeApprovalMatcher,
   type ApprovedResumeAction,
 } from "./runtime-interrupts.js";
-import { CODE_DEVELOPMENT_ORCHESTRATOR_BLOCKED_TOOLS } from "./runtime-tool-boundary.js";
 import {
   ensureRuntimeClarification,
   ensureRuntimeClarifications,
@@ -165,6 +176,10 @@ import {
   injectRootAgentTopology,
   rootAgentProfile,
 } from "./runtime-root-agent.js";
+import {
+  resolveChildToolBundleDefinition,
+  resolveVisibleToolsForAgent,
+} from "./runtime-tool-visibility.js";
 
 const DEFAULT_NODE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 const DEFAULT_PROVIDER_TIMEOUT_MS = 3 * 60 * 1000; // 3 minutes
@@ -191,6 +206,7 @@ export interface RuntimeKernelOptions {
   customAgentContexts?: Record<string, Pick<CustomAgentDetail, "model" | "skillIds" | "toolIds"> & { overlay: string }>;
   modeSpec?: ModeSpec;
   definition?: PatternDefinition;
+  sessionContextState?: SessionContextState;
   resumeContext?: {
     clarifications?: Record<string, unknown>;
     approvedActionIds?: string[];
@@ -248,15 +264,12 @@ type AsyncAgentResultEnvelope = {
   completedAt: number;
   toolBundleId?: AgentToolBundleId;
   resolvedToolIds: string[];
+  spawnContract?: AgentSpawnContract;
+  spawnValidation?: AgentSpawnResultValidation;
   resultContract?: AgentResultContract;
   usedToolCount: number;
   artifactIds: string[];
   durationMs?: number;
-};
-
-type ChildToolBundleDefinition = {
-  toolIds: string[];
-  requiredToolIds?: string[];
 };
 
 type BackgroundChildRegistryEntry = {
@@ -273,8 +286,15 @@ type BackgroundChildRegistryEntry = {
   summary?: string;
   lastMessage?: string;
   artifactIds: string[];
+  delegationKind?: ChildSessionDelegationKind;
+  authoritySource?: ChildSessionAuthoritySource;
   toolBundleId?: AgentToolBundleId;
+  requestedToolPreset?: ChildSessionSummary["requestedToolPreset"];
+  resolvedToolPreset?: ChildSessionSummary["resolvedToolPreset"];
   resolvedToolIds: string[];
+  spawnContract?: AgentSpawnContract;
+  spawnPreflight?: AgentSpawnPreflightResult;
+  spawnValidation?: AgentSpawnResultValidation;
   resultContract?: AgentResultContract;
   usedToolCount?: number;
   durationMs?: number;
@@ -337,6 +357,8 @@ function projectBackgroundChildSummary(
     agentId: entry.agentId,
     label: entry.label,
     sessionClass: entry.sessionClass,
+    delegationKind: entry.delegationKind,
+    authoritySource: entry.authoritySource,
     status: entry.status,
     lifecyclePhase: entry.lifecyclePhase,
     deliveryStatus: entry.deliveryStatus,
@@ -345,7 +367,12 @@ function projectBackgroundChildSummary(
     lastMessage: entry.lastMessage,
     artifactIds: entry.artifactIds,
     toolBundleId: entry.toolBundleId,
+    requestedToolPreset: entry.requestedToolPreset,
+    resolvedToolPreset: entry.resolvedToolPreset,
     resolvedToolIds: entry.resolvedToolIds,
+    spawnContract: entry.spawnContract,
+    spawnPreflight: entry.spawnPreflight,
+    spawnValidation: entry.spawnValidation,
     resultContract: entry.resultContract,
     usedToolCount: entry.usedToolCount,
     durationMs: entry.durationMs,
@@ -501,6 +528,8 @@ class KernelRuntimeContext {
     completedAt?: number;
     toolBundleId?: AgentToolBundleId;
     resolvedToolIds?: string[];
+    spawnContract?: AgentSpawnContract;
+    spawnValidation?: AgentSpawnResultValidation;
     resultContract?: AgentResultContract;
     usedToolCount?: number;
     artifactIds?: string[];
@@ -515,6 +544,8 @@ class KernelRuntimeContext {
       completedAt,
       toolBundleId: params.toolBundleId,
       resolvedToolIds: params.resolvedToolIds ?? [],
+      spawnContract: params.spawnContract,
+      spawnValidation: params.spawnValidation,
       resultContract: params.resultContract,
       usedToolCount: params.usedToolCount ?? 0,
       artifactIds: params.artifactIds ?? [],
@@ -724,6 +755,8 @@ class KernelRuntimeContext {
       parentAgentId: current?.parentAgentId,
       label: parsed.label,
       sessionClass: parsed.sessionClass,
+      delegationKind: parsed.delegationKind ?? current?.delegationKind,
+      authoritySource: parsed.authoritySource ?? current?.authoritySource,
       status: parsed.status,
       lifecyclePhase: parsed.lifecyclePhase ?? defaultBackgroundLifecyclePhase({
         status: parsed.status,
@@ -738,7 +771,12 @@ class KernelRuntimeContext {
       lastMessage: parsed.lastMessage,
       artifactIds: parsed.artifactIds,
       toolBundleId: parsed.toolBundleId,
+      requestedToolPreset: parsed.requestedToolPreset ?? current?.requestedToolPreset,
+      resolvedToolPreset: parsed.resolvedToolPreset ?? current?.resolvedToolPreset,
       resolvedToolIds: parsed.resolvedToolIds ?? [],
+      spawnContract: parsed.spawnContract ?? current?.spawnContract,
+      spawnPreflight: parsed.spawnPreflight,
+      spawnValidation: parsed.spawnValidation ?? current?.spawnValidation,
       resultContract: parsed.resultContract,
       usedToolCount: parsed.usedToolCount,
       durationMs: parsed.durationMs,
@@ -765,6 +803,12 @@ class KernelRuntimeContext {
     agentId: string;
     parentAgentId?: string;
     coordinationBarrier?: "required" | "independent";
+    delegationKind?: ChildSessionDelegationKind;
+    authoritySource?: ChildSessionAuthoritySource;
+    requestedToolPreset?: ChildSessionSummary["requestedToolPreset"];
+    resolvedToolPreset?: ChildSessionSummary["resolvedToolPreset"];
+    spawnContract?: AgentSpawnContract;
+    spawnValidation?: AgentSpawnResultValidation;
   }): void {
     const current = [...this.childSessionsValue.values()].find((entry) => entry.agentId === params.agentId);
     if (!current) {
@@ -774,6 +818,12 @@ class KernelRuntimeContext {
       ...current,
       parentAgentId: params.parentAgentId ?? current.parentAgentId,
       coordinationBarrier: params.coordinationBarrier ?? current.coordinationBarrier,
+      delegationKind: params.delegationKind ?? current.delegationKind,
+      authoritySource: params.authoritySource ?? current.authoritySource,
+      requestedToolPreset: params.requestedToolPreset ?? current.requestedToolPreset,
+      resolvedToolPreset: params.resolvedToolPreset ?? current.resolvedToolPreset,
+      spawnContract: params.spawnContract ?? current.spawnContract,
+      spawnValidation: params.spawnValidation ?? current.spawnValidation,
     });
     this.syncParentCoordinationFromChildren(current.status);
   }
@@ -1323,6 +1373,9 @@ export function buildDelegationGuidance(
   if (!strategy) {
     return undefined;
   }
+  if (strategy.sourceModeId === CODE_DEVELOPMENT_MODE_ID) {
+    return undefined;
+  }
   if (strategy.collaborationRequirement === "required") {
     return [
       "Delegation guidance for this turn:",
@@ -1353,6 +1406,51 @@ export function buildDelegationGuidance(
     "- If the work can be split into substantial, self-contained subtasks, prefer using agent.spawn instead of doing everything locally.",
     ...(delegationIntent?.reason ? [`- Reason: ${delegationIntent.reason}`] : []),
   ].join("\n");
+}
+
+function buildModelStateContext(config: RunConfig): string | undefined {
+  const strategy = config.effectiveStrategy;
+  const providerId = configuredProviderId(config) ?? config.providerConfig?.id;
+  const modelRef = config.modelRef ?? config.providerConfig?.modelId;
+  const lines = [
+    providerId || modelRef ? "Current runtime model state:" : undefined,
+    providerId ? `- Provider: ${providerId}` : undefined,
+    modelRef ? `- Model: ${modelRef}` : undefined,
+    strategy?.reasoningEffort ? `- Reasoning effort: ${strategy.reasoningEffort}` : undefined,
+    strategy ? `- Provider thinking enabled: ${strategy.providerThinkingEnabled ? "yes" : "no"}` : undefined,
+    strategy?.providerPolicyStatus ? `- Provider policy status: ${strategy.providerPolicyStatus}` : undefined,
+    strategy?.notes?.length ? `- Runtime policy notes: ${strategy.notes.join(" | ")}` : undefined,
+  ].filter((line): line is string => Boolean(line));
+  return lines.length > 0 ? lines.join("\n") : undefined;
+}
+
+function buildCompressionStateContext(
+  contextState: SessionContextState | undefined,
+): string | undefined {
+  const compactionCount = contextState?.compactionCount ?? 0;
+  const compactedHistoryCount = contextState?.compactedHistory?.length ?? 0;
+  const lastCompaction = contextState?.lastCompaction;
+  if (compactionCount === 0 && compactedHistoryCount === 0 && !lastCompaction) {
+    return undefined;
+  }
+  return [
+    "Current session compression state:",
+    `- Compaction count: ${compactionCount}`,
+    contextState?.compactedThroughTurnIndex !== undefined
+      ? `- History compacted through turn index: ${contextState.compactedThroughTurnIndex}`
+      : undefined,
+    compactedHistoryCount > 0
+      ? `- Compacted history entries carried into this request: ${compactedHistoryCount}`
+      : undefined,
+    lastCompaction?.phase ? `- Latest compaction phase: ${lastCompaction.phase}` : undefined,
+    lastCompaction?.implementation ? `- Latest compaction implementation: ${lastCompaction.implementation}` : undefined,
+    typeof lastCompaction?.beforeTokens === "number" && typeof lastCompaction?.afterTokens === "number"
+      ? `- Latest compaction tokens: ${lastCompaction.beforeTokens} -> ${lastCompaction.afterTokens}`
+      : undefined,
+    typeof lastCompaction?.limit === "number" ? `- Latest compaction limit: ${lastCompaction.limit}` : undefined,
+    lastCompaction?.reason ? `- Latest compaction reason: ${lastCompaction.reason}` : undefined,
+    "- Earlier turns before the compacted boundary should be interpreted through the carried compacted history summary, not reconstructed from scratch.",
+  ].filter((line): line is string => Boolean(line)).join("\n");
 }
 
 function cloneRecord(value: unknown): Record<string, unknown> {
@@ -1736,6 +1834,13 @@ export async function executeRuntimeKernel(
     modeSpec,
     runtimeToolExecutor.enabledToolIds(config.toolIds),
   );
+  const resolvedTaskIntent = (
+    config.metadata.taskIntent === "chat" ||
+    config.metadata.taskIntent === "plan" ||
+    config.metadata.taskIntent === "implement"
+  )
+    ? config.metadata.taskIntent
+    : undefined;
 
   const publishRecoveryArtifact = (
     incident: RecoveryIncident,
@@ -1929,6 +2034,7 @@ export async function executeRuntimeKernel(
     messages: ModelMessage[];
     system: string;
     providerCache?: ModelRequest["providerCache"];
+    cacheDiagnosticsContext?: ModelRequest["cacheDiagnosticsContext"];
     nativeTools: ReturnType<RuntimeToolExecutor["toolDefinitions"]>;
     streamCallbacks?: Parameters<typeof invokeRunProviderStream>[2];
     reason: CompletionStopReason;
@@ -1948,6 +2054,7 @@ export async function executeRuntimeKernel(
             messages,
             system: forcedFinalSystemPrompt(params.system, params.reason),
             providerCache: params.providerCache,
+            cacheDiagnosticsContext: params.cacheDiagnosticsContext,
             maxTokens: params.config.budget?.maxTokens,
             tools: params.nativeTools,
             toolChoice: params.nativeTools.length > 0 ? "none" : undefined,
@@ -2099,27 +2206,35 @@ export async function executeRuntimeKernel(
     }
   };
 
-  const effectiveAgentToolIds = (agentId: string, customAgentId?: string): string[] => {
+  const effectiveAgentToolVisibility = (
+    agentId: string,
+    nodeId?: string,
+    customAgentId?: string,
+    requestedToolIds?: readonly string[],
+  ) => {
     const profile = profilesById.get(agentId);
     const profileToolIds = profile?.toolIds ?? [];
     const customAgentToolIds = customAgentId ? options.customAgentContexts?.[customAgentId]?.toolIds ?? [] : [];
-    const requestedToolIds = profileToolIds.length > 0 ? profileToolIds : customAgentToolIds;
-    if (requestedToolIds.length === 0) {
-      return restrictToolsForAgentBoundary(agentId, config.toolIds);
-    }
-    const requested = new Set(requestedToolIds);
-    return restrictToolsForAgentBoundary(agentId, config.toolIds.filter((toolId) => requested.has(toolId)));
+    return resolveVisibleToolsForAgent({
+      availableToolIds: config.toolIds,
+      toolDescriptors: toolRegistry.list(),
+      modeSpec,
+      agentId,
+      nodeId,
+      profileToolIds,
+      customAgentToolIds,
+      requestedToolIds,
+      taskIntent: resolvedTaskIntent,
+      isNestedAgentSpawn,
+    });
+  };
+
+  const effectiveAgentToolIds = (agentId: string, nodeId?: string, customAgentId?: string): string[] => {
+    return effectiveAgentToolVisibility(agentId, nodeId, customAgentId).visibleToolIds;
   };
 
   const restrictToolsForAgentBoundary = (agentId: string, toolIds: string[]): string[] => {
-    let restricted = toolIds;
-    if (isNestedAgentSpawn) {
-      restricted = restricted.filter((id) => id !== "agent.spawn");
-    }
-    if (modeSpec.id === "code_development" && agentId === ORA_ROOT_AGENT_ID) {
-      restricted = restricted.filter((toolId) => !CODE_DEVELOPMENT_ORCHESTRATOR_BLOCKED_TOOLS.has(toolId));
-    }
-    return restricted;
+    return [...new Set(toolIds)].filter((toolId) => config.toolIds.includes(toolId));
   };
 
   const effectiveAgentSkillIds = (agentId: string, customAgentId?: string): string[] => {
@@ -2196,6 +2311,8 @@ export async function executeRuntimeKernel(
   const mergedMemoryContext = [memoryContext, taskMemoryOverlay]
     .filter((s): s is string => typeof s === "string" && s.length > 0)
     .join("\n\n") || undefined;
+  const modelStateContext = buildModelStateContext(config);
+  const compressionStateContext = buildCompressionStateContext(options.sessionContextState);
   const taskIntentContextForAgent = (agentId: string) => {
     const taskIntent = config.metadata.taskIntent as TaskIntent | undefined;
     const delegationContext = buildDelegationGuidance(config, agentId);
@@ -2254,7 +2371,7 @@ export async function executeRuntimeKernel(
 
   const withAgentRuntimeContext = (
     system: string,
-    params: { agentId: string; customAgentId?: string },
+    params: { agentId: string; nodeId?: string; customAgentId?: string },
     overrideToolIds?: string[],
   ) => {
     const customOverlay = customAgentOverlayFor(params.customAgentId);
@@ -2264,7 +2381,7 @@ export async function executeRuntimeKernel(
           params.agentId,
           config.toolIds.filter((toolId) => overrideToolIds.includes(toolId)),
         )
-      : effectiveAgentToolIds(params.agentId, params.customAgentId);
+      : effectiveAgentToolIds(params.agentId, params.nodeId, params.customAgentId);
     const configSkillIds = effectiveAgentSkillIds(params.agentId, params.customAgentId);
     const toolPrompt = runtimeToolExecutor.systemPrompt(toolIds);
     const availableSkills = skillRegistry.list({ enabledOnly: true });
@@ -2287,9 +2404,11 @@ export async function executeRuntimeKernel(
       temporalContext,
       memoryContext: mergedMemoryContext,
       taskIntentContext: taskIntentContextForAgent(params.agentId),
+      modelStateContext,
       availableSkills,
       toolProtocol: toolPrompt,
       skillSnippets: snippets,
+      compressionStateContext,
       toolIds,
       cache: promptCache,
     });
@@ -2381,6 +2500,69 @@ export async function executeRuntimeKernel(
       prompt: params.prompt,
       system: params.system,
     });
+    const agentInvocationStartedAt = now();
+    const effectiveCustomAgentId = customAgentIdForAgent(params.agentId, params.customAgentId);
+    const effectiveNodeId = params.planItemId ?? params.agentId;
+    const effectiveVisibility = effectiveAgentToolVisibility(
+      params.agentId,
+      effectiveNodeId,
+      effectiveCustomAgentId,
+      params.toolIds,
+    );
+    const effectiveToolIds = params.toolIds
+      ? restrictToolsForAgentBoundary(params.agentId, effectiveVisibility.visibleToolIds)
+      : effectiveVisibility.visibleToolIds;
+    const currentChildSession = params.agentId === ORA_ROOT_AGENT_ID
+      ? undefined
+      : kernelRuntimeContext.childSession(params.agentId);
+    const modeStageChildSessionBase = params.agentId !== ORA_ROOT_AGENT_ID
+      && currentChildSession?.authoritySource !== "dynamic_spawn"
+      ? {
+          agentId: params.agentId,
+          label: currentChildSession?.label ?? params.title,
+          sessionClass: currentChildSession?.sessionClass ?? "mode_subagent" as const,
+          coordinationBarrier: "required" as const,
+          delegationKind: currentChildSession?.delegationKind ?? "mode_stage" as const,
+          authoritySource: currentChildSession?.authoritySource ?? "mode_stage" as const,
+          requestedToolPreset: currentChildSession?.requestedToolPreset ?? effectiveVisibility.presetId,
+          resolvedToolPreset: currentChildSession?.resolvedToolPreset ?? effectiveVisibility.presetId,
+          resolvedToolIds: effectiveToolIds,
+        }
+      : undefined;
+    const syncModeStageChild = (patch: {
+      status: ChildSessionSummary["status"];
+      summary?: string;
+      lastMessage?: string;
+      usedToolCount?: number;
+      artifactIds?: string[];
+      durationMs?: number;
+    }) => {
+      if (!modeStageChildSessionBase) {
+        return;
+      }
+      updateCollaborationState({
+        ...modeStageChildSessionBase,
+        status: patch.status,
+        summary: patch.summary,
+        lastMessage: patch.lastMessage,
+        usedToolCount: patch.usedToolCount,
+        artifactIds: patch.artifactIds,
+        durationMs: patch.durationMs,
+      });
+      kernelRuntimeContext.setBackgroundChildRuntimeMetadata({
+        agentId: params.agentId,
+        parentAgentId: ORA_ROOT_AGENT_ID,
+        coordinationBarrier: modeStageChildSessionBase.coordinationBarrier,
+        delegationKind: modeStageChildSessionBase.delegationKind,
+        authoritySource: modeStageChildSessionBase.authoritySource,
+        requestedToolPreset: modeStageChildSessionBase.requestedToolPreset,
+        resolvedToolPreset: modeStageChildSessionBase.resolvedToolPreset,
+      });
+    };
+    syncModeStageChild({
+      status: "running",
+      summary: "子 Agent 正在执行任务。",
+    });
 
     kernelRuntimeContext.activateAgent(params.agentId);
     setTopologyStatus(params.agentId, "running");
@@ -2460,27 +2642,24 @@ export async function executeRuntimeKernel(
     });
     while (true) {
       try {
-        const effectiveCustomAgentId = customAgentIdForAgent(params.agentId, params.customAgentId);
-        const effectiveToolIds = params.toolIds
-          ? restrictToolsForAgentBoundary(
-              params.agentId,
-              config.toolIds.filter((toolId) => params.toolIds?.includes(toolId)),
-            )
-          : effectiveAgentToolIds(params.agentId, effectiveCustomAgentId);
         const runtimePromptContext = withAgentRuntimeContext(params.system, {
           agentId: params.agentId,
+          nodeId: effectiveNodeId,
           customAgentId: effectiveCustomAgentId,
         }, params.toolIds);
         const response = await runNodeRuntimeLoopForAgent({
           runId,
           agentId: params.agentId,
-          nodeId: params.planItemId ?? params.agentId,
+          nodeId: effectiveNodeId,
           title: params.title,
           prompt: promptWithTurnLocalMetadata(params.prompt, turnLocalMetadata),
           system: runtimePromptContext.system,
           providerCache: runtimePromptContext.stablePrefix
             ? { stableSystemPrefix: runtimePromptContext.stablePrefix }
             : undefined,
+          cacheDiagnosticsContext: {
+            derivedContextBlocks: runtimePromptContext.cacheDiagnosticsContext.derivedContextBlocks,
+          },
           toolIds: effectiveToolIds,
           timeoutMs:
             resolvedModeSpec.nodes.find(
@@ -2581,11 +2760,26 @@ export async function executeRuntimeKernel(
           { title: params.title },
           { agentId: params.agentId, nodeId: params.agentId },
         );
+        const toolStats = collectChildExecutionStats(params.agentId);
+        syncModeStageChild({
+          status: "succeeded",
+          summary: cleanedText.trim() || `${params.title} 已完成。`,
+          lastMessage: cleanedText.trim() || undefined,
+          usedToolCount: toolStats.usedToolCount,
+          artifactIds: toolStats.artifactIds,
+          durationMs: Math.max(0, now() - agentInvocationStartedAt),
+        });
         kernelRuntimeContext.deactivateAgent(params.agentId);
         setTopologyStatus(params.agentId, "done");
         return response.text;
       } catch (error) {
         if (isRecoveryExhaustedError(error)) {
+          syncModeStageChild({
+            status: "failed",
+            summary: error instanceof Error ? error.message : String(error),
+            lastMessage: error instanceof Error ? error.message : String(error),
+            durationMs: Math.max(0, now() - agentInvocationStartedAt),
+          });
           kernelRuntimeContext.deactivateAgent(params.agentId);
           setTopologyStatus(params.agentId, "failed");
           throw error;
@@ -2594,6 +2788,12 @@ export async function executeRuntimeKernel(
           isApprovalInterruptError(error) ||
           isClarificationInterruptError(error)
         ) {
+          syncModeStageChild({
+            status: "cancelled",
+            summary: error instanceof Error ? error.message : String(error),
+            lastMessage: error instanceof Error ? error.message : String(error),
+            durationMs: Math.max(0, now() - agentInvocationStartedAt),
+          });
           emitDelegatedAgentState("interrupted", {
             agentId: params.agentId,
             title: params.title,
@@ -2650,6 +2850,12 @@ export async function executeRuntimeKernel(
         }
 
         if (recoveryDecision.action !== "fallback_artifact") {
+          syncModeStageChild({
+            status: "failed",
+            summary: detail,
+            lastMessage: detail,
+            durationMs: Math.max(0, now() - agentInvocationStartedAt),
+          });
           kernelRuntimeContext.deactivateAgent(params.agentId);
           setTopologyStatus(params.agentId, "failed");
           throw error;
@@ -2703,6 +2909,12 @@ export async function executeRuntimeKernel(
           title: params.title,
           detail,
         });
+        syncModeStageChild({
+          status: "succeeded",
+          summary: visibleFallback,
+          lastMessage: visibleFallback,
+          durationMs: Math.max(0, now() - agentInvocationStartedAt),
+        });
         kernelRuntimeContext.deactivateAgent(params.agentId);
         setTopologyStatus(params.agentId, "done");
         throw new AgentDegradedError(visibleFallback, {
@@ -2718,29 +2930,269 @@ export async function executeRuntimeKernel(
   const MAX_SPAWN_DEPTH = 3;
   let isNestedAgentSpawn = false;
   let subAgentCounter = 0;
-  const CHILD_TOOL_BUNDLES: Record<AgentToolBundleId, ChildToolBundleDefinition> = {
-    research_readonly: {
-      toolIds: ["file.read", "file.list", "file.glob", "file.grep", "web.fetch", "web.search"],
-      requiredToolIds: ["file.read", "file.grep"],
-    },
-    repo_forensics: {
-      toolIds: ["file.read", "file.list", "file.glob", "file.grep", "shell.execute", "web.fetch", "web.search"],
-      requiredToolIds: ["file.read", "shell.execute"],
-    },
-    review_readonly: {
-      toolIds: ["file.read", "file.list", "file.glob", "file.grep"],
-      requiredToolIds: ["file.read", "file.grep"],
-    },
-    builder_write: {
-      toolIds: ["file.read", "file.list", "file.glob", "file.grep", "file.write", "file.patch", "file.apply_patch", "shell.execute"],
-      requiredToolIds: ["file.read", "file.apply_patch"],
-    },
-  };
   const DEFAULT_RESULT_CONTRACT_BY_BUNDLE: Record<AgentToolBundleId, AgentResultContract> = {
     research_readonly: "final_answer",
     repo_forensics: "evidence_report",
     review_readonly: "evidence_report",
     builder_write: "diff_report",
+  };
+  const READONLY_SPAWN_BUNDLES = new Set<AgentToolBundleId>([
+    "research_readonly",
+    "repo_forensics",
+    "review_readonly",
+  ]);
+  const MUTATING_TOOL_IDS = new Set(["file.write", "file.patch", "file.apply_patch"]);
+  const URL_PATTERN = /https?:\/\/[^\s<>"')\]]+/gi;
+
+  const uniqueStrings = (values: readonly string[]): string[] => [...new Set(values.filter((value) => value.length > 0))];
+
+  const normalizeUrl = (value: string): string | undefined => {
+    try {
+      const parsed = new URL(value.trim());
+      parsed.hash = "";
+      return parsed.toString();
+    } catch {
+      return undefined;
+    }
+  };
+
+  const extractUrls = (text: string): string[] =>
+    uniqueStrings(
+      [...text.matchAll(URL_PATTERN)]
+      .map((match) => normalizeUrl(match[0]))
+      .filter((value): value is string => typeof value === "string"),
+    );
+
+  const normalizePathValue = (value: string): string => path.posix.normalize(value.trim().replaceAll("\\", "/"));
+
+  const normalizeCasefold = (value: string): string => value.trim().replace(/\s+/g, " ").toLowerCase();
+
+  const defaultNormalizationForSubjectKind = (
+    kind: "url" | "file" | "artifact" | "entity" | "topic" | "document",
+  ): "url_canonical" | "path_canonical" | "casefold" | "none" => {
+    switch (kind) {
+      case "url":
+        return "url_canonical";
+      case "file":
+      case "document":
+        return "path_canonical";
+      case "entity":
+      case "topic":
+        return "casefold";
+      default:
+        return "none";
+    }
+  };
+
+  const normalizeValueWithMode = (
+    value: string,
+    normalization: "auto" | "none" | "url_canonical" | "path_canonical" | "casefold" | undefined,
+    defaultMode: "url_canonical" | "path_canonical" | "casefold" | "none",
+  ): string => {
+    const mode = normalization && normalization !== "auto" ? normalization : defaultMode;
+    switch (mode) {
+      case "url_canonical":
+        return normalizeUrl(value) ?? value.trim();
+      case "path_canonical":
+        return normalizePathValue(value);
+      case "casefold":
+        return normalizeCasefold(value);
+      case "none":
+      default:
+        return value.trim();
+    }
+  };
+
+  const effectiveValidationPolicyForContract = (
+    contract: AgentSpawnContract,
+  ): "enforce" | "diagnostics_only" =>
+    contract.validationPolicy ?? (contract.source === "inferred" ? "diagnostics_only" : "enforce");
+
+  const normalizeSpawnContract = (contract: AgentSpawnContract | undefined): AgentSpawnContract | undefined => {
+    if (!contract) {
+      return undefined;
+    }
+    const normalizedSubject = contract.subject
+      ? {
+          ...contract.subject,
+          normalization: contract.subject.normalization ?? "auto",
+          normalizedValue: normalizeValueWithMode(
+            contract.subject.normalizedValue ?? contract.subject.value,
+            contract.subject.normalization,
+            defaultNormalizationForSubjectKind(contract.subject.kind),
+          ),
+        }
+      : undefined;
+    const normalizedBindings = contract.resourceBindings.map((binding: AgentSpawnContract["resourceBindings"][number]) => ({
+      ...binding,
+      ...(binding.locator === "value"
+        ? {
+            normalization: binding.normalization ?? "auto",
+            normalizedValue: normalizeValueWithMode(
+              binding.normalizedValue ?? binding.value,
+              binding.normalization,
+              defaultNormalizationForSubjectKind(binding.kind),
+            ),
+          }
+        : {}),
+    }));
+    return AgentSpawnContractSchema.parse({
+      ...contract,
+      requiredAffordances: uniqueStrings(contract.requiredAffordances),
+      resourceBindings: normalizedBindings,
+      resultRules: uniqueStrings(contract.resultRules),
+      subject: normalizedSubject,
+      validationPolicy: effectiveValidationPolicyForContract(contract),
+    });
+  };
+
+  const inferSpawnContract = (params: {
+    prompt: string;
+    description: string;
+    toolBundle?: AgentToolBundleId;
+    resolvedToolIds?: readonly string[];
+    explicitContract?: AgentSpawnContract;
+  }): AgentSpawnContract | undefined => {
+    if (params.explicitContract) {
+      return normalizeSpawnContract(params.explicitContract);
+    }
+    const requiredAffordances = new Set<AgentSpawnAffordance>();
+    const resultRules = new Set<"subject_match_required" | "resource_binding_match_required" | "source_reference_required">();
+    const allText = `${params.description}\n${params.prompt}`;
+    const firstUrl = extractUrls(allText)[0];
+    const scriptLike = /(?:\/|\b)(?:[^\s]+\.sh)\b|(?:^|\s)(?:bash|zsh|sh|python3?|node|pnpm|npm|yarn)\b/i.test(allText);
+    if (scriptLike) {
+      requiredAffordances.add("shell_execute");
+    }
+    if (firstUrl) {
+      requiredAffordances.add("web_read");
+      resultRules.add("subject_match_required");
+      resultRules.add("source_reference_required");
+      resultRules.add("resource_binding_match_required");
+    }
+    const sideEffectPolicy = params.toolBundle && READONLY_SPAWN_BUNDLES.has(params.toolBundle)
+      ? "none"
+      : undefined;
+    const subject = firstUrl
+      ? {
+          kind: "url" as const,
+          value: firstUrl,
+          normalization: "url_canonical" as const,
+          normalizedValue: firstUrl,
+        }
+      : undefined;
+    const resourceBindings = firstUrl
+      ? [{ locator: "value" as const, kind: "url" as const, value: firstUrl, normalization: "url_canonical" as const, normalizedValue: firstUrl, required: true }]
+      : [];
+    if (
+      requiredAffordances.size === 0 &&
+      !subject &&
+      resourceBindings.length === 0 &&
+      !sideEffectPolicy &&
+      (!params.resolvedToolIds || !params.resolvedToolIds.length)
+    ) {
+      return undefined;
+    }
+    return normalizeSpawnContract({
+      source: "inferred",
+      requiredAffordances: [...requiredAffordances],
+      subject,
+      resourceBindings,
+      sideEffectPolicy,
+      resultRules: [...resultRules],
+      validationPolicy: "diagnostics_only",
+    });
+  };
+
+  const resolvedToolsSatisfyAffordance = (
+    resolvedToolIds: readonly string[],
+    affordance: AgentSpawnAffordance,
+  ): boolean => {
+    switch (affordance) {
+      case "repo_read":
+        return resolvedToolIds.includes("file.read");
+      case "repo_search":
+        return resolvedToolIds.includes("file.list")
+          || resolvedToolIds.includes("file.glob")
+          || resolvedToolIds.includes("file.grep");
+      case "repo_explore":
+        return resolvedToolIds.includes("repo.explore");
+      case "web_read":
+        return resolvedToolIds.includes("web.fetch") || resolvedToolIds.includes("web.search");
+      case "shell_execute":
+        return resolvedToolIds.includes("shell.execute");
+      case "workspace_write":
+        return resolvedToolIds.some((toolId) => MUTATING_TOOL_IDS.has(toolId));
+      default:
+        return false;
+    }
+  };
+
+  const evaluateSpawnContractForTooling = (params: {
+    contract?: AgentSpawnContract;
+    resolvedToolIds: readonly string[];
+  }): {
+    blocked: boolean;
+    diagnosticType?: string;
+    message?: string;
+    violations: AgentSpawnContractViolation[];
+  } => {
+    const contract = params.contract;
+    if (!contract) {
+      return { blocked: false, violations: [] };
+    }
+    const violations: AgentSpawnContractViolation[] = [];
+    const missingAffordances = contract.requiredAffordances.filter((affordance: AgentSpawnAffordance) =>
+      !resolvedToolsSatisfyAffordance(params.resolvedToolIds, affordance)
+    );
+    if (missingAffordances.length > 0) {
+      violations.push({
+        code: "missing_required_affordance",
+        message: `Missing required affordances: ${missingAffordances.join(", ")}.`,
+      });
+    }
+    if ((contract.resultRules.includes("subject_match_required") || contract.resultRules.includes("source_reference_required")) && !contract.subject) {
+      violations.push({
+        code: "subject_unbound",
+        message: "The spawn contract requires a bound subject, but no subject was provided or inferred.",
+      });
+    }
+    if (
+      contract.sideEffectPolicy === "none" &&
+      params.resolvedToolIds.some((toolId) => MUTATING_TOOL_IDS.has(toolId))
+    ) {
+      violations.push({
+        code: "side_effect_not_allowed",
+        message: "The spawn contract forbids workspace side effects, but the resolved tool surface includes mutation tools.",
+      });
+    }
+    if (
+      contract.resultRules.includes("resource_binding_match_required") &&
+      contract.resourceBindings.filter((binding: AgentSpawnContract["resourceBindings"][number]) => binding.required).length === 0
+    ) {
+      violations.push({
+        code: "resource_binding_missing",
+        message: "The spawn contract requires explicit resource bindings, but none were resolved.",
+      });
+    }
+    if (violations.length === 0) {
+      return { blocked: false, violations };
+    }
+    const primary = violations[0];
+    const diagnosticType =
+      primary.code === "missing_required_affordance"
+        ? "spawn_affordance_mismatch"
+        : primary.code === "side_effect_not_allowed"
+          ? "spawn_side_effect_violation"
+          : primary.code === "resource_binding_missing"
+            ? "spawn_resource_binding_missing"
+            : "spawn_subject_unbound";
+    return {
+      blocked: true,
+      diagnosticType,
+      message: primary.message,
+      violations,
+    };
   };
 
   const updateCollaborationState = (params: {
@@ -2752,8 +3204,15 @@ export async function executeRuntimeKernel(
     summary?: string;
     lastMessage?: string;
     artifactIds?: string[];
+    delegationKind?: ChildSessionDelegationKind;
+    authoritySource?: ChildSessionAuthoritySource;
     toolBundleId?: AgentToolBundleId;
+    requestedToolPreset?: ChildSessionSummary["requestedToolPreset"];
+    resolvedToolPreset?: ChildSessionSummary["resolvedToolPreset"];
     resolvedToolIds?: string[];
+    spawnContract?: AgentSpawnContract;
+    spawnPreflight?: AgentSpawnPreflightResult;
+    spawnValidation?: AgentSpawnResultValidation;
     resultContract?: AgentResultContract;
     deliveryStatus?: ChildSessionSummary["deliveryStatus"];
     usedToolCount?: number;
@@ -2766,13 +3225,20 @@ export async function executeRuntimeKernel(
       agentId: params.agentId,
       label: params.label,
       sessionClass: params.sessionClass,
+      delegationKind: params.delegationKind ?? current?.delegationKind,
+      authoritySource: params.authoritySource ?? current?.authoritySource,
       status: params.status,
       deliveryStatus: params.deliveryStatus ?? current?.deliveryStatus,
       summary: params.summary ?? current?.summary,
       lastMessage: params.lastMessage ?? current?.lastMessage,
       artifactIds: params.artifactIds ?? current?.artifactIds ?? [],
       toolBundleId: params.toolBundleId ?? current?.toolBundleId,
+      requestedToolPreset: params.requestedToolPreset ?? current?.requestedToolPreset,
+      resolvedToolPreset: params.resolvedToolPreset ?? current?.resolvedToolPreset,
       resolvedToolIds: params.resolvedToolIds ?? current?.resolvedToolIds ?? [],
+      spawnContract: params.spawnContract ?? current?.spawnContract,
+      spawnPreflight: params.spawnPreflight ?? current?.spawnPreflight,
+      spawnValidation: params.spawnValidation ?? current?.spawnValidation,
       resultContract: params.resultContract ?? current?.resultContract,
       usedToolCount: params.usedToolCount ?? current?.usedToolCount,
       durationMs: params.durationMs ?? current?.durationMs,
@@ -2794,22 +3260,42 @@ export async function executeRuntimeKernel(
     kernelRuntimeContext.setBackgroundChildRuntimeMetadata({
       agentId: params.agentId,
       coordinationBarrier: params.coordinationBarrier,
+      delegationKind: params.delegationKind,
+      authoritySource: params.authoritySource,
+      requestedToolPreset: params.requestedToolPreset,
+      resolvedToolPreset: params.resolvedToolPreset,
+      spawnContract: params.spawnContract,
+      spawnValidation: params.spawnValidation,
     });
     return next;
   };
 
   const resolvedSpawnTooling = (params: {
     agentId: string;
+    parentAgentId: string;
+    description: string;
+    prompt: string;
     toolBundle?: AgentToolBundleId;
     toolIds?: string[];
     resultContract?: AgentResultContract;
+    spawnContract?: AgentSpawnContract;
   }): {
     toolBundleId?: AgentToolBundleId;
     resolvedToolIds?: string[];
+    spawnContract?: AgentSpawnContract;
+    spawnPreflight?: AgentSpawnPreflightResult;
     resultContract: AgentResultContract;
+    blockedResult?: Record<string, unknown>;
   } => {
     if (!params.toolBundle && !params.toolIds?.length) {
+      const inferredContract = inferSpawnContract({
+        prompt: params.prompt,
+        description: params.description,
+        resolvedToolIds: undefined,
+        explicitContract: params.spawnContract,
+      });
       return {
+        spawnContract: inferredContract,
         resultContract: params.resultContract ?? "final_answer",
       };
     }
@@ -2821,30 +3307,147 @@ export async function executeRuntimeKernel(
       if (params.toolIds?.length && resolvedToolIds.length === 0) {
         throw new Error("agent.spawn custom tool_ids resolved to no executable tools in the current run.");
       }
+      const spawnContract = inferSpawnContract({
+        prompt: params.prompt,
+        description: params.description,
+        resolvedToolIds,
+        explicitContract: params.spawnContract,
+      });
+      const contractAssessment = evaluateSpawnContractForTooling({
+        contract: spawnContract,
+        resolvedToolIds,
+      });
+      const resolvedResultContract = params.resultContract ?? "final_answer";
+      if (contractAssessment.blocked) {
+        return {
+          resolvedToolIds,
+          spawnContract,
+          resultContract: resolvedResultContract,
+          blockedResult: {
+            status: "blocked",
+            agent_id: params.agentId,
+            authority_source: "dynamic_spawn",
+            diagnostic_type: contractAssessment.diagnosticType,
+            resolved_tool_ids: resolvedToolIds,
+            result_contract: resolvedResultContract,
+            spawn_contract: spawnContract,
+            contract_violations: contractAssessment.violations,
+            message: `agent.spawn blocked: ${contractAssessment.message}`,
+            suggested_next_step: "Adjust the child contract or tool surface so the delegated task is structurally executable.",
+          },
+        };
+      }
       return {
         resolvedToolIds,
-        resultContract: params.resultContract ?? "final_answer",
+        spawnContract,
+        resultContract: resolvedResultContract,
       };
     }
-    const bundle = CHILD_TOOL_BUNDLES[params.toolBundle];
-    const bundleToolIds = restrictToolsForAgentBoundary(
-      params.agentId,
-      config.toolIds.filter((toolId) => bundle.toolIds.includes(toolId)),
-    );
-    const missingRequired = (bundle.requiredToolIds ?? []).filter((toolId) => !bundleToolIds.includes(toolId));
-    if (missingRequired.length > 0) {
-      throw new Error(`agent.spawn tool bundle "${params.toolBundle}" requires unavailable tools: ${missingRequired.join(", ")}`);
-    }
+    const bundle = resolveChildToolBundleDefinition({
+      bundleId: params.toolBundle,
+      availableToolIds: config.toolIds,
+      toolDescriptors: toolRegistry.list(),
+      taskIntent: resolvedTaskIntent,
+      isNestedAgentSpawn,
+    });
+    const bundleToolIds = restrictToolsForAgentBoundary(params.agentId, bundle.toolIds);
+    const preflight: AgentSpawnPreflightResult = {
+      ...bundle.preflight,
+      resolvedToolIds: bundleToolIds,
+      missingToolIds: bundle.preflight.missingToolIds.filter((toolId: string) => !bundleToolIds.includes(toolId)),
+    };
     const requestedToolIds = params.toolIds?.length
       ? bundleToolIds.filter((toolId) => params.toolIds?.includes(toolId))
       : bundleToolIds;
-    if (requestedToolIds.length === 0) {
+    const spawnContract = inferSpawnContract({
+      prompt: params.prompt,
+      description: params.description,
+      toolBundle: params.toolBundle,
+      resolvedToolIds: requestedToolIds,
+      explicitContract: params.spawnContract,
+    });
+    emit(
+      "agent_spawn_preflight.completed",
+      AgentSpawnPreflightTelemetrySchema.parse({
+        ...preflight,
+        modeId: config.modeId,
+        taskIntent: resolvedTaskIntent,
+        parentAgentId: params.parentAgentId,
+        nestedSpawn: isNestedAgentSpawn,
+        spawnContract,
+      }),
+      { agentId: params.parentAgentId, nodeId: params.parentAgentId },
+    );
+    if (requestedToolIds.length === 0 && preflight.status !== "blocked") {
       throw new Error(`agent.spawn tool bundle "${params.toolBundle}" resolved to no executable tools in the current run.`);
+    }
+    const resolvedResultContract = params.resultContract ?? DEFAULT_RESULT_CONTRACT_BY_BUNDLE[params.toolBundle];
+    const contractAssessment = evaluateSpawnContractForTooling({
+      contract: spawnContract,
+      resolvedToolIds: requestedToolIds,
+    });
+    if (preflight.status === "blocked") {
+      const missingCaps = preflight.missingCapabilities.length > 0
+        ? preflight.missingCapabilities.join(", ")
+        : "required preset capabilities";
+      const suggestion = preflight.recommendedAlternativePreset
+        ? `Try tool_bundle="${preflight.recommendedAlternativePreset}" or stay in the parent's read-only surface.`
+        : "Stay in the parent's current tool surface or route this task to an environment with the needed capabilities.";
+      return {
+        toolBundleId: params.toolBundle,
+        resolvedToolIds: requestedToolIds,
+        spawnContract,
+        spawnPreflight: preflight,
+        resultContract: resolvedResultContract,
+        blockedResult: {
+          status: "blocked",
+          agent_id: params.agentId,
+          authority_source: "dynamic_spawn",
+          diagnostic_type: "spawn_authority_mismatch",
+          tool_bundle: params.toolBundle,
+          requested_tool_preset: preflight.requestedPreset,
+          resolved_tool_preset: preflight.resolvedPreset,
+          resolved_tool_ids: requestedToolIds,
+          result_contract: resolvedResultContract,
+          spawn_contract: spawnContract,
+          message: `agent.spawn blocked: preset "${params.toolBundle}" is unavailable because ${missingCaps} are missing.`,
+          recommended_alternative_preset: preflight.recommendedAlternativePreset,
+          suggested_next_step: suggestion,
+          preflight,
+        },
+      };
+    }
+    if (contractAssessment.blocked) {
+      return {
+        toolBundleId: params.toolBundle,
+        resolvedToolIds: requestedToolIds,
+        spawnContract,
+        spawnPreflight: preflight,
+        resultContract: resolvedResultContract,
+        blockedResult: {
+          status: "blocked",
+          agent_id: params.agentId,
+          authority_source: "dynamic_spawn",
+          diagnostic_type: contractAssessment.diagnosticType,
+          tool_bundle: params.toolBundle,
+          requested_tool_preset: preflight.requestedPreset,
+          resolved_tool_preset: preflight.resolvedPreset,
+          resolved_tool_ids: requestedToolIds,
+          result_contract: resolvedResultContract,
+          spawn_contract: spawnContract,
+          contract_violations: contractAssessment.violations,
+          message: `agent.spawn blocked: ${contractAssessment.message}`,
+          suggested_next_step: "Adjust the child contract or tool surface so the delegated task stays on the intended subject and resource boundary.",
+          preflight,
+        },
+      };
     }
     return {
       toolBundleId: params.toolBundle,
       resolvedToolIds: requestedToolIds,
-      resultContract: params.resultContract ?? DEFAULT_RESULT_CONTRACT_BY_BUNDLE[params.toolBundle],
+      spawnContract,
+      spawnPreflight: preflight,
+      resultContract: resolvedResultContract,
     };
   };
 
@@ -2871,15 +3474,215 @@ export async function executeRuntimeKernel(
     };
   };
 
+  const collectChildToolCalls = (agentId: string): OraToolCallEnvelope[] => {
+    const childSession = kernelRuntimeContext.childSession(agentId);
+    const startedAt = childSession?.startedAt;
+    const completedAt = now();
+    return kernelRuntimeContext.toolCalls.filter((call) =>
+      call.agentId === agentId &&
+      call.toolId !== "agent.spawn" &&
+      call.toolId !== "agent.wait" &&
+      call.toolId !== "message.send" &&
+      call.status !== "proposed" &&
+      (typeof startedAt !== "number" || call.requestedAt >= startedAt) &&
+      call.requestedAt <= completedAt
+    );
+  };
+
+  const collectObservedSpawnEvidence = (agentId: string): {
+    urls: string[];
+    paths: string[];
+    textValues: string[];
+    handles: Array<{ handleKind: "artifact" | "browser_session" | "browser_snapshot" | "child_session" | "run"; handleId: string }>;
+    mutatingToolIds: string[];
+  } => {
+    const toolCalls = collectChildToolCalls(agentId);
+    const urls = new Set<string>();
+    const paths = new Set<string>();
+    const textValues = new Set<string>();
+    const handles = new Map<string, { handleKind: "artifact" | "browser_session" | "browser_snapshot" | "child_session" | "run"; handleId: string }>();
+    const mutatingToolIds = new Set<string>();
+    const childSession = kernelRuntimeContext.childSession(agentId);
+
+    const recordHandle = (
+      handleKind: "artifact" | "browser_session" | "browser_snapshot" | "child_session" | "run",
+      handleId: string,
+    ) => {
+      const trimmed = handleId.trim();
+      if (!trimmed) return;
+      handles.set(`${handleKind}:${trimmed}`, { handleKind, handleId: trimmed });
+    };
+
+    const visit = (value: unknown, keyHint?: string) => {
+      if (typeof value === "string") {
+        textValues.add(normalizeCasefold(value));
+        for (const url of extractUrls(value)) {
+          urls.add(url);
+        }
+        if (keyHint && keyHint.toLowerCase().includes("path") && value.trim().length > 0) {
+          paths.add(normalizePathValue(value));
+        }
+        const normalizedKey = keyHint?.toLowerCase();
+        if (normalizedKey === "artifact_id" || normalizedKey === "artifactid") {
+          recordHandle("artifact", value);
+        } else if (normalizedKey === "browser_session_id" || normalizedKey === "browsersessionid") {
+          recordHandle("browser_session", value);
+        } else if (normalizedKey === "browser_snapshot_id" || normalizedKey === "browsersnapshotid" || normalizedKey === "snapshot_id" || normalizedKey === "snapshotid") {
+          recordHandle("browser_snapshot", value);
+        } else if (normalizedKey === "child_session_id" || normalizedKey === "childsessionid") {
+          recordHandle("child_session", value);
+        } else if (normalizedKey === "run_id" || normalizedKey === "runid") {
+          recordHandle("run", value);
+        }
+        return;
+      }
+      if (Array.isArray(value)) {
+        for (const item of value) {
+          visit(item, keyHint);
+        }
+        return;
+      }
+      if (value && typeof value === "object") {
+        for (const [key, nested] of Object.entries(value)) {
+          visit(nested, key);
+        }
+      }
+    };
+
+    for (const call of toolCalls) {
+      if (MUTATING_TOOL_IDS.has(call.toolId)) {
+        mutatingToolIds.add(call.toolId);
+      }
+      visit(call.args);
+      visit(call.result);
+    }
+    for (const artifactId of childSession?.artifactIds ?? []) {
+      recordHandle("artifact", artifactId);
+    }
+    if (childSession?.id) {
+      recordHandle("child_session", childSession.id);
+    }
+    if (childSession?.sourceRunId) {
+      recordHandle("run", childSession.sourceRunId);
+    }
+
+    return {
+      urls: [...urls],
+      paths: [...paths],
+      textValues: [...textValues],
+      handles: [...handles.values()],
+      mutatingToolIds: [...mutatingToolIds],
+    };
+  };
+
+  const validateSpawnContractResult = (params: {
+    agentId: string;
+    contract?: AgentSpawnContract;
+  }): AgentSpawnResultValidation | undefined => {
+    if (!params.contract) {
+      return undefined;
+    }
+    const observed = collectObservedSpawnEvidence(params.agentId);
+    const violations: AgentSpawnContractViolation[] = [];
+    const contract = params.contract;
+
+    if (contract.sideEffectPolicy === "none" && observed.mutatingToolIds.length > 0) {
+      violations.push({
+        code: "unexpected_workspace_mutation",
+        message: `The child used mutation tools despite side_effect_policy=none: ${observed.mutatingToolIds.join(", ")}.`,
+      });
+    }
+
+    const subject = contract.subject;
+    if (subject && contract.resultRules.includes("subject_match_required")) {
+      if (subject.kind === "url") {
+        const target = subject.normalizedValue ?? subject.value;
+        if (!observed.urls.includes(target)) {
+          violations.push({
+            code: "subject_mismatch",
+            message: `The child never touched the bound subject URL "${target}".`,
+          });
+        }
+      } else if (subject.kind === "file" || subject.kind === "document") {
+        const target = subject.normalizedValue ?? subject.value;
+        if (!observed.paths.includes(target)) {
+          violations.push({
+            code: "subject_mismatch",
+            message: `The child never touched the bound subject path "${target}".`,
+          });
+        }
+      } else if (subject.kind === "entity" || subject.kind === "topic") {
+        const target = subject.normalizedValue ?? subject.value;
+        if (!observed.textValues.some((value) => value.includes(target))) {
+          violations.push({
+            code: "subject_mismatch",
+            message: `The child never referenced the bound subject text "${target}".`,
+          });
+        }
+      }
+    }
+
+    if (contract.resultRules.includes("resource_binding_match_required")) {
+      for (const binding of contract.resourceBindings.filter((item: AgentSpawnContract["resourceBindings"][number]) => item.required)) {
+        const matched = binding.locator === "handle"
+          ? observed.handles.some((handle) => handle.handleKind === binding.handleKind && handle.handleId === binding.handleId)
+          : (() => {
+              const target = binding.normalizedValue ?? binding.value;
+              return binding.kind === "url"
+                ? observed.urls.includes(target)
+                : observed.paths.includes(target);
+            })();
+        if (!matched) {
+          violations.push({
+            code: "resource_binding_mismatch",
+            message:
+              binding.locator === "handle"
+                ? `The child result did not stay on the required ${binding.handleKind} handle "${binding.handleId}".`
+                : `The child result did not stay on the required ${binding.kind} binding "${binding.normalizedValue ?? binding.value}".`,
+          });
+        }
+      }
+    }
+
+    if (contract.resultRules.includes("source_reference_required")) {
+      const hasObservedReference = observed.urls.length > 0 || observed.paths.length > 0 || observed.handles.length > 0;
+      if (!hasObservedReference) {
+        violations.push({
+          code: "source_reference_missing",
+          message: "The child returned a result without any observable source reference or bound resource usage.",
+        });
+      }
+    }
+
+    return AgentSpawnResultValidationSchema.parse({
+      status: violations.length === 0 ? "passed" : "failed",
+      policy: effectiveValidationPolicyForContract(contract),
+      effect:
+        violations.length === 0
+          ? "none"
+          : effectiveValidationPolicyForContract(contract) === "diagnostics_only"
+            ? "warning"
+            : "blocked",
+      violations,
+      observedUrls: observed.urls,
+      observedPaths: observed.paths,
+      observedHandles: observed.handles,
+    });
+  };
+
   const validateChildResult = (params: {
     agentId: string;
     description: string;
     resultText: string;
     resultContract: AgentResultContract;
+    spawnContract?: AgentSpawnContract;
     toolBundleId?: AgentToolBundleId;
     resolvedToolIds?: string[];
     usedToolCount: number;
-  }): string => {
+  }): {
+    text: string;
+    spawnValidation?: AgentSpawnResultValidation;
+  } => {
     const trimmed = stripInternalAssistantText(params.resultText).trim();
     if (!trimmed || isInternalProviderAssistantText(params.resultText)) {
       throw new Error(`Sub-agent "${params.description || params.agentId}" produced only internal tool protocol text and no consumable answer.`);
@@ -2905,7 +3708,21 @@ export async function executeRuntimeKernel(
     ) {
       throw new Error(`Sub-agent "${params.description || params.agentId}" did not perform the expected repository forensics tool execution.`);
     }
-    return trimmed;
+    const spawnValidation = validateSpawnContractResult({
+      agentId: params.agentId,
+      contract: params.spawnContract,
+    });
+    if (spawnValidation?.status === "failed" && spawnValidation.effect === "blocked") {
+      throw new Error(`Sub-agent "${params.description || params.agentId}" violated the spawn contract: ${spawnValidation.violations.map((violation: AgentSpawnContractViolation) => violation.message).join(" ")}`);
+    }
+    const text = spawnValidation?.status === "failed" && spawnValidation.effect === "warning"
+      ? [
+          `[spawn validation warning] ${spawnValidation.violations.map((violation: AgentSpawnContractViolation) => violation.message).join(" ")}`,
+          "",
+          trimmed,
+        ].join("\n")
+      : trimmed;
+    return { text, spawnValidation };
   };
 
   type BackgroundSpawnEntry = {
@@ -2915,6 +3732,8 @@ export async function executeRuntimeKernel(
     prompt: string;
     sessionClass: ChildSessionClass;
     toolBundleId?: AgentToolBundleId;
+    spawnContract?: AgentSpawnContract;
+    spawnPreflight?: AgentSpawnPreflightResult;
     resultContract: AgentResultContract;
     resolvedToolIds?: string[];
     customSystemPrompt?: string;
@@ -2973,6 +3792,56 @@ export async function executeRuntimeKernel(
     ].join("\n");
   };
 
+  const applySpawnPreflightContext = (prompt: string, preflight?: AgentSpawnPreflightResult): string => {
+    if (!preflight || preflight.status !== "degraded") {
+      return prompt;
+    }
+    return [
+      "<spawn-preflight>",
+      `Requested tool bundle: ${preflight.requestedPreset}`,
+      `Resolved preset: ${preflight.resolvedPreset}`,
+      `Status: ${preflight.status}`,
+      `Missing capabilities: ${preflight.missingCapabilities.join(", ") || "none"}`,
+      `Applied degradations: ${preflight.appliedDegradations.join(", ") || "none"}`,
+      "Stay within the resolved tool surface and mention any material capability limit if it affects your answer.",
+      "</spawn-preflight>",
+      "",
+      prompt,
+    ].join("\n");
+  };
+
+  const applySpawnContractContext = (prompt: string, contract?: AgentSpawnContract): string => {
+    if (!contract) {
+      return prompt;
+    }
+    const lines = [
+      "<spawn-contract>",
+      `Contract source: ${contract.source}`,
+      `Required affordances: ${contract.requiredAffordances.join(", ") || "none"}`,
+      `Side-effect policy: ${contract.sideEffectPolicy ?? "unspecified"}`,
+      `Validation policy: ${effectiveValidationPolicyForContract(contract)}`,
+      `Result rules: ${contract.resultRules.join(", ") || "none"}`,
+    ];
+    if (contract.subject) {
+      lines.push(`Subject: ${contract.subject.kind}=${contract.subject.normalizedValue ?? contract.subject.value}`);
+    }
+    if (contract.resourceBindings.length > 0) {
+      lines.push(`Resource bindings: ${contract.resourceBindings.map((binding: AgentSpawnContract["resourceBindings"][number]) =>
+        binding.locator === "handle"
+          ? `${binding.handleKind}#${binding.handleId}`
+          : `${binding.kind}=${binding.normalizedValue ?? binding.value}`
+      ).join(", ")}`);
+    }
+    lines.push(
+      "Stay bound to the declared subject and resource bindings. If you cannot satisfy the contract with the resolved tools, say so explicitly instead of switching subjects or expanding side effects.",
+      "When source_reference_required is present, make sure the result is grounded in the bound subject/resource rather than unrelated prior artifacts.",
+      "</spawn-contract>",
+      "",
+      prompt,
+    );
+    return lines.join("\n");
+  };
+
   const launchBackgroundSpawn = (entry: BackgroundSpawnEntry): void => {
     const task = (async () => {
       const prevNestedSpawn = isNestedAgentSpawn;
@@ -2990,11 +3859,21 @@ export async function executeRuntimeKernel(
           status: "running",
           coordinationBarrier: "independent",
           summary: "后台子 Agent 正在执行任务。",
+          delegationKind: "dynamic_spawn",
+          authoritySource: "dynamic_spawn",
           toolBundleId: entry.toolBundleId,
+          requestedToolPreset: entry.spawnPreflight?.requestedPreset,
+          resolvedToolPreset: entry.spawnPreflight?.resolvedPreset,
           resolvedToolIds: entry.resolvedToolIds,
+          spawnContract: entry.spawnContract,
+          spawnPreflight: entry.spawnPreflight,
           resultContract: entry.resultContract,
         });
-        const runtimeCtx = withAgentRuntimeContext(entry.customSystemPrompt ?? "", { agentId: entry.effectiveAgentId });
+        const runtimeCtx = withAgentRuntimeContext(
+          entry.customSystemPrompt ?? "",
+          { agentId: entry.effectiveAgentId },
+          entry.customToolIds,
+        );
         const result = await callAgent({
           agentId: entry.effectiveAgentId,
           title: safeTitle,
@@ -3006,11 +3885,12 @@ export async function executeRuntimeKernel(
         const rawText = typeof result === "string" ? result : String(result ?? "");
         const stats = collectChildExecutionStats(entry.effectiveAgentId);
         const durationMs = Math.max(0, now() - startedAt);
-        const text = validateChildResult({
+        const validated = validateChildResult({
           agentId: entry.effectiveAgentId,
           description: entry.description,
           resultText: rawText,
           resultContract: entry.resultContract,
+          spawnContract: entry.spawnContract,
           toolBundleId: entry.toolBundleId,
           resolvedToolIds: entry.resolvedToolIds,
           usedToolCount: stats.usedToolCount,
@@ -3019,9 +3899,11 @@ export async function executeRuntimeKernel(
           targetAgentId: entry.parentAgentId,
           sourceAgentId: entry.effectiveAgentId,
           childSessionId: `${runId}:${entry.effectiveAgentId}`,
-          result: text,
+          result: validated.text,
           toolBundleId: entry.toolBundleId,
           resolvedToolIds: entry.resolvedToolIds,
+          spawnContract: entry.spawnContract,
+          spawnValidation: validated.spawnValidation,
           resultContract: entry.resultContract,
           usedToolCount: stats.usedToolCount,
           artifactIds: stats.artifactIds,
@@ -3033,10 +3915,17 @@ export async function executeRuntimeKernel(
           sessionClass: entry.sessionClass,
           status: "succeeded",
           coordinationBarrier: "independent",
-          summary: text.trim() || "后台子 Agent 已完成。",
-          lastMessage: text.trim() || undefined,
+          summary: validated.text.trim() || "后台子 Agent 已完成。",
+          lastMessage: validated.text.trim() || undefined,
+          delegationKind: "dynamic_spawn",
+          authoritySource: "dynamic_spawn",
           toolBundleId: entry.toolBundleId,
+          requestedToolPreset: entry.spawnPreflight?.requestedPreset,
+          resolvedToolPreset: entry.spawnPreflight?.resolvedPreset,
           resolvedToolIds: entry.resolvedToolIds,
+          spawnContract: entry.spawnContract,
+          spawnPreflight: entry.spawnPreflight,
+          spawnValidation: validated.spawnValidation,
           resultContract: entry.resultContract,
           deliveryStatus: "awaiting_pickup",
           usedToolCount: stats.usedToolCount,
@@ -3055,6 +3944,7 @@ export async function executeRuntimeKernel(
             result: text,
             toolBundleId: entry.toolBundleId,
             resolvedToolIds: entry.resolvedToolIds,
+            spawnContract: entry.spawnContract,
             resultContract: entry.resultContract,
             usedToolCount: stats.usedToolCount,
             artifactIds: stats.artifactIds,
@@ -3068,8 +3958,14 @@ export async function executeRuntimeKernel(
             coordinationBarrier: "independent",
             summary: text,
             lastMessage: text,
+            delegationKind: "dynamic_spawn",
+            authoritySource: "dynamic_spawn",
             toolBundleId: entry.toolBundleId,
+            requestedToolPreset: entry.spawnPreflight?.requestedPreset,
+            resolvedToolPreset: entry.spawnPreflight?.resolvedPreset,
             resolvedToolIds: entry.resolvedToolIds,
+            spawnContract: entry.spawnContract,
+            spawnPreflight: entry.spawnPreflight,
             resultContract: entry.resultContract,
             deliveryStatus: "awaiting_pickup",
             usedToolCount: stats.usedToolCount,
@@ -3087,6 +3983,7 @@ export async function executeRuntimeKernel(
             result: message,
             toolBundleId: entry.toolBundleId,
             resolvedToolIds: entry.resolvedToolIds,
+            spawnContract: entry.spawnContract,
             resultContract: entry.resultContract,
             usedToolCount: stats.usedToolCount,
             artifactIds: stats.artifactIds,
@@ -3100,8 +3997,14 @@ export async function executeRuntimeKernel(
             coordinationBarrier: "independent",
             summary: message,
             lastMessage: message,
+            delegationKind: "dynamic_spawn",
+            authoritySource: "dynamic_spawn",
             toolBundleId: entry.toolBundleId,
+            requestedToolPreset: entry.spawnPreflight?.requestedPreset,
+            resolvedToolPreset: entry.spawnPreflight?.resolvedPreset,
             resolvedToolIds: entry.resolvedToolIds,
+            spawnContract: entry.spawnContract,
+            spawnPreflight: entry.spawnPreflight,
             resultContract: entry.resultContract,
             deliveryStatus: "awaiting_pickup",
             usedToolCount: stats.usedToolCount,
@@ -3162,6 +4065,8 @@ export async function executeRuntimeKernel(
         title: kernelRuntimeContext.childSession(result.sourceAgentId)?.label ?? result.sourceAgentId,
         tool_bundle: result.toolBundleId,
         resolved_tool_ids: result.resolvedToolIds,
+        spawn_contract: result.spawnContract,
+        spawn_validation: result.spawnValidation,
         result_contract: result.resultContract,
         status: kernelRuntimeContext.childSession(result.sourceAgentId)?.status ?? "succeeded",
         delivery_status: "consumed",
@@ -3203,7 +4108,7 @@ export async function executeRuntimeKernel(
     })
   );
 
-  runtimeToolExecutor.setSpawnAgent(async ({ description, prompt, agentType, runInBackground, inheritContext, systemPrompt: customSystemPrompt, toolBundle, toolIds: requestedToolIds, resultContract, invokingAgentId }) => {
+  runtimeToolExecutor.setSpawnAgent(async ({ description, prompt, agentType, runInBackground, inheritContext, systemPrompt: customSystemPrompt, toolBundle, toolIds: requestedToolIds, resultContract, spawnContract, invokingAgentId }) => {
     const agentId = agentType ?? ORA_ROOT_AGENT_ID;
     if (agentId !== ORA_ROOT_AGENT_ID && !profilesById.has(agentId)) {
       throw new Error(`agent.spawn: unknown agent profile "${agentId}". Available: ${[...profilesById.keys()].join(", ")}`);
@@ -3211,11 +4116,18 @@ export async function executeRuntimeKernel(
     const parentAgentId = invokingAgentId || ORA_ROOT_AGENT_ID;
     const spawnTooling = resolvedSpawnTooling({
       agentId,
+      parentAgentId,
+      description,
+      prompt,
       toolBundle,
       toolIds: requestedToolIds,
       resultContract,
+      spawnContract,
     });
     const customToolIds = spawnTooling.resolvedToolIds;
+    if (spawnTooling.blockedResult) {
+      return spawnTooling.blockedResult;
+    }
 
     if (runInBackground) {
       if (spawnDepth + 1 > MAX_SPAWN_DEPTH) {
@@ -3238,6 +4150,13 @@ export async function executeRuntimeKernel(
         parentAgentId,
         inheritContext,
       });
+      const effectiveAsyncPromptWithPreflight = applySpawnContractContext(
+        applySpawnPreflightContext(
+          effectiveAsyncPrompt,
+          spawnTooling.spawnPreflight,
+        ),
+        spawnTooling.spawnContract,
+      );
       updateCollaborationState({
         agentId: queuedAgentId,
         label: description || agentLabel(queuedAgentId),
@@ -3245,8 +4164,14 @@ export async function executeRuntimeKernel(
         status: "queued",
         coordinationBarrier: "independent",
         summary: "已进入后台协作队列。",
+        delegationKind: "dynamic_spawn",
+        authoritySource: "dynamic_spawn",
         toolBundleId: spawnTooling.toolBundleId,
+        requestedToolPreset: spawnTooling.spawnPreflight?.requestedPreset,
+        resolvedToolPreset: spawnTooling.spawnPreflight?.resolvedPreset,
         resolvedToolIds: customToolIds,
+        spawnContract: spawnTooling.spawnContract,
+        spawnPreflight: spawnTooling.spawnPreflight,
         resultContract: spawnTooling.resultContract,
       });
       kernelRuntimeContext.registerBackgroundChild(parentAgentId, queuedAgentId);
@@ -3254,9 +4179,11 @@ export async function executeRuntimeKernel(
         effectiveAgentId: queuedAgentId,
         parentAgentId,
         description,
-        prompt: effectiveAsyncPrompt,
+        prompt: effectiveAsyncPromptWithPreflight,
         sessionClass,
         toolBundleId: spawnTooling.toolBundleId,
+        spawnContract: spawnTooling.spawnContract,
+        spawnPreflight: spawnTooling.spawnPreflight,
         resultContract: spawnTooling.resultContract,
         resolvedToolIds: customToolIds,
         customSystemPrompt,
@@ -3270,6 +4197,8 @@ export async function executeRuntimeKernel(
         description,
         tool_bundle: spawnTooling.toolBundleId,
         resolved_tool_ids: customToolIds ?? [],
+        spawn_contract: spawnTooling.spawnContract,
+        preflight: spawnTooling.spawnPreflight,
         result_contract: spawnTooling.resultContract,
       };
     }
@@ -3297,8 +4226,14 @@ export async function executeRuntimeKernel(
       status: "running",
       coordinationBarrier: "required",
       summary: "子 Agent 正在执行任务。",
+      delegationKind: "dynamic_spawn",
+      authoritySource: "dynamic_spawn",
       toolBundleId: spawnTooling.toolBundleId,
+      requestedToolPreset: spawnTooling.spawnPreflight?.requestedPreset,
+      resolvedToolPreset: spawnTooling.spawnPreflight?.resolvedPreset,
       resolvedToolIds: customToolIds,
+      spawnContract: spawnTooling.spawnContract,
+      spawnPreflight: spawnTooling.spawnPreflight,
       resultContract: spawnTooling.resultContract,
     });
 
@@ -3312,7 +4247,11 @@ export async function executeRuntimeKernel(
     const startedAt = now();
     try {
       const wasAlreadyActive = kernelRuntimeContext.activeAgents.includes(effectiveAgentId);
-      const runtimeCtx = withAgentRuntimeContext(customSystemPrompt ?? "", { agentId: effectiveAgentId });
+      const runtimeCtx = withAgentRuntimeContext(
+        customSystemPrompt ?? "",
+        { agentId: effectiveAgentId },
+        customToolIds,
+      );
       const MAX_TITLE_LENGTH = 200;
       const safeTitle = description.length > MAX_TITLE_LENGTH
         ? description.slice(0, MAX_TITLE_LENGTH)
@@ -3323,13 +4262,20 @@ export async function executeRuntimeKernel(
         parentAgentId,
         inheritContext,
       });
+      const effectiveSubPromptWithPreflight = applySpawnContractContext(
+        applySpawnPreflightContext(
+          effectiveSubPrompt,
+          spawnTooling.spawnPreflight,
+        ),
+        spawnTooling.spawnContract,
+      );
 
       let result: unknown;
       try {
         result = await callAgent({
           agentId: effectiveAgentId,
           title: safeTitle,
-          prompt: effectiveSubPrompt,
+          prompt: effectiveSubPromptWithPreflight,
           system: customSystemPrompt || runtimeCtx.system,
           riskLevel: "low",
           toolIds: customToolIds,
@@ -3346,8 +4292,14 @@ export async function executeRuntimeKernel(
             coordinationBarrier: "required",
             summary: caught instanceof Error ? caught.message : String(caught),
             lastMessage: caught instanceof Error ? caught.message : String(caught),
+            delegationKind: "dynamic_spawn",
+            authoritySource: "dynamic_spawn",
             toolBundleId: spawnTooling.toolBundleId,
+            requestedToolPreset: spawnTooling.spawnPreflight?.requestedPreset,
+            resolvedToolPreset: spawnTooling.spawnPreflight?.resolvedPreset,
             resolvedToolIds: customToolIds,
+            spawnContract: spawnTooling.spawnContract,
+            spawnPreflight: spawnTooling.spawnPreflight,
             resultContract: spawnTooling.resultContract,
             usedToolCount: collectChildExecutionStats(effectiveAgentId).usedToolCount,
             durationMs: Math.max(0, now() - startedAt),
@@ -3361,31 +4313,64 @@ export async function executeRuntimeKernel(
       const rawText = typeof result === "string" ? result : String(result ?? "");
       const stats = collectChildExecutionStats(effectiveAgentId);
       const durationMs = Math.max(0, now() - startedAt);
-      const text = validateChildResult({
-        agentId: effectiveAgentId,
-        description,
-        resultText: rawText,
-        resultContract: spawnTooling.resultContract,
-        toolBundleId: spawnTooling.toolBundleId,
-        resolvedToolIds: customToolIds,
-        usedToolCount: stats.usedToolCount,
-      });
-      updateCollaborationState({
-        agentId: effectiveAgentId,
-        label: description || agentLabel(effectiveAgentId),
-        sessionClass: agentType ? "mode_subagent" : "temporary_spawn",
-        status: "succeeded",
-        coordinationBarrier: "required",
-        summary: text.trim() || "子 Agent 已完成。",
-        lastMessage: text.trim() || undefined,
-        toolBundleId: spawnTooling.toolBundleId,
-        resolvedToolIds: customToolIds,
-        resultContract: spawnTooling.resultContract,
-        usedToolCount: stats.usedToolCount,
-        artifactIds: stats.artifactIds,
-        durationMs,
-      });
-      return text;
+      try {
+        const validated = validateChildResult({
+          agentId: effectiveAgentId,
+          description,
+          resultText: rawText,
+          resultContract: spawnTooling.resultContract,
+          spawnContract: spawnTooling.spawnContract,
+          toolBundleId: spawnTooling.toolBundleId,
+          resolvedToolIds: customToolIds,
+          usedToolCount: stats.usedToolCount,
+        });
+        updateCollaborationState({
+          agentId: effectiveAgentId,
+          label: description || agentLabel(effectiveAgentId),
+          sessionClass: agentType ? "mode_subagent" : "temporary_spawn",
+          status: "succeeded",
+          coordinationBarrier: "required",
+          summary: validated.text.trim() || "子 Agent 已完成。",
+          lastMessage: validated.text.trim() || undefined,
+          delegationKind: "dynamic_spawn",
+          authoritySource: "dynamic_spawn",
+          toolBundleId: spawnTooling.toolBundleId,
+          requestedToolPreset: spawnTooling.spawnPreflight?.requestedPreset,
+          resolvedToolPreset: spawnTooling.spawnPreflight?.resolvedPreset,
+          resolvedToolIds: customToolIds,
+          spawnContract: spawnTooling.spawnContract,
+          spawnPreflight: spawnTooling.spawnPreflight,
+          spawnValidation: validated.spawnValidation,
+          resultContract: spawnTooling.resultContract,
+          usedToolCount: stats.usedToolCount,
+          artifactIds: stats.artifactIds,
+          durationMs,
+        });
+        return validated.text;
+      } catch (caught) {
+        updateCollaborationState({
+          agentId: effectiveAgentId,
+          label: description || agentLabel(effectiveAgentId),
+          sessionClass: agentType ? "mode_subagent" : "temporary_spawn",
+          status: "failed",
+          coordinationBarrier: "required",
+          summary: caught instanceof Error ? caught.message : String(caught),
+          lastMessage: caught instanceof Error ? caught.message : String(caught),
+          delegationKind: "dynamic_spawn",
+          authoritySource: "dynamic_spawn",
+          toolBundleId: spawnTooling.toolBundleId,
+          requestedToolPreset: spawnTooling.spawnPreflight?.requestedPreset,
+          resolvedToolPreset: spawnTooling.spawnPreflight?.resolvedPreset,
+          resolvedToolIds: customToolIds,
+          spawnContract: spawnTooling.spawnContract,
+          spawnPreflight: spawnTooling.spawnPreflight,
+          resultContract: spawnTooling.resultContract,
+          usedToolCount: stats.usedToolCount,
+          artifactIds: stats.artifactIds,
+          durationMs,
+        });
+        throw caught;
+      }
     } finally {
       spawnDepth -= 1;
       isNestedAgentSpawn = prevNestedSpawn;
@@ -3445,7 +4430,7 @@ export async function executeRuntimeKernel(
         "Continue from the provided conversation and tool results.",
         "Do not restart earlier mode stages or repeat completed work.",
       ].join("\n"),
-      { agentId },
+      { agentId, nodeId },
     );
     const response = await runNodeRuntimeLoopForAgent({
       runId,
@@ -3461,7 +4446,10 @@ export async function executeRuntimeKernel(
       providerCache: runtimePromptContext.stablePrefix
         ? { stableSystemPrefix: runtimePromptContext.stablePrefix }
         : undefined,
-      toolIds: effectiveAgentToolIds(agentId),
+      cacheDiagnosticsContext: {
+        derivedContextBlocks: runtimePromptContext.cacheDiagnosticsContext.derivedContextBlocks,
+      },
+      toolIds: effectiveAgentToolIds(agentId, nodeId),
       timeoutMs:
         resolvedModeSpec.nodes.find((n) => n.id === nodeId)?.config.timeoutMs ??
         DEFAULT_NODE_TIMEOUT_MS,

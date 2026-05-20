@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { deriveSessionProjection, RuntimeSessionLedgerSchema, RuntimeWorkbenchBootstrapSchema, SessionDetailSchema, StateSnapshotSchema } from "@cemeworm/shared";
+import { createModeSpecFromPattern, deriveSessionProjection, RuntimeSessionLedgerSchema, RuntimeWorkbenchBootstrapSchema, SessionDetailSchema, StateSnapshotSchema } from "@cemeworm/shared";
 import type { RuntimeGateResolution } from "../src/runtime-gate-service.js";
 
 const capturedRequests: Array<{
@@ -13,6 +13,63 @@ const capturedRequests: Array<{
   modelRef?: string;
 }> = [];
 const titleResponses: Array<string | Error> = [];
+
+function buildMockProviderText(request: {
+  prompt?: string;
+  system?: string;
+  messages?: readonly { role: string; content: unknown }[];
+}): string | Error {
+  const messages = (request.messages ?? []).map((message) => ({
+    role: message.role,
+    content: typeof message.content === "string" ? message.content : JSON.stringify(message.content),
+  }));
+  const hasToolResult = messages.some((message) => message.content.includes("Workspace tool result for shell.execute"));
+  const requestText = [request.prompt ?? "", ...messages.map((message) => message.content)].join("\n");
+  const shouldEscapeShell = request.system?.includes("Workspace tool protocol:")
+    && requestText.includes("Try escaping shell")
+    && !hasToolResult;
+  const shouldCallShell = request.system?.includes("Workspace tool protocol:")
+    && requestText.includes("Count markdown with shell")
+    && !hasToolResult;
+  const isTitleRequest = request.system?.includes("Ora's conversation title generator");
+  const isCompactRequest = request.system?.includes("compressing an Ora session history");
+  const isMemoryUpdateRequest = request.system?.includes("Ora's memory updater");
+  const shouldReturnProposedPlan = requestText.includes("Return a proposed plan");
+  return isTitleRequest
+    ? titleResponses.shift() ?? "Generated Session Title"
+    : isCompactRequest
+    ? "SUMMARY: preserve the earlier long user goal and assistant answer."
+    : isMemoryUpdateRequest
+    ? JSON.stringify({
+        user: {
+          workContext: { summary: "", shouldUpdate: false },
+          personalContext: { summary: "", shouldUpdate: false },
+          topOfMind: { summary: "", shouldUpdate: false },
+        },
+        history: {
+          recentMonths: { summary: "", shouldUpdate: false },
+          earlierContext: { summary: "", shouldUpdate: false },
+          longTermBackground: { summary: "", shouldUpdate: false },
+        },
+        newFacts: [],
+        factsToRemove: [],
+      })
+    : shouldReturnProposedPlan
+      ? [
+          "<proposed_plan>",
+          "## Runtime status plan",
+          "1. Add shared attention projection.",
+          "2. Persist plan decision gates.",
+          "</proposed_plan>",
+        ].join("\n")
+    : shouldEscapeShell
+    ? JSON.stringify({ tool: "shell.execute", args: { command: "cat /etc/passwd" } })
+    : shouldCallShell
+    ? JSON.stringify({ tool: "shell.execute", args: { command: "rg --files -g '*.md'" } })
+    : hasToolResult
+      ? "There are 2 Markdown files."
+      : `reply:${request.prompt}`;
+}
 
 vi.mock("../src/providers/index.js", async () => {
   const actual = await vi.importActual<typeof import("../src/providers/index.js")>(
@@ -26,36 +83,7 @@ vi.mock("../src/providers/index.js", async () => {
         role: message.role,
         content: typeof message.content === "string" ? message.content : JSON.stringify(message.content),
       }));
-      const hasToolResult = messages.some((message) => message.content.includes("Workspace tool result for shell.execute"));
-      const requestText = [request.prompt ?? "", ...messages.map((message) => message.content)].join("\n");
-      const shouldEscapeShell = request.system?.includes("Workspace tool protocol:")
-        && requestText.includes("Try escaping shell")
-        && !hasToolResult;
-      const shouldCallShell = request.system?.includes("Workspace tool protocol:")
-        && requestText.includes("Count markdown with shell")
-        && !hasToolResult;
-      const isTitleRequest = request.system?.includes("Ora's conversation title generator");
-      const isCompactRequest = request.system?.includes("compressing an Ora session history");
-      const shouldReturnProposedPlan = requestText.includes("Return a proposed plan");
-      const text = isTitleRequest
-        ? titleResponses.shift() ?? "Generated Session Title"
-        : isCompactRequest
-        ? "SUMMARY: preserve the earlier long user goal and assistant answer."
-        : shouldReturnProposedPlan
-          ? [
-              "<proposed_plan>",
-              "## Runtime status plan",
-              "1. Add shared attention projection.",
-              "2. Persist plan decision gates.",
-              "</proposed_plan>",
-            ].join("\n")
-        : shouldEscapeShell
-        ? JSON.stringify({ tool: "shell.execute", args: { command: "cat /etc/passwd" } })
-        : shouldCallShell
-        ? JSON.stringify({ tool: "shell.execute", args: { command: "rg --files -g '*.md'" } })
-        : hasToolResult
-          ? "There are 2 Markdown files."
-          : `reply:${request.prompt}`;
+      const text = buildMockProviderText(request);
 
       capturedRequests.push({
         prompt: request.prompt,
@@ -71,6 +99,40 @@ vi.mock("../src/providers/index.js", async () => {
 
       return {
         providerId: config.providerId ?? "mock-provider",
+        providerType: "local_smoke",
+        modelId: config.modelRef ?? "mock-model",
+        text,
+        raw: {
+          prompt: request.prompt,
+          messages: request.messages ?? [],
+        },
+      };
+    }),
+    invokeRunProviderStream: vi.fn(async (config, request, callbacks) => {
+      const messages = (request.messages ?? []).map((message) => ({
+        role: message.role,
+        content: typeof message.content === "string" ? message.content : JSON.stringify(message.content),
+      }));
+      const text = buildMockProviderText(request);
+
+      capturedRequests.push({
+        prompt: request.prompt,
+        system: request.system ?? "",
+        messages,
+        providerId: config.providerId,
+        modelRef: config.modelRef,
+      });
+
+      if (text instanceof Error) {
+        throw text;
+      }
+
+      await callbacks?.onStreamEvent?.({ kind: "fallback_started", streamMode: "fallback_single" });
+      await callbacks?.onTextDelta?.({ delta: text, text, raw: { prompt: request.prompt } });
+
+      return {
+        providerId: config.providerId ?? "mock-provider",
+        providerType: "local_smoke",
         modelId: config.modelRef ?? "mock-model",
         text,
         raw: {
@@ -88,8 +150,40 @@ import { createRunningRunSnapshot } from "../src/run-snapshots.js";
 const FIXED_TIME = 1_700_000_000_000;
 const clock = () => FIXED_TIME;
 
+function localSmokeProviderConfig(providerId: string, modelId: string) {
+  return {
+    id: providerId,
+    type: "local_smoke" as const,
+    label: providerId,
+    modelId,
+    capabilities: ["chat"] as const,
+    headers: {},
+  };
+}
+
 function freshStoreDir(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), "ora-runtime-session-test-"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ora-runtime-session-test-"));
+  seedLegacyModes(dir);
+  return dir;
+}
+
+function seedLegacyModes(runtimeDataDir: string): void {
+  const rootDir = runtimeDataDir.endsWith(".db")
+    ? path.dirname(runtimeDataDir)
+    : runtimeDataDir;
+  const modesDir = path.join(rootDir, "modes");
+  fs.mkdirSync(modesDir, { recursive: true });
+  for (const pattern of ["generator_verifier", "orchestrator_subagent", "agent_teams", "shared_state"] as const) {
+    const modePath = path.join(modesDir, `${pattern}.json`);
+    if (fs.existsSync(modePath)) {
+      continue;
+    }
+    const spec = {
+      ...createModeSpecFromPattern(pattern),
+      systemPreset: false,
+    };
+    fs.writeFileSync(modePath, `${JSON.stringify(spec, null, 2)}\n`, "utf8");
+  }
 }
 
 function readSessionLedger(dir: string, sessionId: string) {
@@ -227,7 +321,12 @@ describe("session thread runtime behavior", () => {
     const run = await store.startRun({
       sessionId: session.sessionId,
       input: { prompt: "Ledger cutover smoke", createdAt: FIXED_TIME },
-      config: { modeId: "single_agent", providerId: "ledger-cutover-provider", modelRef: "mock-model" },
+      config: {
+        modeId: "single_agent",
+        providerId: "ledger-cutover-provider",
+        modelRef: "mock-model",
+        providerConfig: localSmokeProviderConfig("ledger-cutover-provider", "mock-model"),
+      },
     });
 
     const ledgerPath = path.join(dir, "sessions-ledger", `${session.sessionId}.jsonl`);
@@ -275,6 +374,7 @@ describe("session thread runtime behavior", () => {
         modeId: "single_agent",
         providerId: "gate-ledger-provider",
         modelRef: "gate-ledger-model",
+        providerConfig: localSmokeProviderConfig("gate-ledger-provider", "gate-ledger-model"),
         toolIds: ["file.write"],
         approvalMode: "high_risk_only",
       },
@@ -377,6 +477,7 @@ describe("session thread runtime behavior", () => {
         modeId: "single_agent",
         providerId: "gate-ledger-idempotence-provider",
         modelRef: "gate-ledger-idempotence-model",
+        providerConfig: localSmokeProviderConfig("gate-ledger-idempotence-provider", "gate-ledger-idempotence-model"),
         toolIds: ["file.write"],
         approvalMode: "high_risk_only",
       },
@@ -670,6 +771,7 @@ describe("session thread runtime behavior", () => {
         modeId: "single_agent",
         providerId: "clarification-closure-provider",
         modelRef: "clarification-closure-model",
+        providerConfig: localSmokeProviderConfig("clarification-closure-provider", "clarification-closure-model"),
       },
     }, async (args) => {
       const base = createRunningRunSnapshot({ ...args, clock });
@@ -791,6 +893,10 @@ describe("session thread runtime behavior", () => {
         modeId: "single_agent",
         providerId: "streaming-non-kernel-clarification-provider",
         modelRef: "streaming-non-kernel-clarification-model",
+        providerConfig: localSmokeProviderConfig(
+          "streaming-non-kernel-clarification-provider",
+          "streaming-non-kernel-clarification-model",
+        ),
       },
     }, async (args) => {
       const base = createRunningRunSnapshot({ ...args, clock: advancingClock });
@@ -855,6 +961,10 @@ describe("session thread runtime behavior", () => {
         modeId: "single_agent",
         providerId: "sqlite-clarification-closure-provider",
         modelRef: "sqlite-clarification-closure-model",
+        providerConfig: localSmokeProviderConfig(
+          "sqlite-clarification-closure-provider",
+          "sqlite-clarification-closure-model",
+        ),
       },
     }, async (args) => {
       const base = createRunningRunSnapshot({ ...args, clock });
@@ -928,6 +1038,7 @@ describe("session thread runtime behavior", () => {
         modeId: "single_agent",
         providerId: "approval-closure-provider",
         modelRef: "approval-closure-model",
+        providerConfig: localSmokeProviderConfig("approval-closure-provider", "approval-closure-model"),
         toolIds: ["file.write"],
         approvalMode: "high_risk_only",
       },
@@ -1698,6 +1809,10 @@ describe("session thread runtime behavior", () => {
         modeId: "single_agent",
         providerId: "candidate-gate-resolution-provider",
         modelRef: "candidate-gate-resolution-model",
+        providerConfig: localSmokeProviderConfig(
+          "candidate-gate-resolution-provider",
+          "candidate-gate-resolution-model",
+        ),
         metadata: { branchRole: "candidate", branchGroupId: "branch-candidate-gate-resolution" },
       },
     }, async (args) => {

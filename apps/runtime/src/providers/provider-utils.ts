@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import type { ModelTokenUsage, ProviderConfig } from "@cemeworm/shared";
-import type { ModelMessage, ModelRequest, ModelToolCall, ModelToolDefinition } from "./types.js";
+import type { DerivedContextBlock, ModelMessage, ModelRequest, ModelToolCall, ModelToolDefinition } from "./types.js";
 import { ProxyAgent } from "undici";
 
 export interface ProviderFetchContext {
@@ -236,14 +236,47 @@ export function openAiSystemMessages(params: {
   system?: string;
   instructions?: string;
   stableSystemPrefix?: string;
-}): Array<{ role: "system"; content: string }> {
+  derivedContextBlocks?: readonly DerivedContextBlock[];
+  stablePrefixRole?: "developer" | "system";
+}): Array<{
+  role: "developer" | "system";
+  content: string;
+  source: "stable_prefix" | "volatile_suffix" | "instruction_messages";
+}> {
   const system = params.system?.trim() ?? "";
   const instructions = params.instructions?.trim() ?? "";
   const { stablePrefix, suffix } = splitStableSystemPrompt(system, params.stableSystemPrefix);
+  const derivedContextBlocks = normalizeDerivedContextBlocks(params.derivedContextBlocks);
+  assertDerivedContextBlockPlacement({
+    system,
+    stablePrefix,
+    suffix,
+    instructions,
+    derivedContextBlocks,
+  });
+  const stablePrefixRole = params.stablePrefixRole ?? "system";
   return [
-    ...(stablePrefix ? [{ role: "system" as const, content: stablePrefix }] : []),
-    ...(suffix ? [{ role: "system" as const, content: suffix }] : []),
-    ...(instructions ? [{ role: "system" as const, content: instructions }] : []),
+    ...(stablePrefix
+      ? [{
+          role: stablePrefixRole,
+          content: stablePrefix,
+          source: "stable_prefix" as const,
+        }]
+      : []),
+    ...(suffix
+      ? [{
+          role: "system" as const,
+          content: suffix,
+          source: "volatile_suffix" as const,
+        }]
+      : []),
+    ...(instructions
+      ? [{
+          role: "system" as const,
+          content: instructions,
+          source: "instruction_messages" as const,
+        }]
+      : []),
   ];
 }
 
@@ -253,12 +286,16 @@ export interface ModelRequestCacheDiagnostics {
   fullSystemHash?: string;
   volatileSystemSuffixHash?: string;
   volatileSystemSuffixChars: number;
+  derivedContextBlocksHash?: string;
+  derivedContextBlocksChars: number;
+  derivedContextBlockHashes: Record<string, string>;
+  derivedContextBlockChars: Record<string, number>;
   toolsHash?: string;
   latestTurnMetadataHash?: string;
   latestTurnMetadataChars: number;
 }
 
-export function buildModelRequestCacheDiagnostics(request: Pick<ModelRequest, "system" | "messages" | "prompt" | "tools" | "providerCache">): ModelRequestCacheDiagnostics {
+export function buildModelRequestCacheDiagnostics(request: Pick<ModelRequest, "system" | "messages" | "prompt" | "tools" | "providerCache" | "cacheDiagnosticsContext">): ModelRequestCacheDiagnostics {
   const messages = normalizeMessages(request);
   const { stablePrefix, suffix } = splitStableSystemPrompt(
     request.system,
@@ -268,12 +305,31 @@ export function buildModelRequestCacheDiagnostics(request: Pick<ModelRequest, "s
   const toolFingerprint = request.tools?.length
     ? hashText(JSON.stringify(openAiChatTools(request.tools)))
     : undefined;
+  const derivedContextBlocks = normalizeDerivedContextBlocks(
+    request.cacheDiagnosticsContext?.derivedContextBlocks,
+  );
+  const derivedContextBlockHashes = Object.fromEntries(
+    derivedContextBlocks.map((block) => [block.id, hashText(JSON.stringify(block))]),
+  );
+  const derivedContextBlockChars = Object.fromEntries(
+    derivedContextBlocks.map((block) => [block.id, block.content.length]),
+  );
+  const derivedContextBlocksChars = derivedContextBlocks.reduce(
+    (sum, block) => sum + block.content.length,
+    0,
+  );
   return {
     ...(stablePrefix ? { stableSystemPrefixHash: hashText(stablePrefix) } : {}),
     stableSystemPrefixChars: stablePrefix?.length ?? 0,
     ...(request.system?.trim() ? { fullSystemHash: hashText(request.system.trim()) } : {}),
     ...(suffix ? { volatileSystemSuffixHash: hashText(suffix) } : {}),
     volatileSystemSuffixChars: suffix?.length ?? 0,
+    ...(derivedContextBlocks.length > 0
+      ? { derivedContextBlocksHash: hashText(JSON.stringify(derivedContextBlocks)) }
+      : {}),
+    derivedContextBlocksChars,
+    derivedContextBlockHashes,
+    derivedContextBlockChars,
     ...(toolFingerprint ? { toolsHash: toolFingerprint } : {}),
     ...(latestTurnMetadata ? { latestTurnMetadataHash: hashText(latestTurnMetadata) } : {}),
     latestTurnMetadataChars: latestTurnMetadata?.length ?? 0,
@@ -287,6 +343,67 @@ export function toInputText(content: string) {
 export function providerToolName(toolId: string): string {
   const normalized = toolId.replace(/[^A-Za-z0-9_-]/g, "__").slice(0, 64);
   return normalized || "tool";
+}
+
+function normalizeDerivedContextBlocks(
+  blocks: readonly DerivedContextBlock[] | undefined,
+): DerivedContextBlock[] {
+  return [...(blocks ?? [])]
+    .map((block) => ({
+      id: block.id.trim(),
+      title: block.title.trim(),
+      content: block.content.trim(),
+      placement: block.placement,
+    }))
+    .filter((block) => block.id.length > 0 && block.content.length > 0)
+    .sort((left, right) => left.id.localeCompare(right.id));
+}
+
+function assertDerivedContextBlockPlacement(params: {
+  system: string;
+  stablePrefix?: string;
+  suffix?: string;
+  instructions: string;
+  derivedContextBlocks: readonly DerivedContextBlock[];
+}): void {
+  if (params.derivedContextBlocks.length === 0) {
+    return;
+  }
+
+  const stablePrefix = params.stablePrefix?.trim() ?? "";
+  const suffix = params.suffix?.trim() ?? "";
+  const instructions = params.instructions.trim();
+  for (const block of params.derivedContextBlocks) {
+    if (block.placement === "volatile_suffix") {
+      if (stablePrefix.includes(block.content)) {
+        throw new Error(
+          `Derived context block "${block.id}" is marked volatile_suffix but leaked into the stable system prefix.`,
+        );
+      }
+      if (!suffix) {
+        throw new Error(
+          `Derived context block "${block.id}" is marked volatile_suffix but the provider request has no volatile system suffix after stable prefix splitting.`,
+        );
+      }
+      if (!suffix.includes(block.content)) {
+        throw new Error(
+          `Derived context block "${block.id}" is marked volatile_suffix but was not rendered into the provider's volatile system suffix.`,
+        );
+      }
+      continue;
+    }
+
+    if (
+      params.system.includes(block.content) ||
+      stablePrefix.includes(block.content) ||
+      suffix.includes(block.content) ||
+      instructions.includes(block.content)
+    ) {
+      throw new Error(
+        `Derived context block "${block.id}" is marked history_event and must not be rendered through provider developer/system instruction surfaces.`,
+      );
+    }
+  }
 }
 
 function sortedJsonValue(value: unknown): unknown {
@@ -721,9 +838,11 @@ export function buildResponsesInput(request: ModelRequest) {
       system: request.system,
       instructions,
       stableSystemPrefix: request.providerCache?.stableSystemPrefix,
+      derivedContextBlocks: request.cacheDiagnosticsContext?.derivedContextBlocks,
+      stablePrefixRole: "developer",
     }).map((message) => ({
       type: "message",
-      role: "developer",
+      role: message.role,
       content: toInputText(message.content),
     })),
     ...dialog.flatMap((message): Array<Record<string, unknown>> => {

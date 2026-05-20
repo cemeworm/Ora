@@ -93,6 +93,9 @@ import {
   EvaluationStructuredExpectedSchema,
   EvaluationStreamEvent,
   EvaluationStreamEventSchema,
+  getModePreset,
+  MVP_TOOLS,
+  ORA_ROOT_AGENT_ID,
   RunConfig,
   RunConfigSchema,
   RunHandle,
@@ -104,6 +107,7 @@ import {
 import { z } from "zod";
 import { buildAgenticEfficiencyLedger } from "./agentic-efficiency.js";
 import { adaptCausalDecisionsFromTrace } from "./harness/causal-decision-adapter.js";
+import { resolveVisibleToolsForAgent } from "./harness/runtime-tool-visibility.js";
 import { parseJsonObject } from "./provider-json.js";
 import { invokeRunProvider } from "./providers/index.js";
 import {
@@ -1511,6 +1515,26 @@ export class LocalEvaluationStore {
       if (topTags.length > 0) {
         recommendedActions.push(`Top failure tags: ${topTags.join(", ")}. Review relevant scorer rationales.`);
       }
+    }
+    const visibleSurfaceScore = averageMetricScoreForRun(run.run.caseResults, "visible_surface_shrinkage");
+    if (visibleSurfaceScore !== undefined && visibleSurfaceScore < 0.7) {
+      recommendedActions.push("Resolver visible surfaces are still too wide in evaluated runs: audit preset defaults and explicit toolIds overrides.");
+    }
+    const exploreFirstScore = averageMetricScoreForRun(run.run.caseResults, "explore_first_score");
+    if (exploreFirstScore !== undefined && exploreFirstScore < 0.7) {
+      recommendedActions.push("Explore-first workflow is being bypassed: reinforce repo.explore or other high-level Explore entries before low-level execution.");
+    }
+    const atomicHopScore = averageMetricScoreForRun(run.run.caseResults, "atomic_tool_hops");
+    if (atomicHopScore !== undefined && atomicHopScore < 0.7) {
+      recommendedActions.push("Atomic file/list/grep hops are still too high: improve repo.explore coverage or trim fallback read chains.");
+    }
+    const firstLocateScore = averageMetricScoreForRun(run.run.caseResults, "first_locate_success");
+    if (firstLocateScore !== undefined && firstLocateScore < 0.7) {
+      recommendedActions.push("First locate success is low: tune repo.explore ranking, scope heuristics, or escalation hints.");
+    }
+    const shellExploreScore = averageMetricScoreForRun(run.run.caseResults, "shell_explore_restraint");
+    if (shellExploreScore !== undefined && shellExploreScore < 0.7) {
+      recommendedActions.push("shell.execute is still acting as an exploration front door: keep shell as an escalation path, not the default discovery path.");
     }
 
     return EvaluationReportSchema.parse({
@@ -3108,6 +3132,17 @@ function averageMetricScoresFromAttempts(attempts: EvaluationAttempt[]): Evaluat
   }));
 }
 
+function averageMetricScoreForRun(
+  caseResults: readonly EvaluationCaseResult[],
+  metricId: string,
+): number | undefined {
+  const scores = caseResults
+    .flatMap((result) => result.metricScores)
+    .filter((metric) => metric.metricId === metricId)
+    .map((metric) => metric.score);
+  return scores.length > 0 ? roundScore(average(scores)) : undefined;
+}
+
 function aggregateEvaluatorResultsFromAttempts(attempts: EvaluationAttempt[]): EvaluationEvaluatorResult[] {
   const byEvaluator = new Map<string, EvaluationEvaluatorResult[]>();
   for (const attempt of attempts) {
@@ -3184,10 +3219,11 @@ function objectiveForProfile(profileId: EvaluationProfileKind, evaluationCase: E
   });
 }
 
-function extractEvaluationObservations(snapshot: StateSnapshot, runtimeMs: number, retrofitCausalDecisions = false): EvaluationObservation {
+export function extractEvaluationObservations(snapshot: StateSnapshot, runtimeMs: number, retrofitCausalDecisions = false): EvaluationObservation {
   const autoModeRouter = snapshot.config.metadata.autoModeRouter && typeof snapshot.config.metadata.autoModeRouter === "object"
     ? snapshot.config.metadata.autoModeRouter as Record<string, unknown>
     : {};
+  const modeSpec = snapshot.modeSpec ?? (snapshot.modeId ? getModePreset(snapshot.modeId) : undefined);
   const effectiveStrategy = snapshot.config.effectiveStrategy;
   const efficiencyLedger = buildAgenticEfficiencyLedger(snapshot, runtimeMs);
   const realCausalDecisions = snapshot.events
@@ -3201,6 +3237,8 @@ function extractEvaluationObservations(snapshot: StateSnapshot, runtimeMs: numbe
   const causalInterventionEpisodes = causalDecisions.length > 0
     ? deriveCausalInterventionEpisodes(snapshot, causalDecisions)
     : [];
+  const resolverVisibility = buildResolverVisibilityObservation(snapshot, modeSpec);
+  const toolWorkflow = buildToolWorkflowObservation(snapshot);
   return {
     run: {
       status: snapshot.status,
@@ -3223,6 +3261,8 @@ function extractEvaluationObservations(snapshot: StateSnapshot, runtimeMs: numbe
         confidence: numberValue(autoModeRouter.confidence),
         reason: stringValue(autoModeRouter.reason),
       },
+      ...(resolverVisibility ? { toolVisibility: resolverVisibility } : {}),
+      toolWorkflow,
       ...(effectiveStrategy ? { effectiveStrategy } : {}),
       efficiencyLedger,
     },
@@ -3232,11 +3272,137 @@ function extractEvaluationObservations(snapshot: StateSnapshot, runtimeMs: numbe
       eventCount: snapshot.events.length,
       toolCallIds: snapshot.toolCalls.map((call) => call.toolId),
       toolCallCount: snapshot.toolCalls.length,
+      repoExploreEvents: toolWorkflow.repoExploreEvents,
     },
   };
 }
 
-function scoreObjectiveMetrics(
+const TOOL_DESCRIPTOR_BY_ID = new Map(MVP_TOOLS.map((tool) => [tool.id, tool]));
+const ATOMIC_EXPLORE_TOOL_IDS = new Set(["file.read", "file.list", "file.glob", "file.grep"]);
+const HIGH_LEVEL_EXPLORE_TOOL_IDS = new Set(["repo.explore"]);
+const READONLY_ENVIRONMENT_EXPLORE_TOOL_IDS = new Set(["web.fetch", "web.search"]);
+const MUTATION_TOOL_IDS = new Set(["file.write", "file.patch", "file.apply_patch"]);
+
+function buildResolverVisibilityObservation(snapshot: StateSnapshot, modeSpec: StateSnapshot["modeSpec"]) {
+  if (!modeSpec) {
+    return undefined;
+  }
+  const rootProfile = snapshot.profiles.find((profile) => profile.id === ORA_ROOT_AGENT_ID);
+  const resolution = resolveVisibleToolsForAgent({
+    availableToolIds: snapshot.config.toolIds,
+    toolDescriptors: MVP_TOOLS,
+    modeSpec,
+    agentId: ORA_ROOT_AGENT_ID,
+    profileToolIds: rootProfile?.toolIds ?? [],
+  });
+  const presetCounts: Record<string, number> = {};
+  for (const child of snapshot.childSessions ?? []) {
+    if (typeof child.resolvedToolPreset === "string" && child.resolvedToolPreset.length > 0) {
+      presetCounts[child.resolvedToolPreset] = (presetCounts[child.resolvedToolPreset] ?? 0) + 1;
+    }
+  }
+  return {
+    root: {
+      availableToolCount: snapshot.config.toolIds.length,
+      visibleToolCount: resolution.visibleToolIds.length,
+      hiddenToolCount: resolution.hiddenToolIds.length,
+      visibleToolIds: resolution.visibleToolIds,
+      hiddenToolIds: resolution.hiddenToolIds,
+      decisionSource: resolution.decisionSource,
+      presetId: resolution.presetId,
+      appliedConstraints: resolution.appliedConstraints,
+      visibleFamilyCounts: familyCountsForToolIds(resolution.visibleToolIds),
+      hiddenFamilyCounts: familyCountsForToolIds(resolution.hiddenToolIds),
+    },
+    childSessions: {
+      totalCount: snapshot.childSessions?.length ?? 0,
+      modeStageCount: (snapshot.childSessions ?? []).filter((child) => child.authoritySource === "mode_stage").length,
+      dynamicSpawnCount: (snapshot.childSessions ?? []).filter((child) => child.authoritySource === "dynamic_spawn").length,
+      presetCounts,
+    },
+  };
+}
+
+function familyCountsForToolIds(toolIds: readonly string[]): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const toolId of toolIds) {
+    const family = TOOL_DESCRIPTOR_BY_ID.get(toolId)?.family ?? "unknown";
+    counts[family] = (counts[family] ?? 0) + 1;
+  }
+  return counts;
+}
+
+function buildToolWorkflowObservation(snapshot: StateSnapshot) {
+  const detailedCalls = snapshot.toolCalls.map((call) => {
+    const family = TOOL_DESCRIPTOR_BY_ID.get(call.toolId)?.family ?? "unknown";
+    const shellCommand = call.toolId === "shell.execute" ? extractShellCommand(call.args) : undefined;
+    const shellExplore = call.toolId === "shell.execute" && looksExploratoryShellCommand(shellCommand);
+    const atomicExplore = ATOMIC_EXPLORE_TOOL_IDS.has(call.toolId);
+    const highLevelExplore = HIGH_LEVEL_EXPLORE_TOOL_IDS.has(call.toolId);
+    const readonlyEnvironmentExplore = READONLY_ENVIRONMENT_EXPLORE_TOOL_IDS.has(call.toolId);
+    const isExplore = atomicExplore || highLevelExplore || readonlyEnvironmentExplore || shellExplore;
+    const isMutation = MUTATION_TOOL_IDS.has(call.toolId);
+    return {
+      toolId: call.toolId,
+      family,
+      agentId: call.agentId,
+      nodeId: call.nodeId,
+      status: call.status,
+      isExplore,
+      isAtomicExplore: atomicExplore,
+      isHighLevelExplore: highLevelExplore,
+      isShellExplore: shellExplore,
+      isMutation,
+      shellCommand,
+    };
+  });
+  const firstSubstantiveCall = detailedCalls.find((call) => call.family !== "coordinate");
+  const familyCounts: Record<string, number> = {};
+  for (const call of detailedCalls) {
+    familyCounts[call.family] = (familyCounts[call.family] ?? 0) + 1;
+  }
+  const repoExploreEvents = snapshot.events
+    .filter((event) => event.type === "tool.repo_explore.completed" && event.payload && typeof event.payload === "object")
+    .map((event) => event.payload as Record<string, unknown>);
+  return {
+    totalToolCalls: detailedCalls.length,
+    familyCounts,
+    exploreCallCount: detailedCalls.filter((call) => call.isExplore).length,
+    highLevelExploreCount: detailedCalls.filter((call) => call.isHighLevelExplore).length,
+    atomicExploreCount: detailedCalls.filter((call) => call.isAtomicExplore).length,
+    shellExploreCount: detailedCalls.filter((call) => call.isShellExplore).length,
+    mutationCallCount: detailedCalls.filter((call) => call.isMutation).length,
+    firstSubstantiveToolId: firstSubstantiveCall?.toolId,
+    firstSubstantiveFamily: firstSubstantiveCall?.family,
+    firstSubstantiveIsExplore: firstSubstantiveCall?.isExplore ?? false,
+    firstSubstantiveIsHighLevelExplore: firstSubstantiveCall?.isHighLevelExplore ?? false,
+    firstSubstantiveIsAtomicExplore: firstSubstantiveCall?.isAtomicExplore ?? false,
+    firstSubstantiveIsShellExplore: firstSubstantiveCall?.isShellExplore ?? false,
+    firstSubstantiveIsMutation: firstSubstantiveCall?.isMutation ?? false,
+    repoExploreEvents,
+    toolCalls: detailedCalls,
+  };
+}
+
+function extractShellCommand(args: Record<string, unknown>): string | undefined {
+  const value = args.command ?? args.cmd;
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function looksExploratoryShellCommand(command: string | undefined): boolean {
+  if (!command) {
+    return false;
+  }
+  if (/[>|]{1,2}/.test(command)) {
+    return false;
+  }
+  if (/\b(rm|mv|cp|chmod|chown|git\s+apply|patch)\b/.test(command)) {
+    return false;
+  }
+  return /\b(rg|grep|find|ls|pwd|cat|head|tail|sed)\b/.test(command);
+}
+
+export function scoreObjectiveMetrics(
   objective: EvaluationObjective,
   evaluationCase: EvaluationCase,
   observations: EvaluationObservation
@@ -3269,7 +3435,7 @@ function defaultMetricsForObjective(objective: EvaluationObjective): EvaluationM
 }
 
 function scoreMetric(
-  metricId: EvaluationMetricId,
+  metricId: string,
   objective: EvaluationObjective,
   evaluationCase: EvaluationCase,
   observations: EvaluationObservation
@@ -3317,7 +3483,18 @@ function scoreMetric(
       return taskSuccessRateMetric(evaluationCase, observations);
     case "llm_judge_score":
       return llmJudgeScoreMetric(evaluationCase, observations);
+    case "visible_surface_shrinkage":
+      return visibleSurfaceShrinkageMetric(observations);
+    case "explore_first_score":
+      return exploreFirstScoreMetric(observations);
+    case "atomic_tool_hops":
+      return atomicToolHopsMetric(observations);
+    case "first_locate_success":
+      return firstLocateSuccessMetric(observations);
+    case "shell_explore_restraint":
+      return shellExploreRestraintMetric(observations);
   }
+  throw new Error(`Unsupported evaluation metric: ${metricId}`);
 }
 
 function textSimilarityMetric(evaluationCase: EvaluationCase, observations: EvaluationObservation): EvaluationMetricScore {
@@ -3943,6 +4120,188 @@ function llmJudgeScoreMetric(evaluationCase: EvaluationCase, observations: Evalu
       relevanceScore: roundScore(relevanceScore),
       structureScore: roundScore(structureScore),
     },
+  });
+}
+
+function visibleSurfaceShrinkageMetric(observations: EvaluationObservation): EvaluationMetricScore {
+  const availableToolCount = numberValue(getObservationPath(observations, "runtime.toolVisibility.root.availableToolCount")) ?? 0;
+  const visibleToolCount = numberValue(getObservationPath(observations, "runtime.toolVisibility.root.visibleToolCount")) ?? 0;
+  const presetId = String(getObservationPath(observations, "runtime.toolVisibility.root.presetId") ?? "");
+  const decisionSource = String(getObservationPath(observations, "runtime.toolVisibility.root.decisionSource") ?? "");
+  if (availableToolCount <= 0 || visibleToolCount <= 0 || visibleToolCount > availableToolCount) {
+    return EvaluationMetricScoreSchema.parse({
+      metricId: "visible_surface_shrinkage",
+      score: 0.5,
+      passed: false,
+      rationale: "Resolver visibility observation was missing or incomplete.",
+      failureTags: ["missing_visibility_observation"],
+    });
+  }
+  if (availableToolCount <= 12) {
+    return EvaluationMetricScoreSchema.parse({
+      metricId: "visible_surface_shrinkage",
+      score: 1,
+      passed: true,
+      rationale: "The available tool surface was already pre-narrowed before resolver expansion.",
+      details: { availableToolCount, visibleToolCount, presetId, decisionSource },
+    });
+  }
+  const shrinkRatio = 1 - visibleToolCount / availableToolCount;
+  const score = roundScore(Math.min(1, shrinkRatio / 0.5));
+  return EvaluationMetricScoreSchema.parse({
+    metricId: "visible_surface_shrinkage",
+    score,
+    passed: score >= 0.7,
+    rationale: `Resolver reduced the visible surface from ${availableToolCount} available tools to ${visibleToolCount}.`,
+    failureTags: score >= 0.7 ? [] : ["visible_surface_too_wide"],
+    details: { availableToolCount, visibleToolCount, shrinkRatio: roundScore(shrinkRatio), presetId, decisionSource },
+  });
+}
+
+function exploreFirstScoreMetric(observations: EvaluationObservation): EvaluationMetricScore {
+  const firstToolId = String(getObservationPath(observations, "runtime.toolWorkflow.firstSubstantiveToolId") ?? "");
+  const firstFamily = String(getObservationPath(observations, "runtime.toolWorkflow.firstSubstantiveFamily") ?? "");
+  const isExplore = Boolean(getObservationPath(observations, "runtime.toolWorkflow.firstSubstantiveIsExplore"));
+  const isHighLevelExplore = Boolean(getObservationPath(observations, "runtime.toolWorkflow.firstSubstantiveIsHighLevelExplore"));
+  const isShellExplore = Boolean(getObservationPath(observations, "runtime.toolWorkflow.firstSubstantiveIsShellExplore"));
+  const isMutation = Boolean(getObservationPath(observations, "runtime.toolWorkflow.firstSubstantiveIsMutation"));
+  if (!firstToolId) {
+    return EvaluationMetricScoreSchema.parse({
+      metricId: "explore_first_score",
+      score: 1,
+      passed: true,
+      rationale: "The run completed without any substantive tool call.",
+    });
+  }
+  const score = isHighLevelExplore
+    ? 1
+    : isExplore && !isShellExplore
+      ? 0.85
+      : isShellExplore
+        ? 0.25
+        : isMutation
+          ? 0.35
+          : 0.6;
+  return EvaluationMetricScoreSchema.parse({
+    metricId: "explore_first_score",
+    score,
+    passed: score >= 0.7,
+    rationale: isHighLevelExplore
+      ? `The first substantive tool call used the high-level explore entry (${firstToolId}).`
+      : isExplore && !isShellExplore
+        ? `The run started with a read-only explore tool (${firstToolId}), but not the preferred high-level entry.`
+        : isShellExplore
+          ? `The run entered exploration through shell.execute (${firstToolId}) instead of a structured explore tool.`
+          : isMutation
+            ? `The run entered execution through a mutation-capable tool (${firstToolId}) before any explore step.`
+            : `The first substantive tool call (${firstToolId}) did not clearly align with the explore-first workflow.`,
+    failureTags: score >= 0.7 ? [] : ["explore_entry_bypass"],
+    details: { firstToolId, firstFamily, isExplore, isHighLevelExplore, isShellExplore, isMutation },
+  });
+}
+
+function atomicToolHopsMetric(observations: EvaluationObservation): EvaluationMetricScore {
+  const atomicExploreCount = numberValue(getObservationPath(observations, "runtime.toolWorkflow.atomicExploreCount")) ?? 0;
+  const highLevelExploreCount = numberValue(getObservationPath(observations, "runtime.toolWorkflow.highLevelExploreCount")) ?? 0;
+  const rootVisibleToolIds = getObservationPath(observations, "runtime.toolVisibility.root.visibleToolIds");
+  const rootHasRepoExplore = Array.isArray(rootVisibleToolIds) && rootVisibleToolIds.includes("repo.explore");
+  if (atomicExploreCount === 0) {
+    return EvaluationMetricScoreSchema.parse({
+      metricId: "atomic_tool_hops",
+      score: 1,
+      passed: true,
+      rationale: "The run did not rely on atomic file-level exploration hops.",
+    });
+  }
+  if (!rootHasRepoExplore) {
+    return EvaluationMetricScoreSchema.parse({
+      metricId: "atomic_tool_hops",
+      score: 0.8,
+      passed: true,
+      rationale: "repo.explore was not visible in the resolved root surface, so atomic explore hops were treated as an acceptable fallback.",
+      details: { atomicExploreCount, highLevelExploreCount, rootHasRepoExplore },
+    });
+  }
+  const overhead = highLevelExploreCount > 0
+    ? atomicExploreCount / (highLevelExploreCount + 1)
+    : atomicExploreCount;
+  const score = roundScore(Math.max(0.2, 1 - overhead / 4));
+  return EvaluationMetricScoreSchema.parse({
+    metricId: "atomic_tool_hops",
+    score,
+    passed: score >= 0.7,
+    rationale: highLevelExploreCount > 0
+      ? `The run used ${atomicExploreCount} atomic explore hops across ${highLevelExploreCount} high-level explore call(s).`
+      : `The run used ${atomicExploreCount} atomic explore hops without using repo.explore despite having it visible.`,
+    failureTags: score >= 0.7 ? [] : ["atomic_explore_hops_high"],
+    details: { atomicExploreCount, highLevelExploreCount, rootHasRepoExplore, overhead: roundScore(overhead) },
+  });
+}
+
+function firstLocateSuccessMetric(observations: EvaluationObservation): EvaluationMetricScore {
+  const repoExploreEvents = getObservationPath(observations, "runtime.toolWorkflow.repoExploreEvents");
+  const atomicExploreCount = numberValue(getObservationPath(observations, "runtime.toolWorkflow.atomicExploreCount")) ?? 0;
+  const rootVisibleToolIds = getObservationPath(observations, "runtime.toolVisibility.root.visibleToolIds");
+  const rootHasRepoExplore = Array.isArray(rootVisibleToolIds) && rootVisibleToolIds.includes("repo.explore");
+  if (Array.isArray(repoExploreEvents) && repoExploreEvents.length > 0) {
+    const first = repoExploreEvents[0] as Record<string, unknown>;
+    const status = String(first.status ?? "");
+    const relatedPathCount = numberValue(first.relatedPathCount) ?? 0;
+    const evidenceCount = numberValue(first.evidenceCount) ?? 0;
+    const gapCount = numberValue(first.gapCount) ?? 0;
+    const score = status === "answered"
+      ? 1
+      : status === "insufficient_evidence" && (relatedPathCount > 0 || evidenceCount > 0)
+        ? 0.7
+        : status === "needs_escalation"
+          ? 0.45
+          : 0.25;
+    return EvaluationMetricScoreSchema.parse({
+      metricId: "first_locate_success",
+      score,
+      passed: score >= 0.7,
+      rationale: `The first repo.explore telemetry event finished with status=${status || "unknown"}.`,
+      failureTags: score >= 0.7 ? [] : ["first_locate_failed"],
+      details: { status, relatedPathCount, evidenceCount, gapCount },
+    });
+  }
+  const score = rootHasRepoExplore && atomicExploreCount > 0 ? 0.45 : rootHasRepoExplore ? 0.75 : 0.8;
+  return EvaluationMetricScoreSchema.parse({
+    metricId: "first_locate_success",
+    score,
+    passed: score >= 0.7,
+    rationale: rootHasRepoExplore && atomicExploreCount > 0
+      ? "repo.explore was visible, but the run fell back to atomic exploration without any structured locate result."
+      : rootHasRepoExplore
+        ? "repo.explore was visible, but no locate attempt was needed in this run."
+        : "repo.explore was not visible in the resolved surface, so no locate success signal was required.",
+    failureTags: score >= 0.7 ? [] : ["first_locate_failed"],
+    details: { rootHasRepoExplore, atomicExploreCount, repoExploreEventCount: 0 },
+  });
+}
+
+function shellExploreRestraintMetric(observations: EvaluationObservation): EvaluationMetricScore {
+  const shellExploreCount = numberValue(getObservationPath(observations, "runtime.toolWorkflow.shellExploreCount")) ?? 0;
+  const exploreCallCount = Math.max(1, numberValue(getObservationPath(observations, "runtime.toolWorkflow.exploreCallCount")) ?? 0);
+  const rootVisibleToolIds = getObservationPath(observations, "runtime.toolVisibility.root.visibleToolIds");
+  const rootHasRepoExplore = Array.isArray(rootVisibleToolIds) && rootVisibleToolIds.includes("repo.explore");
+  if (shellExploreCount === 0) {
+    return EvaluationMetricScoreSchema.parse({
+      metricId: "shell_explore_restraint",
+      score: 1,
+      passed: true,
+      rationale: "shell.execute was not used as an exploration entry point.",
+    });
+  }
+  const rawScore = 1 - shellExploreCount / Math.max(2, exploreCallCount);
+  const score = roundScore(Math.max(rootHasRepoExplore ? 0 : 0.35, rawScore));
+  return EvaluationMetricScoreSchema.parse({
+    metricId: "shell_explore_restraint",
+    score,
+    passed: score >= 0.7,
+    rationale: `Exploratory shell usage accounted for ${shellExploreCount}/${exploreCallCount} explore-oriented tool call(s).`,
+    failureTags: score >= 0.7 ? [] : ["shell_used_for_exploration"],
+    details: { shellExploreCount, exploreCallCount, rootHasRepoExplore },
   });
 }
 

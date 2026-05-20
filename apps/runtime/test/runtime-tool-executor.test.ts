@@ -280,6 +280,84 @@ describe("RuntimeToolExecutor", () => {
     expect(receivedParams.resultContract).toBe("evidence_report");
   });
 
+  it("parses and forwards spawn_contract on agent.spawn", async () => {
+    const executor = new RuntimeToolExecutor({ toolDescriptors: MVP_TOOLS });
+    let receivedParams: Record<string, unknown> = {};
+    executor.setSpawnAgent(async (params) => {
+      receivedParams = params as unknown as Record<string, unknown>;
+      return "ok";
+    });
+
+    await executor.execute({
+      tool: "agent.spawn" as never,
+      args: {
+        description: "Capture article",
+        prompt: "Capture this article.",
+        spawn_contract: {
+          required_affordances: ["shell_execute", "web_read"],
+          subject: {
+            kind: "url",
+            value: "https://example.com/article",
+            normalization: "url_canonical",
+            normalized_value: "https://example.com/article",
+          },
+          resource_bindings: [
+            {
+              locator: "value",
+              kind: "url",
+              value: "https://example.com/article",
+              normalization: "url_canonical",
+              normalized_value: "https://example.com/article",
+              required: true,
+            },
+            {
+              locator: "handle",
+              handle_kind: "browser_session",
+              handle_id: "session-123",
+              required: true,
+              label: "Bound browser session",
+            },
+          ],
+          side_effect_policy: "none",
+          result_rules: ["subject_match_required", "resource_binding_match_required", "source_reference_required"],
+          validation_policy: "diagnostics_only",
+        },
+      },
+    });
+
+    expect(receivedParams.spawnContract).toEqual({
+      source: "explicit",
+      requiredAffordances: ["shell_execute", "web_read"],
+      subject: {
+        kind: "url",
+        value: "https://example.com/article",
+        normalization: "url_canonical",
+        normalizedValue: "https://example.com/article",
+      },
+      resourceBindings: [
+        {
+          locator: "value",
+          kind: "url",
+          value: "https://example.com/article",
+          normalization: "url_canonical",
+          normalizedValue: "https://example.com/article",
+          required: true,
+        },
+        {
+          locator: "handle",
+          handleKind: "browser_session",
+          handleId: "session-123",
+          required: true,
+          label: "Bound browser session",
+          metadata: {},
+        },
+      ],
+      sideEffectPolicy: "none",
+      resultRules: ["subject_match_required", "resource_binding_match_required", "source_reference_required"],
+      validationPolicy: "diagnostics_only",
+    });
+  });
+
   it("forwards invoking agent context to agent.spawn", async () => {
     const executor = new RuntimeToolExecutor({ toolDescriptors: MVP_TOOLS });
     let receivedParams: Record<string, unknown> = {};

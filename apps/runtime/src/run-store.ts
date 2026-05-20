@@ -79,6 +79,7 @@ import {
   SessionBranchGroupListParamsSchema,
   SessionBranchGroupSchema,
   SessionDetail,
+  type SessionContextState,
   SessionSummary,
   SessionSummarySchema,
   SessionTranscriptMessage,
@@ -1562,6 +1563,7 @@ export class LocalRunStore {
       extractImageBlocksFromContext(input.context),
       selectedWidgetContextFromInput(input.context),
     );
+    const sessionContextState = this.sessions.get(session.sessionId)?.contextState;
     this.appendRunStartedToLedger({
       sessionId: session.sessionId,
       runId,
@@ -1618,6 +1620,7 @@ export class LocalRunStore {
       sessionId: session.sessionId,
       turnIndex,
       conversationMessages,
+      sessionContextState,
       onApprovalAutoResolved: (actionIds) =>
         this.resolveApprovalGatesForAutoReview(runId, session.sessionId, turnIndex, actionIds),
     });
@@ -1681,6 +1684,7 @@ export class LocalRunStore {
       selectedWidgetContextFromInput(input.context),
     );
     markRuntimeLatency("conversationMessages.done", { messageCount: conversationMessages.length });
+    const sessionContextState = this.sessions.get(session.sessionId)?.contextState;
     let liveSnapshot = createRunningRunSnapshot({
       runId,
       sessionId: session.sessionId,
@@ -1738,6 +1742,7 @@ export class LocalRunStore {
       sessionId: session.sessionId,
       turnIndex,
       conversationMessages,
+      sessionContextState,
       streamProvider: true,
       signal: abortController.signal,
       onEvent: applyLiveEvent,
@@ -2101,6 +2106,7 @@ export class LocalRunStore {
       extractImageBlocksFromContext(input.context),
       selectedWidgetContextFromInput(input.context),
     );
+    const sessionContextState = this.sessions.get(session.sessionId)?.contextState;
     this.appendRunStartedToLedger({
       sessionId: session.sessionId,
       runId,
@@ -2121,6 +2127,7 @@ export class LocalRunStore {
       turnIndex,
       forkedFrom,
       conversationMessages,
+      sessionContextState,
     });
     const tracedSnapshot = this.normalizeSnapshotForPersistence(attachTraceMetadata(this.withSnapshotContextState(sessionBoundSnapshot)));
     this.appendRuntimeEventBatchToLedger(tracedSnapshot, tracedSnapshot.events, tracedSnapshot.status);
@@ -2140,6 +2147,7 @@ export class LocalRunStore {
       sessionId: string;
       turnIndex: number;
       conversationMessages: ModelMessage[];
+      sessionContextState?: SessionContextState;
       customAgentOverlay?: string;
       systemAgentOverlays?: Record<string, string>;
       customAgentContexts?: Record<string, Pick<CustomAgentDetail, "model" | "skillIds" | "toolIds"> & { overlay: string }>;
@@ -2167,6 +2175,7 @@ export class LocalRunStore {
       extractImageBlocksFromContext(input.context),
       selectedWidgetContextFromInput(input.context),
     );
+    const sessionContextState = this.sessions.get(session.sessionId)?.contextState;
     this.appendRunStartedToLedger({
       sessionId: session.sessionId,
       runId,
@@ -2186,6 +2195,7 @@ export class LocalRunStore {
       sessionId: session.sessionId,
       turnIndex,
       conversationMessages,
+      sessionContextState,
       customAgentOverlay: this.customAgentStore.personaOverlay(fullConfig.customAgentId),
       systemAgentOverlays: this.systemAgentOverlaysForMode(modeSpec),
       customAgentContexts: this.customAgentContextsForMode(modeSpec),
@@ -3223,7 +3233,17 @@ export class LocalRunStore {
     approvedActionIds: string[],
   ): StateSnapshot {
     let working = snapshot;
-    working = this.appendResolvedClarificationEvents(working, currentPendingClarifications(original), clarificationPatch);
+    const resolvedClarificationIds = currentPendingClarifications(original)
+      .filter((clarification) =>
+        clarificationPatch[clarification.id] !== undefined ||
+        clarificationPatch[clarification.key] !== undefined,
+      )
+      .map((clarification) => clarification.id);
+    working = this.appendResolvedClarificationEvents(
+      working,
+      currentPendingClarifications(original),
+      clarificationPatch,
+    );
     for (const actionId of approvedActionIds) {
       const hasApprovalResolved = working.events.some((event) =>
         event.type === "approval.resolved" &&
@@ -3270,7 +3290,126 @@ export class LocalRunStore {
         cacheHit: false,
       });
     }
-    return working;
+    return this.materializeResumeContinuationClosure(
+      working,
+      resolvedClarificationIds,
+      approvedActionIds,
+    );
+  }
+
+  private materializeResumeContinuationClosure(
+    snapshot: StateSnapshot,
+    resolvedClarificationIds: readonly string[],
+    approvedActionIds: readonly string[],
+  ): StateSnapshot {
+    const resolvedClarificationIdSet = new Set(resolvedClarificationIds);
+    const approvedActionIdSet = new Set(approvedActionIds);
+    if (resolvedClarificationIdSet.size === 0 && approvedActionIdSet.size === 0) {
+      return snapshot;
+    }
+
+    let activeFrameId = snapshot.continuation.activeFrameId;
+    let changed = false;
+    const terminalActionIds = new Set(
+      snapshot.actions
+        .filter((action) => action.status === "succeeded" || action.status === "failed")
+        .map((action) => action.id),
+    );
+    const terminalToolCallIds = new Set(
+      snapshot.toolCalls
+        .filter((call) => call.status === "succeeded" || call.status === "failed")
+        .map((call) => call.id),
+    );
+
+    const frames = snapshot.continuation.frames.map((frame) => {
+      let nextFrame = frame;
+
+      if (frame.reason === "clarification_required") {
+        const newlyResolvedIds = frame.pendingClarificationIds.filter((id) =>
+          resolvedClarificationIdSet.has(id),
+        );
+        if (newlyResolvedIds.length > 0) {
+          changed = true;
+          nextFrame = {
+            ...nextFrame,
+            pendingClarificationIds: nextFrame.pendingClarificationIds.filter((id) => !resolvedClarificationIdSet.has(id)),
+            resolvedClarificationIds: [
+              ...new Set([...nextFrame.resolvedClarificationIds, ...newlyResolvedIds]),
+            ],
+            updatedAt: snapshot.updatedAt,
+          };
+        }
+        if (
+          nextFrame.pendingClarificationIds.length === 0 &&
+          (nextFrame.status === "paused" || nextFrame.status === "awaiting_model" || nextFrame.status === "resuming")
+        ) {
+          changed = true;
+          nextFrame = {
+            ...nextFrame,
+            status: "completed",
+            updatedAt: snapshot.updatedAt,
+          };
+        }
+      }
+
+      if (frame.reason === "approval_required") {
+        const resolvedActionIds = nextFrame.pendingActionIds.filter((id) =>
+          approvedActionIdSet.has(id) || terminalActionIds.has(id),
+        );
+        const resolvedToolCallIds = nextFrame.pendingToolCallIds.filter((toolCallId) => {
+          if (terminalToolCallIds.has(toolCallId)) {
+            return true;
+          }
+          const toolCall = snapshot.toolCalls.find((call) => call.id === toolCallId);
+          return Boolean(toolCall?.actionId && approvedActionIdSet.has(toolCall.actionId));
+        });
+        if (resolvedActionIds.length > 0 || resolvedToolCallIds.length > 0) {
+          changed = true;
+          const resolvedToolCallIdSet = new Set(resolvedToolCallIds);
+          nextFrame = {
+            ...nextFrame,
+            pendingActionIds: nextFrame.pendingActionIds.filter((id) => !approvedActionIdSet.has(id)),
+            pendingToolCallIds: nextFrame.pendingToolCallIds.filter((id) => !resolvedToolCallIdSet.has(id)),
+            approvedActionIds: [
+              ...new Set([...nextFrame.approvedActionIds, ...resolvedActionIds]),
+            ],
+            updatedAt: snapshot.updatedAt,
+          };
+        }
+        if (
+          nextFrame.pendingActionIds.length === 0 &&
+          nextFrame.pendingToolCallIds.length === 0 &&
+          (nextFrame.status === "paused" || nextFrame.status === "awaiting_model" || nextFrame.status === "resuming" || nextFrame.status === "executing_tool")
+        ) {
+          changed = true;
+          nextFrame = {
+            ...nextFrame,
+            status: "completed",
+            updatedAt: snapshot.updatedAt,
+          };
+        }
+      }
+
+      if (
+        activeFrameId === nextFrame.id &&
+        (nextFrame.status === "completed" || nextFrame.status === "failed")
+      ) {
+        activeFrameId = undefined;
+      }
+      return nextFrame;
+    });
+
+    if (!changed) {
+      return snapshot;
+    }
+
+    return StateSnapshotSchema.parse({
+      ...snapshot,
+      continuation: {
+        activeFrameId,
+        frames,
+      },
+    });
   }
 
   private appendAssistantMessageToLedger(snapshot: StateSnapshot): StateSnapshot {

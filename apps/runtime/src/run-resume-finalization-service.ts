@@ -37,13 +37,29 @@ function downgradeToFailed(
 export class RunResumeFinalizationService {
   constructor(private readonly deps: RunResumeFinalizationServiceDeps) {}
 
+  private prepareResumeSnapshot(params: {
+    snapshot: StateSnapshot;
+    original: StateSnapshot;
+    clarificationPatch: Record<string, unknown>;
+    approvedActionIds: string[];
+  }): StateSnapshot {
+    return this.deps.normalizeSnapshotForPersistence(
+      this.deps.withResumeResolutionEvents(
+        params.snapshot,
+        params.original,
+        params.clarificationPatch,
+        params.approvedActionIds,
+      ),
+    );
+  }
+
   async persistTerminal(params: {
     snapshot: StateSnapshot;
     original: StateSnapshot;
     clarificationPatch: Record<string, unknown>;
     approvedActionIds: string[];
   }): Promise<StateSnapshot> {
-    let finalSnapshot = params.snapshot;
+    let finalSnapshot = this.prepareResumeSnapshot(params);
     try {
       assertRunCanBecomeTerminal(
         deriveTerminalStateAssertionFromSnapshot(finalSnapshot),
@@ -55,10 +71,7 @@ export class RunResumeFinalizationService {
         throw caught;
       }
     }
-    const projected = this.projectResumeSnapshot({
-      ...params,
-      snapshot: finalSnapshot,
-    });
+    const projected = this.projectPreparedSnapshot(finalSnapshot);
     await this.deps.persistRunWithGeneratedTitle(projected);
     return projected;
   }
@@ -69,7 +82,9 @@ export class RunResumeFinalizationService {
     clarificationPatch: Record<string, unknown>;
     approvedActionIds: string[];
   }): StateSnapshot {
-    const projected = this.projectResumeSnapshot(params);
+    const projected = this.projectPreparedSnapshot(
+      this.prepareResumeSnapshot(params),
+    );
     this.deps.persistRun(projected);
     return projected;
   }
@@ -82,7 +97,7 @@ export class RunResumeFinalizationService {
     stream: RunResumeFinalizationStreamCallbacks;
     markLedgerSynced?: boolean;
   }): Promise<StateSnapshot> {
-    let finalSnapshot = params.snapshot;
+    let finalSnapshot = this.prepareResumeSnapshot(params);
     try {
       assertRunCanBecomeTerminal(
         deriveTerminalStateAssertionFromSnapshot(finalSnapshot),
@@ -94,10 +109,7 @@ export class RunResumeFinalizationService {
         throw caught;
       }
     }
-    const projected = this.projectResumeSnapshot({
-      ...params,
-      snapshot: finalSnapshot,
-    });
+    const projected = this.projectPreparedSnapshot(finalSnapshot);
     await this.deps.persistRunWithGeneratedTitle(projected);
     const liveSnapshot = params.stream.replaceSnapshot(projected);
     if (params.markLedgerSynced) {
@@ -121,20 +133,8 @@ export class RunResumeFinalizationService {
     return liveSnapshot;
   }
 
-  private projectResumeSnapshot(params: {
-    snapshot: StateSnapshot;
-    original: StateSnapshot;
-    clarificationPatch: Record<string, unknown>;
-    approvedActionIds: string[];
-  }): StateSnapshot {
-    return this.deps.appendRunSnapshotUpdateToLedger(this.deps.normalizeSnapshotForPersistence(
-      this.deps.withResumeResolutionEvents(
-        params.snapshot,
-        params.original,
-        params.clarificationPatch,
-        params.approvedActionIds,
-      ),
-    ));
+  private projectPreparedSnapshot(snapshot: StateSnapshot): StateSnapshot {
+    return this.deps.appendRunSnapshotUpdateToLedger(snapshot);
   }
 }
 

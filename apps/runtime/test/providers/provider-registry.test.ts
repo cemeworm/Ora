@@ -1021,12 +1021,29 @@ describe("provider adapters", () => {
     );
 
     const response = await provider({
+      system: [
+        "Stable identity block",
+        "Capability contract",
+        "Plan mode constraint",
+      ].join("\n\n"),
       messages: [
         { role: "user", content: "Earlier prompt." },
         { role: "assistant", content: "Earlier answer." },
         { role: "user", content: "Only send the delta." },
       ],
+      cacheDiagnosticsContext: {
+        derivedContextBlocks: [{
+          id: "task_mode",
+          title: "Task Mode Block",
+          content: "Plan mode constraint",
+          placement: "volatile_suffix",
+        }],
+      },
       providerCache: {
+        stableSystemPrefix: [
+          "Stable identity block",
+          "Capability contract",
+        ].join("\n\n"),
         openaiPreviousResponseId: "resp_previous",
         openaiDeltaMessages: [{ role: "user", content: "Only send the delta." }],
       },
@@ -1050,7 +1067,7 @@ describe("provider adapters", () => {
         "Stable identity block",
         "Capability contract",
       ].join("\n\n"));
-      expect(body.input[1]?.role).toBe("developer");
+      expect(body.input[1]?.role).toBe("system");
       expect(body.input[1]?.content?.[0]?.text).toBe("Dynamic stage instruction");
       return new Response(JSON.stringify({ id: "resp_prefix", output_text: "OK" }), {
         status: 200,

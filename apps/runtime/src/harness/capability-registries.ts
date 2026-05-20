@@ -22,7 +22,9 @@ import {
   type SkillUpdateParams,
   type ActionApprovalRequestCopy,
   type ActionRiskLevel,
+  normalizeToolDescriptor,
   type ToolDescriptor,
+  type ToolDescriptorInput,
   type ToolRegistry,
 } from "@cemeworm/shared";
 import { SkillFileStore, type SkillFileStoreOptions } from "../skills.js";
@@ -61,6 +63,14 @@ export interface RuntimeToolDefinition<
   continuationHandler?: RuntimeToolContinuationHandler<TArgs>;
 }
 
+type RuntimeToolDefinitionInput<
+  TContext = unknown,
+  TArgs extends Record<string, unknown> = Record<string, unknown>,
+  TResult = unknown,
+> = Omit<RuntimeToolDefinition<TContext, TArgs, TResult>, "descriptor"> & {
+  descriptor: ToolDescriptorInput | ToolDescriptor;
+};
+
 function repoRoot(): string {
   let current = path.resolve(process.cwd());
   while (true) {
@@ -91,16 +101,16 @@ export class RuntimeToolRegistry {
   private readonly definitions = new Map<string, RuntimeToolDefinition>();
   private activeToolIds: string[] | undefined;
 
-  constructor(definitions: Iterable<ToolDescriptor | RuntimeToolDefinition> = MVP_TOOLS) {
+  constructor(definitions: Iterable<ToolDescriptorInput | RuntimeToolDefinitionInput> = MVP_TOOLS) {
     for (const definition of definitions) {
       this.register(definition);
     }
   }
 
-  register(definition: ToolDescriptor | RuntimeToolDefinition): void {
-    const runtimeDefinition = "descriptor" in definition
-      ? definition
-      : { descriptor: definition };
+  register(definition: ToolDescriptorInput | RuntimeToolDefinitionInput): void {
+    const runtimeDefinition: RuntimeToolDefinition = "descriptor" in definition
+      ? { ...definition, descriptor: normalizeToolDescriptor(definition.descriptor) }
+      : { descriptor: normalizeToolDescriptor(definition) };
     this.definitions.set(runtimeDefinition.descriptor.id, runtimeDefinition);
   }
 

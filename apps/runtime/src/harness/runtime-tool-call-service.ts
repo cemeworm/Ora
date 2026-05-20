@@ -3,6 +3,10 @@ import type {
   OraToolCallEnvelope,
   RunConfig,
 } from "@cemeworm/shared";
+import {
+  RepoExploreResponseSchema,
+  RepoExploreTelemetryPayloadSchema,
+} from "@cemeworm/shared";
 import { invokeRunProvider, invokeRunProviderStream } from "../providers/index.js";
 import type { ModelMessage, ModelRequest, ModelResponse } from "../providers/index.js";
 import type { RuntimeCompletionController, RuntimeToolScope } from "./runtime-completion.js";
@@ -50,6 +54,7 @@ interface RuntimeToolCallServiceDeps {
   inputPrompt: string;
   system: string;
   config: RunConfig;
+  cacheDiagnosticsContext?: ModelRequest["cacheDiagnosticsContext"];
   nativeTools: ReturnType<RuntimeToolExecutor["toolDefinitions"]>;
   streamCallbacks?: Parameters<typeof invokeRunProviderStream>[2];
   invokeProvider: typeof invokeRunProvider | typeof invokeRunProviderStream;
@@ -255,6 +260,21 @@ export class RuntimeToolCallService {
     });
     if (toolCall.tool === "plan.update") {
       actionDeps.emit("plan_list.updated", planListUpdatedPayload(toolCall.args));
+    }
+    if (toolCall.tool === "repo.explore" && execution.output && typeof execution.output === "object") {
+      const repoExploreOutput = RepoExploreResponseSchema.safeParse(execution.output);
+      if (repoExploreOutput.success) {
+        const telemetryPayload = RepoExploreTelemetryPayloadSchema.parse({
+          ...(repoExploreOutput.data.metadata.telemetry as Record<string, unknown> | undefined ?? {}),
+          kind: repoExploreOutput.data.kind,
+          status: repoExploreOutput.data.status,
+          modeId: this.deps.config.modeId,
+          agentId: this.deps.agentId,
+          toolCallId: toolCallRecord?.id,
+          actionId: action.id,
+        });
+        actionDeps.emit("tool.repo_explore.completed", telemetryPayload);
+      }
     }
 
     // Truncate tool result text for context inclusion only.

@@ -1,5 +1,4 @@
 import {
-  DEFAULT_AGENT_MODE_TOOL_IDS,
   type AgentProfile,
   type ModeSpec,
   ORA_ROOT_AGENT_ID,
@@ -25,7 +24,8 @@ export function rootAgentProfile(): AgentProfile {
       "Do not expose hidden chain-of-thought or internal-only metadata.",
     ].join("\n"),
     toolPolicyId: "root.default_policy",
-    toolIds: [...DEFAULT_AGENT_MODE_TOOL_IDS],
+    // Root visibility is resolved at runtime from mode + task context.
+    toolIds: [],
     skillIds: [],
     memoryNamespaces: ["session", "project"],
     budget: modeDefaultBudget(),

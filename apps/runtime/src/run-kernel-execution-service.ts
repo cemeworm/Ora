@@ -4,6 +4,7 @@ import type {
   OraEventEnvelope,
   PatternDefinition,
   RunConfig,
+  SessionContextState,
   StateSnapshot,
   UserTaskInput,
 } from "@cemeworm/shared";
@@ -63,6 +64,7 @@ interface ExecutePreparedRunParams {
   sessionId: string;
   turnIndex: number;
   conversationMessages: ModelMessage[];
+  sessionContextState?: SessionContextState;
   forkedFrom?: { runId: string; checkpointId: string; eventSeq: number };
   streamProvider?: boolean;
   signal?: AbortSignal;
@@ -80,6 +82,7 @@ interface ExecutePreparedResumeParams {
   resumeSnapshot?: StateSnapshot;
   configOverride?: RunConfig;
   conversationMessages?: ModelMessage[];
+  sessionContextState?: SessionContextState;
   signal?: AbortSignal;
   onEvent?: (event: OraEventEnvelope) => void;
 }
@@ -137,6 +140,7 @@ export class RunKernelExecutionService {
       conversationMessages:
         params.conversationMessages ??
         this.deps.buildConversationMessages(sessionId, resumedInput.prompt, params.snapshot.runId),
+      sessionContextState: params.sessionContextState ?? resumeSnapshot.contextState ?? params.snapshot.contextState,
       clarificationPatch: params.clarificationPatch,
       approvedActionIds: params.approvedActionIds,
       approvedActions: params.approvedActions,

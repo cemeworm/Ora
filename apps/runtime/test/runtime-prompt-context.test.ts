@@ -56,11 +56,15 @@ describe("buildAgentPromptContext", () => {
       stageSystem: "You are the research subagent. Return concise findings.",
       turnLocalMetadataGuidance: turnLocalMetadataGuidancePrompt(),
       workspaceContext: "Ora project workspace context:\n- Root path: /repo",
+      temporalContext: "Temporal reasoning protocol:\n- Use runtime time metadata when exact dates matter.",
       clarificationContext: "Resolved clarification:\n- Use staging.",
       memoryContext: "Use long-term memory when relevant.",
+      taskIntentContext: "You are in plan mode.",
+      modelStateContext: "Current runtime model state:\n- Model: openai/gpt-5.2",
       availableSkills,
       toolProtocol: "Workspace tool protocol:\nAvailable tools:\n- web.search",
       skillSnippets: ["Skill instructions here."],
+      compressionStateContext: "Current session compression state:\n- Compaction count: 1",
       toolIds: ["web.search", "mcp.listTools", "mcp.call"],
     });
 
@@ -73,11 +77,15 @@ describe("buildAgentPromptContext", () => {
       "turn_local_metadata_guidance",
       "tool_protocol",
       "skills_guidance",
+      "mcp_deferred_tools",
+      "task_intent_context",
+      "model_state_context",
       "available_skills",
       "skills",
-      "mcp_deferred_tools",
+      "compression_state_context",
       "workspace_context",
       "stage_instructions",
+      "temporal_context",
       "clarification_context",
       "memory_context",
     ]);
@@ -86,9 +94,21 @@ describe("buildAgentPromptContext", () => {
     expect(context.stablePrefix).toContain("Clarify first when missing or ambiguous requirements");
     expect(context.stablePrefix).toContain("Turn-local metadata protocol:");
     expect(context.stablePrefix).toContain("Workspace tool protocol:");
-    expect(context.stablePrefix).toContain("<available_skills>");
+    expect(context.stablePrefix).not.toContain("Temporal reasoning protocol:");
+    expect(context.stablePrefix).not.toContain("<available_skills>");
     expect(context.stablePrefix).not.toContain("Ora project workspace context:");
     expect(context.stablePrefix).not.toContain("Resolved clarification:");
+    expect(context.volatileSuffix).toContain("<available_skills>");
+    expect(context.volatileSuffix).toContain("Temporal reasoning protocol:");
+    expect(context.derivedContextBlocks.map((block) => block.id)).toEqual([
+      "task_mode",
+      "model_state",
+      "available_skills",
+      "activated_skills",
+      "compression_state",
+    ]);
+    expect(context.derivedContextBlocks.find((block) => block.id === "available_skills")?.content).toContain("<available_skills>");
+    expect(context.cacheDiagnosticsContext.derivedContextBlocks.find((block) => block.id === "activated_skills")?.content).toContain("Skill instructions here.");
     expect(context.system).toContain("Custom Agent Persona: research-pro");
     expect(context.system).toContain("Act as the configured research system agent.");
     expect(context.system).toContain("Ora agent profile: researcher");
@@ -134,6 +154,7 @@ describe("buildAgentPromptContext", () => {
         clarifications: { environment: "staging" },
       }),
       memoryContext: "Use relevant long-term memory.",
+      taskIntentContext: "You are in plan mode.",
       skillSnippets: ["Skill instructions here."],
     }).system;
 
@@ -145,6 +166,36 @@ describe("buildAgentPromptContext", () => {
     expect(system).toContain("- environment: staging");
     expect(system).toContain("Use relevant long-term memory.");
     expect(system).toContain("Skill instructions here.");
+  });
+
+  it("keeps available skills ordering deterministic even when telemetry differs", () => {
+    const context = buildAgentPromptContext({
+      agentId: "researcher",
+      stageSystem: "You are the researcher.",
+      availableSkills: [
+        {
+          ...availableSkills[0]!,
+          telemetry: { useCount: 1, lastUsedAt: Date.now() },
+        },
+        {
+          id: "zzz-review",
+          name: "zzz-review",
+          description: "Review workflow.",
+          path: "skills/zzz-review/SKILL.md",
+          category: "public",
+          enabled: true,
+          editable: true,
+          allowedPatterns: [],
+          tags: [],
+          telemetry: { useCount: 999, lastUsedAt: Date.now() },
+        },
+      ],
+    });
+
+    const availableSkillsBlock = context.derivedContextBlocks.find((block) => block.id === "available_skills")?.content ?? "";
+    expect(availableSkillsBlock.indexOf("<name>deep-research</name>")).toBeLessThan(
+      availableSkillsBlock.indexOf("<name>zzz-review</name>"),
+    );
   });
 
   it("formats user clarification context for runtime prompts", () => {

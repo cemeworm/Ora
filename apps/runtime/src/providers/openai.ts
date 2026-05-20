@@ -124,7 +124,13 @@ export function createOpenAIProvider(
       {
         model: config.modelId,
         input: canUseContinuation
-          ? buildResponsesInput({ ...request, messages: deltaMessages, system: undefined, providerCache: undefined })
+          ? buildResponsesInput({
+              ...request,
+              messages: deltaMessages,
+              system: undefined,
+              providerCache: undefined,
+              cacheDiagnosticsContext: undefined,
+            })
           : buildResponsesInput(request),
         ...(request.reasoningEffort ? { reasoning: { effort: request.reasoningEffort } } : {}),
       },
@@ -210,7 +216,13 @@ export function createOpenAIProvider(
       {
         model: config.modelId,
         input: canUseContinuation
-          ? buildResponsesInput({ ...request, messages: deltaMessages, system: undefined, providerCache: undefined })
+          ? buildResponsesInput({
+              ...request,
+              messages: deltaMessages,
+              system: undefined,
+              providerCache: undefined,
+              cacheDiagnosticsContext: undefined,
+            })
           : buildResponsesInput(request),
         stream: true,
         ...(request.reasoningEffort ? { reasoning: { effort: request.reasoningEffort } } : {}),

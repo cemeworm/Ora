@@ -24,6 +24,15 @@ export interface ModelImageBlock {
   data: string;
 }
 
+export type DerivedContextBlockPlacement = "volatile_suffix" | "history_event";
+
+export interface DerivedContextBlock {
+  id: string;
+  title: string;
+  content: string;
+  placement: DerivedContextBlockPlacement;
+}
+
 export interface ModelMessage {
   role: ModelRole;
   content: string;
@@ -48,6 +57,9 @@ export interface ModelRequest {
     stableSystemPrefix?: string;
     openaiPreviousResponseId?: string;
     openaiDeltaMessages?: readonly ModelMessage[];
+  };
+  cacheDiagnosticsContext?: {
+    derivedContextBlocks?: readonly DerivedContextBlock[];
   };
   signal?: AbortSignal;
 }

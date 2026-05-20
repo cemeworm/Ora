@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { SINGLE_AGENT_MODE_ID, StateSnapshotSchema } from "@cemeworm/shared";
+import { CODE_DEVELOPMENT_MODE_ID, SINGLE_AGENT_MODE_ID, StateSnapshotSchema } from "@cemeworm/shared";
 import { LocalRunStore, createRuntimeMethodHandler } from "../src/index.js";
 
 const cleanupPaths: string[] = [];
@@ -175,6 +175,41 @@ function runConfig(overrides: Partial<{ toolIds: string[] }> = {}) {
       headers: {},
     },
     toolIds: overrides.toolIds ?? ["agent.spawn", "file.read"],
+  };
+}
+
+function codeDevelopmentRunConfig(overrides: Partial<{ toolIds: string[] }> = {}) {
+  return {
+    modeId: CODE_DEVELOPMENT_MODE_ID,
+    providerId: "agent-spawn-provider",
+    modelRef: "agent-spawn-model",
+    providerConfig: {
+      id: "agent-spawn-provider",
+      label: "Agent Spawn Provider",
+      type: "openai_compatible" as const,
+      modelId: "agent-spawn-model",
+      baseUrl: "https://agent-spawn.test/v1",
+      apiKeyEnv: "NODE_LOOP_TOOL_KEY",
+      capabilities: ["chat", "tool_use"] as string[],
+      headers: {},
+    },
+    toolIds: overrides.toolIds ?? [
+      "repo.explore",
+      "file.read",
+      "file.list",
+      "file.glob",
+      "file.grep",
+      "file.write",
+      "file.patch",
+      "file.apply_patch",
+      "shell.execute",
+      "plan.update",
+      "agent.spawn",
+      "agent.wait",
+      "message.send",
+      "web.fetch",
+      "web.search",
+    ],
   };
 }
 
@@ -692,6 +727,486 @@ describe("agent.spawn integration", () => {
           error: expect.stringContaining('did not execute any real tools for bundle "research_readonly"'),
         }),
       ]));
+    } finally {
+      globalThis.fetch = prevFetch;
+    }
+  });
+
+  it("returns a structured blocked result when builder_write preflight has no patch capability", async () => {
+    process.env.NODE_LOOP_TOOL_KEY = "test";
+    const prevFetch = globalThis.fetch;
+
+    globalThis.fetch = (async (_input, init) => {
+      const request = parseProviderRequest(init);
+      const infraResponse = maybeHandleInfraProviderRequest(request);
+      if (infraResponse) {
+        return infraResponse;
+      }
+      if (request.latestUserText.includes("Patch README via builder_write")) {
+        return jsonResponse(JSON.stringify({
+          tool: "agent.spawn",
+          args: {
+            description: "Patch README",
+            prompt: "Patch README via builder_write",
+            tool_bundle: "builder_write",
+          },
+        }));
+      }
+      if (hasWorkspaceSpawnResult(request)) {
+        return jsonResponse("The builder_write spawn was blocked, so I will stay in the current read-only surface.");
+      }
+      return unexpectedProviderCall(request);
+    }) as typeof fetch;
+
+    try {
+      const handle = createRuntimeMethodHandler(createTempStore());
+      const start = await handle({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "runs.start",
+        params: {
+          input: { prompt: "Patch README via builder_write" },
+          config: runConfig({ toolIds: ["agent.spawn", "file.read", "file.grep"] }),
+        },
+      }) as { runId?: string; error?: unknown };
+      if (!start.runId) throw new Error(`Start failed: ${JSON.stringify(start)}`);
+
+      const result = await pollUntilDone(handle, start.runId, 80);
+      expect(result.status).toBe("succeeded");
+
+      const raw = await handle({ jsonrpc: "2.0", id: 8, method: "runs.state", params: { runId: start.runId } });
+      const parsed = StateSnapshotSchema.parse(raw);
+      expect(parsed.events).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          type: "agent_spawn_preflight.completed",
+          payload: expect.objectContaining({
+            requestedPreset: "builder_write",
+            status: "blocked",
+          }),
+        }),
+      ]));
+      expect(parsed.toolCalls).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          toolId: "agent.spawn",
+          status: "succeeded",
+          result: expect.objectContaining({
+            output: expect.objectContaining({
+              status: "blocked",
+              authority_source: "dynamic_spawn",
+              diagnostic_type: "spawn_authority_mismatch",
+              tool_bundle: "builder_write",
+              requested_tool_preset: "builder_write",
+              resolved_tool_preset: "builder_write",
+            }),
+          }),
+        }),
+      ]));
+    } finally {
+      globalThis.fetch = prevFetch;
+    }
+  });
+
+  it("blocks dynamic spawn when the prompt implies shell execution but the resolved surface is readonly", async () => {
+    process.env.NODE_LOOP_TOOL_KEY = "test";
+    const prevFetch = globalThis.fetch;
+
+    globalThis.fetch = (async (_input, init) => {
+      const request = parseProviderRequest(init);
+      const infraResponse = maybeHandleInfraProviderRequest(request);
+      if (infraResponse) {
+        return infraResponse;
+      }
+      if (request.latestUserText.includes("Capture the target article safely.")) {
+        return jsonResponse(JSON.stringify({
+          tool: "agent.spawn",
+          args: {
+            description: "Capture article",
+            prompt: "Run /tmp/run_capture.sh against https://example.com/article and summarize the article.",
+            tool_bundle: "research_readonly",
+          },
+        }));
+      }
+      if (hasWorkspaceSpawnResult(request)) {
+        return jsonResponse("The requested article capture was blocked because the delegated surface cannot perform shell-backed capture safely.");
+      }
+      return unexpectedProviderCall(request);
+    }) as typeof fetch;
+
+    try {
+      const handle = createRuntimeMethodHandler(createTempStore());
+      const start = await handle({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "runs.start",
+        params: {
+          input: { prompt: "Capture the target article safely." },
+          config: runConfig({ toolIds: ["agent.spawn", "file.read", "web.fetch", "web.search"] }),
+        },
+      }) as { runId?: string; error?: unknown };
+      if (!start.runId) throw new Error(`Start failed: ${JSON.stringify(start)}`);
+
+      const result = await pollUntilDone(handle, start.runId, 80);
+      expect(result.status).toBe("succeeded");
+
+      const raw = await handle({ jsonrpc: "2.0", id: 9, method: "runs.state", params: { runId: start.runId } });
+      const parsed = StateSnapshotSchema.parse(raw);
+      expect(parsed.toolCalls).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          toolId: "agent.spawn",
+          status: "succeeded",
+          result: expect.objectContaining({
+            output: expect.objectContaining({
+              status: "blocked",
+              diagnostic_type: "spawn_affordance_mismatch",
+              spawn_contract: expect.objectContaining({
+                source: "inferred",
+                requiredAffordances: expect.arrayContaining(["shell_execute", "web_read"]),
+                subject: expect.objectContaining({
+                  kind: "url",
+                  value: "https://example.com/article",
+                }),
+              }),
+            }),
+          }),
+        }),
+      ]));
+      expect(parsed.events).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          type: "agent_spawn_preflight.completed",
+          payload: expect.objectContaining({
+            requestedPreset: "research_readonly",
+            spawnContract: expect.objectContaining({
+              source: "inferred",
+            }),
+          }),
+        }),
+      ]));
+    } finally {
+      globalThis.fetch = prevFetch;
+    }
+  });
+
+  it("fails a child result that drifts away from the bound URL subject", async () => {
+    process.env.NODE_LOOP_TOOL_KEY = "test";
+    const prevFetch = globalThis.fetch;
+    const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ora-agent-spawn-drift-"));
+    cleanupPaths.push(workspaceRoot);
+    fs.writeFileSync(path.join(workspaceRoot, "README.md"), "This is unrelated local context.\n", "utf8");
+
+    globalThis.fetch = (async (_input, init) => {
+      const request = parseProviderRequest(init);
+      const infraResponse = maybeHandleInfraProviderRequest(request);
+      if (infraResponse) {
+        return infraResponse;
+      }
+      if (request.latestUserText.includes("Summarize the bound article safely.")) {
+        return jsonResponse(JSON.stringify({
+          tool: "agent.spawn",
+          args: {
+            description: "Bound article",
+            prompt: "Summarize https://example.com/article and stay on that article.",
+            tool_ids: ["file.read", "web.fetch"],
+            spawn_contract: {
+              required_affordances: ["web_read"],
+              subject: {
+                kind: "url",
+                value: "https://example.com/article",
+                normalization: "url_canonical",
+                normalized_value: "https://example.com/article",
+              },
+              resource_bindings: [
+                {
+                  locator: "value",
+                  kind: "url",
+                  value: "https://example.com/article",
+                  normalization: "url_canonical",
+                  normalized_value: "https://example.com/article",
+                  required: true,
+                },
+              ],
+              side_effect_policy: "none",
+              result_rules: ["subject_match_required", "resource_binding_match_required", "source_reference_required"],
+              validation_policy: "enforce",
+            },
+          },
+        }));
+      }
+      if (!hasWorkspaceSpawnResult(request) && request.latestUserText.includes("Summarize https://example.com/article and stay on that article.")) {
+        return jsonResponse(JSON.stringify({
+          tool: "file.read",
+          args: { path: "README.md" },
+        }));
+      }
+      if (!hasWorkspaceSpawnResult(request) && hasWorkspaceToolResult(request, "file.read")) {
+        return jsonResponse("I reviewed a local file and generated a long summary that is intentionally grounded in unrelated local context rather than the requested article URL, so the runtime should reject this result as a subject and resource binding drift before the parent can consume it.");
+      }
+      return unexpectedProviderCall(request);
+    }) as typeof fetch;
+
+    try {
+      const handle = createRuntimeMethodHandler(createTempStore());
+      const start = await handle({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "runs.start",
+        params: {
+          input: {
+            prompt: "Summarize the bound article safely.",
+            context: {
+              projectWorkspace: {
+                label: "Bound Article Drift",
+                rootPath: workspaceRoot,
+              },
+            },
+          },
+          config: runConfig({ toolIds: ["agent.spawn", "file.read", "web.fetch"] }),
+        },
+      }) as { runId?: string; error?: unknown };
+      if (!start.runId) throw new Error(`Start failed: ${JSON.stringify(start)}`);
+
+      const result = await pollUntilDone(handle, start.runId, 80);
+      expect(result.status).toBe("failed");
+
+      const raw = await handle({ jsonrpc: "2.0", id: 10, method: "runs.state", params: { runId: start.runId } });
+      const parsed = StateSnapshotSchema.parse(raw);
+      expect(parsed.toolCalls).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          toolId: "agent.spawn",
+          status: "failed",
+          error: expect.stringContaining("violated the spawn contract"),
+        }),
+      ]));
+      expect(parsed.childSessions).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          status: "failed",
+          spawnContract: expect.objectContaining({
+            source: "explicit",
+            subject: expect.objectContaining({
+              kind: "url",
+              value: "https://example.com/article",
+            }),
+          }),
+        }),
+      ]));
+    } finally {
+      globalThis.fetch = prevFetch;
+    }
+  });
+
+  it("keeps child results but emits warnings when handle binding validation is diagnostics-only", async () => {
+    process.env.NODE_LOOP_TOOL_KEY = "test";
+    const prevFetch = globalThis.fetch;
+    const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ora-agent-spawn-soft-validation-"));
+    cleanupPaths.push(workspaceRoot);
+    fs.writeFileSync(path.join(workspaceRoot, "README.md"), "Local fallback content for warning path.\n", "utf8");
+
+    globalThis.fetch = (async (_input, init) => {
+      const request = parseProviderRequest(init);
+      const infraResponse = maybeHandleInfraProviderRequest(request);
+      if (infraResponse) {
+        return infraResponse;
+      }
+      if (request.latestUserText.includes("Summarize with handle warning.")) {
+        return jsonResponse(JSON.stringify({
+          tool: "agent.spawn",
+          args: {
+            description: "Handle warning",
+            prompt: "Summarize https://example.com/article but keep going even if the bound browser session cannot be proven.",
+            tool_ids: ["file.read", "web.fetch"],
+            spawn_contract: {
+              required_affordances: ["web_read"],
+              subject: {
+                kind: "url",
+                value: "https://example.com/article",
+                normalization: "url_canonical",
+                normalized_value: "https://example.com/article",
+              },
+              resource_bindings: [
+                {
+                  locator: "handle",
+                  handle_kind: "browser_session",
+                  handle_id: "session-123",
+                  required: true,
+                  label: "Expected browser session",
+                },
+              ],
+              side_effect_policy: "none",
+              result_rules: ["resource_binding_match_required", "source_reference_required"],
+              validation_policy: "diagnostics_only",
+            },
+          },
+        }));
+      }
+      if (!hasWorkspaceSpawnResult(request) && request.latestUserText.includes("Summarize https://example.com/article but keep going even if the bound browser session cannot be proven.")) {
+        return jsonResponse(JSON.stringify({
+          tool: "file.read",
+          args: { path: "README.md" },
+        }));
+      }
+      if (!hasWorkspaceSpawnResult(request) && hasWorkspaceToolResult(request, "file.read")) {
+        return jsonResponse("This is a deliberately long delegated answer that still finishes successfully even though the required browser-session handle was never observed in child tool evidence, so the runtime should surface a warning instead of blocking the result.");
+      }
+      if (hasWorkspaceSpawnResult(request)) {
+        return jsonResponse("The delegated summary completed, and I also noticed the child result carried a spawn validation warning that should remain visible to the parent synthesizer.");
+      }
+      return unexpectedProviderCall(request);
+    }) as typeof fetch;
+
+    try {
+      const handle = createRuntimeMethodHandler(createTempStore());
+      const start = await handle({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "runs.start",
+        params: {
+          input: {
+            prompt: "Summarize with handle warning.",
+            context: {
+              projectWorkspace: {
+                label: "Handle Warning Workspace",
+                rootPath: workspaceRoot,
+              },
+            },
+          },
+          config: runConfig({ toolIds: ["agent.spawn", "file.read", "web.fetch"] }),
+        },
+      }) as { runId?: string; error?: unknown };
+      if (!start.runId) throw new Error(`Start failed: ${JSON.stringify(start)}`);
+
+      const result = await pollUntilDone(handle, start.runId, 80);
+      expect(result.status).toBe("succeeded");
+
+      const raw = await handle({ jsonrpc: "2.0", id: 11, method: "runs.state", params: { runId: start.runId } });
+      const parsed = StateSnapshotSchema.parse(raw);
+      expect(parsed.toolCalls).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          toolId: "agent.spawn",
+          status: "succeeded",
+        }),
+      ]));
+      expect(parsed.childSessions).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          status: "succeeded",
+          spawnValidation: expect.objectContaining({
+            status: "failed",
+            policy: "diagnostics_only",
+            effect: "warning",
+            violations: expect.arrayContaining([
+              expect.objectContaining({
+                code: "resource_binding_mismatch",
+              }),
+            ]),
+            observedHandles: expect.any(Array),
+          }),
+        }),
+      ]));
+    } finally {
+      globalThis.fetch = prevFetch;
+    }
+  });
+
+  it("records mode-stage child authority separately from dynamic spawn", async () => {
+    process.env.NODE_LOOP_TOOL_KEY = "test";
+    const prevFetch = globalThis.fetch;
+
+    globalThis.fetch = (async (_input, init) => {
+      const request = parseProviderRequest(init);
+      const infraResponse = maybeHandleInfraProviderRequest(request);
+      if (infraResponse) {
+        return infraResponse;
+      }
+      if (request.latestUserText.includes("创建一个紧凑的开发计划")) {
+        return jsonResponse(JSON.stringify({
+          text: "Implement the requested README change.",
+          goal: "Adjust the README with a minimal verified change.",
+          successCriteria: ["Builder completes the scoped change", "Review passes", "Debug confirms no remaining issue"],
+          backlog: [{ id: "1", owner: "builder", description: "Update the README wording." }],
+          scopeBoundaries: ["No unrelated refactors"],
+        }));
+      }
+      if (request.latestUserText.includes("做出最小的可行代码变更")) {
+        return jsonResponse(JSON.stringify({
+          text: "Updated README wording and captured focused verification evidence.",
+          artifacts: ["README.md"],
+        }));
+      }
+      if (request.latestUserText.includes("逐条对照开发计划中的 successCriteria")) {
+        return jsonResponse([
+          "Verdict: PASS",
+          "Accepted: build",
+          "Blocking issues: none.",
+          "Non-blocking findings: none.",
+          "Evidence: the builder stayed in scope, reported README.md as the only artifact, and did not claim unrelated changes.",
+          "Verification gaps: none identified for this focused handoff test.",
+        ].join("\n"));
+      }
+      if (request.latestUserText.includes("审查已通过。执行最终诊断")) {
+        return jsonResponse("No further debugging is needed. The review passed, there is no failing runtime evidence in this test scenario, and no additional fix path is required before handoff.");
+      }
+      if (request.latestUserText.includes("撰写最终移交报告")) {
+        return jsonResponse("Handoff complete. Changed file: README.md. Validation: reviewer passed and debugger confirmed no remaining issue. Residual risk: this is a mock integration path without real file mutation, but the stage authority flow completed correctly.");
+      }
+      return unexpectedProviderCall(request);
+    }) as typeof fetch;
+
+    try {
+      const handle = createRuntimeMethodHandler(createTempStore());
+      const start = await handle({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "runs.start",
+        params: {
+          input: { prompt: "Make a minimal README update and hand it off." },
+          config: {
+            ...codeDevelopmentRunConfig(),
+            metadata: { disableMemoryUpdate: true },
+          },
+        },
+      }) as { runId?: string; error?: unknown };
+      if (!start.runId) throw new Error(`Start failed: ${JSON.stringify(start)}`);
+
+      const result = await pollUntilDone(handle, start.runId, 80);
+      const raw = await handle({ jsonrpc: "2.0", id: 9, method: "runs.state", params: { runId: start.runId } });
+      const parsed = StateSnapshotSchema.parse(raw);
+      if (result.status !== "succeeded") {
+        throw new Error(`Mode-stage authority run failed: ${JSON.stringify({
+          status: parsed.status,
+          error: parsed.error,
+          output: parsed.output,
+          toolCalls: parsed.toolCalls,
+          childSessions: parsed.childSessions,
+        })}`);
+      }
+      const builderChild = parsed.childSessions.find((session) => session.agentId === "builder");
+      const reviewerChild = parsed.childSessions.find((session) => session.agentId === "reviewer");
+      const debuggerChild = parsed.childSessions.find((session) => session.agentId === "debugger");
+
+      expect(builderChild).toMatchObject({
+        sessionClass: "mode_subagent",
+        delegationKind: "mode_stage",
+        authoritySource: "mode_stage",
+        requestedToolPreset: "builder_write",
+        resolvedToolPreset: "builder_write",
+        status: "succeeded",
+      });
+      expect(builderChild?.resolvedToolIds).toEqual(expect.arrayContaining(["file.apply_patch", "shell.execute"]));
+      expect(reviewerChild).toMatchObject({
+        sessionClass: "mode_subagent",
+        delegationKind: "mode_stage",
+        authoritySource: "mode_stage",
+        requestedToolPreset: "review_readonly",
+        resolvedToolPreset: "review_readonly",
+        status: "succeeded",
+      });
+      expect(debuggerChild).toMatchObject({
+        sessionClass: "mode_subagent",
+        delegationKind: "mode_stage",
+        authoritySource: "mode_stage",
+        requestedToolPreset: "repo_forensics",
+        resolvedToolPreset: "repo_forensics",
+        status: "succeeded",
+      });
+      expect(parsed.childSessions.some((session) => session.authoritySource === "dynamic_spawn")).toBe(false);
     } finally {
       globalThis.fetch = prevFetch;
     }

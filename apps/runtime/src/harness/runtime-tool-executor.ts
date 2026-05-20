@@ -1,12 +1,14 @@
 import { ActionApprovalRequestCopySchema } from "@cemeworm/shared";
+import { AgentSpawnContractSchema } from "@cemeworm/shared";
 import { resolveToolPermission } from "@cemeworm/shared";
-import type { ActionApprovalRequestCopy, ActionRiskLevel, AgentResultContract, AgentToolBundleId, ModeToolLimits, PermissionProfile, RuntimeToolResultPreview, SearchProviderConfig, SkillDescriptor, SkillDetail, SkillListParams, TaskIntent, ToolDescriptor, ToolPermission } from "@cemeworm/shared";
+import type { ActionApprovalRequestCopy, ActionRiskLevel, AgentResultContract, AgentSpawnContract, AgentToolBundleId, ModeToolLimits, PermissionProfile, RuntimeToolResultPreview, SearchProviderConfig, SkillDescriptor, SkillDetail, SkillListParams, TaskIntent, ToolDescriptor, ToolPermission } from "@cemeworm/shared";
 import type { PackageManager } from "../package-manager.js";
 import type { ModelToolDefinition } from "../providers/index.js";
 import type { RuntimeToolDefinition } from "./capability-registries.js";
 import { automationToolRuntimeFields } from "./runtime-automation-tools.js";
 import { clarificationToolRuntimeFields } from "./runtime-clarification-tool.js";
 import { fileToolRuntimeFields } from "./runtime-file-tools.js";
+import { repoExploreToolRuntimeFields } from "./runtime-repo-explore-tool.js";
 import { createSearchProvider, type SearchProvider } from "./search-providers/index.js";
 import { mcpToolRuntimeFields, callMcpTool as callRuntimeMcpTool } from "./runtime-mcp-tools.js";
 import { modeToolRuntimeFields } from "./runtime-mode-tools.js";
@@ -25,6 +27,7 @@ import { type WorkspaceOperations, localWorkspaceOperations } from "./workspace-
 import type { ComputerBackendManager } from "./computer-use/backend-manager.js";
 
 export const IMPLEMENTED_RUNTIME_TOOL_IDS = [
+  "repo.explore",
   "file.read",
   "file.list",
   "file.glob",
@@ -152,6 +155,7 @@ export interface RuntimeToolExecutionContext {
     toolBundle?: AgentToolBundleId;
     toolIds?: string[];
     resultContract?: AgentResultContract;
+    spawnContract?: AgentSpawnContract;
     invokingAgentId?: string;
   }) => Promise<unknown>;
   /** Wait for background sub-agents and collect their structured results. */
@@ -834,6 +838,7 @@ function buildRuntimeToolDefinitions(
 
 function builtInToolRuntimeFields(toolId: string): Partial<RuntimeToolDefinition<RuntimeToolExecutionContext>> {
   return {
+    ...repoExploreToolRuntimeFields(toolId),
     ...fileToolRuntimeFields(toolId),
     ...shellToolRuntimeFields(toolId),
     ...webDocumentToolRuntimeFields(toolId),
@@ -910,11 +915,54 @@ function agentSpawnToolRuntimeFields(toolId: string): Partial<RuntimeToolDefinit
       const toolBundle = typeof args.tool_bundle === "string" ? args.tool_bundle as AgentToolBundleId : undefined;
       const toolIds = Array.isArray(args.tool_ids) ? args.tool_ids.filter((t: unknown) => typeof t === "string") as string[] : undefined;
       const resultContract = typeof args.result_contract === "string" ? args.result_contract as AgentResultContract : undefined;
+      const spawnContract = isRecord(args.spawn_contract)
+        ? AgentSpawnContractSchema.parse({
+            source: "explicit",
+            requiredAffordances: Array.isArray(args.spawn_contract.required_affordances)
+              ? args.spawn_contract.required_affordances
+              : undefined,
+            subject: isRecord(args.spawn_contract.subject)
+              ? {
+                  kind: args.spawn_contract.subject.kind,
+                  value: args.spawn_contract.subject.value,
+                  normalization: args.spawn_contract.subject.normalization,
+                  normalizedValue: args.spawn_contract.subject.normalized_value,
+                  label: args.spawn_contract.subject.label,
+                }
+              : undefined,
+            resourceBindings: Array.isArray(args.spawn_contract.resource_bindings)
+              ? args.spawn_contract.resource_bindings.map((binding) => isRecord(binding)
+                ? binding.locator === "handle"
+                  ? {
+                      locator: "handle",
+                      handleKind: binding.handle_kind,
+                      handleId: binding.handle_id,
+                      required: binding.required,
+                      label: binding.label,
+                    }
+                  : {
+                      locator: "value",
+                      kind: binding.kind,
+                      value: binding.value,
+                      normalization: binding.normalization,
+                      normalizedValue: binding.normalized_value,
+                      required: binding.required,
+                      label: binding.label,
+                    }
+                : binding)
+              : undefined,
+            sideEffectPolicy: args.spawn_contract.side_effect_policy,
+            resultRules: Array.isArray(args.spawn_contract.result_rules)
+              ? args.spawn_contract.result_rules
+              : undefined,
+            validationPolicy: args.spawn_contract.validation_policy,
+          })
+        : undefined;
       if (!context.spawnAgent) {
         throw new Error("agent.spawn is not available in this runtime context.");
       }
       const result = await context.spawnAgent({
-        description, prompt, agentType, runInBackground, inheritContext, systemPrompt, toolBundle, toolIds, resultContract, invokingAgentId: context.currentAgentId,
+        description, prompt, agentType, runInBackground, inheritContext, systemPrompt, toolBundle, toolIds, resultContract, spawnContract, invokingAgentId: context.currentAgentId,
       });
       return { output: result };
     },

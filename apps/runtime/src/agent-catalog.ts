@@ -10,7 +10,8 @@ import {
   ORA_ROOT_AGENT_LABEL,
   SystemAgentOverride,
   SYSTEM_AGENT_ID_ALIASES,
-  SystemAgentCatalogItem
+  SystemAgentCatalogItem,
+  visibleToolIdsForPreset,
 } from "@cemeworm/shared";
 import { CustomAgentFileStore, SystemAgentOverrideFileStore } from "./custom-agents.js";
 import { ModeSpecFileStore } from "./modes.js";
@@ -234,7 +235,7 @@ function rootAgentCatalogItem(systemAgentOverrideStore: SystemAgentOverrideFileS
     role: override?.role ?? role,
     ...(explicitSystemAgentModelRef(override?.modelRef) ? { modelRef: explicitSystemAgentModelRef(override?.modelRef) } : {}),
     toolPolicyId: "root.default_policy",
-    toolIds: override?.toolIds ?? [...DEFAULT_AGENT_MODE_TOOL_IDS],
+    toolIds: override?.toolIds ?? visibleToolIdsForPreset("root_default", DEFAULT_AGENT_MODE_TOOL_IDS),
     skillIds: override?.skillIds ?? [],
     memoryNamespaces: ["session", "project"],
     soul: override?.soul ?? "",

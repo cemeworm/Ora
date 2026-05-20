@@ -98,6 +98,81 @@ describe("RunResumeFinalizationService", () => {
     ]);
   });
 
+  it("materializes resolved clarification continuation state before terminal assertion", async () => {
+    const original = StateSnapshotSchema.parse({
+      ...baseSnapshot(),
+      status: "interrupted",
+      pendingClarifications: [{
+        id: "clarification:scope",
+        key: "scope",
+        nodeId: "ora",
+        nodeLabel: "Ora",
+        question: "Which scope?",
+        options: [],
+        requestedAt: 1_100,
+      }],
+      continuation: {
+        activeFrameId: "run-resume-finalization:continuation:0",
+        frames: [{
+          id: "run-resume-finalization:continuation:0",
+          runId: "run-resume-finalization",
+          status: "paused",
+          reason: "clarification_required",
+          conversationCursor: 0,
+          pendingActionIds: [],
+          pendingToolCallIds: [],
+          pendingClarificationIds: ["clarification:scope"],
+          approvedActionIds: [],
+          resolvedClarificationIds: [],
+          createdAt: 1_100,
+          updatedAt: 1_100,
+        }],
+      },
+      updatedAt: 1_100,
+    });
+    const terminal = StateSnapshotSchema.parse({
+      ...original,
+      status: "succeeded",
+      pendingClarifications: [],
+      updatedAt: 2_100,
+    });
+    const service = new RunResumeFinalizationService({
+      withResumeResolutionEvents: (snapshot) => StateSnapshotSchema.parse({
+        ...snapshot,
+        continuation: {
+          activeFrameId: undefined,
+          frames: [{
+            ...snapshot.continuation.frames[0]!,
+            status: "completed",
+            pendingClarificationIds: [],
+            resolvedClarificationIds: ["clarification:scope"],
+            updatedAt: snapshot.updatedAt,
+          }],
+        },
+      }),
+      normalizeSnapshotForPersistence: (snapshot) => snapshot,
+      appendRunSnapshotUpdateToLedger: (snapshot) => snapshot,
+      persistRun: () => {},
+      persistRunWithGeneratedTitle: async () => {},
+    });
+
+    const persisted = await service.persistTerminal({
+      snapshot: terminal,
+      original,
+      clarificationPatch: { scope: "staging" },
+      approvedActionIds: [],
+    });
+
+    expect(persisted.status).toBe("succeeded");
+    expect(persisted.error).toBeUndefined();
+    expect(persisted.continuation.activeFrameId).toBeUndefined();
+    expect(persisted.continuation.frames[0]).toMatchObject({
+      status: "completed",
+      pendingClarificationIds: [],
+      resolvedClarificationIds: ["clarification:scope"],
+    });
+  });
+
   it("owns streaming failure ledger, persistence, and publish sequencing", async () => {
     const calls: string[] = [];
     const failed = StateSnapshotSchema.parse({ ...baseSnapshot(), status: "failed", updatedAt: 3_000 });

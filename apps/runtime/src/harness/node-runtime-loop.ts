@@ -174,6 +174,7 @@ export interface RunNodeRuntimeLoopParams {
   prompt: string;
   system: string;
   providerCache?: ModelRequest["providerCache"];
+  cacheDiagnosticsContext?: ModelRequest["cacheDiagnosticsContext"];
   toolIds: string[];
   /** Optional per-node timeout in milliseconds. Interpreted as an idle timeout:
    *  the node is allowed to run longer than this as long as it continues to
@@ -284,6 +285,7 @@ export interface RunNodeRuntimeLoopDeps {
     messages: ModelMessage[];
     system: string;
     providerCache?: ModelRequest["providerCache"];
+    cacheDiagnosticsContext?: ModelRequest["cacheDiagnosticsContext"];
     nativeTools: ReturnType<RuntimeToolExecutor["toolDefinitions"]>;
     streamCallbacks?: Parameters<typeof invokeRunProviderStream>[2];
     reason: CompletionStopReason;
@@ -364,6 +366,15 @@ function cacheDiagnosticDelta(
   }
   if (previous.volatileSystemSuffixHash !== current.volatileSystemSuffixHash) {
     changed.push("volatile_system_suffix");
+  }
+  const derivedBlockIds = new Set([
+    ...Object.keys(previous.derivedContextBlockHashes),
+    ...Object.keys(current.derivedContextBlockHashes),
+  ]);
+  for (const blockId of [...derivedBlockIds].sort()) {
+    if (previous.derivedContextBlockHashes[blockId] !== current.derivedContextBlockHashes[blockId]) {
+      changed.push(`derived_context_block:${blockId}`);
+    }
   }
   if (previous.toolsHash !== current.toolsHash) {
     changed.push("tools");
@@ -968,13 +979,14 @@ export async function runNodeRuntimeLoop(
     system: params.system,
     ensureClarifications,
     completion,
-    runForcedFinalProviderCall: ({ messages: nextMessages, reason, nativeTools: nextNativeTools }) =>
-      runForcedFinalProviderCall({
+    runForcedFinalProviderCall: ({ messages: nextMessages, reason, nativeTools: nextNativeTools }) => {
+      const forcedFinalParams = {
         invokeProvider,
         config,
         messages: [...nextMessages],
         system: params.system,
         providerCache: params.providerCache,
+        cacheDiagnosticsContext: params.cacheDiagnosticsContext,
         nativeTools: [...nextNativeTools],
         streamCallbacks,
         reason,
@@ -983,7 +995,9 @@ export async function runNodeRuntimeLoop(
         title: params.title,
         emitNodeRuntimeState: emitForcedFinalProviderState,
         onProviderExhausted: params.onForcedFinalProviderExhausted,
-      }),
+      } as Parameters<typeof runForcedFinalProviderCall>[0];
+      return runForcedFinalProviderCall(forcedFinalParams);
+    },
     invokeFollowUpModel,
   };
   const invokeModelResponse = (request: Parameters<typeof invokeRuntimeModelResponse>[0]["request"]) =>
@@ -1052,6 +1066,8 @@ export async function runNodeRuntimeLoop(
           const repairResponse = await invokeFollowUpModel({
             messages,
             system: params.system,
+            providerCache: params.providerCache,
+            cacheDiagnosticsContext: params.cacheDiagnosticsContext,
             maxTokens: config.budget?.maxTokens,
             tools: nativeTools,
             toolChoice: "none",
@@ -1165,6 +1181,8 @@ export async function runNodeRuntimeLoop(
               params.system,
               completion.stopReasonForScope(completionScope) ?? "forced_final_answer",
             ),
+        providerCache: params.providerCache,
+        cacheDiagnosticsContext: params.cacheDiagnosticsContext,
         maxTokens: config.budget?.maxTokens,
         tools: nativeTools,
         toolChoice: completion.toolsAllowed(completionScope) && nativeTools.length > 0 ? "auto" : "none",
@@ -1201,6 +1219,7 @@ export async function runNodeRuntimeLoop(
           completion.stopReasonForScope(completionScope) ?? "tool_budget_exhausted",
         ),
     providerCache: params.providerCache,
+    cacheDiagnosticsContext: params.cacheDiagnosticsContext,
     maxTokens: config.budget?.maxTokens,
     tools: nativeTools,
     toolChoice:
@@ -1315,6 +1334,8 @@ export async function runNodeRuntimeLoop(
         response = await invokeFollowUpModel({
           messages,
           system: params.system,
+          providerCache: params.providerCache,
+          cacheDiagnosticsContext: params.cacheDiagnosticsContext,
           maxTokens: config.budget?.maxTokens,
           tools: nativeTools,
           toolChoice: nativeTools.length > 0 ? "auto" : undefined,
@@ -1432,7 +1453,7 @@ export async function runNodeRuntimeLoop(
             `Recommended action: ${interventionActionToLabel(policyResult.action)}.`,
             `Please provide your final answer based on the conversation so far.`,
           ].join(" ");
-          return runForcedFinalProviderCall({
+          const forcedFinalParams = {
             invokeProvider,
             config,
             messages: [
@@ -1441,6 +1462,7 @@ export async function runNodeRuntimeLoop(
             ],
             system: params.system,
             providerCache: params.providerCache,
+            cacheDiagnosticsContext: params.cacheDiagnosticsContext,
             nativeTools,
             streamCallbacks,
             reason: "causal_policy_blocked",
@@ -1449,7 +1471,8 @@ export async function runNodeRuntimeLoop(
             title: params.title,
             emitNodeRuntimeState: emitForcedFinalProviderState,
             onProviderExhausted: params.onForcedFinalProviderExhausted,
-          });
+          } as Parameters<typeof runForcedFinalProviderCall>[0];
+          return runForcedFinalProviderCall(forcedFinalParams);
         }
       }
     }
@@ -1467,12 +1490,13 @@ export async function runNodeRuntimeLoop(
         reason: attemptDecision.reason,
         iteration,
       });
-      return runForcedFinalProviderCall({
+      const forcedFinalParams = {
         invokeProvider,
         config,
         messages,
         system: params.system,
         providerCache: params.providerCache,
+        cacheDiagnosticsContext: params.cacheDiagnosticsContext,
         nativeTools,
         streamCallbacks,
         reason: attemptDecision.reason,
@@ -1481,7 +1505,8 @@ export async function runNodeRuntimeLoop(
         title: params.title,
         emitNodeRuntimeState: emitForcedFinalProviderState,
         onProviderExhausted: params.onForcedFinalProviderExhausted,
-      });
+      } as Parameters<typeof runForcedFinalProviderCall>[0];
+      return runForcedFinalProviderCall(forcedFinalParams);
     }
 
     const boundaryError = codeDevelopmentToolBoundaryError({
@@ -1526,12 +1551,13 @@ export async function runNodeRuntimeLoop(
     title: params.title,
     reason: "runtime_tool_loop_limit",
   });
-  return runForcedFinalProviderCall({
+  const forcedFinalParams = {
     invokeProvider,
     config,
     messages,
     system: params.system,
     providerCache: params.providerCache,
+    cacheDiagnosticsContext: params.cacheDiagnosticsContext,
     nativeTools,
     streamCallbacks,
     reason: "runtime_tool_loop_limit",
@@ -1539,7 +1565,8 @@ export async function runNodeRuntimeLoop(
     title: params.title,
     emitNodeRuntimeState: emitForcedFinalProviderState,
     onProviderExhausted: params.onForcedFinalProviderExhausted,
-  });
+  } as Parameters<typeof runForcedFinalProviderCall>[0];
+  return runForcedFinalProviderCall(forcedFinalParams);
 }
 
 function lifecycleEvidenceToolCallIds(
