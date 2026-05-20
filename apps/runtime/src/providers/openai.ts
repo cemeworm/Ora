@@ -268,6 +268,7 @@ export function createOpenAIProvider(
 
     let text = "";
     let sawStreamFrame = false;
+    const openTimeoutMs = config.timeoutMs;
     const rawEvents = await readSseMessages(response, async (message) => {
       const data = JSON.parse(message.data) as unknown;
       if (!sawStreamFrame) {
@@ -280,7 +281,7 @@ export function createOpenAIProvider(
       if (!delta) return;
       text += delta;
       await emitTextDelta(callbacks, { delta, text, raw: data });
-    });
+    }, openTimeoutMs ? { openTimeoutMs, idleTimeoutMs: openTimeoutMs } : {});
 
     return {
       providerId: config.id,
