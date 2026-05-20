@@ -2,7 +2,7 @@
 
 本文描述当前 Ora runtime loop 的主结构：Task Flow 兼容层、run 外层生命周期、continuation dispatcher、mode 编排层、单个 node 内部的 model-tool loop，以及 plan list、gate、streaming finalization 如何进入持久 projection。
 
-> **最近更新 (2026-05-19)**：新增父/子协作状态投影（`childSessions` / `parentCoordination`）、background child lifecycle authority（`produced_output` / `awaiting_pickup` / `stalled`）、`agent.spawn` 的 tool bundle / result contract / `agent.wait`、child delta 协作面隔离，以及 `project_instructions` / 响应语言等 turn-local prompt 约束。
+> **最近更新 (2026-05-20)**：child session 投影现已显式区分 `mode_stage` 与 `dynamic_spawn` authority source，并把 `requestedToolPreset` / `resolvedToolPreset` 写入 `child_session.updated`；`dynamic_spawn` contract 现支持 `subject.normalization`、`resource_bindings.locator = value | handle` 与 `validation_policy = enforce | diagnostics_only`；Code Development 的 `debug` stage 最终收敛到 `repo_forensics`（允许诊断性 `shell.execute`，仍禁止写入）。
 
 ## 阅读地图
 
@@ -19,6 +19,7 @@ Ora 的 runtime loop 不是单一循环，而是几层边界叠在一起：
 - 用户正文只消费父 Agent 的最终叙事。
 - 子 Agent 的流式 delta 会被标记为 `audience/visibility = collaboration`，不再进入正文投影。
 - 子 Agent 的低频结构事实通过 `child_session.updated` / `parent_coordination.updated` 进入 snapshot 与 ledger-backed projection，供 desktop 右侧协作区和 Trails 消费。
+- `child_session.updated` 现在不仅记录状态，还会写明它是 `mode_stage` 还是 `dynamic_spawn`，以及 child 实际跑在什么 tool preset 上；Trails 应把这视为权限来源事实，而不是普通状态噪音。
 
 主要源码入口：
 
@@ -76,7 +77,27 @@ Ora 的 runtime loop 不是单一循环，而是几层边界叠在一起：
 - 当前时间、当前用户消息 excerpt、当前轮附件摘要、clarifications 不再进入 system prompt。
 - runtime 保存的 `input.prompt` 仍然是原始用户输入；模型可见的 `<turn_local_metadata>` 在当前轮装配时注入，并在 `run-store` 重建历史 context 时根据持久化的 `input.createdAt` / `input.context` 再生成相同字节。
 - `node-runtime-loop` 会在每次 provider 请求前发出 `cache_diagnostics` 型 `node.updated`，记录 stable prefix / volatile suffix / turn metadata / tools 的 hash 和变化来源。
-- `openai-compatible` / `openai` provider 在请求线上会把 `stableSystemPrefix` 与动态 system tail 拆成独立 developer/system message，避免逻辑层的 stablePrefix 停留在“只存在于中间对象里”。
+- OpenAI Responses 路线会把 `stableSystemPrefix` 放进首条 `developer` instruction，把动态 system tail 放进后续 `system` instruction，避免逻辑层的 stablePrefix 停留在“只存在于中间对象里”。
+- openai-compatible chat completions 与 Anthropic 没有完全等价的 provider role split 时，也必须保留同一条边界：stable prefix 与动态 tail 仍分段发送，不允许把动态 tail 重新并回 stable prefix。
+
+### 0.1.1 Derived Context Block Placement Contract
+
+从 2026-05-20 起，provider 层对 `derivedContextBlocks[]` 施加显式 placement contract：
+
+- `placement = volatile_suffix`
+  - block 内容必须出现在 `system` 的动态 tail 中。
+  - block 内容不得进入 `stableSystemPrefix`。
+  - 对 OpenAI Responses 而言，这意味着：
+    - stable prefix 进入首条 `developer` instruction
+    - derived block 所在 tail 进入后续 `system` instruction
+- `placement = history_event`
+  - block 内容不得经由 provider 的 developer/system instruction surface 发送。
+  - 这类内容只能通过 append-only conversation history 暴露给模型。
+
+当前 provider-side 收紧点：
+
+- `provider-utils.ts` 会在发请求前校验 `derivedContextBlocks[]` 的 placement 是否与 `system` / `stableSystemPrefix` 的实际拆分一致。
+- 一旦发现 `volatile_suffix` block 漏进 stable prefix，或 `history_event` block 被塞进 developer/system instruction surface，请求会直接报错，而不是悄悄继续发送错误布局。
 
 ## 0. Task Flow、Run、Session 的边界
 
@@ -495,6 +516,8 @@ Ledger projection 层也有对应的非法状态处理：`deriveLedgerRunAttenti
 
 orchestrator 负责计划和协调，实际代码修改必须落到 builder 阶段。
 
+从 2026-05-20 这一轮 authority 收口开始，`coding_root` 默认也不再暴露 `agent.spawn`。也就是说，Code Development 的 root orchestrator 不再拥有一条“再临时拉一个只读子代理”的并行主路径；需要的结构化协作由 mode stage 自己承担，动态只读委派不再作为默认出口留在 root prompt/tool surface 上。
+
 ### Dynamic orchestrator delegation
 
 `dynamic_orchestrator` 预设复用 `orchestrator_subagent` family，并通过 mode-scope atom `dynamic_delegation` 改变 driver 执行策略：
@@ -524,17 +547,29 @@ orchestrator 负责计划和协调，实际代码修改必须落到 builder 阶�
 
 ### 动态 subagent 调用链路
 
-这里需要区分两类 subagent：
+这里需要区分两类 subagent，而且它们的 authority 来源不同：
 
 - **mode driver 固定 subagent**：例如 `orchestrator_subagent` family 中的 `researcher` / `reviewer`，由 mode topology 和 node owner 预先定义。
 - **runtime tool 动态 subagent**：由运行中的 agent 通过 `agent.spawn` 临时创建，属于 agent-as-tool delegation。
 
+对应的 child authority contract 是：
+
+- `mode_stage`
+  - authority 直接来自 mode topology / node template / owner agent。
+  - 不以上层 orchestrator 的当前可见工具面作为硬上限。
+  - 例：`code_development.build -> builder_write`，`code_development.debug -> repo_forensics`。
+- `dynamic_spawn`
+  - authority 继续受 invoking agent 当前可见工具面约束。
+  - `tool_bundle` 只是“请求的职责面”，不是提权入口。
+  - blocked request 会产出显式 `spawn_authority_mismatch` 诊断，而不是把它伪装成 stage dispatch 成功。
+
 动态 spawn 的真实调用链是：
 
 1. 父 agent 在 model-tool loop 中产出 `agent.spawn` tool call。
-2. `runtime-tool-executor` 解析 `description`、`prompt`、`agent_type`、`run_in_background`、`inherit_context`、`system_prompt`、`tool_ids`、`tool_bundle`、`result_contract`。
-3. `runtime-kernel.setSpawnAgent()` 校验 profile、分配 `effectiveAgentId`，并写入 `child_session.updated` / `parent_coordination.updated`。
-4. 无论是 mode driver 固定 subagent，还是 `agent.spawn` 动态 subagent，最终都统一进入 `callAgent() -> runNodeRuntimeLoop()`。
+2. `runtime-tool-executor` 解析 `description`、`prompt`、`agent_type`、`run_in_background`、`inherit_context`、`system_prompt`、`tool_ids`、`tool_bundle`、`result_contract`、`spawn_contract`。
+3. `runtime-kernel.setSpawnAgent()` 会先编译 `spawn_contract`：校验 affordance / side-effect / subject / resource binding 是否与当前 resolved tool surface兼容；编译阶段会先做 `subject.normalization` 和 value-binding normalization，若调用方没有显式给 `spawn_contract`，runtime 也会对 URL / shell-script prompt 做有限推断。
+4. `runtime-kernel.setSpawnAgent()` 校验 profile、分配 `effectiveAgentId`，并写入 `child_session.updated` / `parent_coordination.updated`。
+5. mode stage 子执行和 `agent.spawn` 动态子执行都会统一进入 `callAgent() -> runNodeRuntimeLoop()`，但两者不会共享 authority resolution：stage-owned child 的 preset 来自 mode node；dynamic spawn 的 preset 继续受 invoking agent 工具面收窄。
 
 子 agent 的“目标”不是独立 `goal` 字段，而是由以下输入共同表达：
 
@@ -545,6 +580,12 @@ orchestrator 负责计划和协调，实际代码修改必须落到 builder 阶�
 - `tool_ids`：可选，高级覆盖用；会收窄子 agent 可用工具。
 - `tool_bundle`：首选的职责型工具面，映射到维护好的只读研究 / 取证 / review / builder 工具集合。
 - `result_contract`：子结果契约，决定 runtime 如何验证 child 输出是否真的可消费。
+- `spawn_contract`：结构化 delegation contract，可声明 `required_affordances`、`subject`、`resource_bindings`、`side_effect_policy`、`result_rules`、`validation_policy`。
+- `subject.normalization`：当前支持 `auto`、`none`、`url_canonical`、`path_canonical`、`casefold`。runtime 会按 subject kind 选择默认 normalization，并把结果写回 `normalizedValue`。
+- `resource_bindings`：现在支持两类绑定。
+  - `locator = value`：绑定 URL / file / document / artifact 等值型资源，也会走 normalization。
+  - `locator = handle`：绑定 runtime-native handle，例如 `artifact`、`browser_session`、`browser_snapshot`、`child_session`、`run`。
+- `child_session.updated` 投影：现在会额外记录 `spawnContract`、`spawnValidation`，以及已有的 `delegationKind`、`authoritySource`、`requestedToolPreset`、`resolvedToolPreset`，用于 Trails / desktop 协作区区分“结构化 stage child”和“动态委派 child”。
 
 上下文继承的当前实现也需要精确理解：
 
@@ -558,6 +599,18 @@ orchestrator 负责计划和协调，实际代码修改必须落到 builder 阶�
 - **异步回传**：`run_in_background: true` 时，后台结果先写入 async result 队列，并把 child session 投影到 `awaiting_pickup`。
 - **显式 fan-in**：父 agent 可以后续调用 `agent.wait`，按全部 active child 或指定 child ids 收集结构化结果 envelope。
 - **消息回传**：`message.send` 和 `emitAgentMessage` 都会把内容写入目标 agent 的消息队列，目标 agent 下次执行时注入 `<agent-messages>`。
+
+新的动态 spawn 失败面现在被前置并显式化：
+
+- authority 不满足时，返回 `spawn_authority_mismatch`
+- required affordance 不满足时，返回 `spawn_affordance_mismatch`
+- side-effect envelope 与 resolved tools 冲突时，返回 `spawn_side_effect_violation`
+- resource / subject contract 不完整时，返回 `spawn_resource_binding_missing` 或 `spawn_subject_unbound`
+- inferred `spawn_contract` 默认把结果级校验策略降为 `validation_policy = diagnostics_only`；显式 contract 默认仍是 `enforce`
+- `validation_policy` 只影响 child 完成后的 result validation，不影响 authority / affordance / side-effect / missing-binding 这类 launch-time blocker
+- child 完成后若实际工具证据与 `subject` / `resource_bindings` 不一致，`spawnValidation` 会失败：
+  - `effect = blocked` 时，结果不会上交父 agent
+  - `effect = warning` 时，结果会以上方 warning banner 的 degraded success 形式交回父 agent，并保留完整 `spawnValidation`
 
 ```mermaid
 sequenceDiagram

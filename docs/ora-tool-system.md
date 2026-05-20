@@ -2,7 +2,7 @@
 
 本文档是 Ora runtime 工具系统的权威参考，覆盖架构设计、治理链机制、执行管道、基础设施和当前状态。Ora 的工具系统不是一个简单的"函数调用列表"，而是一个以 **runtime governance** 为中心的产品级 agent 工具平台。
 
-> **最近更新 (2026-05-19)**：`agent.spawn` 的 `tool_bundle` / `result_contract`、`agent.wait` fan-in、selected widget runtime tools、child result 有效性校验、审批文案统一跟随当前回合语言。
+> **最近更新 (2026-05-20)**：`agent.spawn` 现在明确区分 dynamic spawn authority 与 mode-stage authority；blocked writable spawn 会返回 `spawn_authority_mismatch` 诊断；Code Development 的 `debug` stage 最终固定为非写入的 `repo_forensics`。
 
 ## 1. 设计理念与架构概览
 
@@ -1029,7 +1029,14 @@ internal:    user.clarify, plan.update, agent.spawn, message.send
   - `system_prompt` 会覆盖默认 profile system prompt。
   - `tool_bundle` 是首选的职责分配方式，当前维护的 bundle 包括 `research_readonly`、`repo_forensics`、`review_readonly`、`builder_write`。
   - `tool_ids` 仍可用，但更适合高级覆盖；runtime 会先把 bundle 解析成维护好的工具集合，再与当前 run allowed tools 求交。
-  - `result_contract` 用来声明子 agent 产出期望，比如 `final_answer`、`evidence_report`、`diff_report`、`plan_only`。runtime 会据此做结果有效性校验。
+  - `spawn_contract` 是新的结构化 delegation contract，可显式声明 `required_affordances`、`subject`、`resource_bindings`、`side_effect_policy`、`result_rules`、`validation_policy`。如果调用方未显式提供，runtime 也会对 URL / shell-script 类 prompt 做有限推断。
+  - `subject` 现在支持显式 `normalization`。当前模式集是 `auto`、`none`、`url_canonical`、`path_canonical`、`casefold`；runtime 会把归一化结果写回 `normalizedValue`，避免 prompt wording 和证据形态的表层差异被误判成 drift。
+  - `resource_bindings` 现在是 value/handle 双形态：
+    - `locator=value` 绑定 URL、file、document、artifact 等值型资源，并支持 normalization。
+    - `locator=handle` 绑定 runtime-native handle，例如 `artifact`、`browser_session`、`browser_snapshot`、`child_session`、`run`。
+  - `agent.spawn` 只适用于 `dynamic_spawn` authority：它永远不能绕过 invoking agent 当前工具边界去拿到更强 preset。
+  - mode topology 自己派发的 child 不走这条 authority 规则；那是独立的 `mode_stage` contract。
+  - `result_contract` 用来声明子 agent 产出期望，比如 `final_answer`、`evidence_report`、`diff_report`、`plan_only`。runtime 现在会同时结合 `spawn_contract` 做结果有效性校验。
 - `message.send`
   - 不会立刻驱动目标 agent 执行。
   - 它会同时做两件事：发出 `agent.message` 事件供 UI / snapshot 可见，以及把消息写入目标 agent 的消息队列，供后续 prompt 注入。
@@ -1047,18 +1054,41 @@ internal:    user.clarify, plan.update, agent.spawn, message.send
 - 默认同步模式：subagent 输出文本会直接作为本次 `agent.spawn` tool result 返回给父 agent。
 - `run_in_background: true`：当前 tool result 只会返回 `async_launched`；真正的 subagent 结果会先进入 background result 队列，并在 child session 上投影为 `awaiting_pickup`。
 - 父 agent 可以后续显式调用 `agent.wait` 做 fan-in；被消费后的 child delivery status 会变成 `consumed`。
+- 如果 `tool_bundle` 请求超出 invoking agent 当前 authority，tool result 会直接返回结构化 blocked envelope，当前至少包含：
+  - `authority_source=dynamic_spawn`
+  - `diagnostic_type=spawn_authority_mismatch`
+  - `requested_tool_preset` / `resolved_tool_preset`
+  - `recommended_alternative_preset`（若存在）
+- 如果 `spawn_contract` 与实际 resolved tool surface 不兼容，tool result 也会直接返回结构化 blocked envelope，当前包括：
+  - `diagnostic_type=spawn_affordance_mismatch | spawn_side_effect_violation | spawn_resource_binding_missing | spawn_subject_unbound`
+  - `spawn_contract`
+  - `contract_violations`
+- 上述 blocked envelope 仍属于 launch-time structural enforcement，不受 `validation_policy` 影响。
 
 子结果不是“只要 loop 结束就算成功”。当前 runtime 还会做一层有效性收口：
 
 - 输出仍是 `<tool_calls>` / `<tool_call>` 等内部工具协议文本时，不记为有效成功结果
 - `result_contract !== "plan_only"` 时，纯 `<proposed_plan>` 不能冒充最终结果
 - 要求 repo / shell / forensics 取证的 bundle，如果 child 没有任何真实工具证据，也不能靠空口回答通过
+- 当 `spawn_contract.result_rules` 要求 `subject_match_required` / `resource_binding_match_required` / `source_reference_required` 时，runtime 会基于 child 实际工具证据检查是否发生 subject drift 或资源污染；这层结果级校验会生成结构化 `spawnValidation`
+- `spawnValidation` 现在显式包含：
+  - `policy=enforce | diagnostics_only`
+  - `effect=none | warning | blocked`
+  - `observedUrls` / `observedPaths` / `observedHandles`
+- 默认策略：
+  - 显式 `spawn_contract` 默认 `validation_policy = enforce`
+  - runtime 推断出的 `spawn_contract` 默认 `validation_policy = diagnostics_only`
+- 结果行为：
+  - `effect = blocked` 时，`agent.spawn` 失败，污染结果不会交回父 agent
+  - `effect = warning` 时，tool result 仍返回，但会带 warning banner，并把完整 `spawnValidation` 投影到 child session / Trails
 
 当前实现边界：
 
 - `inherit_context` 的实现弱于字面文案：当前只会把父 agent 最近一次任务 prompt 注入 `<inherited-context>`，不会自动继承完整 conversation，也不会把 `lastCallAgentSystem` 一起继承。
 - runtime 内部确实保留 `MAX_SPAWN_DEPTH` 计数，但 nested subagent 当前还受 `isNestedAgentSpawn` 工具边界约束，默认拿不到 `agent.spawn` 工具，因此不能把“可继续 spawn 到 3 层”当成当前已开放能力。
 - background child 结果当前以内存队列 + snapshot 投影为主，`awaiting_pickup` / `consumed` 提供的是当前 run 期语义，不是跨重启持久消息总线。
+- `code_development.debug` 现已固定到 `repo_forensics`，因为它需要运行诊断性命令和日志检查；但该 preset 仍显式阻断 `file.write` / `file.patch` / `file.apply_patch`，所以 debug 不能直接越权修改代码。
+- `code_development` 的 root `coding_root` preset 现已默认隐藏 `agent.spawn`。结构化协作应通过 mode-owned `build/review/debug` stage 完成，而不是让 orchestrator 保留一个默认可见的只读动态委派出口。
 - widget 对话写操作当前只开放 Todo 的 `addItem`；其他 widget kind 还没有对称的写工具。
 - 需要完整时序、child session 与 UI 投影细节时，参见 [ora-runtime-loop.md](/Users/quintenchen/developer/ora/docs/ora-runtime-loop.md) 中的“动态 subagent 调用链路”。
 
