@@ -2338,6 +2338,136 @@ describe("desktop session view model", () => {
     ]);
   });
 
+  it("keeps exported artifacts visible as cards while hiding artifact exported timeline events", () => {
+    const createdAt = 1_714_000_000_000;
+    const snapshot = {
+      runId: "run-exported-artifact",
+      sessionId: "session-exported-artifact",
+      turnIndex: 1,
+      status: "succeeded",
+      pattern: "orchestrator_subagent",
+      modeId: SINGLE_AGENT_MODE_ID,
+      input: { prompt: "更新文档", createdAt, context: {} },
+      config: {
+        modeId: SINGLE_AGENT_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["solo_agent"],
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-exported-artifact-test",
+        skillIds: [],
+        toolIds: ["file.patch"],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [{
+        id: "run-exported-artifact:event:artifact-exported",
+        runId: "run-exported-artifact",
+        seq: 1,
+        type: "artifact.exported",
+        createdAt,
+        payload: {
+          artifact: {
+            id: "run-exported-artifact:file-change:0",
+            runId: "run-exported-artifact",
+            kind: "file",
+            label: "notes/project.md",
+            mimeType: "text/markdown",
+            createdAt,
+            payload: {
+              kind: "file_change",
+              path: "notes/project.md",
+              operation: "patch",
+              beforeContent: "alpha\nold\nomega\n",
+              afterContent: "alpha\nnew\nomega\n",
+              additions: 1,
+              deletions: 1,
+              metadata: { sizeBytes: 16, replacements: 1, created: false },
+            },
+          },
+        },
+      }],
+      artifacts: [
+        {
+          id: "run-exported-artifact:file-change:0",
+          runId: "run-exported-artifact",
+          kind: "file",
+          label: "notes/project.md",
+          mimeType: "text/markdown",
+          createdAt,
+          payload: {
+            kind: "file_change",
+            path: "notes/project.md",
+            operation: "patch",
+            beforeContent: "alpha\nold\nomega\n",
+            afterContent: "alpha\nnew\nomega\n",
+            additions: 1,
+            deletions: 1,
+            metadata: { sizeBytes: 16, replacements: 1, created: false },
+          },
+        },
+      ],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 0, completed: 0, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      output: { text: "文档已更新。" },
+      updatedAt: createdAt,
+    } as unknown as OraStateSnapshot;
+
+    const messages = adaptChatMessages(
+      [{
+        id: "run-exported-artifact:user",
+        sessionId: "session-exported-artifact",
+        runId: "run-exported-artifact",
+        turnIndex: 1,
+        role: "user",
+        content: "更新文档",
+        pattern: "orchestrator_subagent",
+        modeId: SINGLE_AGENT_MODE_ID,
+        createdAt,
+      }],
+      { "run-exported-artifact": snapshot },
+    );
+    const assistant = messages.find((message) => message.role === "assistant");
+
+    expect(assistant?.turn?.artifacts).toEqual([
+      expect.objectContaining({
+        id: "run-exported-artifact:file-change:0",
+        label: "notes/project.md",
+        kind: "file",
+      }),
+    ]);
+    expect(assistant?.turn?.fileChanges).toEqual([
+      expect.objectContaining({
+        artifactId: "run-exported-artifact:file-change:0",
+        path: "notes/project.md",
+        operation: "patch",
+      }),
+    ]);
+    expect(assistant?.turn?.timelineItems).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "artifact",
+          artifactId: "run-exported-artifact:file-change:0",
+        }),
+      ]),
+    );
+  });
+
   it("carries natural approval copy into action records", () => {
     const createdAt = 1_714_000_000_000;
     const session: OraSessionSummary = {
@@ -2997,7 +3127,7 @@ describe("desktop session view model", () => {
       content: "我会先确认现有决策面板和输入框结构。",
     });
     expect(firstStatus?.id).toBe(secondStatus?.id);
-    expect(secondStatus?.summary).toBe("正在读取文件：apps/desktop/src/components/PlanDecisionPanel.tsx");
+    expect(secondStatus?.summary).toBe("正在读取文件");
     expect(secondStatus?.summary).not.toContain("已探索");
   });
 
@@ -4195,6 +4325,387 @@ describe("desktop session view model", () => {
     expect(assistant?.turn?.processSteps).toEqual([]);
     expect(assistant?.turn?.timelineItems).toEqual([]);
     expect(assistant?.turn?.timelineItems?.some((item) => item.kind === "assistant_text")).toBe(false);
+  });
+
+  it("shows parent-visible spawn milestones while keeping child internal activity hidden", () => {
+    const createdAt = 1_714_000_100_000;
+    const runId = "run-parent-visible-spawn";
+    const snapshot = {
+      runId,
+      sessionId: "session-parent-visible-spawn",
+      turnIndex: 1,
+      status: "running",
+      pattern: "orchestrator_subagent",
+      modeId: DEERFLOW_HARNESS_MODE_ID,
+      input: { prompt: "coordinate subagents", createdAt, context: {} },
+      config: {
+        modeId: DEERFLOW_HARNESS_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["ora", "orchestrator", "ora-sub-1"],
+        providerId: "deepseek",
+        modelRef: "deepseek-chat",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-parent-visible-spawn-test",
+        skillIds: [],
+        toolIds: ["agent.spawn", "file.read"],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [
+        { id: ORA_ROOT_AGENT_ID, label: ORA_ROOT_AGENT_LABEL, role: "root", model: "deepseek-chat", tools: [], budget: "", memoryScopes: [] },
+        { id: "orchestrator", label: "Orchestrator", role: "orchestrator", model: "deepseek-chat", tools: [], budget: "", memoryScopes: [] },
+        { id: "ora-sub-1", label: "Research subagent", role: "research", model: "deepseek-chat", tools: [], budget: "", memoryScopes: [] },
+      ],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [
+        {
+          id: `${runId}:evt-0`,
+          runId,
+          seq: 0,
+          type: "child_session.updated",
+          createdAt: createdAt + 1,
+          pattern: "orchestrator_subagent",
+          agentId: "ora-sub-1",
+          nodeId: "ora-sub-1",
+          payload: {
+            childSession: {
+              id: `${runId}:ora-sub-1`,
+              agentId: "ora-sub-1",
+              label: "Research subagent",
+              sessionClass: "temporary_spawn",
+              status: "running",
+              startedAt: createdAt + 1,
+              updatedAt: createdAt + 1,
+            },
+          },
+        },
+        {
+          id: `${runId}:evt-1`,
+          runId,
+          seq: 1,
+          type: "tool.called",
+          createdAt: createdAt + 2,
+          pattern: "orchestrator_subagent",
+          agentId: "ora-sub-1",
+          nodeId: "ora-sub-1",
+          payload: {
+            toolId: "file.read",
+            status: "succeeded",
+            input: { path: "apps/desktop/src/components/ChatInput.tsx" },
+            output: { path: "apps/desktop/src/components/ChatInput.tsx", sizeBytes: 128 },
+          },
+        },
+        {
+          id: `${runId}:evt-2`,
+          runId,
+          seq: 2,
+          type: "message.delta",
+          createdAt: createdAt + 3,
+          pattern: "orchestrator_subagent",
+          agentId: "ora-sub-1",
+          nodeId: "ora-sub-1",
+          payload: {
+            role: "assistant",
+            messageId: `${runId}:child`,
+            content: "Research subagent 正在读取相关文件。",
+            audience: "collaboration",
+          },
+        },
+        {
+          id: `${runId}:evt-3`,
+          runId,
+          seq: 3,
+          type: "child_session.updated",
+          createdAt: createdAt + 4,
+          pattern: "orchestrator_subagent",
+          agentId: "ora-sub-1",
+          nodeId: "ora-sub-1",
+          payload: {
+            childSession: {
+              id: `${runId}:ora-sub-1`,
+              agentId: "ora-sub-1",
+              label: "Research subagent",
+              sessionClass: "temporary_spawn",
+              status: "succeeded",
+              deliveryStatus: "awaiting_pickup",
+              startedAt: createdAt + 1,
+              updatedAt: createdAt + 4,
+              summary: "完成资料搜集",
+            },
+          },
+        },
+      ],
+      childSessions: [{
+        id: `${runId}:ora-sub-1`,
+        agentId: "ora-sub-1",
+        label: "Research subagent",
+        sessionClass: "temporary_spawn",
+        status: "succeeded",
+        deliveryStatus: "awaiting_pickup",
+        startedAt: createdAt + 1,
+        updatedAt: createdAt + 4,
+        summary: "完成资料搜集",
+      }],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 1, completed: 1, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      updatedAt: createdAt + 4,
+    } as unknown as OraStateSnapshot;
+
+    const messages = adaptChatMessages(
+      [{
+        id: `${runId}:user`,
+        sessionId: "session-parent-visible-spawn",
+        runId,
+        turnIndex: 1,
+        role: "user",
+        content: "coordinate subagents",
+        pattern: "orchestrator_subagent",
+        modeId: DEERFLOW_HARNESS_MODE_ID,
+        createdAt,
+      }],
+      { [runId]: snapshot },
+    );
+
+    const assistant = messages.find((message) => message.role === "assistant");
+    const timelineText = assistant?.turn?.timelineItems
+      ?.flatMap((item) => "content" in item ? [item.content] : "summary" in item ? [item.summary] : [])
+      .join("\n") ?? "";
+
+    expect(timelineText).toContain("已委派 Research subagent，正在处理子任务。");
+    expect(timelineText).toContain("Research subagent 已完成，结果已回流，父 Agent 正在整合。");
+    expect(timelineText).not.toContain("Research subagent 正在读取相关文件。");
+    expect(timelineText).not.toContain("ChatInput.tsx");
+    expect(assistant?.turn?.processSteps?.map((step) => step.label)).toEqual([
+      "委派子代理",
+      "子代理结果回流",
+    ]);
+  });
+
+  it("shows blocked agent.spawn attempts as public failure milestones", () => {
+    const createdAt = 1_714_000_200_000;
+    const runId = "run-blocked-agent-spawn";
+    const snapshot = {
+      runId,
+      sessionId: "session-blocked-agent-spawn",
+      turnIndex: 1,
+      status: "running",
+      pattern: "orchestrator_subagent",
+      modeId: SINGLE_AGENT_MODE_ID,
+      input: { prompt: "Patch README via builder_write", createdAt, context: {} },
+      config: {
+        modeId: SINGLE_AGENT_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["ora"],
+        providerId: "deepseek",
+        modelRef: "deepseek-chat",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-blocked-agent-spawn-test",
+        skillIds: [],
+        toolIds: ["agent.spawn", "file.read"],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [
+        { id: ORA_ROOT_AGENT_ID, label: ORA_ROOT_AGENT_LABEL, role: "root", model: "deepseek-chat", tools: [], budget: "", memoryScopes: [] },
+      ],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [
+        {
+          id: `${runId}:evt-0`,
+          runId,
+          seq: 0,
+          type: "tool.called",
+          createdAt: createdAt + 1,
+          pattern: "orchestrator_subagent",
+          agentId: ORA_ROOT_AGENT_ID,
+          nodeId: ORA_ROOT_AGENT_ID,
+          payload: {
+            toolId: "agent.spawn",
+            status: "succeeded",
+            input: {
+              description: "Patch README",
+              tool_bundle: "builder_write",
+            },
+            output: {
+              status: "blocked",
+              tool_bundle: "builder_write",
+              message: "preset \"builder_write\" is unavailable because write capability is missing.",
+            },
+          },
+        },
+      ],
+      childSessions: [],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 1, completed: 0, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      updatedAt: createdAt + 1,
+    } as unknown as OraStateSnapshot;
+
+    const messages = adaptChatMessages(
+      [{
+        id: `${runId}:user`,
+        sessionId: "session-blocked-agent-spawn",
+        runId,
+        turnIndex: 1,
+        role: "user",
+        content: "Patch README via builder_write",
+        pattern: "orchestrator_subagent",
+        modeId: SINGLE_AGENT_MODE_ID,
+        createdAt,
+      }],
+      { [runId]: snapshot },
+    );
+
+    const assistant = messages.find((message) => message.role === "assistant");
+    const timelineText = assistant?.turn?.timelineItems
+      ?.flatMap((item) => "content" in item ? [item.content] : "summary" in item ? [item.summary] : [])
+      .join("\n") ?? "";
+
+    expect(timelineText).toContain("委派 Patch README 失败（builder_write）");
+    expect(assistant?.turn?.processSteps?.[0]).toMatchObject({
+      label: "委派子代理",
+      status: "blocked",
+    });
+  });
+
+  it("shows successful parent agent.spawn calls in progress steps", () => {
+    const createdAt = 1_714_000_250_000;
+    const runId = "run-successful-parent-agent-spawn";
+    const snapshot = {
+      runId,
+      sessionId: "session-successful-parent-agent-spawn",
+      turnIndex: 1,
+      status: "running",
+      pattern: "orchestrator_subagent",
+      modeId: DEERFLOW_HARNESS_MODE_ID,
+      input: { prompt: "delegate research", createdAt, context: {} },
+      config: {
+        modeId: DEERFLOW_HARNESS_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["ora", "orchestrator", "ora-sub-1"],
+        providerId: "deepseek",
+        modelRef: "deepseek-chat",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-successful-parent-agent-spawn-test",
+        skillIds: [],
+        toolIds: ["agent.spawn", "file.read"],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [
+        { id: ORA_ROOT_AGENT_ID, label: ORA_ROOT_AGENT_LABEL, role: "root", model: "deepseek-chat", tools: [], budget: "", memoryScopes: [] },
+        { id: "orchestrator", label: "Orchestrator", role: "orchestrator", model: "deepseek-chat", tools: [], budget: "", memoryScopes: [] },
+        { id: "ora-sub-1", label: "Research subagent", role: "research", model: "deepseek-chat", tools: [], budget: "", memoryScopes: [] },
+      ],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [
+        {
+          id: `${runId}:evt-0`,
+          runId,
+          seq: 0,
+          type: "tool.called",
+          createdAt: createdAt + 1,
+          pattern: "orchestrator_subagent",
+          agentId: ORA_ROOT_AGENT_ID,
+          nodeId: ORA_ROOT_AGENT_ID,
+          payload: {
+            toolId: "agent.spawn",
+            status: "succeeded",
+            input: {
+              description: "Research subagent",
+              tool_bundle: "research_readonly",
+            },
+            output: {
+              status: "async_launched",
+              child_agent_id: "ora-sub-1",
+              tool_bundle: "research_readonly",
+            },
+          },
+        },
+      ],
+      childSessions: [],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 1, completed: 0, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      updatedAt: createdAt + 1,
+    } as unknown as OraStateSnapshot;
+
+    const messages = adaptChatMessages(
+      [{
+        id: `${runId}:user`,
+        sessionId: "session-successful-parent-agent-spawn",
+        runId,
+        turnIndex: 1,
+        role: "user",
+        content: "delegate research",
+        pattern: "orchestrator_subagent",
+        modeId: DEERFLOW_HARNESS_MODE_ID,
+        createdAt,
+      }],
+      { [runId]: snapshot },
+    );
+
+    const assistant = messages.find((message) => message.role === "assistant");
+    expect(assistant?.turn?.processSteps).toEqual([
+      expect.objectContaining({
+        id: `${runId}:evt-0`,
+        eventType: "tool.called",
+        label: "委派子代理",
+        detail: "已委派 Research subagent 在后台处理子任务（research_readonly）。",
+        status: "complete",
+      }),
+    ]);
+    expect(assistant?.turn?.timelineItems).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "status_group",
+          steps: [
+            expect.objectContaining({
+              id: `${runId}:evt-0`,
+              eventType: "tool.called",
+              label: "委派子代理",
+            }),
+          ],
+        }),
+      ]),
+    );
   });
 
   it("keeps progress-only status distinct and prefers streamed assistant answer", () => {
@@ -5980,6 +6491,24 @@ describe("desktop session view model", () => {
           id: "run-turn-timeline:evt-4",
           runId: "run-turn-timeline",
           seq: 4,
+          type: "tool.called",
+          createdAt: createdAt + 3_500,
+          pattern: "orchestrator_subagent",
+          payload: {
+            toolId: "plan.update",
+            status: "succeeded",
+            input: {
+              plan: [
+                { step: "定位日志", status: "completed" },
+                { step: "汇总结论", status: "in_progress" },
+              ],
+            },
+          },
+        },
+        {
+          id: "run-turn-timeline:evt-5",
+          runId: "run-turn-timeline",
+          seq: 5,
           type: "task.progress",
           createdAt: createdAt + 4_000,
           pattern: "orchestrator_subagent",
@@ -5991,9 +6520,9 @@ describe("desktop session view model", () => {
           },
         },
         {
-          id: "run-turn-timeline:evt-5",
+          id: "run-turn-timeline:evt-6",
           runId: "run-turn-timeline",
-          seq: 5,
+          seq: 6,
           type: "plan_list.updated",
           createdAt: createdAt + 5_000,
           pattern: "orchestrator_subagent",
@@ -6046,6 +6575,12 @@ describe("desktop session view model", () => {
         expect.objectContaining({ label: "运行命令" }),
       ]),
     });
+    expect(timeline[0]?.kind === "status_group" ? timeline[0].steps : []).toHaveLength(3);
+    expect(timeline[0]?.kind === "status_group" ? timeline[0].steps : []).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ label: "plan.update" }),
+      ]),
+    );
     expect(timeline[1]).toMatchObject({ summary: "已更新任务计划：1/2 完成，正在 汇总结论" });
     expect(timeline[2]).toMatchObject({ content: "最终结论：run 没有停在计划阶段。" });
     expect(assistant?.content).toBe("最终结论：run 没有停在计划阶段。");

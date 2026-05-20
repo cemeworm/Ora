@@ -702,7 +702,6 @@ function ProcessStepItem({ step }: { step: TurnProcessStep }) {
             </p>
           ) : null}
           <TaskItemMeta>
-            {step.contextLabel ? <span>对象：{step.contextLabel}</span> : null}
             <span>{step.timestamp}</span>
           </TaskItemMeta>
         </div>

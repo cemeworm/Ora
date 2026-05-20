@@ -18,6 +18,67 @@ import {
 import type { OraStateSnapshot } from "./runtimeClient";
 
 describe("trail debugger view model", () => {
+  it("renders authority-rich child session and spawn preflight timeline details", () => {
+    const snapshot = baseSnapshot({
+      events: [
+        {
+          id: "evt-child",
+          runId: "run-test",
+          seq: 3,
+          type: "child_session.updated",
+          createdAt: 1000,
+          agentId: "builder",
+          nodeId: "builder",
+          payload: {
+            childSession: {
+              id: "run-test:builder",
+              agentId: "builder",
+              label: "Builder",
+              sessionClass: "mode_subagent",
+              delegationKind: "mode_stage",
+              authoritySource: "mode_stage",
+              status: "succeeded",
+              resolvedToolPreset: "builder_write",
+              artifactIds: [],
+              recoveryAttemptCount: 0,
+              startedAt: 900,
+              updatedAt: 1000,
+            },
+          },
+        },
+        {
+          id: "evt-preflight",
+          runId: "run-test",
+          seq: 4,
+          type: "agent_spawn_preflight.completed",
+          createdAt: 1001,
+          agentId: "ora",
+          nodeId: "ora",
+          payload: {
+            requestedPreset: "builder_write",
+            resolvedPreset: "builder_write",
+            status: "blocked",
+            parentAgentId: "ora",
+            appliedDegradations: ["builder_write_without_patch_capability"],
+          },
+        },
+      ],
+    });
+
+    const timeline = buildSemanticTimeline(snapshot);
+    expect(timeline.find((item) => item.eventType === "child_session.updated")).toMatchObject({
+      kind: "agent",
+      label: "协作子任务更新",
+      detail: expect.stringContaining("模式阶段授权"),
+    });
+    expect(timeline.find((item) => item.eventType === "child_session.updated")?.detail).toContain("工具面 builder_write");
+    expect(timeline.find((item) => item.eventType === "agent_spawn_preflight.completed")).toMatchObject({
+      kind: "tool",
+      label: "子代理预检完成",
+      detail: expect.stringContaining("状态 已阻断"),
+    });
+  });
+
   it("keeps local-only traces as info instead of warning findings", () => {
     const snapshot = baseSnapshot({
       status: "succeeded",

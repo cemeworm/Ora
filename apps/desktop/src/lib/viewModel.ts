@@ -2545,10 +2545,28 @@ function shouldSuppressPublicEventFromChat(
   snapshot: OraStateSnapshot,
   event: OraEventEnvelope,
 ): boolean {
+  if (event.type === "child_session.updated") {
+    if ((snapshot.childSessions?.length ?? 0) === 0) {
+      return true;
+    }
+    if (isPublicChildSessionMilestoneEvent(event)) {
+      return isInternalPublicChatEvent(event);
+    }
+  }
   return shouldSuppressPublicChildAgentActivity(
     snapshot,
     publicEventAgentId(snapshot, event),
-  );
+  ) || isInternalPublicChatEvent(event);
+}
+
+function isInternalPublicChatEvent(event: OraEventEnvelope): boolean {
+  return isPlanUpdateToolEvent(event) || event.type === "artifact.exported";
+}
+
+function isPlanUpdateToolEvent(event: OraEventEnvelope): boolean {
+  return event.type === "tool.called" &&
+    isRecord(event.payload) &&
+    event.payload.toolId === "plan.update";
 }
 
 function shouldSuppressAgentMessageFromPublicChat(
@@ -2721,7 +2739,21 @@ function visibleProcessEvents(
   visibleEvents: OraEventEnvelope[];
 } {
   const projection = timelineProjection ?? deriveRuntimeTimelineProjection(snapshot);
-  const events = projection.events.filter(shouldShowProcessEvent);
+  const events: OraEventEnvelope[] = [];
+  const seenChildMilestones = new Set<string>();
+  for (const event of projection.events) {
+    if (!shouldShowProcessEvent(event)) {
+      continue;
+    }
+    const childMilestoneKey = childSessionMilestoneDedupKey(event);
+    if (childMilestoneKey) {
+      if (seenChildMilestones.has(childMilestoneKey)) {
+        continue;
+      }
+      seenChildMilestones.add(childMilestoneKey);
+    }
+    events.push(event);
+  }
   const hasWorkEvent = events.some(isWorkProcessEvent);
   return {
     events,
@@ -2746,7 +2778,7 @@ function processStepFromEvent(
     timestamp: formatElapsed(baseTime, event.createdAt),
     status: processStepStatus(event, runStatus, isLatestProcessEvent),
     tone: processStepTone(event),
-    agentId: publicEventAgentId(snapshot, event),
+    agentId: timelineProcessEventAgentId(snapshot, event),
     contextLabel: processContextLabel(event),
   };
 }
@@ -2768,6 +2800,7 @@ function deriveTimelineItems(
   const agentLabels = projection.agentLabels;
   const processStepByEventId = new Map(processSteps.map((step) => [step.id, step]));
   const items: Array<{ rawTime: number; eventSeq: number; item: TurnTimelineItem }> = [];
+  const emittedNarratives = new Set<string>();
   let pendingSteps: TurnProcessStep[] = [];
   let pendingStartedAt = baseTime;
   let pendingSeq = 0;
@@ -2838,6 +2871,28 @@ function deriveTimelineItems(
   for (const event of projection.events) {
     if (shouldSuppressPublicEventFromChat(snapshot, event)) {
       continue;
+    }
+    const publicNarrative = publicTimelineNarrativeText(event);
+    if (publicNarrative) {
+      const narrativeKey = publicTimelineNarrativeDedupKey(event);
+      if (!narrativeKey || !emittedNarratives.has(narrativeKey)) {
+        flushPendingText();
+        flushPendingSteps();
+        items.push({
+          rawTime: event.createdAt,
+          eventSeq: event.seq - 0.25,
+          item: {
+            id: `${event.id}:public-narrative`,
+            kind: "assistant_text",
+            content: publicNarrative,
+            timestamp: formatElapsed(baseTime, event.createdAt),
+            eventSeq: event.seq,
+          },
+        });
+        if (narrativeKey) {
+          emittedNarratives.add(narrativeKey);
+        }
+      }
     }
     if (isPublicAssistantDelta(snapshot, event)) {
       const text = assistantDeltaText(event);
@@ -3313,11 +3368,10 @@ function summarizeProcessSteps(steps: TurnProcessStep[], runStatus?: OraStateSna
 }
 
 function runningStepSummary(step: TurnProcessStep): string {
-  const context = step.contextLabel ? `：${step.contextLabel}` : "";
   if (step.status === "active") {
-    return `正在${step.label}${context}`;
+    return `正在${step.label}`;
   }
-  return step.detail.trim() || `${step.label}${context}`;
+  return step.detail.trim() || step.label;
 }
 
 function planUpdateSummary(payload: unknown): string {
@@ -3366,6 +3420,9 @@ function shouldShowProcessEvent(event: OraEventEnvelope): boolean {
     case "clarification.required":
     case "clarification.resolved":
     case "tool.called":
+      if (isRecord(event.payload) && isSpawnToolEventPayload(event.payload)) {
+        return true;
+      }
       if (isCachedWebFetchEvent(event)) {
         return false;
       }
@@ -3375,6 +3432,8 @@ function shouldShowProcessEvent(event: OraEventEnvelope): boolean {
         return false;
       }
       return hasToolId(event) && !isChatProgressEvent(event);
+    case "child_session.updated":
+      return isPublicChildSessionMilestoneEvent(event);
     case "tool.repaired":
       return hasToolId(event);
     case "run.done":
@@ -3403,6 +3462,23 @@ function isChatProgressEvent(event: OraEventEnvelope): boolean {
 }
 
 function processStepLabel(event: OraEventEnvelope): string {
+  if (event.type === "child_session.updated") {
+    const milestoneKind = childSessionMilestoneKindFromEvent(event);
+    switch (milestoneKind) {
+      case "spawn_started":
+        return "委派子代理";
+      case "result_returned":
+        return "子代理结果回流";
+      case "failed":
+        return "子代理失败";
+      case "cancelled":
+        return "子代理已取消";
+      case "stalled":
+        return "子代理卡住";
+      default:
+        return "子代理状态更新";
+    }
+  }
   if (event.type === "node.updated" && isRecord(event.payload)) {
     switch (event.payload.state) {
       case "interrupted":
@@ -3447,6 +3523,9 @@ function processStepLabel(event: OraEventEnvelope): string {
 }
 
 function processStepDetail(event: OraEventEnvelope): string {
+  if (event.type === "child_session.updated") {
+    return childSessionPublicMilestoneText(event) ?? "";
+  }
   if (event.type === "run.done") {
     return "";
   }
@@ -3580,6 +3659,7 @@ function isWorkProcessEvent(event: OraEventEnvelope): boolean {
     case "tool.called":
     case "artifact.exported":
     case "artifact.degraded":
+    case "child_session.updated":
     case "completion.updated":
     case "recovery.detected":
     case "recovery.retry_scheduled":
@@ -3622,6 +3702,8 @@ function hasToolId(event: OraEventEnvelope): boolean {
 function toolCallLabel(payload: Record<string, unknown>): string {
   const toolId = rawToolId(payload);
   switch (toolId) {
+    case "agent.spawn":
+      return "委派子代理";
     case "web.fetch":
       return "浏览网页";
     case "web.search":
@@ -3687,6 +3769,33 @@ function toolCallDetail(payload: Record<string, unknown>): string | undefined {
   const targetPath = stringValue(output.path) ?? stringValue(input.path);
 
   switch (toolId) {
+    case "agent.spawn": {
+      const description =
+        stringValue(input.description) ??
+        stringValue(output.description) ??
+        stringValue(output.child_agent_id) ??
+        stringValue(output.agent_id);
+      const toolBundle =
+        stringValue(output.tool_bundle) ??
+        stringValue(input.tool_bundle);
+      const spawnStatus =
+        stringValue(output.status) ??
+        stringValue(payload.status);
+      const subject = description ? `已委派 ${description}` : "已委派子代理";
+      if (spawnStatus === "blocked") {
+        return toolBundle
+          ? `${subject}，但被当前工具面阻断（${toolBundle}）`
+          : `${subject}，但被当前工具面阻断`;
+      }
+      if (spawnStatus === "async_launched") {
+        return toolBundle
+          ? `${subject} 在后台处理子任务（${toolBundle}）`
+          : `${subject} 在后台处理子任务`;
+      }
+      return toolBundle
+        ? `${subject} 处理子任务（${toolBundle}）`
+        : `${subject} 处理子任务`;
+    }
     case "file.read":
       return targetPath
         ? `已读取 ${targetPath}${sizeSuffix(output.sizeBytes ?? output.bytes)}`
@@ -3824,6 +3933,216 @@ function toolCallDetail(payload: Record<string, unknown>): string | undefined {
   }
 }
 
+type ChildSessionMilestoneKind =
+  | "spawn_started"
+  | "result_returned"
+  | "failed"
+  | "cancelled"
+  | "stalled";
+
+function timelineProcessEventAgentId(
+  snapshot: OraStateSnapshot,
+  event: OraEventEnvelope,
+): string | undefined {
+  if (event.type === "child_session.updated") {
+    return undefined;
+  }
+  if (event.type === "tool.called" && isSpawnToolEventPayload(event.payload)) {
+    return undefined;
+  }
+  return publicEventAgentId(snapshot, event);
+}
+
+function publicTimelineNarrativeText(event: OraEventEnvelope): string | undefined {
+  if (event.type === "child_session.updated") {
+    return childSessionPublicMilestoneText(event);
+  }
+  if (
+    event.type === "tool.called" &&
+    isRecord(event.payload) &&
+    isSpawnToolEventPayload(event.payload)
+  ) {
+    const spawnStatus = spawnToolEventStatus(event.payload);
+    if (spawnStatus === "blocked" || actionStatusFromEvent(event) === "failed") {
+      return spawnToolFailureNarrativeText(event.payload);
+    }
+  }
+  return undefined;
+}
+
+function publicTimelineNarrativeDedupKey(event: OraEventEnvelope): string | undefined {
+  if (event.type === "child_session.updated") {
+    return childSessionMilestoneDedupKey(event);
+  }
+  if (
+    event.type === "tool.called" &&
+    isRecord(event.payload) &&
+    isSpawnToolEventPayload(event.payload)
+  ) {
+    return `${event.id}:spawn_failure`;
+  }
+  return undefined;
+}
+
+function isSpawnToolEventPayload(payload: unknown): payload is Record<string, unknown> {
+  return isRecord(payload) && payload.toolId === "agent.spawn";
+}
+
+function spawnToolEventStatus(payload: Record<string, unknown>): string | undefined {
+  const output = isRecord(payload.output)
+    ? payload.output
+    : isRecord(payload.result)
+      ? payload.result
+      : undefined;
+  return stringValue(output?.status) ?? stringValue(payload.status);
+}
+
+function spawnToolFailureNarrativeText(payload: Record<string, unknown>): string | undefined {
+  const input = isRecord(payload.input)
+    ? payload.input
+    : isRecord(payload.args)
+      ? payload.args
+      : {};
+  const output = isRecord(payload.output)
+    ? payload.output
+    : isRecord(payload.result)
+      ? payload.result
+      : {};
+  const description =
+    stringValue(input.description) ??
+    stringValue(output.description) ??
+    stringValue(output.child_agent_id) ??
+    stringValue(output.agent_id);
+  const toolBundle =
+    stringValue(output.tool_bundle) ??
+    stringValue(input.tool_bundle);
+  const error =
+    stringValue(payload.error) ??
+    stringValue(output.message);
+  const subject = description ? `委派 ${description}` : "委派子代理";
+  if (toolBundle && error) {
+    return `${subject} 失败（${toolBundle}）：${error}`;
+  }
+  if (toolBundle) {
+    return `${subject} 失败（${toolBundle}）。`;
+  }
+  if (error) {
+    return `${subject} 失败：${error}`;
+  }
+  return `${subject} 失败。`;
+}
+
+function childSessionMilestoneDedupKey(event: OraEventEnvelope): string | undefined {
+  const milestoneKind = childSessionMilestoneKindFromEvent(event);
+  const childId = childSessionIdFromEvent(event);
+  if (!milestoneKind || !childId) {
+    return undefined;
+  }
+  return `${childId}:${milestoneKind}`;
+}
+
+function childSessionMilestoneKindFromEvent(
+  event: OraEventEnvelope,
+): ChildSessionMilestoneKind | undefined {
+  return event.type === "child_session.updated"
+    ? childSessionMilestoneKind(readEventChildSession(event))
+    : undefined;
+}
+
+function isPublicChildSessionMilestoneEvent(event: OraEventEnvelope): boolean {
+  return childSessionMilestoneKindFromEvent(event) !== undefined;
+}
+
+function childSessionMilestoneKind(
+  childSession: Record<string, unknown> | undefined,
+): ChildSessionMilestoneKind | undefined {
+  if (!childSession) {
+    return undefined;
+  }
+  const lifecyclePhase = childSessionLifecyclePhase(childSession);
+  const status = stringValue(childSession.status);
+  if (lifecyclePhase === "queued" || lifecyclePhase === "running") {
+    return "spawn_started";
+  }
+  if (lifecyclePhase === "awaiting_pickup" || status === "succeeded") {
+    return "result_returned";
+  }
+  if (lifecyclePhase === "stalled") {
+    return "stalled";
+  }
+  if (status === "failed") {
+    return "failed";
+  }
+  if (status === "cancelled") {
+    return "cancelled";
+  }
+  return undefined;
+}
+
+function childSessionPublicMilestoneText(event: OraEventEnvelope): string | undefined {
+  const childSession = readEventChildSession(event);
+  const milestoneKind = childSessionMilestoneKind(childSession);
+  const label = childSessionLabel(childSession);
+  if (!milestoneKind || !label) {
+    return undefined;
+  }
+  switch (milestoneKind) {
+    case "spawn_started":
+      return childSessionLifecyclePhase(childSession) === "queued"
+        ? `已委派 ${label}，已进入协作队列。`
+        : `已委派 ${label}，正在处理子任务。`;
+    case "result_returned":
+      return `${label} 已完成，结果已回流，父 Agent 正在整合。`;
+    case "failed":
+      return `${label} 执行失败，父 Agent 正在处理。`;
+    case "cancelled":
+      return `${label} 已取消，父 Agent 正在调整后续步骤。`;
+    case "stalled":
+      return `${label} 进展卡住，父 Agent 正在处理。`;
+  }
+}
+
+function readEventChildSession(
+  event: OraEventEnvelope,
+): Record<string, unknown> | undefined {
+  if (
+    event.type !== "child_session.updated" ||
+    !isRecord(event.payload) ||
+    !isRecord(event.payload.childSession)
+  ) {
+    return undefined;
+  }
+  return event.payload.childSession;
+}
+
+function childSessionLabelFromEvent(event: OraEventEnvelope): string | undefined {
+  return childSessionLabel(readEventChildSession(event));
+}
+
+function childSessionLabel(
+  childSession: Record<string, unknown> | undefined,
+): string | undefined {
+  return stringValue(childSession?.label) ?? stringValue(childSession?.agentId);
+}
+
+function childSessionIdFromEvent(event: OraEventEnvelope): string | undefined {
+  return stringValue(readEventChildSession(event)?.id);
+}
+
+function childSessionLifecyclePhase(
+  childSession: Record<string, unknown> | undefined,
+): string | undefined {
+  const lifecyclePhase = stringValue(childSession?.lifecyclePhase);
+  if (lifecyclePhase) {
+    return lifecyclePhase;
+  }
+  const deliveryStatus = stringValue(childSession?.deliveryStatus);
+  if (deliveryStatus === "awaiting_pickup") {
+    return "awaiting_pickup";
+  }
+  return stringValue(childSession?.status);
+}
+
 function toolStatusLabel(status: string): string {
   switch (status) {
     case "succeeded":
@@ -3921,11 +4240,30 @@ function processStepStatus(
   isLatestProcessEvent = true,
 ): TurnProcessStep["status"] {
   switch (event.type) {
+    case "child_session.updated": {
+      const milestoneKind = childSessionMilestoneKindFromEvent(event);
+      switch (milestoneKind) {
+        case "spawn_started":
+          return "active";
+        case "failed":
+        case "cancelled":
+        case "stalled":
+          return "blocked";
+        default:
+          return "complete";
+      }
+    }
     case "task.progress":
       return runStatus === "running" && isLatestProcessEvent
         ? "active"
         : "complete";
     case "tool.called": {
+      if (isSpawnToolEventPayload(event.payload)) {
+        const spawnStatus = spawnToolEventStatus(event.payload);
+        if (spawnStatus === "blocked" || actionStatusFromEvent(event) === "failed") {
+          return "blocked";
+        }
+      }
       const status = actionStatusFromEvent(event);
       if (status === "failed") {
         return "blocked";
@@ -3963,6 +4301,20 @@ function actionStatusFromEvent(event: OraEventEnvelope): string | undefined {
 
 function processStepTone(event: OraEventEnvelope): TurnProcessStep["tone"] {
   switch (event.type) {
+    case "child_session.updated": {
+      const milestoneKind = childSessionMilestoneKindFromEvent(event);
+      if (milestoneKind === "result_returned") {
+        return "accent";
+      }
+      if (
+        milestoneKind === "failed" ||
+        milestoneKind === "cancelled" ||
+        milestoneKind === "stalled"
+      ) {
+        return "warning";
+      }
+      return "neutral";
+    }
     case "approval.required":
     case "clarification.required":
     case "tool.repaired":
@@ -3984,6 +4336,9 @@ function processStepTone(event: OraEventEnvelope): TurnProcessStep["tone"] {
 }
 
 function processContextLabel(event: OraEventEnvelope): string | undefined {
+  if (event.type === "child_session.updated") {
+    return childSessionLabelFromEvent(event);
+  }
   if (!isRecord(event.payload)) {
     return undefined;
   }

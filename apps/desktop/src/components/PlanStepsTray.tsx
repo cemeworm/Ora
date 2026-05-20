@@ -45,6 +45,8 @@ export const PLAN_STEPS_TRAY_HEADER_TITLE_ROW_CLASS =
 export const PLAN_STEPS_TRAY_HEADER_SUMMARY_CLASS =
   "min-w-0 flex-1 truncate whitespace-nowrap text-xs text-muted-foreground";
 export const PLAN_STEPS_TRAY_HEADER_CHEVRON_CLASS = "shrink-0 transition-transform";
+export const PLAN_STEP_TEXT_CLASS =
+  "text-sm font-medium leading-6 break-words [overflow-wrap:anywhere]";
 
 export function PlanStepsTray({
   planSteps,
@@ -158,7 +160,7 @@ function PlanListStepItem({ item }: { item: TurnPlanListStep }) {
       <div className="min-w-0 flex-1">
         <p
           className={cn(
-            "font-medium",
+            PLAN_STEP_TEXT_CLASS,
             item.status === "completed" && "text-muted-foreground line-through",
           )}
         >

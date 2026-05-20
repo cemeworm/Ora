@@ -15,6 +15,7 @@ import {
   CHAT_VIEW_MESSAGES_PANEL_CLASS,
   CHAT_VIEW_ROOT_CLASS,
   CHAT_VIEW_STABLE_CONTENT_WIDTH_CLASS,
+  CHAT_VIEW_WELCOME_VIEWPORT_CLASS,
   collaborationStatusBadgeClassName,
   DesktopOverlayRail,
   deriveChildReplaySelection,
@@ -41,6 +42,10 @@ import {
   FLOATING_OVERLAY_DETAIL_CLASS,
   FLOATING_OVERLAY_PANEL_CLASS,
 } from "./PlanStepsTray";
+import {
+  CHAT_SURFACE_FRAME_WIDTH_CLASS,
+  CHAT_SURFACE_VIEWPORT_GUTTER_CLASS,
+} from "./chatSurfaceLayout";
 
 describe("chat view provider selection", () => {
   it("uses the selected provider when it is available", () => {
@@ -502,6 +507,12 @@ describe("chat view collaboration overlay visibility", () => {
     expect(deriveChatSurfaceContentWidthClassName(true)).toContain(
       CHAT_VIEW_STABLE_CONTENT_WIDTH_CLASS,
     );
+    expect(deriveChatSurfaceContentWidthClassName(true)).toBe(
+      CHAT_VIEW_STABLE_CONTENT_WIDTH_CLASS,
+    );
+    expect(deriveChatSurfaceContentWidthClassName(true)).toContain(
+      CHAT_SURFACE_FRAME_WIDTH_CLASS,
+    );
   });
 
   it("keeps the same stable content width when no collaboration overlay is shown", () => {
@@ -511,6 +522,15 @@ describe("chat view collaboration overlay visibility", () => {
     expect(deriveChatSurfaceContentWidthClassName(false)).toBe(
       deriveChatSurfaceContentWidthClassName(true),
     );
+  });
+
+  it("keeps the welcome copy on the same viewport gutter contract as the messages and composer", () => {
+    expect(CHAT_VIEW_WELCOME_VIEWPORT_CLASS).toBe(
+      CHAT_SURFACE_VIEWPORT_GUTTER_CLASS,
+    );
+    expect(CHAT_VIEW_WELCOME_VIEWPORT_CLASS).toContain("px-4");
+    expect(CHAT_VIEW_WELCOME_VIEWPORT_CLASS).toContain("md:px-6");
+    expect(CHAT_VIEW_WELCOME_VIEWPORT_CLASS).toContain("xl:px-8");
   });
 
   it("does not shift the content rail when the overlay is hidden", () => {

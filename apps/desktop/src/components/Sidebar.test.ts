@@ -5,6 +5,7 @@ import {
   ProjectArchiveButton,
   SessionStatusBadge,
   sidebarStatusForSession,
+  sessionListToggleLabel,
   statusFromSession,
   visibleSidebarSessions,
 } from "./Sidebar";
@@ -165,6 +166,44 @@ describe("sidebar session status", () => {
     ).toBe("decision_needed");
   });
 
+  it("prefers selected-turn clarification state over stale failed session summary", () => {
+    expect(
+      sidebarStatusForSession(sessionSummary({ status: "failed" }), {
+        selectedSessionId: "session-1",
+        selectedTurnRunId: "run-1",
+        activeSessionDetail: undefined,
+        runLifecycle: {
+          stage: "settled",
+          runId: "run-1",
+          sessionId: "session-1",
+          prompt: "test",
+          createdAt: 1,
+          snapshot: activeSnapshot({
+            status: "interrupted",
+            pendingClarifications: [{
+              id: "clarification:scope",
+              key: "scope",
+              nodeId: "ora",
+              nodeLabel: "Ora",
+              question: "Which scope?",
+              options: [],
+              requestedAt: 2,
+            }],
+            attention: {
+              kind: "needs_clarification",
+              blocking: true,
+              sourceRunId: "run-1",
+              reason: "clarification_required",
+              pendingActionIds: [],
+              pendingToolCallIds: [],
+              pendingClarificationIds: ["clarification:scope"],
+            },
+          }),
+        },
+      }),
+    ).toBe("clarification_required");
+  });
+
   it("keeps non-selected rows on session summary state", () => {
     expect(
       sidebarStatusForSession(sessionSummary({
@@ -209,6 +248,12 @@ describe("sidebar session status", () => {
       "session-running",
       "session-selected",
     ]);
+  });
+
+  it("localizes collapsed session toggle copy", () => {
+    expect(sessionListToggleLabel("zh", false, 8)).toBe("再显示 8 个");
+    expect(sessionListToggleLabel("zh", true, 8)).toBe("收起");
+    expect(sessionListToggleLabel("en", false, 8)).toBe("Show 8 more");
   });
 });
 

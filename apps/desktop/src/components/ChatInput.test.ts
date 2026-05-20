@@ -18,6 +18,11 @@ import {
   restoreSelectionBookmark,
   scrollComposerTextareaToBottom,
 } from "./ChatInput";
+import {
+  CHAT_SURFACE_FRAME_WIDTH_CLASS,
+  CHAT_SURFACE_OVERLAY_SCROLLBAR_PADDING_CLASS,
+  CHAT_SURFACE_VIEWPORT_GUTTER_CLASS,
+} from "./chatSurfaceLayout";
 
 const BASE_RUN_INTERACTION_STATE = {
   status: "idle" as const,
@@ -116,7 +121,7 @@ function createBaseProps(overrides: Record<string, unknown> = {}) {
     onConfirmPlanDecision: undefined,
     onDeclinePlanDecision: undefined,
     onOverlayHeightChange: undefined,
-    contentWidthClassName: undefined,
+    surfaceFrameWidthClassName: undefined,
     onStartRun: () => {},
     onStopRun: () => {},
     ...overrides,
@@ -404,6 +409,30 @@ describe("chat input tray visibility", () => {
   });
 });
 
+describe("chat input surface layout", () => {
+  it("uses the shared surface frame width inside the overlay-safe chat coordinate space", () => {
+    const html = renderToStaticMarkup(
+      createElement(ChatInput as any, createBaseProps()),
+    );
+
+    expect(html).toContain('data-testid="chat-input-surface-frame"');
+    expect(html).toContain('data-testid="chat-input-surface-card"');
+    expect(html).toContain(CHAT_SURFACE_FRAME_WIDTH_CLASS);
+    expect(html).toContain(CHAT_SURFACE_VIEWPORT_GUTTER_CLASS);
+    expect(html).toContain(CHAT_SURFACE_OVERLAY_SCROLLBAR_PADDING_CLASS);
+    expect(html).not.toContain("lg:-mr-4");
+    expect(html).not.toContain("xl:-mr-6");
+    expect(html).not.toContain("max-w-[88rem]");
+  });
+
+  it("keeps overlay padding symmetric so the composer stays centered", () => {
+    expect(CHAT_SURFACE_OVERLAY_SCROLLBAR_PADDING_CLASS).toContain("lg:px-4");
+    expect(CHAT_SURFACE_OVERLAY_SCROLLBAR_PADDING_CLASS).toContain("xl:px-6");
+    expect(CHAT_SURFACE_OVERLAY_SCROLLBAR_PADDING_CLASS).not.toContain("lg:pr-4");
+    expect(CHAT_SURFACE_OVERLAY_SCROLLBAR_PADDING_CLASS).not.toContain("xl:pr-6");
+  });
+});
+
 describe("chat input context ring", () => {
   it("uses session context window and token usage when context state is available", () => {
     expect(
@@ -624,6 +653,18 @@ describe("ChatInput content editable chips", () => {
     expect(html).toContain("任务清单 · 3 待办");
     expect(html).toContain("release-helper");
     expect(html).toContain('contenteditable="true"');
+  });
+
+  it("translates the empty composer placeholder for Chinese", () => {
+    const { container } = renderElement(
+      createElement(ChatInput as any, createBaseProps({ language: "zh" })),
+    );
+
+    const editor = getEditor(container);
+    const trailingTextSegment = getTextSegments(editor).at(-1);
+    expect(trailingTextSegment?.getAttribute("data-placeholder")).toBe(
+      "给 Ora 发消息",
+    );
   });
 
   it("deletes the left chip with Backspace when the caret is between two chips", () => {

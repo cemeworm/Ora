@@ -712,6 +712,16 @@ export function visibleSidebarSessions<
   return visible;
 }
 
+export function sessionListToggleLabel(
+  language: AppLanguage,
+  expanded: boolean,
+  hiddenSessionCount: number,
+): string {
+  return expanded
+    ? translateCopy(language, "Show less")
+    : translateCopy(language, `Show ${hiddenSessionCount} more`);
+}
+
 export function isSpaceNavigationActive(
   view: WorkbenchState["activeView"],
 ): boolean {
@@ -1183,7 +1193,11 @@ export const Sidebar = memo(function Sidebar({
                                     }}
                                     className="flex min-h-[32px] items-center px-2.5 text-left text-[12px] text-muted-foreground transition hover:text-foreground"
                                   >
-                                    Show {hiddenSessionCount} more
+                                    {sessionListToggleLabel(
+                                      sidebarState.language,
+                                      false,
+                                      hiddenSessionCount,
+                                    )}
                                   </button>
                                 )}
                                 {showAllSessions &&
@@ -1199,7 +1213,11 @@ export const Sidebar = memo(function Sidebar({
                                       }}
                                       className="flex min-h-[32px] items-center px-2.5 text-left text-[12px] text-muted-foreground transition hover:text-foreground"
                                     >
-                                      Show less
+                                      {sessionListToggleLabel(
+                                        sidebarState.language,
+                                        true,
+                                        hiddenSessionCount,
+                                      )}
                                     </button>
                                   )}
                               </div>

@@ -398,7 +398,7 @@ describe("assistant turn display helpers", () => {
     );
 
     expect(html).toContain("正在综合专家观点。");
-    expect(html).toContain("对象：analysis/report.md");
+    expect(html).not.toContain("对象：analysis/report.md");
     expect(html).not.toContain("正在：正在综合专家观点。");
     expect(html).not.toContain("已完成资料收集。");
   });
@@ -436,6 +436,41 @@ describe("assistant turn display helpers", () => {
 
     expect(html).toContain("这是最终回复。");
     expect(html).not.toContain("已完成");
+  });
+
+  it("hides trivial completed progress even when the assistant turn has no body text", () => {
+    const turn: AssistantTurnAttachment = {
+      runId: "run-1",
+      turnIndex: 1,
+      status: "done",
+      pattern: "orchestrator_subagent",
+      sources: [],
+      processSteps: [],
+      timelineItems: [{
+        id: "progress-done",
+        kind: "status_group",
+        summary: "已完成",
+        timestamp: "00:49",
+        status: "complete",
+        steps: [
+          processStep("done", "complete", "已完成", { label: "已完成" }),
+        ],
+      }],
+      agentMessages: [],
+      artifacts: [],
+      todos: [],
+      planList: [],
+      approvalCount: 0,
+      clarificationCount: 0,
+      hasProposedPlan: false,
+    };
+
+    const html = renderToStaticMarkup(
+      <AssistantTurnCard content="" turn={turn} />,
+    );
+
+    expect(html).not.toContain("已完成");
+    expect(html).not.toContain("00:49");
   });
 
   it("keeps completed progress when it precedes later timeline content", () => {
@@ -800,6 +835,84 @@ describe("assistant turn display helpers", () => {
     expect(html).toContain("-1");
     expect(html).not.toContain("const oldValue = true;");
     expect(html).not.toContain("const newValue = true;");
+  });
+
+  it("renders plan summaries and artifact cards without internal plan update or artifact export progress copy", () => {
+    const turn: AssistantTurnAttachment = {
+      runId: "run-1",
+      turnIndex: 1,
+      status: "done",
+      pattern: "orchestrator_subagent",
+      sources: [],
+      processSteps: [],
+      timelineItems: [
+        {
+          id: "status-1",
+          kind: "status_group",
+          summary: "已探索 1 个文件，已运行 1 条命令",
+          timestamp: "00:01",
+          status: "complete",
+          steps: [
+            processStep("read", "complete", "已读取 notes/project.md。", { label: "读取文件" }),
+            processStep("shell", "complete", "已运行命令：git diff。", { label: "运行命令", eventType: "tool.called" }),
+          ],
+        },
+        {
+          id: "plan-update-1",
+          kind: "plan_update",
+          summary: "已更新任务计划：1/2 完成，正在 汇总结论",
+          timestamp: "00:02",
+        },
+        {
+          id: "final-1",
+          kind: "final_text",
+          content: "文档已更新。",
+          timestamp: "00:03",
+        },
+      ],
+      agentMessages: [],
+      artifacts: [
+        artifact("artifact-1", "notes/project.md", {
+          kind: "file",
+          mimeType: "text/markdown",
+          payload: {
+            kind: "file_change",
+            path: "notes/project.md",
+            operation: "patch",
+            beforeContent: "old",
+            afterContent: "new",
+            additions: 1,
+            deletions: 1,
+            metadata: { replacements: 1 },
+          },
+        }),
+      ],
+      fileChanges: [{
+        artifactId: "artifact-1",
+        path: "notes/project.md",
+        operation: "patch",
+        beforeContent: "old",
+        afterContent: "new",
+        additions: 1,
+        deletions: 1,
+        replacements: 1,
+        created: false,
+      }],
+      todos: [],
+      planList: [],
+      approvalCount: 0,
+      clarificationCount: 0,
+      hasProposedPlan: false,
+    };
+
+    const html = renderToStaticMarkup(
+      <AssistantTurnCard content="文档已更新。" turn={turn} />,
+    );
+
+    expect(html).toContain("已更新任务计划：1/2 完成，正在 汇总结论");
+    expect(html).toContain("notes/project.md");
+    expect(html).not.toContain("工具调用更新：plan.update（已完成）");
+    expect(html).not.toContain("已发布产物：notes/project.md。");
   });
 
   it("summarizes completed and blocked process steps without log wording", () => {

@@ -30,6 +30,7 @@ import {
 } from "react";
 import { Button } from "./ui/button";
 import { Dialog, DialogContent } from "./ui/dialog";
+import { translateCopy, type AppLanguage } from "../lib/i18n";
 import { cn } from "../lib/utils";
 import type { ActionRecord, ModeCard, TurnPlanListStep } from "../types";
 import type { OraProviderConfig, OraSkillRegistry } from "../lib/runtimeClient";
@@ -48,9 +49,13 @@ import { ApprovalRequestCard } from "./ApprovalRequestCard";
 import { ClarificationPanel } from "./ClarificationPanel";
 import { PlanDecisionPanel } from "./PlanDecisionPanel";
 import { PlanStepsTray } from "./PlanStepsTray";
-import { CHAT_SURFACE_WIDTH_CLASS } from "./ChatMessages";
 import type { OraStateSnapshot } from "../lib/runtimeClient";
 import type { DesktopRunInteractionState } from "../lib/runInteractionState";
+import {
+  CHAT_SURFACE_FRAME_WIDTH_CLASS,
+  CHAT_SURFACE_OVERLAY_SCROLLBAR_PADDING_CLASS,
+  CHAT_SURFACE_VIEWPORT_GUTTER_CLASS,
+} from "./chatSurfaceLayout";
 
 type SkillDescriptor = OraSkillRegistry["skills"][number];
 
@@ -74,6 +79,7 @@ interface ChatInputProps {
   providerOptions: OraProviderConfig[];
   skillOptions: SkillDescriptor[];
   selectedSkillIds: string[];
+  language?: AppLanguage;
   contextChips?: ChatInputContextChip[];
   placeholder?: string;
   selectedCustomAgentId?: string;
@@ -107,7 +113,7 @@ interface ChatInputProps {
   onConfirmPlanDecision?: () => void | boolean | Promise<void | boolean>;
   onDeclinePlanDecision?: () => void | boolean | Promise<void | boolean>;
   onOverlayHeightChange?: (height: number) => void;
-  contentWidthClassName?: string;
+  surfaceFrameWidthClassName?: string;
   onStartRun: () => void;
   onStopRun: () => void;
 }
@@ -834,6 +840,7 @@ export function ChatInput({
   providerOptions,
   skillOptions,
   selectedSkillIds,
+  language = "en",
   contextChips = [],
   placeholder = "Message Ora",
   selectedCustomAgentId,
@@ -867,13 +874,17 @@ export function ChatInput({
   onConfirmPlanDecision,
   onDeclinePlanDecision,
   onOverlayHeightChange,
-  contentWidthClassName = CHAT_SURFACE_WIDTH_CLASS,
+  surfaceFrameWidthClassName = CHAT_SURFACE_FRAME_WIDTH_CLASS,
   onStartRun,
   onStopRun,
 }: ChatInputProps) {
   const { contextWindow, activeTokens, showContextRing, contextPct } =
     getContextRingState({ contextState, activeProvider });
   const contextWindowLabel = contextWindow?.toLocaleString() ?? "0";
+  const localizedPlaceholder = useMemo(
+    () => translateCopy(language, placeholder),
+    [language, placeholder],
+  );
 
   const overlayRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<HTMLDivElement>(null);
@@ -1560,60 +1571,70 @@ export function ChatInput({
   return (
     <div
       ref={overlayRef}
-      className="pointer-events-none absolute bottom-0 left-0 right-0 z-30 flex justify-center"
+      className={cn(
+        "pointer-events-none absolute bottom-0 left-0 right-0 z-30 flex justify-center",
+        CHAT_SURFACE_OVERLAY_SCROLLBAR_PADDING_CLASS,
+      )}
     >
       <div
         className={cn(
           "pointer-events-none relative mx-auto",
-          contentWidthClassName,
+          CHAT_SURFACE_VIEWPORT_GUTTER_CLASS,
         )}
       >
-        {showSkillPicker && (
-          <div
-            ref={skillPickerRef}
-            className="pointer-events-auto absolute bottom-full left-3 z-50 mb-2 max-h-[min(32rem,calc(100vh-12rem))] w-[min(26rem,calc(100%-1.5rem))] overflow-y-auto rounded-xl border border-border bg-popover p-1.5 text-popover-foreground shadow-lift"
-          >
-            {visibleSkillOptions.map((skill, idx) => (
-              <button
-                key={skill.id}
-                type="button"
-                onClick={() => selectSkill(skill)}
-                onMouseMove={() => setSkillPickerIndex(idx)}
-                className={`w-full rounded-md px-3 py-2 text-left transition hover:bg-accent ${
-                  idx === skillPickerIndex ? "bg-accent" : ""
-                }`}
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <span className="truncate text-xs font-medium">
-                    {skill.name}
-                  </span>
-                  <span className="rounded-full border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                    {skill.category}
-                  </span>
-                </div>
-                <div className="mt-1 line-clamp-1 text-[11px] text-muted-foreground">
-                  {skill.description}
-                </div>
-              </button>
-            ))}
-            {hiddenSkillCount > 0 && (
-              <button
-                type="button"
-                onClick={() => setSkillListExpanded(true)}
-                onMouseMove={() =>
-                  setSkillPickerIndex(visibleSkillOptions.length)
-                }
-                className={`mt-1 w-full rounded-md bg-transparent px-3 py-2 text-left text-xs font-medium text-muted-foreground transition hover:bg-accent hover:text-foreground ${
-                  skillPickerIndex === visibleSkillOptions.length
-                    ? "bg-accent text-foreground"
-                    : ""
-                }`}
-              >
-                Show all {filteredSkillOptions.length} skills
-              </button>
-            )}
-          </div>
-        )}
+        <div
+          data-testid="chat-input-surface-frame"
+          className={cn(
+            "pointer-events-none relative mx-auto",
+            surfaceFrameWidthClassName,
+          )}
+        >
+          {showSkillPicker && (
+            <div
+              ref={skillPickerRef}
+              className="pointer-events-auto absolute bottom-full left-3 z-50 mb-2 max-h-[min(32rem,calc(100vh-12rem))] w-[min(26rem,calc(100%-1.5rem))] overflow-y-auto rounded-xl border border-border bg-popover p-1.5 text-popover-foreground shadow-lift"
+            >
+              {visibleSkillOptions.map((skill, idx) => (
+                <button
+                  key={skill.id}
+                  type="button"
+                  onClick={() => selectSkill(skill)}
+                  onMouseMove={() => setSkillPickerIndex(idx)}
+                  className={`w-full rounded-md px-3 py-2 text-left transition hover:bg-accent ${
+                    idx === skillPickerIndex ? "bg-accent" : ""
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="truncate text-xs font-medium">
+                      {skill.name}
+                    </span>
+                    <span className="rounded-full border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                      {skill.category}
+                    </span>
+                  </div>
+                  <div className="mt-1 line-clamp-1 text-[11px] text-muted-foreground">
+                    {skill.description}
+                  </div>
+                </button>
+              ))}
+              {hiddenSkillCount > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setSkillListExpanded(true)}
+                  onMouseMove={() =>
+                    setSkillPickerIndex(visibleSkillOptions.length)
+                  }
+                  className={`mt-1 w-full rounded-md bg-transparent px-3 py-2 text-left text-xs font-medium text-muted-foreground transition hover:bg-accent hover:text-foreground ${
+                    skillPickerIndex === visibleSkillOptions.length
+                      ? "bg-accent text-foreground"
+                      : ""
+                  }`}
+                >
+                  Show all {filteredSkillOptions.length} skills
+                </button>
+              )}
+            </div>
+          )}
         {planSteps.length > 0 ? (
           <div className="pointer-events-auto">
             <PlanStepsTray planSteps={planSteps} />
@@ -1649,8 +1670,9 @@ export function ChatInput({
         ) : null}
         {hideComposer ? null : (
           <div
+            data-testid="chat-input-surface-card"
             className={cn(
-              "pointer-events-auto rounded-2xl border bg-card/96 shadow-lift backdrop-blur-sm transition-[background-color,border-color,box-shadow] duration-300",
+              "pointer-events-auto w-full rounded-2xl border bg-card/96 shadow-lift backdrop-blur-sm transition-[background-color,border-color,box-shadow] duration-300",
               isDragOver
                 ? "border-amber-200 ring-2 ring-amber-200/50"
                 : "border-border",
@@ -1825,7 +1847,7 @@ export function ChatInput({
                       plainTextPrompt.length === 0 &&
                       !runInteractionState.isProcessing &&
                       index === segments.length - 1
-                        ? placeholder
+                        ? localizedPlaceholder
                         : undefined;
                     return (
                       <span
@@ -2179,6 +2201,7 @@ export function ChatInput({
         <p className="pb-3 pt-2 text-center text-[11px] text-muted-foreground">
           Ora may be wrong, check the results before adoption.
         </p>
+        </div>
       </div>
     </div>
   );

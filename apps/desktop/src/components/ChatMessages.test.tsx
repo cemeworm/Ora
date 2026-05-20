@@ -1,14 +1,99 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { SINGLE_AGENT_MODE_ID } from "@cemeworm/shared";
+import { ChatInput } from "./ChatInput";
 import {
   ChatMessages,
   CHAT_MESSAGES_SCROLL_CLASS,
   messageBottomPaddingPx,
 } from "./ChatMessages";
+import {
+  CHAT_SURFACE_FRAME_WIDTH_CLASS,
+  CHAT_SURFACE_OVERLAY_SCROLLBAR_PADDING_CLASS,
+  CHAT_SURFACE_SCROLLBAR_COMPENSATION_CLASS,
+  CHAT_SURFACE_VIEWPORT_GUTTER_CLASS,
+} from "./chatSurfaceLayout";
 import { adaptRenderableChatMessages } from "../lib/viewModel";
 import { getPendingRunState, initialWorkbenchState, workbenchReducer, type WorkbenchState } from "../lib/state";
 import type { OraSessionBranchGroup, OraStateSnapshot } from "../lib/runtimeClient";
+import type { DesktopRunInteractionState } from "../lib/runInteractionState";
+
+const BASE_RUN_INTERACTION_STATE: DesktopRunInteractionState = {
+  status: "idle",
+  isProcessing: false,
+  canSubmit: true,
+  canStop: false,
+  canResume: false,
+  canRebuild: false,
+  authority: "session_summary",
+};
+
+const BASE_MODE = {
+  id: "single_agent",
+  family: "single_agent" as const,
+  label: "单智能体",
+  summary: "默认模式",
+  recommendedUse: "默认",
+  failureMode: "无",
+  isPreset: true,
+};
+
+function renderChatInputHtml(overrides: Record<string, unknown> = {}) {
+  return renderToStaticMarkup(
+    <ChatInput
+      sessionId="session-1"
+      composerPrompt=""
+      isLoading={false}
+      runInteractionState={BASE_RUN_INTERACTION_STATE}
+      activeMode={BASE_MODE}
+      modeOptions={[]}
+      selectedModeSelection="manual"
+      activeProvider={undefined}
+      contextState={undefined}
+      providerOptions={[]}
+      skillOptions={[]}
+      selectedSkillIds={[]}
+      language="zh"
+      contextChips={[]}
+      placeholder="Message Ora"
+      selectedCustomAgentId={undefined}
+      projectFileAttachments={[]}
+      localFileAttachments={[]}
+      imageAttachments={[]}
+      onRemoveImageAttachment={() => {}}
+      onAddImageAttachment={() => {}}
+      approvalActions={[]}
+      approvalDisabled={false}
+      onApprove={undefined}
+      onCancelApproval={undefined}
+      clarificationQuestions={[]}
+      onSubmitAllClarifications={undefined}
+      onModeChange={() => {}}
+      onModeSelectionChange={() => {}}
+      onProviderChange={() => {}}
+      onPromptChange={() => {}}
+      onSelectedSkillIdsChange={() => {}}
+      onRemoveProjectFileAttachment={() => {}}
+      onRemoveLocalFileAttachment={() => {}}
+      onOpenLocalFiles={() => {}}
+      onFilesDropped={undefined}
+      onClearSelectedCustomAgent={undefined}
+      permissionMode="default"
+      onPermissionModeChange={() => {}}
+      taskIntent="implement"
+      onTaskIntentChange={() => {}}
+      planDecisionPending={false}
+      planSteps={[]}
+      onConfirmPlanDecision={undefined}
+      onDeclinePlanDecision={undefined}
+      onOverlayHeightChange={undefined}
+      surfaceFrameWidthClassName={undefined}
+      onStartRun={() => {}}
+      onStopRun={() => {}}
+      {...overrides}
+    />,
+  );
+}
 
 describe("ChatMessages bottom inset", () => {
   it("uses dynamic bottom padding when measured overlay height is larger than fallback", () => {
@@ -37,6 +122,49 @@ describe("ChatMessages bottom inset", () => {
 
     expect(html).toContain(CHAT_MESSAGES_SCROLL_CLASS);
     expect(html).not.toContain("relative flex flex-1 flex-col overflow-y-auto");
+  });
+
+  it("uses a dedicated surface frame width inside the scroll-compensated message coordinate space", () => {
+    const html = renderToStaticMarkup(<ChatMessages chatMessages={[]} />);
+
+    expect(html).toContain('data-testid="chat-messages-surface-frame"');
+    expect(html).toContain('data-testid="chat-messages-content"');
+    expect(html).toContain(CHAT_SURFACE_FRAME_WIDTH_CLASS);
+    expect(html).toContain(CHAT_SURFACE_VIEWPORT_GUTTER_CLASS);
+    expect(CHAT_MESSAGES_SCROLL_CLASS).toContain(
+      CHAT_SURFACE_SCROLLBAR_COMPENSATION_CLASS,
+    );
+    expect(html).not.toContain("max-w-[88rem]");
+  });
+
+  it("keeps messages and composer on compatible compensated surface frame contracts", () => {
+    const surfaceFrameWidthClassName = "w-full max-w-[54rem]";
+
+    const messagesHtml = renderToStaticMarkup(
+      <ChatMessages
+        chatMessages={[]}
+        surfaceFrameWidthClassName={surfaceFrameWidthClassName}
+      />,
+    );
+    const inputHtml = renderChatInputHtml({ surfaceFrameWidthClassName });
+
+    expect(messagesHtml).toContain(surfaceFrameWidthClassName);
+    expect(inputHtml).toContain(surfaceFrameWidthClassName);
+    expect(CHAT_MESSAGES_SCROLL_CLASS).toContain(
+      CHAT_SURFACE_SCROLLBAR_COMPENSATION_CLASS,
+    );
+    expect(inputHtml).toContain(CHAT_SURFACE_OVERLAY_SCROLLBAR_PADDING_CLASS);
+    expect(messagesHtml).not.toContain("lg:-mr-4");
+    expect(messagesHtml).not.toContain("xl:-mr-6");
+    expect(inputHtml).not.toContain("lg:-mr-4");
+    expect(inputHtml).not.toContain("xl:-mr-6");
+  });
+
+  it("keeps message rail padding symmetric so content stays on the same center line as the composer", () => {
+    expect(CHAT_SURFACE_SCROLLBAR_COMPENSATION_CLASS).toContain("lg:px-4");
+    expect(CHAT_SURFACE_SCROLLBAR_COMPENSATION_CLASS).toContain("xl:px-6");
+    expect(CHAT_SURFACE_SCROLLBAR_COMPENSATION_CLASS).not.toContain("lg:-mr-4");
+    expect(CHAT_SURFACE_SCROLLBAR_COMPENSATION_CLASS).not.toContain("xl:-mr-6");
   });
 
   it("renders user messages without an avatar icon", () => {

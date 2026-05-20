@@ -165,20 +165,27 @@ function deriveVisibleTimelineItems(
   bodyContent: string,
   isPlaceholder: boolean,
 ): TurnTimelineItem[] {
-  if (
-    turn?.status === "running" ||
-    isPlaceholder ||
-    !bodyContent.trim() ||
-    items.some((item) => item.kind === "assistant_text" || item.kind === "final_text")
-  ) {
+  if (turn?.status === "running" || isPlaceholder) {
     return items;
   }
 
-  const latestNonStatusIndex = findLatestNonStatusTimelineIndex(items);
-  return items.filter((item, index) => (
+  const withoutTrivialCompletedGroups = items.filter((item) => !(
+    item.kind === "status_group" &&
+    item.status === "complete" &&
+    isTrivialCompletedStatusGroup(item)
+  ));
+
+  if (
+    !bodyContent.trim() ||
+    withoutTrivialCompletedGroups.some((item) => item.kind === "assistant_text" || item.kind === "final_text")
+  ) {
+    return withoutTrivialCompletedGroups;
+  }
+
+  const latestNonStatusIndex = findLatestNonStatusTimelineIndex(withoutTrivialCompletedGroups);
+  return withoutTrivialCompletedGroups.filter((item, index) => (
     item.kind !== "status_group" ||
     item.status !== "complete" ||
-    !isTrivialCompletedStatusGroup(item) ||
     index < latestNonStatusIndex
   ));
 }
@@ -212,7 +219,6 @@ function legacyTimelineItems(processSteps: AssistantTurnAttachment["processSteps
   const summaryParts = [
     latest?.eventType === "agent.handoff" ? latest.label : undefined,
     latest?.detail || (latest?.eventType === "agent.handoff" ? undefined : latest?.label),
-    latest?.contextLabel ? `对象：${latest.contextLabel}` : undefined,
     latest?.eventType === "agent.handoff" ? "交接" : undefined,
   ].filter(Boolean);
   return [{

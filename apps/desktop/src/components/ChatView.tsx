@@ -35,6 +35,10 @@ import { derivePresentedAssistantTurnFromSnapshot } from "../lib/viewModel";
 import { getWelcomeGreeting } from "../lib/welcomeGreeting";
 import { translateCopy, type AppLanguage } from "../lib/i18n";
 import type { DesktopRunInteractionState } from "../lib/runInteractionState";
+import {
+  CHAT_SURFACE_FRAME_WIDTH_CLASS,
+  CHAT_SURFACE_VIEWPORT_GUTTER_CLASS,
+} from "./chatSurfaceLayout";
 
 const LOCAL_FILE_PREVIEW_MAX_BYTES = 256 * 1024;
 export const CHAT_VIEW_ROOT_CLASS =
@@ -45,8 +49,8 @@ export const CHAT_VIEW_CONTENT_ROW_CLASS =
   "relative flex min-h-0 min-w-0 flex-1 overflow-hidden";
 export const CHAT_VIEW_MESSAGES_PANEL_CLASS =
   "flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden";
-export const CHAT_VIEW_STABLE_CONTENT_WIDTH_CLASS =
-  "w-full max-w-[54rem] pl-4 pr-4 md:pl-6 md:pr-6 xl:pl-8 xl:pr-8";
+export const CHAT_VIEW_STABLE_CONTENT_WIDTH_CLASS = CHAT_SURFACE_FRAME_WIDTH_CLASS;
+export const CHAT_VIEW_WELCOME_VIEWPORT_CLASS = CHAT_SURFACE_VIEWPORT_GUTTER_CLASS;
 export const CHAT_VIEW_COLLABORATION_SHIFT_CLASS = "lg:-translate-x-8";
 export const CHAT_VIEW_DESKTOP_OVERLAY_RAIL_CLASS =
   "pointer-events-none absolute right-4 top-3 z-20 hidden lg:block xl:right-6 xl:top-4";
@@ -989,13 +993,22 @@ export function ChatView({
               {showWelcome && (
                 <div className="pointer-events-none absolute left-0 right-0 top-[calc(50%-160px)] z-10 flex justify-center">
                   <div
+                    data-testid="chat-welcome-viewport"
                     className={cn(
-                      "flex w-full flex-col items-center gap-2 text-center",
-                      chatSurfaceContentWidthClassName,
+                      "w-full",
+                      CHAT_VIEW_WELCOME_VIEWPORT_CLASS,
                     )}
                   >
-                    <div className="flex items-center gap-2 text-2xl font-bold">
-                      <span>{getWelcomeGreeting(new Date(), state.language, projectLabel)}</span>
+                    <div
+                      data-testid="chat-welcome-surface-frame"
+                      className={cn(
+                        "mx-auto flex w-full flex-col items-center gap-2 text-center",
+                        chatSurfaceContentWidthClassName,
+                      )}
+                    >
+                      <div className="flex items-center gap-2 text-2xl font-bold">
+                        <span>{getWelcomeGreeting(new Date(), state.language, projectLabel)}</span>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -1011,7 +1024,7 @@ export function ChatView({
                 hasPlanDecisionTray={planDecisionPending}
                 hasPlanStepsTray={inlinePlanSteps.length > 0}
                 bottomInsetPx={composerOverlayHeight}
-                contentWidthClassName={chatSurfaceContentWidthClassName}
+                surfaceFrameWidthClassName={chatSurfaceContentWidthClassName}
                 projectRootPath={projectRootPath}
                 onOpenArtifact={onOpenArtifact}
                 onSubmitFeedback={onSubmitFeedback}
@@ -1030,6 +1043,7 @@ export function ChatView({
                 providerOptions={providerOptions}
                 skillOptions={state.skillRegistry?.skills ?? []}
                 selectedSkillIds={state.selectedSkillIds}
+                language={state.language}
                 selectedCustomAgentId={selectedCustomAgentId}
                 projectFileAttachments={projectFileAttachments}
                 localFileAttachments={localFileAttachments}
@@ -1080,7 +1094,7 @@ export function ChatView({
                 onConfirmPlanDecision={onAcceptPlanDecisionAndStartImplementation}
                 onDeclinePlanDecision={() => onResolvePlanDecision("declined")}
                 onOverlayHeightChange={handleOverlayHeightChange}
-                contentWidthClassName={chatSurfaceContentWidthClassName}
+                surfaceFrameWidthClassName={chatSurfaceContentWidthClassName}
                 onOpenLocalFiles={() => void openLocalFiles()}
                 onFilesDropped={handleFilesDropped}
                 onClearSelectedCustomAgent={onClearSelectedCustomAgent}

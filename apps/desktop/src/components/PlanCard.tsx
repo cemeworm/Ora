@@ -2,6 +2,7 @@ import { CheckCircle2, Circle, ListTodo, LoaderCircle } from "lucide-react";
 import type { TurnPlanListStep } from "../types";
 import { cn } from "../lib/utils";
 import { MarkdownContent } from "./MarkdownContent";
+import { PLAN_STEP_TEXT_CLASS } from "./PlanStepsTray";
 
 interface PlanCardProps {
   planSteps: TurnPlanListStep[];
@@ -58,7 +59,7 @@ export function PlanCard({ planSteps, planContent, isStreaming = false }: PlanCa
                 <div className="min-w-0 flex-1">
                   <p
                     className={cn(
-                      "text-sm font-medium",
+                      PLAN_STEP_TEXT_CLASS,
                       item.status === "completed" && "text-muted-foreground line-through",
                     )}
                   >

@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   FLOATING_OVERLAY_PANEL_CLASS,
   nextPlanTrayOpenState,
+  PLAN_STEP_TEXT_CLASS,
   PLAN_STEPS_TRAY_HEADER_CHEVRON_CLASS,
   PLAN_STEPS_TRAY_HEADER_SUMMARY_CLASS,
   PLAN_STEPS_TRAY_HEADER_TITLE_ROW_CLASS,
@@ -94,6 +95,37 @@ describe("plan steps tray open state", () => {
     expect(html).toContain(PLAN_STEPS_TRAY_HEADER_CHEVRON_CLASS);
     expect(html).toContain("whitespace-nowrap");
     expect(html).toContain("truncate");
+  });
+
+  it("wraps long step tokens safely in both inline and floating variants", () => {
+    const planSteps = [
+      {
+        step: "Step 1: 从 STABLE_PROMPT_PREFIX_SECTION_IDS 移除 available_skills",
+        status: "in_progress" as const,
+      },
+      {
+        step: "Step 2: 扩展 task_intent_context 并同步 RUNTIME_CONTEXT_BLOCK_SECTION_IDS",
+        status: "pending" as const,
+      },
+    ];
+
+    const floatingHtml = renderToStaticMarkup(
+      createElement(PlanStepsTray, {
+        variant: "floating",
+        planSteps,
+      }),
+    );
+    const inlineHtml = renderToStaticMarkup(
+      createElement(PlanStepsTray, {
+        variant: "inline",
+        planSteps,
+      }),
+    );
+
+    expect(floatingHtml).toContain(PLAN_STEP_TEXT_CLASS);
+    expect(inlineHtml).toContain(PLAN_STEP_TEXT_CLASS);
+    expect(floatingHtml).toContain("[overflow-wrap:anywhere]");
+    expect(inlineHtml).toContain("break-words");
   });
 });
 

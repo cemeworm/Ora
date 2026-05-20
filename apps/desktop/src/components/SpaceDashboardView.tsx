@@ -378,6 +378,7 @@ export function SpaceDashboardView() {
         providerOptions={providerOptions}
         skillOptions={workbench.skillRegistry?.skills ?? []}
         selectedSkillIds={workbench.selectedSkillIds}
+        language={workbench.language}
         contextChips={contextChips}
         placeholder="让 Ora 制作小组件"
         projectFileAttachments={[]}
@@ -408,7 +409,7 @@ export function SpaceDashboardView() {
           dispatch({ type: "SET_TASK_INTENT", taskIntent: ti })
         }
         onOverlayHeightChange={setComposerOverlayHeight}
-        contentWidthClassName={CHAT_VIEW_STABLE_CONTENT_WIDTH_CLASS}
+        surfaceFrameWidthClassName={CHAT_VIEW_STABLE_CONTENT_WIDTH_CLASS}
         onStartRun={() => {
           if (!workbench.selectedSessionId || !composerPrompt.trim()) return;
           const prompt = composerPrompt;

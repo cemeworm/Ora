@@ -1714,6 +1714,7 @@ function eventKind(type: string): SemanticTimelineItem["kind"] {
   if (type.startsWith("run.")) return "run";
   if (type === "child_session.updated") return "agent";
   if (type === "parent_coordination.updated") return "handoff";
+  if (type === "agent_spawn_preflight.completed") return "tool";
   if (type.startsWith("agent.") || type === "agent.message" || type === "message.published" || type === "message.routed") return "agent";
   if (type.startsWith("tool.")) return "tool";
   if (type.startsWith("approval.") || type.startsWith("clarification.")) return "gate";
@@ -1785,6 +1786,8 @@ function timelineLabel(eventType: string) {
       return "智能体消息";
     case "child_session.updated":
       return "协作子任务更新";
+    case "agent_spawn_preflight.completed":
+      return "子代理预检完成";
     case "parent_coordination.updated":
       return "父 Agent 编排状态";
     case "message.published":
@@ -1818,6 +1821,12 @@ function timelineLabel(eventType: string) {
 
 function timelineDetail(event: OraStateSnapshot["events"][number]) {
   if (isRecord(event.payload)) {
+    if (event.type === "child_session.updated" && isRecord(event.payload.childSession)) {
+      return childSessionTimelineDetail(event.payload.childSession);
+    }
+    if (event.type === "agent_spawn_preflight.completed") {
+      return spawnPreflightTimelineDetail(event.payload);
+    }
     if (event.type === "tool.called" || event.type === "tool.repaired") {
       const toolId = typeof event.payload.toolId === "string" ? event.payload.toolId : "tool";
       const status = typeof event.payload.status === "string" ? event.payload.status : "updated";
@@ -1835,6 +1844,108 @@ function timelineDetail(event: OraStateSnapshot["events"][number]) {
     }
   }
   return "运行状态已更新。";
+}
+
+function childSessionTimelineDetail(childSession: Record<string, unknown>): string {
+  const label = typeof childSession.label === "string" && childSession.label.trim()
+    ? childSession.label.trim()
+    : typeof childSession.agentId === "string" && childSession.agentId.trim()
+      ? childSession.agentId.trim()
+      : "子任务";
+  const status = childSessionStatusLabel(
+    typeof childSession.status === "string" ? childSession.status : undefined,
+  );
+  const authority = childAuthorityLabel(
+    typeof childSession.authoritySource === "string" ? childSession.authoritySource : undefined,
+  );
+  const preset = typeof childSession.resolvedToolPreset === "string" && childSession.resolvedToolPreset.trim()
+    ? childSession.resolvedToolPreset.trim()
+    : undefined;
+  const summary = typeof childSession.summary === "string" && childSession.summary.trim()
+    ? childSession.summary.trim()
+    : undefined;
+  const parts = [label, status];
+  if (authority) {
+    parts.push(authority);
+  }
+  if (preset) {
+    parts.push(`工具面 ${preset}`);
+  }
+  if (summary) {
+    parts.push(summary);
+  }
+  return parts.join(" · ");
+}
+
+function spawnPreflightTimelineDetail(payload: Record<string, unknown>): string {
+  const requestedPreset = typeof payload.requestedPreset === "string" && payload.requestedPreset.trim()
+    ? payload.requestedPreset.trim()
+    : "unknown";
+  const resolvedPreset = typeof payload.resolvedPreset === "string" && payload.resolvedPreset.trim()
+    ? payload.resolvedPreset.trim()
+    : requestedPreset;
+  const status = typeof payload.status === "string" && payload.status.trim()
+    ? payload.status.trim()
+    : "unknown";
+  const parentAgentId = typeof payload.parentAgentId === "string" && payload.parentAgentId.trim()
+    ? payload.parentAgentId.trim()
+    : undefined;
+  const degradationText = Array.isArray(payload.appliedDegradations)
+    ? payload.appliedDegradations.filter((value): value is string => typeof value === "string" && value.trim().length > 0).join(", ")
+    : "";
+  const parts = [
+    `请求 ${requestedPreset}`,
+    `结果 ${resolvedPreset}`,
+    `状态 ${spawnPreflightStatusLabel(status)}`,
+  ];
+  if (parentAgentId) {
+    parts.push(`来源 ${parentAgentId}`);
+  }
+  if (degradationText) {
+    parts.push(`降级 ${degradationText}`);
+  }
+  return parts.join(" · ");
+}
+
+function childSessionStatusLabel(status: string | undefined): string {
+  switch (status) {
+    case "queued":
+      return "已排队";
+    case "running":
+      return "进行中";
+    case "succeeded":
+      return "已完成";
+    case "failed":
+      return "失败";
+    case "cancelled":
+      return "已取消";
+    default:
+      return "状态已更新";
+  }
+}
+
+function childAuthorityLabel(authoritySource: string | undefined): string | undefined {
+  switch (authoritySource) {
+    case "mode_stage":
+      return "模式阶段授权";
+    case "dynamic_spawn":
+      return "动态委派授权";
+    default:
+      return undefined;
+  }
+}
+
+function spawnPreflightStatusLabel(status: string): string {
+  switch (status) {
+    case "ready":
+      return "可执行";
+    case "degraded":
+      return "降级执行";
+    case "blocked":
+      return "已阻断";
+    default:
+      return status;
+  }
 }
 
 function readablePayloadText(payload: Record<string, unknown>): string | undefined {
