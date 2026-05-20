@@ -391,12 +391,13 @@ async function executeStagedTranscriptMode(input: ModeExecutionInput): Promise<P
 }
 
 export async function executeOrchestratorSubagent(input: ModeExecutionInput): Promise<PatternExecutionResult> {
-  const { context, prompt, modeSpec } = input;
+  const { context, prompt, config, modeSpec } = input;
   if (modeSpec.stages?.length) {
     return executeStagedTranscriptMode(input);
   }
   const layers = orderedEnabledModeLayers(modeSpec);
   const allNodes = layers.flat();
+  const planIntent = config.metadata.taskIntent === "plan";
   const enableDynamicDelegation = modeSpec.runtimeAtoms.includes("dynamic_delegation");
   let delegationPlan: DelegationPlan | null = null;
   const skipNodeIds = new Set<string>();
@@ -565,6 +566,32 @@ export async function executeOrchestratorSubagent(input: ModeExecutionInput): Pr
         executeNode, bag,
         { skipNodeIds, alreadyCompletedNodeIds: resumedCompletedNodeIds, activeResumeNodeId: resumedActiveNodeId },
       );
+
+      if (planIntent && containsCompleteProposedPlan(bag.synthesis || bag.review || bag.research || bag.plan)) {
+        const currentNode = layer.at(-1);
+        finishPlanModeAfterProposedPlan(
+          context,
+          allNodes,
+          currentNode ? allNodes.findIndex((candidate) => candidate.id === currentNode.id) : -1,
+          totalActiveNodes,
+        );
+        return {
+          output: {
+            text: asText(bag.synthesis || bag.review || bag.research || bag.plan),
+            pattern: modeSpec.family,
+            modeId: modeSpec.id,
+            stoppedAfterProposedPlan: true,
+            orchestrator: {
+              decomposition: allNodes.map((node) => node.template),
+              plan: bag.plan,
+            },
+            subagents: {
+              researcher: bag.research,
+              reviewer: bag.review,
+            },
+          },
+        };
+      }
     }
 
   context.remember({

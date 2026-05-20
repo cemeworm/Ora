@@ -1,4 +1,4 @@
-import { CODE_DEVELOPMENT_MODE_ID, DEEP_RESEARCH_MODE_ID, REVIEW_CRITIQUE_MODE_ID, getModePreset, modeSpecToPatternDefinition, type BusStats, type QueueSummary, type RunConfig, type SharedStateSummary } from "@cemeworm/shared";
+import { CODE_DEVELOPMENT_MODE_ID, DEEP_RESEARCH_MODE_ID, REVIEW_CRITIQUE_MODE_ID, createModeSpecFromPattern, getModePreset, modeSpecToPatternDefinition, type BusStats, type QueueSummary, type RunConfig, type SharedStateSummary } from "@cemeworm/shared";
 import { describe, expect, it } from "vitest";
 import { executeOrchestratorSubagent } from "./orchestrator-subagent-driver.js";
 import type { PatternExecutionContext } from "./execution-context.js";
@@ -229,6 +229,60 @@ describe("executeOrchestratorSubagent staged plan intent early stop", () => {
     expect(callLog.some((entry) => entry.includes("reviewer"))).toBe(false);
     expect(result.output).toMatchObject({
       modeId: REVIEW_CRITIQUE_MODE_ID,
+      stoppedAfterProposedPlan: true,
+    });
+    expect(String((result.output as { text?: string }).text ?? "")).toContain("<proposed_plan>");
+  });
+});
+
+describe("executeOrchestratorSubagent plain plan intent early stop", () => {
+  it("stops plain orchestrator_subagent after decompose produces a complete proposed plan", async () => {
+    const modeSpec = createModeSpecFromPattern("orchestrator_subagent");
+    const callLog: string[] = [];
+    const context = createContext(callLog);
+    const config: RunConfig = {
+      pattern: "orchestrator_subagent",
+      modeId: "orchestrator_subagent",
+      modeSelection: "manual",
+      profileIds: [],
+      skillIds: [],
+      toolIds: [],
+      approvalMode: "high_risk_only",
+      permissionMode: "auto_review",
+      patternOptions: {},
+      metadata: {
+        taskIntent: "plan",
+      },
+      causalInterventionLevel: "record_only",
+      deterministicSeed: "test-seed",
+    };
+
+    context.callAgent = async ({ agentId, title }) => {
+      callLog.push(`${agentId}:${title}`);
+      if (agentId === "ora") {
+        return [
+          "<proposed_plan>",
+          "## Runtime status plan",
+          "1. Add shared attention projection.",
+          "2. Persist plan decision gates.",
+          "</proposed_plan>",
+        ].join("\n");
+      }
+      return `${agentId}:${title}`;
+    };
+
+    const result = await executeOrchestratorSubagent({
+      context,
+      prompt: "Return a proposed plan for session state.",
+      config,
+      modeSpec,
+      definition: modeSpecToPatternDefinition(modeSpec),
+    });
+
+    expect(callLog).toHaveLength(1);
+    expect(callLog[0]).toContain("ora:Decompose task into inspectable plan");
+    expect(result.output).toMatchObject({
+      modeId: "orchestrator_subagent",
       stoppedAfterProposedPlan: true,
     });
     expect(String((result.output as { text?: string }).text ?? "")).toContain("<proposed_plan>");

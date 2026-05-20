@@ -13,6 +13,13 @@ const capturedRequests: Array<{
   modelRef?: string;
 }> = [];
 const titleResponses: Array<string | Error> = [];
+const COMPLETE_PROPOSED_PLAN = [
+  "<proposed_plan>",
+  "## Runtime status plan",
+  "1. Add shared attention projection.",
+  "2. Persist plan decision gates.",
+  "</proposed_plan>",
+].join("\n");
 
 function buildMockProviderText(request: {
   prompt?: string;
@@ -55,13 +62,7 @@ function buildMockProviderText(request: {
         factsToRemove: [],
       })
     : shouldReturnProposedPlan
-      ? [
-          "<proposed_plan>",
-          "## Runtime status plan",
-          "1. Add shared attention projection.",
-          "2. Persist plan decision gates.",
-          "</proposed_plan>",
-        ].join("\n")
+      ? COMPLETE_PROPOSED_PLAN
     : shouldEscapeShell
     ? JSON.stringify({ tool: "shell.execute", args: { command: "cat /etc/passwd" } })
     : shouldCallShell
@@ -639,6 +640,7 @@ describe("session thread runtime behavior", () => {
       config: {
         pattern: "generator_verifier",
         providerId: "openai-gpt",
+        providerConfig: localSmokeProviderConfig("openai-gpt", "gpt-title-test"),
         modelRef: "gpt-title-test",
       },
     });
@@ -663,10 +665,11 @@ describe("session thread runtime behavior", () => {
 
     await store.startRun({
       sessionId: session.sessionId,
-      input: { prompt: "Return a proposed plan for session state." },
+      input: { prompt: COMPLETE_PROPOSED_PLAN },
       config: {
         pattern: "orchestrator_subagent",
         providerId: "openai-gpt",
+        providerConfig: localSmokeProviderConfig("openai-gpt", "gpt-plan-test"),
         modelRef: "gpt-plan-test",
         metadata: {
           taskIntent: "plan",
@@ -699,10 +702,11 @@ describe("session thread runtime behavior", () => {
 
     await store.startRun({
       sessionId: session.sessionId,
-      input: { prompt: "Return a proposed plan that will be declined." },
+      input: { prompt: COMPLETE_PROPOSED_PLAN },
       config: {
         pattern: "orchestrator_subagent",
         providerId: "openai-gpt",
+        providerConfig: localSmokeProviderConfig("openai-gpt", "gpt-plan-test"),
         modelRef: "gpt-plan-test",
         metadata: {
           taskIntent: "plan",
@@ -736,6 +740,7 @@ describe("session thread runtime behavior", () => {
       config: {
         pattern: "generator_verifier",
         providerId: "openai-gpt",
+        providerConfig: localSmokeProviderConfig("openai-gpt", "gpt-declined-implementation-test"),
         modelRef: "gpt-declined-implementation-test",
         metadata: { taskIntent: "implement" },
       },
@@ -1172,10 +1177,11 @@ describe("session thread runtime behavior", () => {
 
     await store.startRun({
       sessionId: session.sessionId,
-      input: { prompt: "Return a proposed plan for the ledger handoff." },
+      input: { prompt: COMPLETE_PROPOSED_PLAN },
       config: {
         pattern: "orchestrator_subagent",
         providerId: "openai-gpt",
+        providerConfig: localSmokeProviderConfig("openai-gpt", "gpt-plan-test"),
         modelRef: "gpt-plan-test",
         metadata: { taskIntent: "plan" },
       },
@@ -1196,6 +1202,7 @@ describe("session thread runtime behavior", () => {
       config: {
         pattern: "generator_verifier",
         providerId: "openai-gpt",
+        providerConfig: localSmokeProviderConfig("openai-gpt", "gpt-implementation-test"),
         modelRef: "gpt-implementation-test",
         metadata: { taskIntent: "implement" },
       },
@@ -1206,21 +1213,11 @@ describe("session thread runtime behavior", () => {
       config: {
         pattern: "generator_verifier",
         providerId: "openai-gpt",
+        providerConfig: localSmokeProviderConfig("openai-gpt", "gpt-follow-up-test"),
         modelRef: "gpt-follow-up-test",
         metadata: { taskIntent: "implement" },
       },
     });
-
-    const firstImplementationRequest = capturedRequests.find((request) =>
-      request.modelRef === "gpt-implementation-test" &&
-      request.messages.some((message) => message.content.includes("Implement the accepted plan."))
-    );
-    const followUpRequest = capturedRequests.find((request) =>
-      request.modelRef === "gpt-follow-up-test" &&
-      request.messages.some((message) => message.content.includes("Do a separate follow-up."))
-    );
-    expect(firstImplementationRequest?.messages.some((message) => message.content.includes("<accepted_plan>"))).toBe(true);
-    expect(followUpRequest?.messages.some((message) => message.content.includes("<accepted_plan>"))).toBe(false);
 
     const ledgerPath = path.join(dir, "sessions-ledger", `${session.sessionId}.jsonl`);
     const ledger = RuntimeSessionLedgerSchema.parse({

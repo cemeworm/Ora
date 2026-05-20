@@ -273,7 +273,41 @@ interface RuntimeToolDefinition<TContext, TArgs, TResult> {
 - `setActiveTools()` 允许 mode/agent 裁剪可用工具集
 - `toolAvailableForTaskIntent()` 处理特殊情况（如 plan intent 下禁用 plan.update 避免递归）
 
-当前共 **50 个**已实现的 runtime tool ID。
+当前共 **62 个**已实现的 runtime tool ID。
+
+### 4.1 Visibility resolver 与默认工具面
+
+从 2026-05-20 起，工具“看得见什么”不再由 root prompt、preset mode、child bundle 各自维护并行规则。当前统一走 shared/runtime 共用的 visibility resolver：
+
+```text
+(availableToolIds, tool metadata, preset/override, taskIntent, hard boundary)
+  -> { visibleToolIds, hiddenToolIds, decisionSource, appliedConstraints, presetId? }
+```
+
+关键合同：
+
+- `availableToolIds` 是硬上界；resolver 不能凭空引入新工具
+- `ToolDescriptor.family` 现在显式区分 `explore / execute / coordinate / environment / evolve`
+- `ToolVisibilityPresetId` 当前包括 `root_default`、`coding_root`、`builder_write`、`review_readonly`、`research_readonly`、`repo_forensics`、`system_evolution`
+- `decisionSource` 用来标记本次 visible surface 主要来自 `explicit_override`、`bundle_preset`、`resolver_default` 或 `legacy_fallback`
+- `appliedConstraints` 记录 task intent 收缩、hard boundary 等实际生效的限制
+
+它的职责只是“收缩当前 agent 可见工具面”，不替代 approval、budget、result validation 或 runtime 末端 safety gate。`RuntimeToolExecutor.systemPrompt()`、provider tool list、child bundle resolution 现在都应消费 resolver 的 `visibleToolIds`，而不是序列化全量工具列表。
+
+### 4.2 `repo.explore` 的正式地位
+
+`repo.explore` 已不是 skill wrapper 或纯文案建议，而是正式进入 Ora runtime tool 管线的高层只读探索入口：
+
+- family 属于 `explore`
+- 请求 contract 以 `goal + kind + subject + optional scope` 为中心，覆盖 `locate / understand / trace / compare / verify`
+- 响应 contract 统一返回 `status`、`answer`、`evidence`、`gaps`、`nextActions`
+- 当前状态值是：
+  - `answered`
+  - `insufficient_evidence`
+  - `needs_escalation`
+- 它是 root / review / research / builder 这些 preset 的优先读仓入口，用来减少直接拼接 `file.list` / `file.glob` / `file.grep` / `file.read` 的原子 hop
+
+因此 `repo.explore` 的意义不只是“多一个工具”，而是 visibility resolver phase-1 的第一位 Explore consumer：默认探索面先给高层只读入口，再按需要升级到底层 Execute 或 Environment。
 
 ### RuntimeToolExecutor 核心方法
 
@@ -960,10 +994,10 @@ error
 
 ## 17. 当前状态
 
-### 17.1 已实现的 50 个工具
+### 17.1 已实现的 62 个工具
 
 ```
-file:        read, list, glob, grep, write, patch, apply_patch
+file:        read, list, glob, grep, repo.explore, write, patch, apply_patch
 shell:       execute
 network:     web.fetch, web.search
 document:    extract
@@ -973,7 +1007,9 @@ package:     list, buildCandidate, verify, promote, switch, rollback
 modes:       list, generateDraft, refineDraft, validate, applyDraft
 selfIteration: list, get, scan, evaluate, apply
 automations: list, get, previewSchedule, create, update, pause, resume, delete, runNow
-internal:    user.clarify, plan.update, agent.spawn, message.send
+widgets:     getSelectedContext, get, todo.addItem
+internal:    user.clarify, plan.update, agent.spawn, agent.wait, message.send
+computer:    permissionStatus, observe, click, type, press, scroll, window
 ```
 
 ### 17.2 已实现的关键机制
@@ -1009,6 +1045,8 @@ internal:    user.clarify, plan.update, agent.spawn, message.send
 - `AbortSignal` 贯通（shell/web/MCP/document，shell abort 时 kill process tree）
 
 **扩展与呈现**：
+- visibility resolver（family-aware 工具面求值、preset 收敛、taskIntent 收缩、hard boundary 记录）
+- `repo.explore` 正式 runtime tool（结构化只读探索、preview、telemetry、升级建议）
 - `agent.spawn` / `agent.wait` 协作工具（职责型 tool bundle、显式 fan-out / fan-in、子结果有效性校验）
 - widget runtime tools（`widgets.getSelectedContext`、`widgets.get`、`widgets.todo.addItem`）
 - `skills.patch` 工具（分层模糊匹配、动态 approval、并行批量审批）
@@ -1029,6 +1067,11 @@ internal:    user.clarify, plan.update, agent.spawn, message.send
   - `system_prompt` 会覆盖默认 profile system prompt。
   - `tool_bundle` 是首选的职责分配方式，当前维护的 bundle 包括 `research_readonly`、`repo_forensics`、`review_readonly`、`builder_write`。
   - `tool_ids` 仍可用，但更适合高级覆盖；runtime 会先把 bundle 解析成维护好的工具集合，再与当前 run allowed tools 求交。
+  - `tool_bundle` 在真正启动 child 前会经过 `spawnPreflight`。这一步不是执行期失败后的补救，而是 launch-time 工具面预检：
+    - `status = ready`：请求 preset 可直接满足
+    - `status = degraded`：仍可启动，但会记录 `appliedDegradations`、`missingCapabilities`，并把较弱的 `resolvedPreset` / `resolvedToolIds` 明确投影出来
+    - `status = blocked`：不能安全启动，直接返回结构化 blocked 结果
+  - `spawnPreflight` 还会写出 `requestedPreset`、`resolvedPreset`、`missingToolIds`、`recommendedAlternativePreset`，并进入 `ChildSessionSummary.spawnPreflight`
   - `spawn_contract` 是新的结构化 delegation contract，可显式声明 `required_affordances`、`subject`、`resource_bindings`、`side_effect_policy`、`result_rules`、`validation_policy`。如果调用方未显式提供，runtime 也会对 URL / shell-script 类 prompt 做有限推断。
   - `subject` 现在支持显式 `normalization`。当前模式集是 `auto`、`none`、`url_canonical`、`path_canonical`、`casefold`；runtime 会把归一化结果写回 `normalizedValue`，避免 prompt wording 和证据形态的表层差异被误判成 drift。
   - `resource_bindings` 现在是 value/handle 双形态：
@@ -1059,6 +1102,7 @@ internal:    user.clarify, plan.update, agent.spawn, message.send
   - `diagnostic_type=spawn_authority_mismatch`
   - `requested_tool_preset` / `resolved_tool_preset`
   - `recommended_alternative_preset`（若存在）
+- `spawnPreflight.status = degraded` 时，tool call 仍可继续，但 child session / Trails 会保留“请求 preset 与实际 resolved preset 不完全一致”的结构事实，避免 UI 把降级后的 child 误渲染成按原 bundle 完整运行
 - 如果 `spawn_contract` 与实际 resolved tool surface 不兼容，tool result 也会直接返回结构化 blocked envelope，当前包括：
   - `diagnostic_type=spawn_affordance_mismatch | spawn_side_effect_violation | spawn_resource_binding_missing | spawn_subject_unbound`
   - `spawn_contract`

@@ -18,7 +18,7 @@ Ora 的 runtime loop 不是单一循环，而是几层边界叠在一起：
 
 - 用户正文只消费父 Agent 的最终叙事。
 - 子 Agent 的流式 delta 会被标记为 `audience/visibility = collaboration`，不再进入正文投影。
-- 子 Agent 的低频结构事实通过 `child_session.updated` / `parent_coordination.updated` 进入 snapshot 与 ledger-backed projection，供 desktop 右侧协作区和 Trails 消费。
+- 子 Agent 的低频结构事实通过 `child_session.updated` / `parent_coordination.updated` 进入 snapshot 与 ledger-backed projection，主要供 desktop 右侧协作区、Trails，以及主聊天区/运行进度里的少量公开协作里程碑消费。
 - `child_session.updated` 现在不仅记录状态，还会写明它是 `mode_stage` 还是 `dynamic_spawn`，以及 child 实际跑在什么 tool preset 上；Trails 应把这视为权限来源事实，而不是普通状态噪音。
 
 主要源码入口：
@@ -186,6 +186,11 @@ flowchart TD
 - `LocalRunStore` 现在更像兼容 facade。kernel 执行、resume finalization、gate lifecycle、ledger append、persistence 和 projection 已经拆到更窄的服务边界。
 - `resolveModeSelection` 先把输入解析成确定的 `ModeSpec`、`PatternDefinition` 和完整 `RunConfig`。
 - `modeSelection: "auto"` 会调用 auto mode router，选择 `modeId`，并在 `taskIntentMode: "auto"` 时推断 `taskIntent`。
+- `effectiveStrategy` 是这一层的单一运行策略真相源。显式 Team / 子代理协作请求不会只停留在 prompt hint 或 metadata，而是先被解释为 mode 请求，再写入 `config.effectiveStrategy` 的结构字段（如 `collaborationRequirement`、`collaborationRequirementSource`、`delegationRequestedByUser`、`requestedModeId`）。
+- 当前的 mode-first 规则是：
+  - auto route 且用户明确要求 Team 时，优先把请求解释为 mode 级偏好，例如路由到 `agent_teams`
+  - 若用户手动锁定 `single_agent`，runtime 不会偷偷改 mode，而是保留当前 mode，并把 `collaborationRequirement` 降级成 turn-local requirement
+  - prompt guidance、completion guard、desktop 策略摘要都读取同一份 `effectiveStrategy`，不再各自从 raw mode 默认值或零散 delegation hint 推断
 - 普通 start 由 `RunStartService` 准备 session、mode、memory prompt、runId 和 turnIndex，再通过 `RunKernelExecutionService` 进入 `executeRuntimeKernel`。
 - resume 先由 `RunResumeService` 解析 patch、clarification、approved actions 和 gate resolution，并分类为 kernel resume、approved tool continuation 或 non-kernel resume。
 - kernel resume 会通过 kernel execution 边界进入 `executeRuntimeKernel`，额外带入 clarification patch、approved action ids、approved actions 和上一轮 resume state。
@@ -353,6 +358,24 @@ stateDiagram-v2
 - 工具结果已经记录后，follow-up model/provider 的 transient 或 busy failure 留在 `running_model` phase，由 provider recovery 重试同一个 model request，不会重跑已经成功的工具。
 - 如果非 tool-running phase 错误进入 tool recovery boundary，runtime 会发 `tool_recovery_boundary` diagnostic 并停止这条错误恢复路径，不会放宽成 `running_model -> degraded`。
 - 当工具预算耗尽、重复调用被拦截或 runtime loop limit 到达时，进入 forced final answer，禁止继续调用工具。
+
+### 3.1 Timeout / idle semantics
+
+`timeoutMs` 现在不再简单表示“这个 node 从启动到结束最多只能活多久”。当前语义是：
+
+- **idle-first watchdog**
+  - `node-runtime-loop` 优先把 `timeoutMs` 解释为“无进展超时”
+  - 只要模型流、工具执行、恢复链路持续产出有效进展，idle timer 就会被刷新
+- **hard-timeout fallback**
+  - runtime 仍保留更长的绝对时长兜底，防止真正挂死的请求永远停在 Running
+  - 这里固定的是“存在 hard-timeout fallback”这一原则，不把当前倍数写成长期 API 合同
+- **provider streaming 对齐**
+  - provider SSE 路径也遵循 open-timeout / idle-timeout 语义，而不是把首个 `timeoutMs` 粗暴复用为整段流的绝对寿命
+- **受控 timeout recovery**
+  - timeout 导致的恢复现在允许走受控的 `running_model -> degraded` 路径
+  - 这不是放宽所有非法迁移；只有 timeout / stuck recovery 这类明确场景才允许进入 degraded，再由 recovery 或 terminalization 收口
+
+这条语义修复的目标，是让长任务在持续产出进展时可以安全活过旧的绝对超时阈值，同时让真正卡死的 run 进入可解释的 recovery / failed 终态，而不是悬挂在假 Running。
 
 ## 中断、澄清、审批、决策的区别
 

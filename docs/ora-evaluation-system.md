@@ -231,6 +231,24 @@ causal 评估现在同时看结果、过程和成本三层信号：
 
 因此在阅读 compare/report 时，`llm_judge_score` 要同时看数值和 provenance；只有前两者才能当作真正的 judge outcome 信号。
 
+### 5.4 Resolver-aware / family-aware 工具质量指标
+
+从 visibility resolver phase-1 起，evaluation 还会额外跟踪一组“工具面是否健康”的指标。它们不是替代 outcome 指标，而是回答“这次 run 是否按期望的工具工作流在做事”：
+
+| 指标 | 含义 | 当前关注点 |
+| --- | --- | --- |
+| `visible_surface_shrinkage` | root resolver 是否显著收窄默认 visible surface | 是否仍把过宽工具面暴露给 root agent |
+| `explore_first_score` | 是否先进入高层 Explore 入口 | 是否优先使用 `repo.explore` 等高层入口，而不是直接落到底层执行 |
+| `atomic_tool_hops` | 原子 read/list/grep/glob hop 是否过多 | 是否还在靠很多低层文件 hop 拼仓库理解 |
+| `first_locate_success` | 第一次 locate 是否拿到可用证据 | `repo.explore` 的定位质量是否足够好 |
+| `shell_explore_restraint` | shell 是否被当作默认探索入口 | 是否仍绕过 resolver 设计，直接把 shell 当侦察工具 |
+
+这些指标的解释边界是：
+
+- 它们是 **resolver-aware / family-aware workflow quality signals**，不是直接的任务成功率替代品
+- 它们会结合 run observation 中的 resolver 可见面、tool family 使用、`repo.explore` telemetry 一起解释
+- 当 `repo.explore` 本轮并不可见时，部分指标会按“允许原子 fallback”而不是直接记为失败
+
 ## 6. Verdict：A/B 与 Three-way 判定
 
 ### 6.1 A/B verdict
@@ -279,6 +297,7 @@ three-way 不会强行产出一个“永远唯一正确”的模式，而是输�
 3. **Net Lift**：outcome / intervention / cost 的综合结果
 4. **Verdict**：总体结论 + fairness / missing-data 提示
 5. **Case-Level Summary**：improved/degraded/unchanged 计数 + Top 退化 case
+6. **Resolver-aware Recommended Actions**：当 visible surface、explore-first workflow、`repo.explore` locate 质量或 shell restraint 表现差时，报告会给出结构化改进建议
 
 ### 7.2 Multi-config 报告
 
@@ -287,6 +306,7 @@ three-way 不会强行产出一个“永远唯一正确”的模式，而是输�
 - config 排名
 - pairwise outcome / cost 对照
 - 每个 config 的主要 failure tags
+- resolver-aware recommended actions
 - 对 `record_only` / `advisory` / `enforcing` 的推荐结论
 
 ### 7.3 JSON 输出
