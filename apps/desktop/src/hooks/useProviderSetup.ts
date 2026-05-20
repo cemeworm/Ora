@@ -161,7 +161,7 @@ export function useProviderSetup({
   async function saveProviderSecret(secret: string) {
     const trimmed = secret.trim();
     if (!trimmed) {
-      setProviderActionError("Enter an API key before saving.");
+      setProviderActionError("保存前请先输入 API 密钥。");
       return false;
     }
     setProviderActionError(undefined);
@@ -188,7 +188,7 @@ export function useProviderSetup({
 
   async function verifyAndEnableProvider(secret?: string) {
     if (saveDisabled) {
-      setProviderActionError("Complete the provider details before verifying.");
+      setProviderActionError("请先补全提供方配置后再验证。");
       return undefined;
     }
     if (needsSecret) {
@@ -199,7 +199,7 @@ export function useProviderSetup({
           return undefined;
         }
       } else if (!draftSecretStatus?.hasSecret) {
-        setProviderActionError("Enter an API key before verifying.");
+        setProviderActionError("验证前请先输入 API 密钥。");
         return undefined;
       }
     }

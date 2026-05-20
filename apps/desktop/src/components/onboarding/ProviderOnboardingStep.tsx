@@ -250,8 +250,8 @@ export function ProviderOnboardingStep({
   }
 
   return (
-    <div className="animate-fade-in mx-auto flex min-h-full w-full flex-col gap-5">
-      <div className="relative flex-1 overflow-hidden rounded-[34px]  p-5  sm:p-6 lg:p-7">
+    <div className="relative mx-auto flex min-h-screen w-full flex-col gap-5 overflow-y-auto px-4 pb-36 pt-4 sm:px-6 sm:pb-40 sm:pt-5 lg:px-7 lg:pb-44 lg:pt-6">
+      <div className="animate-fade-in relative flex-1 overflow-hidden rounded-[34px]  p-5  sm:p-6 lg:p-7">
         <div className="relative grid min-h-full gap-6 lg:grid-cols-[minmax(0,1fr)_420px] xl:grid-cols-[minmax(0,1fr)_460px]">
           <div className="min-h-0 space-y-5">
             <header className="animate-ink-in rounded-[26px]  p-5  sm:p-6">
@@ -319,47 +319,59 @@ export function ProviderOnboardingStep({
             style={{ animationDelay: "200ms" }}
           >
             <div className="mx-auto mb-4 h-5 w-28 -rotate-1 rounded-sm bg-[#d9b98f]/45 shadow-sm" />
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <p className="text-xs font-semibold uppercase tracking-[0.16em] text-bench-600">
-                  已选服务提供方
-                </p>
-                <h3 className="mt-2 truncate text-2xl font-semibold tracking-[-0.03em] text-bench-900">
-                  {providerDraft.label || activePreset.label}
-                </h3>
+            <div className="space-y-4">
+              <div className="flex items-start justify-between gap-4">
+                <div className="min-w-0 space-y-2.5">
+                  <p className="text-xs font-semibold uppercase tracking-[0.16em] text-bench-600">
+                    已选服务提供方
+                  </p>
+                  <h3 className="truncate text-2xl font-semibold tracking-[-0.03em] text-bench-900">
+                    {providerDraft.label || activePreset.label}
+                  </h3>
+                </div>
+                {activePreset.apiKeyUrl ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    className="mt-0.5 h-9 shrink-0 rounded-full border border-[#e5d4ba] bg-white/78 px-3.5 text-xs font-semibold text-bench-800 shadow-[0_8px_18px_rgba(90,68,39,0.10)] backdrop-blur-sm active:scale-95"
+                    onClick={() => {
+                      void runtimeClient.openExternalUrl(activePreset.apiKeyUrl!);
+                    }}
+                  >
+                    <KeyRound size={13} />
+                    API 密钥页
+                    <ExternalLink size={12} />
+                  </Button>
+                ) : null}
               </div>
-              <span
-                className={cn(
-                  "shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold",
-                  statusClasses(draftProviderStatus.state),
-                )}
-              >
-                {statusLabel(draftProviderStatus.state)}
-              </span>
+
+              <p className="max-w-[28rem] text-sm leading-6 text-bench-700">
+                {activePreset.recommendationReason ?? activePreset.description}
+              </p>
+
+              {activePreset.freeTier && (
+                <div className="rounded-2xl border border-[#e5d4ba] bg-[#f6ead8] px-3 py-2.5 text-xs leading-5 text-bench-900">
+                  <span className="font-semibold">
+                    {activePreset.freeTier.label}
+                  </span>
+                  {activePreset.freeTier.description
+                    ? ` · ${activePreset.freeTier.description}`
+                    : ""}
+                </div>
+              )}
             </div>
 
-            <p className="mt-3 text-sm leading-6 text-bench-700">
-              {activePreset.recommendationReason ?? activePreset.description}
-            </p>
-
-            {activePreset.freeTier && (
-              <div className="mt-4 rounded-2xl border border-[#e5d4ba] bg-[#f6ead8] px-3 py-2.5 text-xs leading-5 text-bench-900">
-                <span className="font-semibold">
-                  {activePreset.freeTier.label}
-                </span>
-                {activePreset.freeTier.description
-                  ? ` · ${activePreset.freeTier.description}`
-                  : ""}
-              </div>
-            )}
-
-            <div className="mt-5 space-y-4">
+            <div className="mt-6 flex flex-col gap-3">
               {canEditBaseUrl(providerDraft.type) && (
-                <label className="space-y-2">
-                  <span className="text-xs font-semibold uppercase tracking-[0.12em] text-bench-700">
+                <>
+                  <label
+                    htmlFor="onboarding-provider-base-url"
+                    className="text-xs font-semibold uppercase tracking-[0.12em] text-bench-700"
+                  >
                     Base URL
-                  </span>
+                  </label>
                   <Input
+                    id="onboarding-provider-base-url"
                     value={providerDraft.baseUrl}
                     onChange={(event) =>
                       updateDraft({ baseUrl: event.target.value })
@@ -367,38 +379,40 @@ export function ProviderOnboardingStep({
                     placeholder="https://provider.example/v1"
                     className="h-11 rounded-xl border-[#e0cfb5] bg-[#f8efe2]/70 font-mono"
                   />
-                </label>
+                </>
               )}
 
-              <label className="space-y-2">
-                <span className="text-xs font-semibold uppercase tracking-[0.12em] text-bench-700">
-                  API 密钥
-                </span>
-                <div className="relative">
-                  <LockKeyhole
-                    size={16}
-                    className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-bench-700"
-                  />
-                  <Input
-                    type="password"
-                    value={apiKey}
-                    onChange={(event) => setApiKey(event.target.value)}
-                    disabled={!needsSecret}
-                    placeholder={
-                      needsSecret
-                        ? selectedProviderHasKey
-                          ? "密钥已保存，粘贴新密钥可替换"
-                          : `${providerDraft.label || "服务提供方"} API 密钥`
-                        : "无需密钥"
-                    }
-                    className="h-11 rounded-xl border-[#e0cfb5] bg-white/80 pl-9"
-                  />
-                </div>
+              <label
+                htmlFor="onboarding-provider-api-key"
+                className="text-xs font-semibold uppercase tracking-[0.12em] text-bench-700"
+              >
+                API 密钥
               </label>
+              <div className="relative">
+                <LockKeyhole
+                  size={16}
+                  className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-bench-700"
+                />
+                <Input
+                  id="onboarding-provider-api-key"
+                  type="password"
+                  value={apiKey}
+                  onChange={(event) => setApiKey(event.target.value)}
+                  disabled={!needsSecret}
+                  placeholder={
+                    needsSecret
+                      ? selectedProviderHasKey
+                        ? "密钥已保存，粘贴新密钥可替换"
+                        : `${providerDraft.label || "服务提供方"} API 密钥`
+                      : "无需密钥"
+                  }
+                  className="h-11 rounded-xl border-[#e0cfb5] bg-white/80 pl-9"
+                />
+              </div>
 
               <Button
                 type="button"
-                className="h-11 w-full rounded-xl active:scale-95"
+                className="mt-2 h-11 w-full rounded-xl active:scale-95"
                 onClick={() => void handleVerify()}
                 disabled={!canVerify || providerModelsLoading}
               >
@@ -407,9 +421,11 @@ export function ProviderOnboardingStep({
               </Button>
             </div>
 
-            <div className="mt-4 rounded-2xl border border-[#e5d4ba] bg-[#f8efe2]/75 px-3 py-2.5 text-xs leading-5 text-bench-700">
-              {providerActionError ?? draftProviderStatus.detail}
-            </div>
+            {providerActionError ? (
+              <p className="mt-3 text-xs leading-5 text-red-600">
+                {providerActionError}
+              </p>
+            ) : null}
 
             {(activeProviderModelsResult || draftProviderStatus.state === "verified") && (
               <div className="mt-4 rounded-2xl border border-[#e5d4ba] bg-white/65 p-3">
@@ -506,48 +522,36 @@ export function ProviderOnboardingStep({
                 </div>
               </div>
             )}
-
-            {activePreset.apiKeyUrl && (
-              <div className="mt-auto pt-5">
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="h-11 w-full rounded-xl border-[#d7c4aa] bg-white/70 active:scale-95"
-                  onClick={() => {
-                    void runtimeClient.openExternalUrl(activePreset.apiKeyUrl!);
-                  }}
-                >
-                  <KeyRound size={15} />
-                  API 密钥页
-                  <ExternalLink size={13} />
-                </Button>
-              </div>
-            )}
           </aside>
         </div>
       </div>
 
-      <footer className="-mx-7 -mb-6 flex shrink-0 items-center justify-between gap-3 px-7 py-5">
-        <div className="flex items-center gap-2">
-          <Button
-            type="button"
-            variant="ghost"
-            className="rounded-2xl text-bench-700 active:scale-95"
-            onClick={onSkip}
-          >
-            跳过
-          </Button>
+      <div className="pointer-events-none fixed inset-x-0 bottom-0 z-40">
+        <div className="relative mx-auto w-full px-4 sm:px-6 lg:px-7">
+          <div className="pointer-events-none absolute inset-x-4 bottom-full h-16 bg-gradient-to-b from-[#efe5d6]/0 via-[#efe5d6]/42 to-[#f7f0e5]/92 sm:inset-x-6 lg:inset-x-7" />
+          <footer className="animate-fade-in relative mb-4 flex items-center justify-between gap-3 sm:mb-6 lg:mb-7">
+            <div className="pointer-events-auto flex min-w-0 items-center gap-2">
+              <Button
+                type="button"
+                variant="ghost"
+                className="rounded-2xl border border-[#e1d0b7]/75 bg-[#f8f1e6]/88 px-4 py-2.5 whitespace-nowrap text-bench-700 shadow-[0_10px_22px_rgba(90,68,39,0.12)] backdrop-blur-md active:scale-95"
+                onClick={onSkip}
+              >
+                跳过
+              </Button>
+            </div>
+            <Button
+              type="button"
+              className="pointer-events-auto rounded-2xl border border-black/10 bg-black px-4 py-2.5 whitespace-nowrap shadow-[0_14px_28px_rgba(0,0,0,0.24)] active:scale-95"
+              onClick={onComplete}
+              disabled={!canCompleteOnboarding}
+            >
+              <CheckCircle2 size={15} />
+              进入 Ora
+            </Button>
+          </footer>
         </div>
-        <Button
-          type="button"
-          className="rounded-2xl active:scale-95"
-          onClick={onComplete}
-          disabled={!canCompleteOnboarding}
-        >
-          <CheckCircle2 size={15} />
-          进入 Ora
-        </Button>
-      </footer>
+      </div>
     </div>
   );
 }
