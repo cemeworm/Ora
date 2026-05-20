@@ -505,18 +505,24 @@ export function deriveLedgerRunAttention(run: Pick<RuntimeRunProjection, "runId"
       gateIds: [gate.gateId],
     }));
 
-  // Projection-level integrity guard: a terminal run (succeeded /
-  // failed / cancelled) must not carry open gates. If open gates
-  // exist alongside a terminal status, the projection has been
-  // corrupted and we surface an integrity diagnostic failure.
-  if (openGates.length > 0 && (run.status === "succeeded" || run.status === "failed" || run.status === "cancelled")) {
+  const invalidTerminalOpenGates = openGates.filter((gate) =>
+    !(run.status === "succeeded" && gate.kind === "plan_decision")
+  );
+
+  // Projection-level integrity guard: terminal runs normally must not
+  // carry open gates. The one supported exception is a successful plan
+  // run waiting on a durable plan-decision gate.
+  if (
+    invalidTerminalOpenGates.length > 0 &&
+    (run.status === "succeeded" || run.status === "failed" || run.status === "cancelled")
+  ) {
     return RunAttentionSchema.parse({
       kind: "failed",
       blocking: false,
       sourceRunId: run.runId,
       reason: [
         `terminal_run_with_open_gates:${run.status}`,
-        ...openGates.map((gate) => `${gate.kind}:${gate.gateId}`),
+        ...invalidTerminalOpenGates.map((gate) => `${gate.kind}:${gate.gateId}`),
       ].join(";"),
     });
   }

@@ -641,12 +641,15 @@ flowchart TD
     I --> J["更新 live snapshot / 发布最终事件"]
 ```
 
-`projectResumeSnapshot` 的三步 pipeline：
+`projectResumeSnapshot` 的四步 pipeline：
 1. **withResumeResolutionEvents**：将 gate 决议反向投影为事件（如 `clarification.resolved`、`approval.resolved`），让 UI 能消费 resume 结果
-2. **normalizeSnapshotForPersistence**：标准化 snapshot 以写入持久存储
-3. **appendRunSnapshotUpdateToLedger**：将 snapshot 作为 ledger entry 追加
+2. **materializeResumeContinuationClosure**：先把 resume 已经解决的 clarification / approval continuation 在 snapshot 上收口，关闭对应 frame、清理已完成的 pending ids，并在完成后清掉 `continuation.activeFrameId`
+3. **normalizeSnapshotForPersistence**：标准化 snapshot 以写入持久存储
+4. **appendRunSnapshotUpdateToLedger**：将 snapshot 作为 ledger entry 追加
 
-所有 terminal writer（kernel finalization、resume finalization、non-kernel resume completion）在写入 `run.done` 前必须通过共享的 `assertRunCanBecomeTerminal()` 断言门。该门验证：状态为 terminal 时不得有 open gate、pending action/tool-call/clarification 残留。违反时抛出 `TerminalStateIntegrityError` 并降级为 `run.failed`。
+这里的顺序很关键：**先 materialize resolution 与 continuation closure，再做 terminal assertion。** 如果先跑 `assertRunCanBecomeTerminal()`，就会把“事实上已解决、但尚未从 continuation projection 收口”的 clarification / approval 误判成终态非法残留。
+
+所有 terminal writer（kernel finalization、resume finalization、non-kernel resume completion）在写入 `run.done` 前必须通过共享的 `assertRunCanBecomeTerminal()` 断言门。该门验证：状态为 terminal 时不得有 open gate、pending action/tool-call/clarification 残留，也不得保留 active continuation frame。违反时抛出 `TerminalStateIntegrityError` 并降级为 `run.failed`。
 
 此外，`ApprovalInterruptError` 在 runtime tool call service 的 catch 路径中已被特殊处理，审批中断不再落入通用 tool failure handling。`buildTrailDebugSummary()` / `collectTrailFindings()` 对 stale approval-interrupt snapshot 渲染为 waiting-for-approval，而非 run/tool failure。
 

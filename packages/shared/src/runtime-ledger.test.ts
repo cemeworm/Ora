@@ -621,6 +621,14 @@ describe("terminal state integrity", () => {
     });
     expect(runningPlan.kind).toBe("needs_plan_decision");
 
+    const succeededPlan = deriveLedgerRunAttention({
+      runId: "run-succeeded-plan",
+      status: "succeeded",
+      gates: [testGate({ gateId: "g-plan", kind: "plan_decision", status: "open" })],
+      events: [],
+    });
+    expect(succeededPlan.kind).toBe("needs_plan_decision");
+
     // Failed run (clean, no open gates):
     const cleanFailed = deriveLedgerRunAttention({
       runId: "run-failed",
