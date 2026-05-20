@@ -407,6 +407,50 @@ describe("chat input tray visibility", () => {
       hideComposer: false,
     });
   });
+
+  it("focuses the editor when the plan decision tray closes and the composer returns", async () => {
+    const requestAnimationFrameSpy = vi
+      .spyOn(window, "requestAnimationFrame")
+      .mockImplementation((callback: FrameRequestCallback) => {
+        callback(0);
+        return 1;
+      });
+
+    try {
+      const { container, rerender } = renderElement(
+        createElement(
+          ChatInput as any,
+          createBaseProps({
+            planDecisionPending: true,
+            onConfirmPlanDecision: () => {},
+            onDeclinePlanDecision: () => {},
+          }),
+        ),
+      );
+
+      expect(
+        container.querySelector('[data-testid="chat-input-editor"]'),
+      ).toBeNull();
+
+      rerender(
+        createElement(
+          ChatInput as any,
+          createBaseProps({
+            planDecisionPending: false,
+            onConfirmPlanDecision: () => {},
+            onDeclinePlanDecision: () => {},
+          }),
+        ),
+      );
+
+      await flushMicrotasks();
+
+      const editor = getEditor(container);
+      expect(document.activeElement).toBe(editor);
+    } finally {
+      requestAnimationFrameSpy.mockRestore();
+    }
+  });
 });
 
 describe("chat input surface layout", () => {

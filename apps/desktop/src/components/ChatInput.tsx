@@ -892,6 +892,7 @@ export function ChatInput({
   const shouldScrollPastedTextRef = useRef(false);
   const skillPickerRef = useRef<HTMLDivElement>(null);
   const pendingSelectionRef = useRef<ComposerSelectionBookmark | null>(null);
+  const previousHideComposerRef = useRef(false);
   const sessionIdRef = useRef(sessionId);
   const isComposingRef = useRef(false);
   const [openPicker, setOpenPicker] = useState<
@@ -1053,6 +1054,13 @@ export function ChatInput({
       target.scrollTop = 0;
     }
   }, [plainTextPrompt, segments, sessionId]);
+
+  useEffect(() => {
+    if (previousHideComposerRef.current && !hideComposer) {
+      window.requestAnimationFrame(() => editorRef.current?.focus());
+    }
+    previousHideComposerRef.current = hideComposer;
+  }, [hideComposer]);
 
   useLayoutEffect(() => {
     const target = overlayRef.current;
