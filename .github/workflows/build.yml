@@ -3,10 +3,6 @@ name: Build
 on:
   workflow_dispatch:
     inputs:
-      ref:
-        description: Git ref to build
-        required: true
-        default: main
       tag_name:
         description: Existing GitHub release tag to upload assets to
         required: true
@@ -20,7 +16,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ inputs.tag_name }}
 
       - name: Resolve release id
         id: release-info
@@ -70,6 +66,8 @@ jobs:
         id: tauri
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ORA_BUILD_TAG: ${{ inputs.tag_name }}
+          ORA_BUILD_WORKFLOW: manual-build
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:

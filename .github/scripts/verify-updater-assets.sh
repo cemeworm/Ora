@@ -72,3 +72,57 @@ jq -e '
   and (($names | map(select(test("\\.app\\.tar\\.gz\\.sig$"))) | length) > 0)
   and (($names | map(select(test("\\.dmg$"))) | length) > 0)
  ' "$API_JSON" > /dev/null
+
+APP_TARBALL_URL="$(python3 - <<'PY'
+import json
+from pathlib import Path
+
+data = json.loads(Path("latest.json").read_text())
+platforms = data["platforms"]
+for key in sorted(platforms):
+    if "darwin" in key:
+        url = (platforms[key] or {}).get("url")
+        if isinstance(url, str) and url.strip():
+            print(url.strip())
+            break
+else:
+    raise SystemExit("No darwin updater tarball URL found in latest.json")
+PY
+)"
+
+echo "Checking bundled build metadata from $APP_TARBALL_URL"
+curl -s -L -o Ora.app.tar.gz "$APP_TARBALL_URL"
+tar -xOf Ora.app.tar.gz Ora.app/Contents/Resources/build-meta.json > build-meta.json
+
+python3 - <<'PY'
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+tag = os.environ["TAG"]
+expected_tag = tag
+expected_version = tag.lstrip("v")
+expected_commit = subprocess.check_output(
+    ["git", "rev-list", "-n", "1", tag],
+    text=True,
+).strip()
+
+data = json.loads(Path("build-meta.json").read_text())
+
+if data.get("version") != expected_version:
+    sys.exit(
+        f"build-meta.json version mismatch: expected {expected_version}, got {data.get('version')!r}"
+    )
+if data.get("tag") != expected_tag:
+    sys.exit(f"build-meta.json tag mismatch: expected {expected_tag}, got {data.get('tag')!r}")
+if data.get("commit") != expected_commit:
+    sys.exit(
+        f"build-meta.json commit mismatch: expected {expected_commit}, got {data.get('commit')!r}"
+    )
+if not isinstance(data.get("builtAt"), str) or not data["builtAt"].strip():
+    sys.exit("build-meta.json builtAt is missing")
+if not isinstance(data.get("workflow"), str) or not data["workflow"].strip():
+    sys.exit("build-meta.json workflow is missing")
+PY
