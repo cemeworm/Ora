@@ -170,6 +170,21 @@ export function getSelectedInteractiveSnapshot(
   return activeSnapshot;
 }
 
+export function getPlanDecisionResumeRunId(
+  state: Pick<WorkbenchState, "runLifecycle" | "selectedTurnRunId" | "activeSessionDetail">,
+): string | undefined {
+  return getSelectedInteractiveSnapshot(state)?.runId
+    ?? state.selectedTurnRunId
+    ?? state.activeSessionDetail?.latestSnapshot?.runId
+    ?? state.activeSessionDetail?.session.attention?.sourceRunId;
+}
+
+export function getInteractiveRunId(
+  state: Pick<WorkbenchState, "runLifecycle" | "selectedTurnRunId" | "activeSessionDetail">,
+): string | undefined {
+  return getPlanDecisionResumeRunId(state);
+}
+
 export function stableViewModelCacheKey(params: {
   activeSessionId?: string;
   selectedModeId: string;
@@ -802,7 +817,8 @@ export function useRunActions() {
   }
 
   async function submitClarificationOption(answer: string) {
-    if (!state.selectedSessionId || !state.selectedTurnRunId) return;
+    const resumeRunId = getInteractiveRunId(state);
+    if (!state.selectedSessionId || !resumeRunId) return;
     const selectedSnapshot = getSelectedInteractiveSnapshot(state);
     const clarificationPatch = buildPendingClarificationResumePatch(
       selectedSnapshot,
@@ -812,7 +828,7 @@ export function useRunActions() {
     flushSync(() => {
       dispatch({
         type: "BEGIN_RUN_RESUME",
-        runId: state.selectedTurnRunId!,
+        runId: resumeRunId,
         approvedActionIds: [],
         resolvedClarificationIds: clarificationIdsFromAnswers(
           selectedSnapshot,
@@ -824,7 +840,7 @@ export function useRunActions() {
     await waitForPendingRunPaint();
     try {
       const handle = await runtimeClient.resumeStreamingRun(
-        state.selectedTurnRunId,
+        resumeRunId,
         USER_RESUMED_MESSAGE,
         clarificationPatch,
       );
@@ -840,13 +856,14 @@ export function useRunActions() {
   }
 
   async function submitAllClarifications(answers: Record<string, string>) {
-    if (!state.selectedSessionId || !state.selectedTurnRunId) return;
+    const resumeRunId = getInteractiveRunId(state);
+    if (!state.selectedSessionId || !resumeRunId) return;
     if (Object.keys(answers).length === 0) return;
     const selectedSnapshot = getSelectedInteractiveSnapshot(state);
     flushSync(() => {
       dispatch({
         type: "BEGIN_RUN_RESUME",
-        runId: state.selectedTurnRunId!,
+        runId: resumeRunId,
         approvedActionIds: [],
         resolvedClarificationIds: clarificationIdsFromAnswers(
           selectedSnapshot,
@@ -858,7 +875,7 @@ export function useRunActions() {
     await waitForPendingRunPaint();
     try {
       const handle = await runtimeClient.resumeStreamingRun(
-        state.selectedTurnRunId,
+        resumeRunId,
         USER_RESUMED_MESSAGE,
         { clarifications: answers },
       );
@@ -890,14 +907,15 @@ export function useRunActions() {
     const submittedLocalFileAttachments = state.sessionLocalFileAttachments[sessionId] ?? [];
     const submittedImageAttachments = state.sessionImageAttachments[sessionId] ?? [];
     const selectedSnapshot = getSelectedInteractiveSnapshot(state);
-    const clarificationPatch = selectedSnapshot?.runId === state.selectedTurnRunId
+    const resumeRunId = getInteractiveRunId(state);
+    const clarificationPatch = selectedSnapshot?.runId === resumeRunId
       ? buildPendingClarificationResumePatch(selectedSnapshot, submittedPrompt)
       : undefined;
     flushSync(() => {
-      if (clarificationPatch && state.selectedTurnRunId) {
+      if (clarificationPatch && resumeRunId) {
         dispatch({
           type: "BEGIN_RUN_RESUME",
-          runId: state.selectedTurnRunId,
+          runId: resumeRunId,
           approvedActionIds: [],
           resolvedClarificationIds: clarificationIdsFromAnswers(
             selectedSnapshot,
@@ -935,10 +953,10 @@ export function useRunActions() {
         progressText: "正在选择合适的工作模式",
       });
     }
-    if (clarificationPatch && state.selectedTurnRunId) {
+    if (clarificationPatch && resumeRunId) {
       try {
         const handle = await runtimeClient.resumeStreamingRun(
-          state.selectedTurnRunId,
+          resumeRunId,
           USER_RESUMED_MESSAGE,
           clarificationPatch,
         );
@@ -1051,10 +1069,11 @@ export function useRunActions() {
   }
 
   async function interruptRun() {
-    if (!state.selectedTurnRunId) return;
+    const runId = getInteractiveRunId(state);
+    if (!runId) return;
     dispatch({ type: "SET_BUSY_COMMAND", command: "Interrupt" });
     try {
-      const snapshot = await runtimeClient.interruptRun(state.selectedTurnRunId, USER_INTERRUPTED_MESSAGE);
+      const snapshot = await runtimeClient.interruptRun(runId, USER_INTERRUPTED_MESSAGE);
       await refreshCurrentSession(snapshot, `Interrupt completed against ${snapshot.runId}.`);
     } catch (error) {
       dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: error instanceof Error ? error.message : "Interrupt failed." });
@@ -1063,8 +1082,9 @@ export function useRunActions() {
   }
 
   async function resumeRun() {
-    if (!state.selectedTurnRunId) return;
-    const activeSnapshot = getActiveSnapshot(state.runLifecycle);
+    const resumeRunId = getInteractiveRunId(state);
+    if (!resumeRunId) return;
+    const activeSnapshot = getSelectedInteractiveSnapshot(state);
     const pendingApprovalIds = new Set(
       activeSnapshot?.attention?.kind === "needs_approval"
         ? activeSnapshot.attention.pendingActionIds
@@ -1076,7 +1096,7 @@ export function useRunActions() {
     flushSync(() => {
       dispatch({
         type: "BEGIN_RUN_RESUME",
-        runId: state.selectedTurnRunId!,
+        runId: resumeRunId,
         approvedActionIds,
         resolvedClarificationIds: [],
         updatedAt: Date.now(),
@@ -1086,7 +1106,7 @@ export function useRunActions() {
     await waitForPendingRunPaint();
     try {
       const handle = await runtimeClient.resumeStreamingRun(
-        state.selectedTurnRunId,
+        resumeRunId,
         USER_RESUMED_MESSAGE,
         { approvedActionIds },
       );
@@ -1099,7 +1119,7 @@ export function useRunActions() {
   }
 
   async function cancelRun() {
-    const runId = state.selectedTurnRunId;
+    const runId = getInteractiveRunId(state);
     if (!runId) return;
     dispatch({
       type: "REQUEST_RUN_CANCEL",
@@ -1128,6 +1148,7 @@ export function useRunActions() {
       return false;
     }
     const sessionId = state.activeSessionDetail?.session.sessionId ?? state.selectedSessionId;
+    const resumeRunId = getInteractiveRunId(state);
     const decisionId =
       state.activeSessionDetail?.session.attention?.planDecisionId ??
       getActiveSnapshot(state.runLifecycle)?.attention?.planDecisionId ??
@@ -1163,13 +1184,17 @@ export function useRunActions() {
         dispatch({ type: "SET_TASK_INTENT", taskIntent: currentTaskIntent });
         return true;
       }
-      if (!state.selectedTurnRunId) {
+      if (!resumeRunId) {
+        dispatch({
+          type: "SET_COMMAND_FEEDBACK",
+          feedback: "Plan accepted, but no run is available to resume.",
+        });
         return false;
       }
       flushSync(() => {
         dispatch({
           type: "BEGIN_RUN_RESUME",
-          runId: state.selectedTurnRunId!,
+          runId: resumeRunId,
           approvedActionIds: [],
           resolvedClarificationIds: [],
           planDecisionId: decisionId,
@@ -1179,7 +1204,7 @@ export function useRunActions() {
       });
       await waitForPendingRunPaint();
       const handle = await runtimeClient.resumeStreamingRun(
-        state.selectedTurnRunId,
+        resumeRunId,
         USER_RESUMED_MESSAGE,
         { planDecisionResolutions: [{ decisionId, status }] },
       );
@@ -1206,7 +1231,7 @@ export function useRunActions() {
   }
 
   async function acceptPlanDecisionAndStartImplementation() {
-    await resolvePlanDecision("accepted");
+    return resolvePlanDecision("accepted");
   }
 
   async function forkRun() {

@@ -212,6 +212,48 @@ describe("chat view projected gate trays", () => {
 });
 
 describe("chat view composer plan decision state", () => {
+  it("prefers the fresher active snapshot over a stale same-run cached turn snapshot", () => {
+    const composerGateSnapshot = resolveComposerGateSnapshot({
+      sourceRunId: "run-1",
+      activeSnapshot: {
+        runId: "run-1",
+        updatedAt: 20,
+        status: "succeeded",
+        planDecisions: [{
+          id: "decision-1",
+          runId: "run-1",
+          sessionId: "session-1",
+          status: "declined",
+          createdAt: 1,
+          resolvedAt: 20,
+        }],
+      } as any,
+      turnSnapshots: {
+        "run-1": {
+          runId: "run-1",
+          updatedAt: 10,
+          status: "succeeded",
+          planDecisions: [{
+            id: "decision-1",
+            runId: "run-1",
+            sessionId: "session-1",
+            status: "pending",
+            createdAt: 1,
+          }],
+        } as any,
+      },
+    });
+
+    expect(composerGateSnapshot?.updatedAt).toBe(20);
+    expect(deriveComposerPlanDecisionState({
+      sessionId: "session-1",
+      activeSnapshot: composerGateSnapshot,
+    })).toEqual({
+      pendingPlanDecisionId: undefined,
+      planDecisionPending: false,
+    });
+  });
+
   it("shows plan decision panel from durable planDecision even when attention drifted to idle", () => {
     expect(deriveComposerPlanDecisionState({
       sessionId: "session-1",
@@ -453,6 +495,22 @@ describe("chat view collaboration overlay visibility", () => {
       { id: "running-child", status: "running" },
       { id: "awaiting-child", status: "succeeded", deliveryStatus: "awaiting_pickup" },
       { id: "stalled-child", lifecyclePhase: "stalled" },
+    ]);
+  });
+
+  it("excludes mode-stage child sessions from the floating overlay even when they are active", () => {
+    expect(deriveVisibleCollaborationChildren({
+      childSessions: [
+        childSession("dynamic-child", "running"),
+        {
+          ...childSession("mode-stage-child", "running"),
+          sessionClass: "mode_subagent" as const,
+          authoritySource: "mode_stage" as const,
+          delegationKind: "mode_stage" as const,
+        },
+      ],
+    } as any)).toMatchObject([
+      { id: "dynamic-child", status: "running" },
     ]);
   });
 
@@ -849,6 +907,8 @@ function childSession(
     agentId: id,
     label: id,
     sessionClass: "temporary_spawn" as const,
+    authoritySource: "dynamic_spawn" as const,
+    delegationKind: "dynamic_spawn" as const,
     status,
     lifecyclePhase,
     deliveryStatus,

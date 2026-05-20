@@ -3,6 +3,8 @@ import { initialWorkbenchState, type WorkbenchState } from "./state";
 import {
   buildClarificationSubmissionPrompt,
   buildDesktopRunContext,
+  getInteractiveRunId,
+  getPlanDecisionResumeRunId,
   getSelectedInteractiveSnapshot,
   isDisposableEmptySession,
   shouldSelectFallbackAfterProjectArchive,
@@ -213,6 +215,85 @@ describe("desktop run actions", () => {
     });
 
     expect(getSelectedInteractiveSnapshot(state)?.runId).toBe("run-clarify");
+  });
+
+  it("derives the accepted plan resume runId from the interactive snapshot even when no turn is selected", () => {
+    const state = stateWithSession({
+      runLifecycle: {
+        stage: "settled",
+        runId: "run-plan",
+        sessionId: "session-empty",
+        prompt: "Plan the work",
+        createdAt: 1_714_000_000_001,
+        snapshot: {
+          runId: "run-plan",
+          sessionId: "session-empty",
+          status: "succeeded",
+          input: { prompt: "Plan the work" },
+          planDecisions: [{
+            id: "decision-1",
+            runId: "run-plan",
+            sessionId: "session-empty",
+            status: "pending",
+            createdAt: 1_714_000_000_002,
+          }],
+          updatedAt: 1_714_000_000_002,
+        } as OraStateSnapshot,
+      },
+      selectedTurnRunId: undefined,
+    });
+
+    expect(getPlanDecisionResumeRunId(state)).toBe("run-plan");
+    expect(getInteractiveRunId(state)).toBe("run-plan");
+  });
+
+  it("falls back to the session attention sourceRunId when accepted plan resume lacks snapshots", () => {
+    const state = stateWithSession({
+      selectedTurnRunId: undefined,
+      activeSessionDetail: {
+        session: {
+          ...sessionSummary("session-empty"),
+          attention: {
+            kind: "needs_plan_decision",
+            blocking: true,
+            sourceRunId: "run-plan",
+            reason: "plan_decision_required",
+            planDecisionId: "decision-1",
+            pendingActionIds: [],
+            pendingToolCallIds: [],
+            pendingClarificationIds: [],
+          },
+        } as OraSessionSummary & { attention: NonNullable<OraSessionSummary["attention"]> },
+        turns: [],
+        transcript: [],
+        latestSnapshot: undefined,
+      },
+    });
+
+    expect(getPlanDecisionResumeRunId(state)).toBe("run-plan");
+    expect(getInteractiveRunId(state)).toBe("run-plan");
+  });
+
+  it("uses the latest interactive snapshot runId for clarification and approval style resumes", () => {
+    const latestSnapshot = {
+      runId: "run-gate",
+      sessionId: "session-empty",
+      status: "interrupted",
+      input: { prompt: "Need gate resolution" },
+      updatedAt: 3,
+    } as unknown as OraStateSnapshot;
+
+    const state = stateWithSession({
+      selectedTurnRunId: undefined,
+      activeSessionDetail: {
+        session: sessionSummary("session-empty"),
+        turns: [],
+        transcript: [],
+        latestSnapshot,
+      },
+    });
+
+    expect(getInteractiveRunId(state)).toBe("run-gate");
   });
 
   it("includes attached local files in run context", () => {

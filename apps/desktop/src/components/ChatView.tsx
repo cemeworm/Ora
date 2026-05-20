@@ -186,8 +186,14 @@ export function resolveComposerGateSnapshot({
   turnSnapshots: Record<string, OraStateSnapshot | undefined>;
   sourceRunId?: string;
 }) {
-  if (sourceRunId && turnSnapshots[sourceRunId]) {
-    return turnSnapshots[sourceRunId];
+  const sourceSnapshot = sourceRunId ? turnSnapshots[sourceRunId] : undefined;
+  if (sourceSnapshot && activeSnapshot?.runId === sourceSnapshot.runId) {
+    return (activeSnapshot.updatedAt ?? 0) >= (sourceSnapshot.updatedAt ?? 0)
+      ? activeSnapshot
+      : sourceSnapshot;
+  }
+  if (sourceSnapshot) {
+    return sourceSnapshot;
   }
   return activeSnapshot;
 }
@@ -268,7 +274,9 @@ export function deriveChildReplaySelection({
 export function deriveVisibleCollaborationChildren(
   snapshot?: Pick<OraStateSnapshot, "childSessions">,
 ): NonNullable<OraStateSnapshot["childSessions"]> {
-  return (snapshot?.childSessions ?? []).filter((child) => isOverlayChildActive(child));
+  return (snapshot?.childSessions ?? []).filter((child) =>
+    isDynamicSpawnOverlayChild(child) && isOverlayChildActive(child)
+  );
 }
 
 export function shouldShowCollaborationOverlay(
@@ -312,6 +320,17 @@ function isOverlayChildActive(
     lifecyclePhase === "produced_output" ||
     lifecyclePhase === "awaiting_pickup" ||
     lifecyclePhase === "stalled";
+}
+
+function isDynamicSpawnOverlayChild(
+  child: NonNullable<OraStateSnapshot["childSessions"]>[number],
+): boolean {
+  if (child.authoritySource === "dynamic_spawn" || child.delegationKind === "dynamic_spawn") {
+    return true;
+  }
+  return !child.authoritySource &&
+    !child.delegationKind &&
+    child.sessionClass === "temporary_spawn";
 }
 
 function deriveOverlayReplayChildSnapshot(
