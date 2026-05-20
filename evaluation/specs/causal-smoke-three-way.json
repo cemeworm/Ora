@@ -63,6 +63,9 @@
   ],
   "metadata": {
     "retrofitCausalDecisions": true,
-    "description": "Three-way smoke test: record_only vs advisory vs enforcing on 3 cases."
+    "description": "Three-way smoke test: record_only vs advisory vs enforcing on 3 cases.",
+    "evaluationFamily": "causal",
+    "judgeRubricTemplate": "causal_outcome_v1",
+    "judgePassThreshold": 0.7
   }
 }

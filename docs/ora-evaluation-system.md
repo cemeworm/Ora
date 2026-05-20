@@ -197,7 +197,7 @@ causal 评估现在同时看结果、过程和成本三层信号：
 | 类别 | 指标 | 含义 |
 | --- | --- | --- |
 | 结果 | `task_success_rate` | 任务是否按 success criteria 真正完成 |
-| 结果 | `llm_judge_score` | 最终答案质量评分 |
+| 结果 | `llm_judge_score` | 最终答案质量评分；必须带 provenance（`explicit_llm_judge` / `auto_llm_judge` / `heuristic_proxy`） |
 | 结果 | `counterfactual_lift` | 干预是否带来可观察的结果提升 |
 | 过程 | `effective_intervention` | 干预是否起到了正确作用 |
 | 过程 | `intent_resolution` | 是否理解并完成了用户真实意图 |
@@ -217,6 +217,19 @@ causal 评估现在同时看结果、过程和成本三层信号：
    过度操作、明显的 token / latency / tool cost 增长会被当成 penalty。
 
 因此 Net Lift 现在更像“结果优先的综合净收益”，而不是一条固定权重永不变化的线性打分公式。
+
+### 5.3 `llm_judge_score` provenance
+
+`llm_judge_score` 不再默认等同于“真实 LLM 裁判分”。当前口径要求它显式记录来源：
+
+- `explicit_llm_judge`
+  - spec 显式声明了 `kind: "llm_judge"` evaluator，并成功返回评分。
+- `auto_llm_judge`
+  - spec 没有手写 evaluator，但请求了 `llm_judge_score`，runner 根据 judge config 自动合成了 judge evaluator 并成功评分。
+- `heuristic_proxy`
+  - 当前没有可用 judge，或 judge 调用失败，metric 回退到 heuristic proxy；报告必须把它视为代理信号，而不是把它表述成真实 judge。
+
+因此在阅读 compare/report 时，`llm_judge_score` 要同时看数值和 provenance；只有前两者才能当作真正的 judge outcome 信号。
 
 ## 6. Verdict：A/B 与 Three-way 判定
 

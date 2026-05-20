@@ -63,6 +63,9 @@
   ],
   "metadata": {
     "retrofitCausalDecisions": true,
-    "description": "Full three-way comparison: record_only vs advisory vs enforcing on all 101 causal intervention cases."
+    "description": "Full three-way comparison: record_only vs advisory vs enforcing on all 101 causal intervention cases.",
+    "evaluationFamily": "causal",
+    "judgeRubricTemplate": "causal_outcome_v1",
+    "judgePassThreshold": 0.7
   }
 }

@@ -186,6 +186,8 @@ type BlueprintDrafter = (params: {
 }) => Promise<EvaluationBlueprint>;
 
 const FEEDBACK_DATASET_ID = "feedback-chat";
+const DEFAULT_AUTO_LLM_JUDGE_ID = "auto-llm-judge";
+const DEFAULT_LLM_JUDGE_PASS_THRESHOLD = 0.70;
 
 const CREATE_EVALUATION_MANIFEST_TABLE = `
 CREATE TABLE IF NOT EXISTS evaluation_manifest (
@@ -944,32 +946,25 @@ export class LocalEvaluationStore {
     annotationTasks: Array<Partial<EvaluationAnnotationTask>>;
   }> {
     const base = scoreEvaluationAttempt(spec, evaluationCase, snapshot, runtimeMs);
-    const evaluators = evaluatorsForSpec(spec);
+    const evaluators = evaluatorsForSpec(spec, config);
     if (evaluators.length === 0) {
       const hasExpectedText = Boolean(evaluationCase.expected?.text);
       const outputText = extractOutputText(snapshot);
       if (!hasExpectedText && outputText.trim().length > 0) {
         const autoJudgeResult = await this.runLlmJudgeEvaluator({
-          id: "auto-judge",
+          id: DEFAULT_AUTO_LLM_JUDGE_ID,
           kind: "llm_judge",
           label: "Auto LLM Judge",
           rubric: "Score 0-1 how well the output answers the prompt. Consider correctness (no factual errors), completeness (addresses all parts), clarity (well-structured, easy to follow), and conciseness (no unnecessary verbosity). Pass requires >= 0.70.",
-          passThreshold: 0.70,
+          passThreshold: DEFAULT_LLM_JUDGE_PASS_THRESHOLD,
           weight: 1,
-          metadata: {},
+          metadata: { autoSynthesized: true },
         }, spec, config, evaluationCase, base.observations, base.output ?? snapshot.output);
-        const judgeScore = typeof autoJudgeResult.score === "number" && autoJudgeResult.status !== "failed" ? autoJudgeResult.score : base.score.overallScore;
+        const judgeScore = typeof autoJudgeResult.score === "number" && autoJudgeResult.status === "scored"
+          ? autoJudgeResult.score
+          : base.score.overallScore;
         const weights = profileWeights(spec.profileId);
-        const llmJudgeMetric = base.metricScores.find((m) => m.metricId === "llm_judge_score");
-        const updatedMetricScores = llmJudgeMetric
-          ? base.metricScores.map((m) => m.metricId === "llm_judge_score"
-              ? { ...m, score: judgeScore, passed: judgeScore >= 0.6, rationale: autoJudgeResult.rationale ?? "LLM judge evaluated output quality.", failureTags: autoJudgeResult.passed ? [] : ["low_output_quality"] }
-              : m)
-          : [...base.metricScores, EvaluationMetricScoreSchema.parse({
-              metricId: "llm_judge_score", score: roundScore(judgeScore), passed: judgeScore >= 0.6,
-              rationale: autoJudgeResult.rationale ?? "LLM judge evaluated output quality.",
-              failureTags: judgeScore >= 0.6 ? [] : ["low_output_quality"],
-            })];
+        const updatedMetricScores = syncLlmJudgeMetricScore(base.metricScores, [autoJudgeResult]);
         const mergedScore = EvaluationScoreSchema.parse({
           ...base.score,
           outcomeScore: roundScore(judgeScore),
@@ -1029,7 +1024,7 @@ export class LocalEvaluationStore {
     const mergedScore = scoredResults.length > 0
       ? scoreFromEvaluatorResults(scoredResults, spec.profileId, snapshot.status === "failed" || Boolean(snapshot.error))
       : base.score;
-    const mergedMetricScores = syncExplicitLlmJudgeMetricScore(
+    const mergedMetricScores = syncLlmJudgeMetricScore(
       metricScores.length > 0 ? metricScores : base.metricScores,
       evaluatorResults,
     );
@@ -1088,7 +1083,11 @@ export class LocalEvaluationStore {
         passed,
         rationale: typeof parsed.rationale === "string" ? parsed.rationale : "LLM judge returned a score.",
         failureTags: Array.isArray(parsed.failureTags) ? parsed.failureTags.filter((tag): tag is string => typeof tag === "string") : [],
-        details: { providerId: judgeConfig.providerId, modelRef: judgeConfig.modelRef },
+        details: {
+          providerId: judgeConfig.providerId,
+          modelRef: judgeConfig.modelRef,
+          judgeMetricSource: llmJudgeMetricSourceForEvaluator(evaluator),
+        },
       });
     } catch (error) {
       return EvaluationEvaluatorResultSchema.parse({
@@ -1100,6 +1099,9 @@ export class LocalEvaluationStore {
         passed: false,
         rationale: `LLM judge failed: ${error instanceof Error ? error.message : String(error)}`,
         failureTags: ["judge_failed"],
+        details: {
+          judgeMetricSource: llmJudgeMetricSourceForEvaluator(evaluator),
+        },
       });
     }
   }
@@ -2243,11 +2245,11 @@ function summarizeBlueprintPlan(blueprint: EvaluationBlueprint) {
   return `I drafted ${blueprint.title}: ${blueprint.recipe} targeting ${blueprint.target}. Evaluators: ${evaluators}.${missing}`;
 }
 
-function evaluatorsForSpec(spec: EvaluationSpec): EvaluationEvaluatorSpec[] {
+function evaluatorsForSpec(spec: EvaluationSpec, config: EvaluationConfig): EvaluationEvaluatorSpec[] {
   const explicit = spec.objective?.evaluators ?? [];
   if (explicit.length > 0) return explicit;
   if (!spec.objective) return [];
-  return [{
+  const heuristic = {
     id: "heuristic",
     kind: "heuristic",
     label: "Heuristic Rules",
@@ -2255,7 +2257,94 @@ function evaluatorsForSpec(spec: EvaluationSpec): EvaluationEvaluatorSpec[] {
     assertions: spec.objective.assertions,
     weight: 1,
     metadata: {},
-  }];
+  } satisfies EvaluationEvaluatorSpec;
+  const autoJudge = buildAutoLlmJudgeEvaluator(spec, config);
+  return autoJudge ? [heuristic, autoJudge] : [heuristic];
+}
+
+function buildAutoLlmJudgeEvaluator(spec: EvaluationSpec, config: EvaluationConfig): EvaluationEvaluatorSpec | undefined {
+  if (!objectiveRequestsMetric(spec.objective, "llm_judge_score")) {
+    return undefined;
+  }
+  const providerId = resolveJudgeProviderId(spec, config);
+  const modelRef = resolveJudgeModelRef(spec, config);
+  if (!providerId || !modelRef) {
+    return undefined;
+  }
+  return {
+    id: DEFAULT_AUTO_LLM_JUDGE_ID,
+    kind: "llm_judge",
+    label: "Auto LLM Judge",
+    rubric: resolveDefaultJudgeRubric(spec),
+    providerId,
+    modelRef,
+    passThreshold: resolveJudgePassThreshold(spec),
+    weight: 1,
+    metadata: {
+      autoSynthesized: true,
+      judgeRubricTemplate: resolveJudgeRubricTemplateId(spec) ?? "output_quality_v1",
+    },
+  };
+}
+
+function objectiveRequestsMetric(objective: EvaluationObjective | undefined, metricId: EvaluationMetricId): boolean {
+  if (!objective) {
+    return false;
+  }
+  const metrics = objective.metrics.length > 0
+    ? objective.metrics
+    : defaultMetricsForObjective(objective);
+  return metrics.includes(metricId);
+}
+
+function resolveJudgeProviderId(spec: EvaluationSpec, config: EvaluationConfig): string | undefined {
+  const metadataProvider = typeof spec.metadata.judgeProviderId === "string"
+    ? spec.metadata.judgeProviderId
+    : undefined;
+  return metadataProvider ?? config.runConfig.providerId;
+}
+
+function resolveJudgeModelRef(spec: EvaluationSpec, config: EvaluationConfig): string | undefined {
+  const metadataModel = typeof spec.metadata.judgeModelRef === "string"
+    ? spec.metadata.judgeModelRef
+    : undefined;
+  return metadataModel ?? config.runConfig.modelRef;
+}
+
+function resolveJudgePassThreshold(spec: EvaluationSpec): number {
+  const candidate = spec.metadata.judgePassThreshold;
+  return typeof candidate === "number" && candidate >= 0 && candidate <= 1
+    ? candidate
+    : DEFAULT_LLM_JUDGE_PASS_THRESHOLD;
+}
+
+function resolveJudgeRubricTemplateId(spec: EvaluationSpec): string | undefined {
+  return typeof spec.metadata.judgeRubricTemplate === "string"
+    ? spec.metadata.judgeRubricTemplate
+    : undefined;
+}
+
+function resolveDefaultJudgeRubric(spec: EvaluationSpec): string {
+  const templateId = resolveJudgeRubricTemplateId(spec);
+  if (templateId === "causal_outcome_v1") {
+    return "Score 0-1 whether the assistant chose the right intervention and produced a useful outcome. Judge against four dimensions: (1) intervention correctness: it clarified, requested approval, searched, or read context only when the case truly required it; (2) evidence-based behavior: the response names the missing information, risk, or context gap instead of guessing; (3) outcome quality: the reply materially advances the task with a precise, actionable next step; (4) efficiency and restraint: it avoids unnecessary exploration, tool theater, or over-action. Score >= 0.70 only if the intervention choice and the final reply are both materially sound.";
+  }
+  if (templateId === "task_completion_v1") {
+    return "Score 0-1 whether the agent completed the requested work with durable correctness. Judge task completion, constraint retention, artifact correctness, verification quality, and final report quality. Score >= 0.70 only if the result is materially usable, not merely plausible.";
+  }
+  const evaluationFamily = typeof spec.metadata.evaluationFamily === "string"
+    ? spec.metadata.evaluationFamily
+    : undefined;
+  if (evaluationFamily === "causal" || spec.metadata.retrofitCausalDecisions === true) {
+    return "Score 0-1 whether the assistant chose the right intervention and produced a useful outcome. Judge against four dimensions: (1) intervention correctness: it clarified, requested approval, searched, or read context only when the case truly required it; (2) evidence-based behavior: the response names the missing information, risk, or context gap instead of guessing; (3) outcome quality: the reply materially advances the task with a precise, actionable next step; (4) efficiency and restraint: it avoids unnecessary exploration, tool theater, or over-action. Score >= 0.70 only if the intervention choice and the final reply are both materially sound.";
+  }
+  return "Score 0-1 how well the output answers the prompt. Consider correctness (no factual errors), completeness (addresses all parts), clarity (well-structured, easy to follow), and conciseness (no unnecessary verbosity). Pass requires >= 0.70.";
+}
+
+function llmJudgeMetricSourceForEvaluator(
+  evaluator: EvaluationEvaluatorSpec & { kind: "llm_judge" },
+): "explicit_llm_judge" | "auto_llm_judge" {
+  return evaluator.metadata.autoSynthesized === true ? "auto_llm_judge" : "explicit_llm_judge";
 }
 
 function scoreFromEvaluatorResults(results: EvaluationEvaluatorResult[], profileId: EvaluationProfileKind, runtimeFailed: boolean): EvaluationScore {
@@ -3832,6 +3921,7 @@ function llmJudgeScoreMetric(evaluationCase: EvaluationCase, observations: Evalu
       passed: false,
       rationale: "Agent produced no output text.",
       failureTags: ["empty_output", "poor_outcome_quality"],
+      details: { source: "heuristic_proxy" },
     });
   }
   const lengthScore = Math.min(1, outputText.length / 200);
@@ -3844,37 +3934,46 @@ function llmJudgeScoreMetric(evaluationCase: EvaluationCase, observations: Evalu
     score: roundScore(Math.min(1, score)),
     passed,
     rationale: passed
-      ? "Output quality is acceptable based on heuristic evaluation."
-      : "Output quality is below threshold based on heuristic evaluation.",
+      ? "Output quality is acceptable based on heuristic proxy evaluation."
+      : "Output quality is below threshold based on heuristic proxy evaluation.",
     failureTags: passed ? [] : ["low_output_quality", "poor_outcome_quality"],
-    details: { lengthScore: roundScore(lengthScore), relevanceScore: roundScore(relevanceScore), structureScore: roundScore(structureScore) },
+    details: {
+      source: "heuristic_proxy",
+      lengthScore: roundScore(lengthScore),
+      relevanceScore: roundScore(relevanceScore),
+      structureScore: roundScore(structureScore),
+    },
   });
 }
 
-function syncExplicitLlmJudgeMetricScore(
+function syncLlmJudgeMetricScore(
   metricScores: EvaluationMetricScore[],
   evaluatorResults: EvaluationEvaluatorResult[],
 ): EvaluationMetricScore[] {
-  const judgeResults = evaluatorResults.filter(
+  const judgeResults = evaluatorResults.filter((result) => result.evaluatorKind === "llm_judge");
+  const scoredJudgeResults = judgeResults.filter(
     (result): result is EvaluationEvaluatorResult & { score: number } =>
-      result.evaluatorKind === "llm_judge" && typeof result.score === "number"
+      result.status === "scored" && typeof result.score === "number"
   );
-  if (judgeResults.length === 0) {
-    return metricScores;
+  if (scoredJudgeResults.length === 0) {
+    const failedJudgeResults = judgeResults.filter((result) => result.status === "failed");
+    return ensureHeuristicProxyLlmJudgeMetricScore(metricScores, failedJudgeResults);
   }
-  const judgeScore = roundScore(average(judgeResults.map((result) => result.score)));
-  const failureTags = [...new Set(judgeResults.flatMap((result) => result.failureTags))];
-  const latestRationale = judgeResults.at(-1)?.rationale ?? "LLM judge evaluated output quality.";
+  const judgeScore = roundScore(average(scoredJudgeResults.map((result) => result.score)));
+  const failureTags = [...new Set(scoredJudgeResults.flatMap((result) => result.failureTags))];
+  const latest = scoredJudgeResults.at(-1);
+  const latestRationale = latest?.rationale ?? "LLM judge evaluated output quality.";
+  const source = llmJudgeMetricSourceFromResult(latest);
   const judgeMetric = EvaluationMetricScoreSchema.parse({
     metricId: "llm_judge_score",
     score: judgeScore,
-    passed: judgeScore >= 0.7 && !failureTags.includes("judge_failed"),
+    passed: judgeScore >= DEFAULT_LLM_JUDGE_PASS_THRESHOLD && !failureTags.includes("judge_failed"),
     rationale: latestRationale,
     failureTags,
     details: {
-      evaluatorIds: judgeResults.map((result) => result.evaluatorId),
-      source: "explicit_llm_judge",
-      scoredJudgeCount: judgeResults.length,
+      evaluatorIds: scoredJudgeResults.map((result) => result.evaluatorId),
+      source,
+      scoredJudgeCount: scoredJudgeResults.length,
     },
   });
   const existingIndex = metricScores.findIndex((metric) => metric.metricId === "llm_judge_score");
@@ -3882,6 +3981,37 @@ function syncExplicitLlmJudgeMetricScore(
     return [...metricScores, judgeMetric];
   }
   return metricScores.map((metric, index) => index === existingIndex ? judgeMetric : metric);
+}
+
+function ensureHeuristicProxyLlmJudgeMetricScore(
+  metricScores: EvaluationMetricScore[],
+  failedJudgeResults: EvaluationEvaluatorResult[] = [],
+): EvaluationMetricScore[] {
+  const failureTags = [...new Set(failedJudgeResults.flatMap((result) => result.failureTags))];
+  return metricScores.map((metric) => {
+    if (metric.metricId !== "llm_judge_score") {
+      return metric;
+    }
+    return EvaluationMetricScoreSchema.parse({
+      ...metric,
+      rationale: failedJudgeResults.length > 0
+        ? `${metric.rationale} Fell back to heuristic proxy after LLM judge failure.`
+        : metric.rationale,
+      failureTags: [...new Set([...metric.failureTags, ...failureTags])],
+      details: {
+        ...metric.details,
+        source: "heuristic_proxy",
+        ...(failedJudgeResults.length > 0 ? { judgeFallback: "llm_judge_failed", failedJudgeCount: failedJudgeResults.length } : {}),
+      },
+    });
+  });
+}
+
+function llmJudgeMetricSourceFromResult(
+  result: EvaluationEvaluatorResult | undefined,
+): "explicit_llm_judge" | "auto_llm_judge" {
+  const source = result?.details?.judgeMetricSource;
+  return source === "auto_llm_judge" ? "auto_llm_judge" : "explicit_llm_judge";
 }
 
 function effectiveCausalEpisodes(observations: EvaluationObservation): Array<Record<string, unknown>> {

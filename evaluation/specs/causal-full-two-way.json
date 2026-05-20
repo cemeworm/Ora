@@ -47,6 +47,9 @@
   ],
   "metadata": {
     "retrofitCausalDecisions": true,
-    "description": "Two-way: record_only vs enforcing on 101 cases."
+    "description": "Two-way: record_only vs enforcing on 101 cases.",
+    "evaluationFamily": "causal",
+    "judgeRubricTemplate": "causal_outcome_v1",
+    "judgePassThreshold": 0.7
   }
 }

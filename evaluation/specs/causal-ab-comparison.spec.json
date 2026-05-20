@@ -63,6 +63,9 @@
   ],
   "metadata": {
     "retrofitCausalDecisions": true,
-    "description": "Three-way comparison spec for causal policy router at three intervention levels: record_only (baseline) vs advisory (gate approvals/stops) vs enforcing (block all non-safe tools). Each config runs the same 101 cases with different causalInterventionLevel. Use 'ora-runtime eval compare-configs' to generate the multi-way comparison report."
+    "description": "Three-way comparison spec for causal policy router at three intervention levels: record_only (baseline) vs advisory (gate approvals/stops) vs enforcing (block all non-safe tools). Each config runs the same 101 cases with different causalInterventionLevel. Use 'ora-runtime eval compare-configs' to generate the multi-way comparison report.",
+    "evaluationFamily": "causal",
+    "judgeRubricTemplate": "causal_outcome_v1",
+    "judgePassThreshold": 0.7
   }
 }
