@@ -76,6 +76,31 @@ describe("resolveModeSelection delegation intent", () => {
     });
   });
 
+  it("uses single_agent mode capability defaults when explicit tool ids are omitted", async () => {
+    globalThis.fetch = (() => {
+      throw new Error("Manual single_agent mode selection should not call the provider.");
+    }) as typeof fetch;
+
+    const { fullConfig, modeSpec } = await resolveModeSelection(
+      baseConfig(),
+      {
+        prompt: "请直接修改项目里的说明文件。",
+        context: {},
+        createdAt: Date.now(),
+      },
+      undefined,
+      createDeps(tempDir),
+    );
+
+    expect(modeSpec.id).toBe(SINGLE_AGENT_MODE_ID);
+    expect(fullConfig.toolIds).toEqual(expect.arrayContaining(modeSpec.capabilityFlags.toolIds));
+    expect(fullConfig.toolIds).toContain("file.write");
+    expect(fullConfig.toolIds).toContain("file.apply_patch");
+    expect(fullConfig.toolIds).toContain("shell.execute");
+    expect(fullConfig.toolIds).toContain("agent.spawn");
+    expect(fullConfig.toolIds).not.toContain("skills.create");
+  });
+
   it("records rule-based none intent when the user explicitly asks to avoid sub-agents", async () => {
     globalThis.fetch = (() => {
       throw new Error("Explicit no-delegation requests should be handled without provider classification.");

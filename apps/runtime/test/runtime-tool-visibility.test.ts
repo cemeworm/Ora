@@ -61,7 +61,7 @@ function makeMode(params: {
 }
 
 describe("runtime tool visibility", () => {
-  it("treats legacy full-surface profile tool ids as resolver defaults for the root agent", () => {
+  it("gives single_agent implement root a writable builder-capable surface", () => {
     const mode = makeMode({
       id: SINGLE_AGENT_MODE_ID,
       nodes: [
@@ -89,9 +89,41 @@ describe("runtime tool visibility", () => {
     expect(resolution.decisionSource).toBe("resolver_default");
     expect(resolution.visibleToolIds).toContain("repo.explore");
     expect(resolution.visibleToolIds).toContain("file.read");
+    expect(resolution.visibleToolIds).toContain("file.apply_patch");
+    expect(resolution.visibleToolIds).toContain("shell.execute");
     expect(resolution.visibleToolIds).toContain("agent.spawn");
-    expect(resolution.visibleToolIds).not.toContain("shell.execute");
     expect(resolution.visibleToolIds).not.toContain("skills.create");
+  });
+
+  it("keeps single_agent chat root on the narrow default surface", () => {
+    const mode = makeMode({
+      id: SINGLE_AGENT_MODE_ID,
+      nodes: [
+        {
+          id: "respond",
+          template: "respond",
+          label: "Respond",
+          ownerAgentId: ORA_ROOT_AGENT_ID,
+          config: {},
+        },
+      ],
+    });
+
+    const resolution = resolveVisibleToolsForAgent({
+      availableToolIds: DEFAULT_AGENT_MODE_TOOL_IDS,
+      toolDescriptors: MVP_TOOLS,
+      modeSpec: mode,
+      agentId: ORA_ROOT_AGENT_ID,
+      profileToolIds: mode.profiles[0]!.toolIds,
+      nodeId: "respond",
+      taskIntent: "chat",
+    });
+
+    expect(resolution.decisionSource).toBe("resolver_default");
+    expect(resolution.visibleToolIds).toContain("repo.explore");
+    expect(resolution.visibleToolIds).toContain("agent.spawn");
+    expect(resolution.visibleToolIds).not.toContain("file.apply_patch");
+    expect(resolution.visibleToolIds).not.toContain("shell.execute");
   });
 
   it("uses builder_write for code development build stages", () => {

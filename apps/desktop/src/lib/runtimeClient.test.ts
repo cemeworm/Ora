@@ -297,6 +297,21 @@ describe("desktop runtime client agent catalog", () => {
     expect(resetCatalog.systemAgents.find((agent) => agent.id === "builder")?.overridden).toBe(false);
   });
 
+  it("shows single_agent implement root tools in browser fallback agent catalog", async () => {
+    const client = createRuntimeClient();
+    const catalog = await client.agentCatalog();
+    const ora = catalog.systemAgents.find((agent) => agent.id === "ora");
+
+    expect(ora).toBeDefined();
+    expect(ora?.toolIds).toEqual(expect.arrayContaining([
+      "file.write",
+      "file.apply_patch",
+      "shell.execute",
+      "agent.spawn",
+    ]));
+    expect(ora?.toolIds).not.toContain("skills.create");
+  });
+
   it("mirrors evaluation blueprint lifecycle and compile in browser fallback", async () => {
     const client = createRuntimeClient();
     const dataset = await client.importEvaluationDataset({

@@ -175,6 +175,21 @@ describe("custom agent runtime behavior", () => {
     })).toThrow(/built-in system agent/);
   });
 
+  it("shows single_agent implement root tools in the runtime agent catalog", () => {
+    const store = new LocalRunStore({ dataDir: freshStoreDir(), clock });
+    const catalog = AgentCatalogResultSchema.parse(store.agentCatalog());
+    const ora = catalog.systemAgents.find((agent) => agent.id === ORA_ROOT_AGENT_ID);
+
+    expect(ora).toBeDefined();
+    expect(ora?.toolIds).toEqual(expect.arrayContaining([
+      "file.write",
+      "file.apply_patch",
+      "shell.execute",
+      "agent.spawn",
+    ]));
+    expect(ora?.toolIds).not.toContain("skills.create");
+  });
+
   it("maps legacy built-in override ids onto canonical system agents", async () => {
     const dir = freshStoreDir();
     const overrideDir = path.join(dir, "agent-overrides");

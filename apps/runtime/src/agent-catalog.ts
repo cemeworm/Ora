@@ -235,7 +235,7 @@ function rootAgentCatalogItem(systemAgentOverrideStore: SystemAgentOverrideFileS
     role: override?.role ?? role,
     ...(explicitSystemAgentModelRef(override?.modelRef) ? { modelRef: explicitSystemAgentModelRef(override?.modelRef) } : {}),
     toolPolicyId: "root.default_policy",
-    toolIds: override?.toolIds ?? visibleToolIdsForPreset("root_default", DEFAULT_AGENT_MODE_TOOL_IDS),
+    toolIds: override?.toolIds ?? visibleToolIdsForPreset("single_agent_implement", DEFAULT_AGENT_MODE_TOOL_IDS),
     skillIds: override?.skillIds ?? [],
     memoryNamespaces: ["session", "project"],
     soul: override?.soul ?? "",

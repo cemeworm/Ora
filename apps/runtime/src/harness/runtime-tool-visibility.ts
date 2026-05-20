@@ -8,6 +8,7 @@ import {
   type AgentToolBundleId,
   isLegacyDefaultAgentModeToolIds,
   ORA_ROOT_AGENT_ID,
+  SINGLE_AGENT_MODE_ID,
   TOOL_VISIBILITY_PRESETS,
   resolveToolVisibility,
   REVIEW_CRITIQUE_MODE_ID,
@@ -39,8 +40,16 @@ const CHILD_TOOL_BUNDLE_ALTERNATIVES: Partial<Record<AgentToolBundleId, AgentToo
   repo_forensics: "review_readonly",
 };
 
-function presetForNode(modeSpec: ModeSpec, agentId: string, node: ModeNodeSpec | undefined): ToolVisibilityPresetId {
+function presetForNode(
+  modeSpec: ModeSpec,
+  agentId: string,
+  node: ModeNodeSpec | undefined,
+  taskIntent?: "chat" | "plan" | "implement",
+): ToolVisibilityPresetId {
   if (agentId === ORA_ROOT_AGENT_ID) {
+    if (modeSpec.id === SINGLE_AGENT_MODE_ID && taskIntent === "implement") {
+      return "single_agent_implement";
+    }
     return modeSpec.id === CODE_DEVELOPMENT_MODE_ID ? "coding_root" : "root_default";
   }
   if (modeSpec.id === DEEP_RESEARCH_MODE_ID) {
@@ -114,7 +123,7 @@ export function resolveVisibleToolsForAgent(params: {
   return resolveToolVisibility({
     availableToolIds: params.availableToolIds,
     toolDescriptors: params.toolDescriptors,
-    presetId: presetForNode(params.modeSpec, params.agentId, node),
+    presetId: presetForNode(params.modeSpec, params.agentId, node, params.taskIntent),
     taskIntent: params.taskIntent,
     hardBlockedToolIds,
     defaultDecisionSource: "resolver_default",

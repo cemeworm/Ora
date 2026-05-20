@@ -154,6 +154,7 @@ export async function resolveModeSelection(
         : modeSpec.capabilityFlags.approvalMode);
   const skillIds = Array.isArray(config?.skillIds) ? config.skillIds : modeSpec.capabilityFlags.skillIds;
   const modeDisablesDefaultWebTools = DEFAULT_WEB_TOOL_IDS.some((toolId) => !modeSpec.capabilityFlags.toolIds.includes(toolId));
+  const modeEnablesDefaultSkillTools = DEFAULT_SKILL_TOOL_IDS.every((toolId) => modeSpec.capabilityFlags.toolIds.includes(toolId));
   const defaultWebToolsDisabled = parsed.metadata.disableDefaultWebTools === true || modeDisablesDefaultWebTools;
   const configuredToolIds = Array.isArray(config?.toolIds)
     ? (parsed.modeSelection === "auto"
@@ -165,8 +166,8 @@ export async function resolveModeSelection(
     ? configuredToolIds.filter((toolId) => !DEFAULT_WEB_TOOL_IDS.includes(toolId as typeof DEFAULT_WEB_TOOL_IDS[number]))
     : configuredToolIds;
   const toolIds = defaultWebToolsDisabled
-    ? [...new Set([...webDisabledToolIds, ...DEFAULT_SKILL_TOOL_IDS])]
-    : withDefaultWebToolIds(configuredToolIds);
+    ? [...new Set([...webDisabledToolIds, ...(modeEnablesDefaultSkillTools ? DEFAULT_SKILL_TOOL_IDS : [])])]
+    : withDefaultWebToolIds(configuredToolIds, { includeSkillTools: modeEnablesDefaultSkillTools });
   const skillWarnings = deps.skillRegistry.warnings(skillIds);
   const skillPromptOverlay = deps.skillRegistry.promptSnippets(skillIds).join("\n\n");
   const baseBudget = parsed.budget ?? modeSpec.defaultBudget ?? DEFAULT_RESOURCE_BUDGETS[modeSpec.family];
