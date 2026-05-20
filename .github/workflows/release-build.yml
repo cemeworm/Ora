@@ -63,138 +63,20 @@ jobs:
           tagName: ${{ github.event.release.tag_name }}
           args: --ci
 
-      - name: Re-sign DMG contents with ad-hoc identity and inject fix-quarantine helper
+      - name: Post-process desktop release assets
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_ID: ${{ github.event.release.id }}
           TAG: ${{ github.event.release.tag_name }}
         run: |
-          set -euo pipefail
-
-          BUNDLE_ROOT="apps/desktop/src-tauri/target"
-          FIX_SCRIPT="apps/desktop/resources/fix-quarantine.command"
-
-          if [ ! -f "$FIX_SCRIPT" ]; then
-            echo "::error::fix-quarantine.command 缺失：$FIX_SCRIPT"
-            exit 1
-          fi
-
-          DMG_COUNT="$(find "$BUNDLE_ROOT" -type f -name "*.dmg" | wc -l | tr -d " ")"
-          if [ "$DMG_COUNT" -eq 0 ]; then
-            echo "::warning::No DMG found under $BUNDLE_ROOT, skipping post-processing."
-            exit 0
-          fi
-
-          WORK_DIR="$(mktemp -d)"
-          echo "Working dir: $WORK_DIR"
-
-          find "$BUNDLE_ROOT" -type f -name "*.dmg" -print0 | while IFS= read -r -d '' DMG; do
-            echo "::group::Post-processing $DMG"
-            BASENAME="$(basename "$DMG")"
-            MOUNT_DIR="$WORK_DIR/mnt-${BASENAME%.dmg}"
-            STAGE_DIR="$WORK_DIR/stage-${BASENAME%.dmg}"
-            REBUILT="$WORK_DIR/$BASENAME"
-            mkdir -p "$MOUNT_DIR" "$STAGE_DIR"
-
-            # 1. 挂载原 dmg（只读）
-            hdiutil attach "$DMG" -readonly -nobrowse -mountpoint "$MOUNT_DIR"
-
-            # 2. 拷贝内容到 stage 目录
-            cp -R "$MOUNT_DIR"/* "$STAGE_DIR"/ || true
-            # 保留隐藏文件（如 .VolumeIcon.icns、.background）
-            find "$MOUNT_DIR" -maxdepth 1 -name ".*" ! -name "." ! -name ".." \
-              -exec cp -R {} "$STAGE_DIR"/ \; || true
-
-            hdiutil detach "$MOUNT_DIR" -quiet
-
-            # 3. 对 .app 执行 ad-hoc 深度签名（deep + force），保证 Apple Silicon 上能运行
-            APP_INSIDE="$(find "$STAGE_DIR" -maxdepth 2 -name "*.app" -type d | head -n1)"
-            if [ -n "$APP_INSIDE" ]; then
-              echo "Re-signing $APP_INSIDE with ad-hoc identity"
-              codesign --force --deep --sign - "$APP_INSIDE"
-              codesign --verify --deep --strict --verbose=2 "$APP_INSIDE" || true
-            fi
-
-            # 4. 注入一键修复脚本
-            cp "$FIX_SCRIPT" "$STAGE_DIR/修复「已损坏」.command"
-            chmod +x "$STAGE_DIR/修复「已损坏」.command"
-
-            # 5. 推断卷标
-            VOLNAME="$(basename "$DMG" .dmg)"
-
-            # 6. 重新打包为压缩 dmg
-            hdiutil create \
-              -volname "$VOLNAME" \
-              -srcfolder "$STAGE_DIR" \
-              -ov -format UDZO \
-              "$REBUILT"
-
-            # 7. 覆盖原文件（tauri-action 已上传旧版，下一步会重新上传）
-            mv "$REBUILT" "$DMG"
-
-            # 8. 重新上传替换 Release 中的 dmg 资产
-            ASSET_NAME="$(basename "$DMG")"
-            echo "Replacing release asset: $ASSET_NAME"
-            OLD_ID="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}/assets" \
-              --jq ".[] | select(.name==\"${ASSET_NAME}\") | .id" | head -n1)"
-            if [ -n "$OLD_ID" ]; then
-              gh api -X DELETE "repos/${GITHUB_REPOSITORY}/releases/assets/${OLD_ID}" || true
-            fi
-            gh release upload "$TAG" "$DMG" --clobber
-            echo "::endgroup::"
-          done
+          chmod +x .github/scripts/desktop-release-postprocess.sh
+          .github/scripts/desktop-release-postprocess.sh
 
       - name: Verify updater release assets
         shell: bash
         env:
           TAG: ${{ github.event.release.tag_name }}
         run: |
-          set -euo pipefail
-
-          LATEST_URL="https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/latest.json"
-          RELEASE_API="https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/latest"
-
-          echo "Checking updater manifest: $LATEST_URL"
-          HTTP_CODE="$(curl -s -L -o latest.json -w '%{http_code}' "$LATEST_URL")"
-          if [ "$HTTP_CODE" != "200" ]; then
-            echo "::error::latest.json is missing or inaccessible (HTTP $HTTP_CODE)"
-            exit 1
-          fi
-
-          python3 - <<'PY'
-          import json
-          import os
-          import sys
-          from pathlib import Path
-
-          tag = os.environ["TAG"].lstrip("v")
-          data = json.loads(Path("latest.json").read_text())
-          version = data.get("version")
-          if version != tag:
-              sys.exit(f"latest.json version mismatch: expected {tag}, got {version!r}")
-
-          platforms = data.get("platforms")
-          if not isinstance(platforms, dict) or not platforms:
-              sys.exit("latest.json platforms map is missing or empty")
-
-          matching_keys = [key for key in platforms if "darwin" in key]
-          if not matching_keys:
-              sys.exit(f"latest.json does not contain a darwin platform entry: {list(platforms)}")
-
-          for key in matching_keys:
-              entry = platforms.get(key) or {}
-              url = entry.get("url")
-              signature = entry.get("signature")
-              if not isinstance(url, str) or not url.strip():
-                  sys.exit(f"platform {key} is missing url")
-              if not isinstance(signature, str) or not signature.strip():
-                  sys.exit(f"platform {key} is missing signature")
-          PY
-
-          echo "Checking latest release asset inventory"
-          curl -s "$RELEASE_API" | jq -e '
-            .assets | map(.name) as $names
-            | ($names | index("latest.json")) != null
-            and (map(select(test("\\.app\\.tar\\.gz$"))) | length) > 0
-          ' > /dev/null
+          chmod +x .github/scripts/verify-updater-assets.sh
+          .github/scripts/verify-updater-assets.sh

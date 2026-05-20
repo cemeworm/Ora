@@ -105,6 +105,7 @@ jobs:
           PY
 
       - uses: tauri-apps/tauri-action@v0
+        id: tauri
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -114,3 +115,21 @@ jobs:
           releaseId: ${{ needs.release-please.outputs.release_id }}
           tagName: ${{ needs.release-please.outputs.tag_name }}
           args: --ci
+
+      - name: Post-process desktop release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ needs.release-please.outputs.release_id }}
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+        run: |
+          chmod +x .github/scripts/desktop-release-postprocess.sh
+          .github/scripts/desktop-release-postprocess.sh
+
+      - name: Verify updater release assets
+        shell: bash
+        env:
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+        run: |
+          chmod +x .github/scripts/verify-updater-assets.sh
+          .github/scripts/verify-updater-assets.sh

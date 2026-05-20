@@ -22,6 +22,15 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
 
+      - name: Resolve release id
+        id: release-info
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ inputs.tag_name }}
+        run: |
+          release_id="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG_NAME}" --jq '.id')"
+          echo "release_id=${release_id}" >> "$GITHUB_OUTPUT"
+
       - uses: pnpm/action-setup@v4
 
       - uses: actions/setup-node@v4
@@ -58,11 +67,31 @@ jobs:
           PY
 
       - uses: tauri-apps/tauri-action@v0
+        id: tauri
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: apps/desktop
+          releaseId: ${{ steps.release-info.outputs.release_id }}
           tagName: ${{ inputs.tag_name }}
           args: --ci
+
+      - name: Post-process desktop release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ steps.release-info.outputs.release_id }}
+          TAG: ${{ inputs.tag_name }}
+        run: |
+          chmod +x .github/scripts/desktop-release-postprocess.sh
+          .github/scripts/desktop-release-postprocess.sh
+
+      - name: Verify updater release assets
+        shell: bash
+        env:
+          TAG: ${{ inputs.tag_name }}
+        run: |
+          chmod +x .github/scripts/verify-updater-assets.sh
+          .github/scripts/verify-updater-assets.sh
