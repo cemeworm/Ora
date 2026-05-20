@@ -4367,6 +4367,105 @@ describe("desktop session view model", () => {
     });
   });
 
+  it("prefers the running mode-stage executor label over parent Ora text", () => {
+    const createdAt = 1_714_000_000_000;
+    const runId = "run-mode-stage-parent-ora";
+    const sessionId = "session-mode-stage-parent-ora";
+    const snapshot = {
+      runId,
+      sessionId,
+      turnIndex: 1,
+      status: "running",
+      pattern: "orchestrator_subagent",
+      modeId: CODE_DEVELOPMENT_MODE_ID,
+      input: { prompt: "continue", createdAt, context: {} },
+      config: {
+        modeId: CODE_DEVELOPMENT_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["ora", "builder"],
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-mode-stage-parent-ora-test",
+        skillIds: [],
+        toolIds: [],
+      },
+      topology: {
+        nodes: [
+          { id: "ora", label: "Ora", kind: "agent", agentId: "ora", status: "running", metadata: {} },
+          { id: "builder", label: "Builder", kind: "agent", agentId: "builder", status: "running", metadata: {} },
+        ],
+        edges: [],
+      },
+      profiles: [
+        { id: "ora", label: "Ora", role: "Coordinate", modelRef: "local/smoke-model", toolPolicyId: "code.default", memoryNamespaces: ["session"], budget: { maxTokens: 1000, maxToolCalls: 0, maxRuntimeMs: 1000 } },
+        { id: "builder", label: "Builder", role: "Build", modelRef: "local/smoke-model", toolPolicyId: "code.default", memoryNamespaces: ["session"], budget: { maxTokens: 1000, maxToolCalls: 0, maxRuntimeMs: 1000 } },
+      ],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [{
+        id: `${runId}:evt-parent`,
+        runId,
+        seq: 1,
+        type: "message.delta",
+        agentId: ORA_ROOT_AGENT_ID,
+        createdAt: createdAt + 1,
+        pattern: "orchestrator_subagent",
+        payload: {
+          role: "assistant",
+          messageId: `${runId}:assistant`,
+          content: "Ora 正在整理执行进展。",
+        },
+      }],
+      agentMessages: [],
+      childSessions: [{
+        id: `${runId}:builder`,
+        agentId: "builder",
+        label: "Builder",
+        sessionClass: "mode_subagent",
+        delegationKind: "mode_stage",
+        authoritySource: "mode_stage",
+        status: "running",
+        startedAt: createdAt + 1,
+        updatedAt: createdAt + 2,
+        artifactIds: [],
+      }],
+      artifacts: [],
+      activeAgents: ["ora", "builder"],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 1, completed: 0, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      updatedAt: createdAt + 2,
+    } as unknown as OraStateSnapshot;
+
+    const assistant = adaptChatMessages(
+      [{
+        id: `${runId}:user`,
+        sessionId,
+        runId,
+        turnIndex: 1,
+        role: "user",
+        content: "continue",
+        pattern: "orchestrator_subagent",
+        modeId: CODE_DEVELOPMENT_MODE_ID,
+        createdAt,
+      }],
+      { [runId]: snapshot },
+    ).find((message) => message.role === "assistant");
+
+    expect(assistant?.turn?.currentAgentLabel).toBe("Builder");
+  });
+
   it("keeps non-transcript child coordination chatter out of mode-stage mainline messages", () => {
     const createdAt = 1_714_000_000_000;
     const runId = "run-mode-stage-private-chatter";
@@ -4874,8 +4973,32 @@ describe("desktop session view model", () => {
           id: `${runId}:evt-0`,
           runId,
           seq: 0,
-          type: "child_session.updated",
+          type: "tool.called",
           createdAt: createdAt + 1,
+          pattern: "orchestrator_subagent",
+          agentId: ORA_ROOT_AGENT_ID,
+          nodeId: ORA_ROOT_AGENT_ID,
+          payload: {
+            toolId: "agent.spawn",
+            status: "succeeded",
+            input: {
+              description: "Research subagent",
+              tool_bundle: "research_readonly",
+            },
+            output: {
+              status: "async_launched",
+              child_agent_id: "ora-sub-1",
+              child_session_id: `${runId}:ora-sub-1`,
+              tool_bundle: "research_readonly",
+            },
+          },
+        },
+        {
+          id: `${runId}:evt-1`,
+          runId,
+          seq: 1,
+          type: "child_session.updated",
+          createdAt: createdAt + 2,
           pattern: "orchestrator_subagent",
           agentId: "ora-sub-1",
           nodeId: "ora-sub-1",
@@ -4887,16 +5010,16 @@ describe("desktop session view model", () => {
               sessionClass: "temporary_spawn",
               status: "running",
               startedAt: createdAt + 1,
-              updatedAt: createdAt + 1,
+              updatedAt: createdAt + 2,
             },
           },
         },
         {
-          id: `${runId}:evt-1`,
+          id: `${runId}:evt-2`,
           runId,
-          seq: 1,
+          seq: 2,
           type: "tool.called",
-          createdAt: createdAt + 2,
+          createdAt: createdAt + 3,
           pattern: "orchestrator_subagent",
           agentId: "ora-sub-1",
           nodeId: "ora-sub-1",
@@ -4908,11 +5031,11 @@ describe("desktop session view model", () => {
           },
         },
         {
-          id: `${runId}:evt-2`,
+          id: `${runId}:evt-3`,
           runId,
-          seq: 2,
+          seq: 3,
           type: "message.delta",
-          createdAt: createdAt + 3,
+          createdAt: createdAt + 4,
           pattern: "orchestrator_subagent",
           agentId: "ora-sub-1",
           nodeId: "ora-sub-1",
@@ -4924,11 +5047,11 @@ describe("desktop session view model", () => {
           },
         },
         {
-          id: `${runId}:evt-3`,
+          id: `${runId}:evt-4`,
           runId,
-          seq: 3,
+          seq: 4,
           type: "child_session.updated",
-          createdAt: createdAt + 4,
+          createdAt: createdAt + 5,
           pattern: "orchestrator_subagent",
           agentId: "ora-sub-1",
           nodeId: "ora-sub-1",
@@ -4941,8 +5064,29 @@ describe("desktop session view model", () => {
               status: "succeeded",
               deliveryStatus: "awaiting_pickup",
               startedAt: createdAt + 1,
-              updatedAt: createdAt + 4,
+              updatedAt: createdAt + 5,
               summary: "完成资料搜集",
+            },
+          },
+        },
+        {
+          id: `${runId}:evt-1`,
+          runId,
+          seq: 1,
+          type: "tool.called",
+          createdAt: createdAt + 2,
+          pattern: "orchestrator_subagent",
+          agentId: ORA_ROOT_AGENT_ID,
+          nodeId: ORA_ROOT_AGENT_ID,
+          payload: {
+            toolId: "file.read",
+            status: "succeeded",
+            input: {
+              path: "apps/desktop/src/components/AssistantTurnCard.tsx",
+            },
+            output: {
+              path: "apps/desktop/src/components/AssistantTurnCard.tsx",
+              sizeBytes: 128,
             },
           },
         },
@@ -4955,7 +5099,7 @@ describe("desktop session view model", () => {
         status: "succeeded",
         deliveryStatus: "awaiting_pickup",
         startedAt: createdAt + 1,
-        updatedAt: createdAt + 4,
+        updatedAt: createdAt + 5,
         summary: "完成资料搜集",
       }],
       artifacts: [],
@@ -4965,7 +5109,7 @@ describe("desktop session view model", () => {
       busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
       pendingClarifications: [],
       pendingApprovals: [],
-      updatedAt: createdAt + 4,
+      updatedAt: createdAt + 5,
     } as unknown as OraStateSnapshot;
 
     const messages = adaptChatMessages(
@@ -4989,11 +5133,14 @@ describe("desktop session view model", () => {
       .join("\n") ?? "";
 
     expect(timelineText).toContain("已委派 Research subagent，正在处理子任务。");
+    expect(timelineText.match(/已委派 Research subagent，正在处理子任务。/g)).toHaveLength(1);
     expect(timelineText).toContain("Research subagent 已完成，结果已回流，父 Agent 正在整合。");
     expect(timelineText).not.toContain("Research subagent 正在读取相关文件。");
     expect(timelineText).not.toContain("ChatInput.tsx");
     expect(assistant?.turn?.processSteps?.map((step) => step.label)).toEqual([
       "委派子代理",
+      "委派子代理",
+      "读取文件",
       "子代理结果回流",
     ]);
   });
@@ -5058,6 +5205,48 @@ describe("desktop session view model", () => {
             },
           },
         },
+        {
+          id: `${runId}:evt-1`,
+          runId,
+          seq: 1,
+          type: "tool.called",
+          createdAt: createdAt + 2,
+          pattern: "orchestrator_subagent",
+          agentId: ORA_ROOT_AGENT_ID,
+          nodeId: ORA_ROOT_AGENT_ID,
+          payload: {
+            toolId: "file.read",
+            status: "succeeded",
+            input: {
+              path: "apps/desktop/src/components/AssistantTurnCard.tsx",
+            },
+            output: {
+              path: "apps/desktop/src/components/AssistantTurnCard.tsx",
+              sizeBytes: 128,
+            },
+          },
+        },
+        {
+          id: `${runId}:evt-1`,
+          runId,
+          seq: 1,
+          type: "tool.called",
+          createdAt: createdAt + 2,
+          pattern: "orchestrator_subagent",
+          agentId: ORA_ROOT_AGENT_ID,
+          nodeId: ORA_ROOT_AGENT_ID,
+          payload: {
+            toolId: "file.read",
+            status: "succeeded",
+            input: {
+              path: "apps/desktop/src/components/AssistantTurnCard.tsx",
+            },
+            output: {
+              path: "apps/desktop/src/components/AssistantTurnCard.tsx",
+              sizeBytes: 128,
+            },
+          },
+        },
       ],
       childSessions: [],
       artifacts: [],
@@ -5067,7 +5256,7 @@ describe("desktop session view model", () => {
       busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
       pendingClarifications: [],
       pendingApprovals: [],
-      updatedAt: createdAt + 1,
+      updatedAt: createdAt + 2,
     } as unknown as OraStateSnapshot;
 
     const messages = adaptChatMessages(
@@ -5159,6 +5348,27 @@ describe("desktop session view model", () => {
             },
           },
         },
+        {
+          id: `${runId}:evt-1`,
+          runId,
+          seq: 1,
+          type: "tool.called",
+          createdAt: createdAt + 2,
+          pattern: "orchestrator_subagent",
+          agentId: ORA_ROOT_AGENT_ID,
+          nodeId: ORA_ROOT_AGENT_ID,
+          payload: {
+            toolId: "file.read",
+            status: "succeeded",
+            input: {
+              path: "apps/desktop/src/components/AssistantTurnCard.tsx",
+            },
+            output: {
+              path: "apps/desktop/src/components/AssistantTurnCard.tsx",
+              sizeBytes: 128,
+            },
+          },
+        },
       ],
       childSessions: [],
       artifacts: [],
@@ -5168,7 +5378,7 @@ describe("desktop session view model", () => {
       busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
       pendingClarifications: [],
       pendingApprovals: [],
-      updatedAt: createdAt + 1,
+      updatedAt: createdAt + 2,
     } as unknown as OraStateSnapshot;
 
     const messages = adaptChatMessages(
@@ -5195,16 +5405,31 @@ describe("desktop session view model", () => {
         detail: "已委派 Research subagent 在后台处理子任务（research_readonly）。",
         status: "complete",
       }),
+      expect.objectContaining({
+        id: `${runId}:evt-1`,
+        eventType: "tool.called",
+        label: "读取文件",
+      }),
     ]);
     expect(assistant?.turn?.timelineItems).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
+          kind: "assistant_text",
+          content: "已委派 Research subagent，正在处理子任务。",
+        }),
+        expect.objectContaining({
           kind: "status_group",
+          summary: "已委派 Research subagent 在后台处理子任务（research_readonly）。",
           steps: [
             expect.objectContaining({
               id: `${runId}:evt-0`,
               eventType: "tool.called",
               label: "委派子代理",
+            }),
+            expect.objectContaining({
+              id: `${runId}:evt-1`,
+              eventType: "tool.called",
+              label: "读取文件",
             }),
           ],
         }),

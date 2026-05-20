@@ -1459,6 +1459,7 @@ export function mergeRunStreamSnapshot(
   );
   const planList = mergeStreamPlanListUpdates(snapshot, stream);
   const agentMessages = mergeStreamAgentMessages(snapshot, stream);
+  const activeAgents = mergeStreamActiveAgents(snapshot, stream);
   return normalizeDesktopSnapshot(mergeStreamLatency(normalizeStateSnapshot({
     ...snapshot,
     status: streamRunStatus(stream, snapshot) ?? snapshot.status,
@@ -1467,6 +1468,7 @@ export function mergeRunStreamSnapshot(
     pendingApprovals: merged.pendingApprovals,
     pendingClarifications,
     agentMessages,
+    activeAgents,
     events,
     updatedAt: stream.events.at(-1)?.createdAt ?? snapshot.updatedAt,
   }), stream));
@@ -1848,6 +1850,37 @@ function mergeStreamAgentMessages(
     (left, right) =>
       left.createdAt - right.createdAt || left.id.localeCompare(right.id),
   );
+}
+
+function mergeStreamActiveAgents(
+  snapshot: OraStateSnapshot,
+  stream: OraRunEventStream,
+): OraStateSnapshot["activeAgents"] {
+  const activeAgents = [...snapshot.activeAgents];
+  for (const event of stream.events) {
+    if (event.type === "agent.started" && typeof event.agentId === "string") {
+      if (!activeAgents.includes(event.agentId)) {
+        activeAgents.push(event.agentId);
+      }
+      continue;
+    }
+    if (event.type === "agent.completed" && typeof event.agentId === "string") {
+      const index = activeAgents.indexOf(event.agentId);
+      if (index >= 0) {
+        activeAgents.splice(index, 1);
+      }
+      continue;
+    }
+    if (
+      event.type === "run.done" ||
+      event.type === "run.failed" ||
+      event.type === "run.cancelled" ||
+      event.type === "run.interrupted"
+    ) {
+      return [];
+    }
+  }
+  return activeAgents;
 }
 
 function readAgentConversationMessage(

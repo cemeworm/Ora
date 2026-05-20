@@ -632,6 +632,55 @@ describe("assistant turn display helpers", () => {
     expect(html).not.toContain("运行进度");
   });
 
+  it("prefers collaboration summaries over later generic tool details in collapsed progress", () => {
+    const turn: AssistantTurnAttachment = {
+      runId: "run-1",
+      turnIndex: 1,
+      status: "running",
+      pattern: "orchestrator_subagent",
+      sources: [],
+      processSteps: [],
+      timelineItems: [
+        {
+          id: "spawn-text",
+          kind: "assistant_text",
+          content: "已委派 Research subagent，正在处理子任务。",
+          timestamp: "00:00",
+        },
+        {
+          id: "status-1",
+          kind: "status_group",
+          summary: "已委派 Research subagent 在后台处理子任务（research_readonly）。",
+          timestamp: "00:01",
+          status: "active",
+          steps: [
+            processStep("spawn-step", "complete", "已委派 Research subagent 在后台处理子任务（research_readonly）。", {
+              label: "委派子代理",
+            }),
+            processStep("read-step", "active", "已读取 apps/desktop/src/components/AssistantTurnCard.tsx。", {
+              label: "读取文件",
+            }),
+          ],
+        },
+      ],
+      agentMessages: [],
+      artifacts: [],
+      todos: [],
+      planList: [],
+      approvalCount: 0,
+      clarificationCount: 0,
+      hasProposedPlan: false,
+    };
+
+    const html = renderToStaticMarkup(
+      <AssistantTurnCard content="" turn={turn} />,
+    );
+
+    expect(html).toContain("已委派 Research subagent，正在处理子任务。");
+    expect(html).toContain("已委派 Research subagent 在后台处理子任务（research_readonly）。");
+    expect(html).not.toContain("已读取 apps/desktop/src/components/AssistantTurnCard.tsx。");
+  });
+
   it("does not repeat the thinking indicator after the latest active progress group", () => {
     const turn: AssistantTurnAttachment = {
       runId: "run-1",

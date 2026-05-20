@@ -462,6 +462,96 @@ describe("trail debugger view model", () => {
     expect(summary.decisions[1]?.assistantPreview).toBe("第二段方案。");
   });
 
+  it("filters internal delta text when an assistant preview falls back to seq-window evidence", () => {
+    const snapshot = baseSnapshot({
+      events: [
+        {
+          id: "evt-decision",
+          runId: "run-test",
+          seq: 10,
+          type: "causal.decision.recorded",
+          createdAt: 1000,
+          agentId: "agent-1",
+          nodeId: "agent-1",
+          payload: {
+            source: "router_primary",
+            taskState: { surfaceRequest: "给出最终说明" },
+            policyDecision: {
+              goalUncertainty: 0.2,
+              factUncertainty: 0.2,
+              contextUncertainty: 0.2,
+              actionRisk: 0.1,
+              userCost: 0.05,
+              reversibility: "high",
+              recommendedAction: "answer_directly",
+              reason: "answer_directly: low uncertainty, safe to proceed",
+              wouldChangeOutcomeIfWrong: false,
+            },
+            chosenIntervention: "answer_directly",
+            alternativeInterventions: [],
+            recordedAt: 1000,
+            decisionContext: { phase: "completion", agentId: "agent-1", nodeId: "agent-1" },
+            outcome: {
+              status: "completed",
+              evidenceStartSeq: 11,
+              evidenceEndSeq: 13,
+            },
+          },
+        },
+        {
+          id: "evt-msg-1",
+          runId: "run-test",
+          seq: 11,
+          type: "message.delta",
+          createdAt: 1010,
+          agentId: "agent-1",
+          nodeId: "agent-1",
+          payload: { role: "assistant", content: "公开说明", delta: "公开说明", streaming: true },
+        },
+        {
+          id: "evt-msg-2",
+          runId: "run-test",
+          seq: 12,
+          type: "message.delta",
+          createdAt: 1011,
+          agentId: "agent-1",
+          nodeId: "agent-1",
+          payload: { role: "assistant", content: "<tool_call>", delta: "<tool_call>", streaming: true },
+        },
+        {
+          id: "evt-msg-3",
+          runId: "run-test",
+          seq: 13,
+          type: "message.delta",
+          createdAt: 1012,
+          agentId: "agent-1",
+          nodeId: "agent-1",
+          payload: { role: "assistant", content: " 已完成。", delta: " 已完成。", streaming: true },
+        },
+      ],
+      topology: {
+        nodes: [{ id: "agent-1", label: "Ora", kind: "agent", agentId: "agent-1", status: "done", metadata: {} }],
+        edges: [],
+      },
+      profiles: [{
+        id: "agent-1",
+        label: "Ora",
+        role: "Assistant",
+        modelRef: "local/smoke-model",
+        toolPolicyId: "policy",
+        toolIds: [],
+        skillIds: [],
+        memoryNamespaces: ["session"],
+        budget: { maxTokens: 1000, maxToolCalls: 2, maxRuntimeMs: 1000 },
+      }],
+    });
+
+    const summary = buildCausalDecisionSummary(snapshot);
+
+    expect(summary.decisions[0]?.assistantPreview).toBe("公开说明");
+    expect(summary.decisions[0]?.assistantPreview).not.toContain("<tool_call>");
+  });
+
   it("prioritizes failed runs and points developers to flow evidence", () => {
     const snapshot = baseSnapshot({
       status: "failed",
@@ -523,12 +613,42 @@ describe("trail debugger view model", () => {
     const summary = buildTrailDebugSummary(snapshot, undefined, [], []);
     const findings = collectTrailFindings(snapshot, undefined, undefined, []);
 
-    expect(summary.currentStage).toBe("进行中：builder");
+    expect(summary.currentStage).toBe("进行中：Builder");
     expect(summary.blockingGate).toBe("无");
     expect(buildPendingApprovalItems(snapshot)).toEqual([]);
     expect(snapshotPendingClarifications(snapshot)).toEqual([]);
     expect(findings.some((finding) => finding.id === "approval.pending")).toBe(false);
     expect(findings.some((finding) => finding.id.startsWith("clarification.pending"))).toBe(false);
+  });
+
+  it("shows the running mode-stage executor even before activeAgents are projected", () => {
+    const snapshot = baseSnapshot({
+      status: "running",
+      attention: {
+        kind: "running",
+        blocking: false,
+        sourceRunId: "run-test",
+        pendingActionIds: [],
+        pendingToolCallIds: [],
+        pendingClarificationIds: [],
+      },
+      activeAgents: [],
+      childSessions: [{
+        id: "child-builder",
+        agentId: "builder",
+        label: "Builder",
+        status: "running",
+        authoritySource: "mode_stage",
+        delegationKind: "mode_stage",
+        updatedAt: 10,
+        startedAt: 9,
+        artifactIds: [],
+      }],
+    });
+
+    const summary = buildTrailDebugSummary(snapshot, undefined, [], []);
+
+    expect(summary.currentStage).toBe("进行中：Builder");
   });
 
   it("does not synthesize trail gates from raw pending fields without projection attention", () => {

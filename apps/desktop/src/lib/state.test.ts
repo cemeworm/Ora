@@ -43,6 +43,7 @@ function testSnapshot(params: {
   sessionId?: string;
   status?: OraStateSnapshot["status"];
   updatedAt?: number;
+  activeAgents?: OraStateSnapshot["activeAgents"];
   childSessions?: OraStateSnapshot["childSessions"];
   parentCoordination?: OraStateSnapshot["parentCoordination"];
   agentMessages?: OraStateSnapshot["agentMessages"];
@@ -98,7 +99,7 @@ function testSnapshot(params: {
     childSessions: params.childSessions ?? [],
     parentCoordination: params.parentCoordination,
     artifacts: [],
-    activeAgents: [],
+    activeAgents: params.activeAgents ?? [],
     queueSummary: { mode: "backlog", pending: 0, inProgress: 1, completed: 0, topics: [] },
     sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
     busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
@@ -3260,6 +3261,61 @@ describe("desktop workbench state", () => {
 
     expect(getActiveSnapshot(nextState.runLifecycle)?.runId).toBe("run-active");
     expect(nextState.selectedTurnRunId).toBe("run-active");
+  });
+
+  it("tracks activeAgents for event-only agent lifecycle streams", () => {
+    const createdAt = 1_714_000_000_000;
+    const snapshot = testSnapshot({
+      runId: "run-agent-lifecycle",
+      sessionId: "session-agent-lifecycle",
+      status: "running",
+      updatedAt: createdAt,
+      activeAgents: [],
+    });
+
+    const startedStream = {
+      runId: "run-agent-lifecycle",
+      sessionId: "session-agent-lifecycle",
+      status: "running",
+      fromSeq: 0,
+      nextSeq: 1,
+      events: [{
+        id: "run-agent-lifecycle:evt-started",
+        runId: "run-agent-lifecycle",
+        seq: 0,
+        type: "agent.started",
+        createdAt: createdAt + 1,
+        pattern: "orchestrator_subagent",
+        agentId: "builder",
+        nodeId: "builder",
+        payload: { title: "Build assigned work" },
+      }],
+    } as unknown as OraRunEventStream;
+
+    const afterStarted = mergeRunStreamSnapshot(snapshot, startedStream);
+    expect(afterStarted?.activeAgents).toEqual(["builder"]);
+
+    const completedStream = {
+      runId: "run-agent-lifecycle",
+      sessionId: "session-agent-lifecycle",
+      status: "running",
+      fromSeq: 1,
+      nextSeq: 2,
+      events: [{
+        id: "run-agent-lifecycle:evt-completed",
+        runId: "run-agent-lifecycle",
+        seq: 1,
+        type: "agent.completed",
+        createdAt: createdAt + 2,
+        pattern: "orchestrator_subagent",
+        agentId: "builder",
+        nodeId: "builder",
+        payload: { title: "Build assigned work" },
+      }],
+    } as unknown as OraRunEventStream;
+
+    const afterCompleted = mergeRunStreamSnapshot(afterStarted, completedStream);
+    expect(afterCompleted?.activeAgents).toEqual([]);
   });
 
   it("merges streamed agent messages into the active snapshot", () => {

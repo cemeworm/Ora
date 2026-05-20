@@ -59,6 +59,7 @@ import { deriveSnapshotInteractionProjection, attentionGateKind } from "./runInt
 import { parseProposedPlan } from "./proposedPlanParser";
 import { mergeAssistantMessageTextProjection } from "./assistantMessageProjection";
 import { deriveAssistantTurnPresentation } from "./assistantTurnPresentation";
+import { deriveCurrentExecutorProjection } from "./currentExecutor";
 
 const APPROVAL_INTERRUPT_MESSAGE = "需要你确认后，我才能继续。";
 const APPROVAL_INTERRUPT_MESSAGE_EN = "Waiting for your approval before continuing.";
@@ -2788,6 +2789,10 @@ function deriveClarificationExchanges(snapshot: OraStateSnapshot): TurnClarifica
 }
 
 function currentAgentLabelFromSnapshot(snapshot: OraStateSnapshot): string {
+  if (snapshot.status === "running") {
+    return deriveCurrentExecutorProjection(snapshot).agentLabel ?? ORA_ROOT_AGENT_LABEL;
+  }
+
   const profiles = new Map(snapshot.profiles.map((profile) => [profile.id, profile.label]));
   const latestAgentMessage = [...(snapshot.agentMessages ?? [])].reverse().find((message) =>
     message.fromAgentId !== ORA_ROOT_AGENT_ID &&
@@ -3722,6 +3727,10 @@ function aggregateStepStatus(steps: TurnProcessStep[]): TurnProcessStep["status"
 }
 
 function summarizeProcessSteps(steps: TurnProcessStep[], runStatus?: OraStateSnapshot["status"]): string {
+  const collaborationSummary = preferredCollaborationProcessSummary(steps);
+  if (collaborationSummary) {
+    return collaborationSummary;
+  }
   const active = steps.find((step) => step.status === "active");
   if (active && (runStatus === "running" || runStatus === "queued")) {
     return runningStepSummary(active);
@@ -3764,6 +3773,29 @@ function summarizeProcessSteps(steps: TurnProcessStep[], runStatus?: OraStateSna
     return steps[0]?.detail || steps[0]?.label || "已更新执行状态";
   }
   return `已更新 ${steps.length} 条执行状态`;
+}
+
+function preferredCollaborationProcessSummary(steps: TurnProcessStep[]): string | undefined {
+  const preferredStep =
+    findLastProcessStep(steps, (step) => step.status === "blocked" && step.label === "委派子代理") ??
+    findLastProcessStep(steps, (step) => step.label === "子代理失败") ??
+    findLastProcessStep(steps, (step) => step.label === "子代理已取消") ??
+    findLastProcessStep(steps, (step) => step.label === "子代理卡住") ??
+    findLastProcessStep(steps, (step) => step.label === "子代理结果回流") ??
+    findLastProcessStep(steps, (step) => step.label === "委派子代理");
+  return preferredStep?.detail.trim() || preferredStep?.label;
+}
+
+function findLastProcessStep(
+  steps: TurnProcessStep[],
+  predicate: (step: TurnProcessStep) => boolean,
+): TurnProcessStep | undefined {
+  for (let index = steps.length - 1; index >= 0; index -= 1) {
+    if (predicate(steps[index]!)) {
+      return steps[index];
+    }
+  }
+  return undefined;
 }
 
 function runningStepSummary(step: TurnProcessStep): string {
@@ -4365,6 +4397,9 @@ function publicTimelineNarrativeText(event: OraEventEnvelope): string | undefine
     if (spawnStatus === "blocked" || actionStatusFromEvent(event) === "failed") {
       return spawnToolFailureNarrativeText(event.payload);
     }
+    if (shouldShowSuccessfulSpawnNarrative(event, event.payload)) {
+      return spawnToolSuccessNarrativeText(event.payload);
+    }
   }
   return undefined;
 }
@@ -4378,7 +4413,15 @@ function publicTimelineNarrativeDedupKey(event: OraEventEnvelope): string | unde
     isRecord(event.payload) &&
     isSpawnToolEventPayload(event.payload)
   ) {
-    return `${event.id}:spawn_failure`;
+    const spawnStatus = spawnToolEventStatus(event.payload);
+    if (spawnStatus === "blocked" || actionStatusFromEvent(event) === "failed") {
+      return `${event.id}:spawn_failure`;
+    }
+    const childSessionKey = spawnToolChildSessionKey(event, event.payload);
+    if (childSessionKey) {
+      return `${childSessionKey}:spawn_started`;
+    }
+    return `${event.id}:spawn_success`;
   }
   return undefined;
 }
@@ -4396,28 +4439,31 @@ function spawnToolEventStatus(payload: Record<string, unknown>): string | undefi
   return stringValue(output?.status) ?? stringValue(payload.status);
 }
 
+function shouldShowSuccessfulSpawnNarrative(
+  event: OraEventEnvelope,
+  payload: Record<string, unknown>,
+): boolean {
+  const spawnStatus = spawnToolEventStatus(payload);
+  if (spawnStatus === "blocked" || actionStatusFromEvent(event) === "failed") {
+    return false;
+  }
+  return spawnStatus === "async_launched" || Boolean(spawnToolChildSessionKey(event, payload));
+}
+
+function spawnToolSuccessNarrativeText(payload: Record<string, unknown>): string | undefined {
+  const description = spawnToolDescription(payload);
+  if (description) {
+    return `已委派 ${description}，正在处理子任务。`;
+  }
+  return "已委派子代理，正在处理子任务。";
+}
+
 function spawnToolFailureNarrativeText(payload: Record<string, unknown>): string | undefined {
-  const input = isRecord(payload.input)
-    ? payload.input
-    : isRecord(payload.args)
-      ? payload.args
-      : {};
-  const output = isRecord(payload.output)
-    ? payload.output
-    : isRecord(payload.result)
-      ? payload.result
-      : {};
-  const description =
-    stringValue(input.description) ??
-    stringValue(output.description) ??
-    stringValue(output.child_agent_id) ??
-    stringValue(output.agent_id);
-  const toolBundle =
-    stringValue(output.tool_bundle) ??
-    stringValue(input.tool_bundle);
+  const toolBundle = spawnToolBundle(payload);
   const error =
     stringValue(payload.error) ??
-    stringValue(output.message);
+    stringValue(spawnToolOutput(payload)?.message);
+  const description = spawnToolDescription(payload);
   const subject = description ? `委派 ${description}` : "委派子代理";
   if (toolBundle && error) {
     return `${subject} 失败（${toolBundle}）：${error}`;
@@ -4429,6 +4475,48 @@ function spawnToolFailureNarrativeText(payload: Record<string, unknown>): string
     return `${subject} 失败：${error}`;
   }
   return `${subject} 失败。`;
+}
+
+function spawnToolDescription(payload: Record<string, unknown>): string | undefined {
+  return (
+    stringValue(spawnToolInput(payload).description) ??
+    stringValue(spawnToolOutput(payload)?.description) ??
+    stringValue(spawnToolOutput(payload)?.child_agent_id) ??
+    stringValue(spawnToolOutput(payload)?.agent_id)
+  );
+}
+
+function spawnToolBundle(payload: Record<string, unknown>): string | undefined {
+  return stringValue(spawnToolOutput(payload)?.tool_bundle) ?? stringValue(spawnToolInput(payload).tool_bundle);
+}
+
+function spawnToolChildSessionKey(
+  event: OraEventEnvelope,
+  payload: Record<string, unknown>,
+): string | undefined {
+  const output = spawnToolOutput(payload);
+  const childSessionId = stringValue(output?.child_session_id);
+  if (childSessionId) {
+    return childSessionId;
+  }
+  const childAgentId = stringValue(output?.child_agent_id) ?? stringValue(output?.agent_id);
+  return childAgentId ? `${event.runId}:${childAgentId}` : undefined;
+}
+
+function spawnToolInput(payload: Record<string, unknown>): Record<string, unknown> {
+  return isRecord(payload.input)
+    ? payload.input
+    : isRecord(payload.args)
+      ? payload.args
+      : {};
+}
+
+function spawnToolOutput(payload: Record<string, unknown>): Record<string, unknown> | undefined {
+  return isRecord(payload.output)
+    ? payload.output
+    : isRecord(payload.result)
+      ? payload.result
+      : undefined;
 }
 
 function childSessionMilestoneDedupKey(event: OraEventEnvelope): string | undefined {
