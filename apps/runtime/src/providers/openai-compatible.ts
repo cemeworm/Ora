@@ -178,7 +178,12 @@ export async function listOpenAICompatibleModels(
       });
     }
 
-    const raw = rawText ? JSON.parse(rawText) : {};
+    let raw: Record<string, unknown> = {};
+    try {
+      raw = rawText ? JSON.parse(rawText) : {};
+    } catch {
+      // rawText is malformed / truncated — proceed with empty raw
+    }
     const models = parseCompatibleModels(raw);
     if (models.length === 0) {
       return unsupportedModelsResult(`Provider ${config.id} returned no parseable model IDs.`);
@@ -365,7 +370,12 @@ export function createOpenAICompatibleProvider(
       throw createError(response.status, rawText, config.id);
     }
 
-    const raw = rawText ? JSON.parse(rawText) : {};
+    let raw: Record<string, unknown> = {};
+    try {
+      raw = rawText ? JSON.parse(rawText) : {};
+    } catch {
+      // rawText is malformed / truncated — proceed with empty raw
+    }
     const text = extractTextFromValue(raw);
     const reasoningContent = protocol === "chat_completions"
       ? extractOpenAiChatReasoningContent(raw)
@@ -455,7 +465,12 @@ export function createOpenAICompatibleProvider(
     let sawStreamFrame = false;
     const openTimeoutMs = config.timeoutMs;
     const rawEvents = await readSseMessages(response, async (message) => {
-      const data = JSON.parse(message.data) as unknown;
+      let data: unknown;
+      try {
+        data = JSON.parse(message.data) as unknown;
+      } catch {
+        return; // skip malformed / truncated SSE frames
+      }
       if (!sawStreamFrame) {
         sawStreamFrame = true;
         const fetchElapsed = Date.now() - (((globalThis as any).__latencyFetchStart as number) ?? 0);

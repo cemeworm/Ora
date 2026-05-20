@@ -69,6 +69,7 @@ export const CORE_NODE_RUNTIME_TRANSITIONS: readonly NodeRuntimeTransition[] = [
   { from: "completed", to: "degraded" },
   { from: "interrupted", to: "interrupted" },
   { from: "interrupted", to: "pending" },
+  { from: "interrupted", to: "degraded" },
 ];
 
 const NODE_LOOP_TRANSITION_KIND_PATHS: Record<NodeLoopTransitionResultKind, readonly NodeRuntimeTransition[]> = {
