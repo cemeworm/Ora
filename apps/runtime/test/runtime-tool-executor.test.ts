@@ -1108,6 +1108,31 @@ describe("RuntimeToolExecutor", () => {
     }
   });
 
+  it("cancels web.fetch when a per-call abort signal fires", async () => {
+    const controller = new AbortController();
+    const executor = new RuntimeToolExecutor({
+      toolDescriptors: MVP_TOOLS,
+      fetchImpl: (async (_input, init) => {
+        return await new Promise((_resolve, reject) => {
+          const abort = () => reject(init?.signal?.reason ?? new Error("aborted"));
+          if (init?.signal?.aborted) {
+            abort();
+            return;
+          }
+          init?.signal?.addEventListener("abort", abort, { once: true });
+        });
+      }) as typeof fetch,
+    });
+    setTimeout(() => {
+      controller.abort(new Error("per-call abort"));
+    }, 10);
+
+    await expect(executor.execute({
+      tool: "web.fetch",
+      args: { url: "https://example.com/slow" },
+    }, { signal: controller.signal })).rejects.toThrow("per-call abort");
+  });
+
   it("guides agents away from using web.fetch on PDF URLs", async () => {
     const server = http.createServer((_request, response) => {
       response.writeHead(200, { "content-type": "application/pdf" });

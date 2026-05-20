@@ -167,6 +167,13 @@ export interface RuntimeToolExecutionContext {
   computerBackendManager?: ComputerBackendManager;
 }
 
+export interface RuntimeToolExecutionOptions {
+  allowRisky?: boolean;
+  currentAgentId?: string;
+  currentNodeId?: string;
+  signal?: AbortSignal;
+}
+
 export interface RuntimePreToolPolicyRequest {
   toolId: string;
   args: Record<string, unknown>;
@@ -608,12 +615,13 @@ export class RuntimeToolExecutor {
       ?? genericApprovalRequest(userPrompt);
   }
 
-  async execute(call: RuntimeToolCall, options: { allowRisky?: boolean; currentAgentId?: string; currentNodeId?: string } = {}): Promise<unknown> {
+  async execute(call: RuntimeToolCall, options: RuntimeToolExecutionOptions = {}): Promise<unknown> {
     return (await this.executeWithMetadata(call, options)).output;
   }
 
-  async executeWithMetadata(call: RuntimeToolCall, options: { allowRisky?: boolean; currentAgentId?: string; currentNodeId?: string } = {}): Promise<RuntimeToolExecutionResult> {
-    if (this.signal?.aborted) {
+  async executeWithMetadata(call: RuntimeToolCall, options: RuntimeToolExecutionOptions = {}): Promise<RuntimeToolExecutionResult> {
+    const effectiveSignal = mergeAbortSignals(this.signal, options.signal);
+    if (effectiveSignal?.aborted) {
       throw new Error(`Tool '${call.tool}' execution cancelled: run was aborted.`);
     }
     const preflight = await this.runPreToolPolicy(call, options);
@@ -650,7 +658,7 @@ export class RuntimeToolExecutor {
 
   private async runPreToolPolicy(
     call: RuntimeToolCall,
-    options: { allowRisky?: boolean; currentAgentId?: string; currentNodeId?: string },
+    options: RuntimeToolExecutionOptions,
   ): Promise<{ args: Record<string, unknown>; permission: ToolPermission; riskLevel: ToolDescriptor["riskLevel"]; reason?: string }> {
     const descriptor = this.definitions.get(call.tool)?.descriptor;
     if (!descriptor) {
@@ -693,7 +701,7 @@ export class RuntimeToolExecutor {
     call: RuntimeToolCall,
     result: RuntimeToolExecutionResult | undefined,
     isError: boolean,
-    options: { allowRisky?: boolean; currentAgentId?: string; currentNodeId?: string },
+    options: RuntimeToolExecutionOptions,
     error?: unknown,
   ): Promise<RuntimeToolExecutionResult> {
     const descriptor = this.definitions.get(call.tool)?.descriptor;
@@ -716,7 +724,7 @@ export class RuntimeToolExecutor {
     return nextResult;
   }
 
-  private executionContext(options: { allowRisky?: boolean; currentAgentId?: string; currentNodeId?: string } = {}): RuntimeToolExecutionContext {
+  private executionContext(options: RuntimeToolExecutionOptions = {}): RuntimeToolExecutionContext {
     return {
       currentAgentId: options.currentAgentId,
       currentNodeId: options.currentNodeId,
@@ -734,7 +742,7 @@ export class RuntimeToolExecutor {
       taskIntent: this.taskIntent,
       permissionProfile: this.permissionProfile,
       allowRisky: options.allowRisky,
-      signal: this.signal,
+      signal: mergeAbortSignals(this.signal, options.signal),
       turnContext: this.turnContext,
       operations: this.workspaceOperations,
       spawnAgent: this.spawnAgentCallback,
@@ -743,6 +751,30 @@ export class RuntimeToolExecutor {
       computerBackendManager: this.computerBackendManager,
     };
   }
+}
+
+function mergeAbortSignals(...signals: Array<AbortSignal | undefined>): AbortSignal | undefined {
+  const activeSignals = signals.filter((signal): signal is AbortSignal => Boolean(signal));
+  if (activeSignals.length === 0) {
+    return undefined;
+  }
+  if (activeSignals.length === 1) {
+    return activeSignals[0];
+  }
+  const controller = new AbortController();
+  const abort = (signal: AbortSignal) => {
+    if (!controller.signal.aborted) {
+      controller.abort(signal.reason);
+    }
+  };
+  for (const signal of activeSignals) {
+    if (signal.aborted) {
+      abort(signal);
+      break;
+    }
+    signal.addEventListener("abort", () => abort(signal), { once: true });
+  }
+  return controller.signal;
 }
 
 const shellDestructiveCommandPolicyHook: RuntimePreToolPolicyHook = (request) => {

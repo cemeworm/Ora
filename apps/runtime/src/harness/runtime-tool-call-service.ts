@@ -9,6 +9,7 @@ import type { RuntimeCompletionController, RuntimeToolScope } from "./runtime-co
 import type { RuntimeActionDeps } from "./runtime-action-runner.js";
 import { forcedFinalSystemPrompt } from "./runtime-output.js";
 import {
+  recordRuntimeToolActionFailed,
   recordRuntimeToolActionSucceeded,
   resolveRuntimeActionApproval,
   transitionRuntimeAction,
@@ -187,6 +188,18 @@ export class RuntimeToolCallService {
         iteration,
       });
     } catch (error) {
+      if (isNodeRuntimeTimeoutError(error)) {
+        recordRuntimeToolActionFailed({
+          action,
+          context: { agentId: this.deps.agentId, nodeId: this.deps.agentId },
+          deps: actionDeps,
+          toolCall,
+          detail: error instanceof Error ? error.message : String(error),
+          toolCallRecord,
+          now: this.deps.now,
+        });
+        throw error;
+      }
       if (isApprovalInterruptError(error)) {
         transitionRuntimeAction({
           action,
@@ -317,4 +330,8 @@ export class RuntimeToolCallService {
     };
   }
 
+}
+
+function isNodeRuntimeTimeoutError(error: unknown): boolean {
+  return error instanceof Error && /Node (idle|hard) timeout after \d+ms/.test(error.message);
 }

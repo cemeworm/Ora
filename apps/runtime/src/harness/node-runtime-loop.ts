@@ -89,6 +89,83 @@ export function shouldEmitProviderStreamEvent(
   return event.kind !== "sse_frame" || !emittedProviderStreamFrameForInvocation;
 }
 
+const NODE_RUNTIME_HARD_TIMEOUT_MULTIPLIER = 6;
+
+class NodeRuntimeTimeoutError extends Error {
+  constructor(
+    public readonly kind: "idle" | "hard",
+    public readonly timeoutMs: number,
+    public readonly state?: NodeRuntimeLoopState,
+  ) {
+    super(
+      kind === "idle"
+        ? `Node idle timeout after ${timeoutMs}ms without progress.`
+        : `Node hard timeout after ${timeoutMs}ms.`,
+    );
+    this.name = "NodeRuntimeTimeoutError";
+  }
+}
+
+function shouldTrackRuntimeActivity(
+  type: OraEventEnvelope["type"],
+  payload: unknown,
+): boolean {
+  switch (type) {
+    case "message.delta":
+    case "token.delta":
+    case "tool.called":
+    case "action.updated":
+    case "task.started":
+    case "task.progress":
+    case "task.completed":
+    case "task.failed":
+    case "artifact.exported":
+    case "artifact.degraded":
+      return true;
+    case "node.updated": {
+      if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+        return false;
+      }
+      const state = (payload as { state?: unknown }).state;
+      return typeof state === "string" && state !== "cache_diagnostics";
+    }
+    default:
+      return false;
+  }
+}
+
+function shouldTrackProviderStreamActivity(
+  event: Pick<ModelStreamEvent, "kind">,
+): boolean {
+  return event.kind === "sse_frame" || event.kind === "fallback_response" || event.kind === "local_stream_started";
+}
+
+function mergeAbortSignals(
+  ...signals: Array<AbortSignal | undefined>
+): AbortSignal | undefined {
+  const activeSignals = signals.filter((signal): signal is AbortSignal => Boolean(signal));
+  if (activeSignals.length === 0) {
+    return undefined;
+  }
+  if (activeSignals.length === 1) {
+    return activeSignals[0];
+  }
+  const controller = new AbortController();
+  const abort = (signal: AbortSignal) => {
+    if (!controller.signal.aborted) {
+      controller.abort(signal.reason);
+    }
+  };
+  for (const signal of activeSignals) {
+    if (signal.aborted) {
+      abort(signal);
+      break;
+    }
+    signal.addEventListener("abort", () => abort(signal), { once: true });
+  }
+  return controller.signal;
+}
+
 export interface RunNodeRuntimeLoopParams {
   runId: string;
   agentId: string;
@@ -98,8 +175,10 @@ export interface RunNodeRuntimeLoopParams {
   system: string;
   providerCache?: ModelRequest["providerCache"];
   toolIds: string[];
-  /** Optional per-node timeout in milliseconds. If set, the node automatically
-   *  transitions to `degraded` if execution exceeds this duration. */
+  /** Optional per-node timeout in milliseconds. Interpreted as an idle timeout:
+   *  the node is allowed to run longer than this as long as it continues to
+   *  produce meaningful progress. A longer hard-timeout fallback is derived
+   *  internally to prevent infinite hangs. */
   timeoutMs?: number;
   onForcedFinalProviderExhausted?: (error: unknown) => ModelResponse | undefined;
 }
@@ -359,8 +438,8 @@ export async function runNodeRuntimeLoop(
     recoveryCoordinator,
     appendToolCall,
     now,
-    emit,
-    emitNodeRuntimeState: emitNodeRuntimeStateEvent,
+    emit: rawEmit,
+    emitNodeRuntimeState: rawEmitNodeRuntimeStateEvent,
     emitRecoveryDecision,
     emitRejectedFinalToolIntent,
     clarificationAnswer,
@@ -377,6 +456,23 @@ export async function runNodeRuntimeLoop(
     conversationMessages: deps.conversationMessages,
     streamProvider: deps.streamProvider,
   };
+  let activeOperationAbortController: AbortController | undefined;
+  let recordWatchdogActivity = (_source: string): void => undefined;
+  let disposeNodeWatchdog = (): void => undefined;
+  const emitNodeRuntimeState: RunNodeRuntimeLoopDeps["emitNodeRuntimeState"] = (state, emitParams) => {
+    rawEmitNodeRuntimeStateEvent(state, emitParams);
+    recordWatchdogActivity(`state:${state}`);
+    if (state === "completed" || state === "failed" || state === "interrupted") {
+      disposeNodeWatchdog();
+    }
+  };
+  const emit: RuntimeLoopEmit = (type, payload, extra) => {
+    const envelope = rawEmit(type, payload, extra);
+    if (shouldTrackRuntimeActivity(type, payload)) {
+      recordWatchdogActivity(`event:${type}`);
+    }
+    return envelope;
+  };
   const input = { prompt: deps.inputPrompt };
   const events = {
     get length(): number {
@@ -385,7 +481,7 @@ export async function runNodeRuntimeLoop(
   };
   const { actionLedger } = actionDeps();
   const nodeLoopController = new NodeLoopController({
-    emit: emitNodeRuntimeStateEvent,
+    emit: emitNodeRuntimeState,
     onInvalidTransition: "throw",
     onInvalidTransitionRecorded: (transition, transitionParams) => {
       emit(
@@ -405,28 +501,67 @@ export async function runNodeRuntimeLoop(
       );
     },
   });
-  let nodeTimeoutSignal: AbortSignal | undefined;
-  if (params.timeoutMs && params.timeoutMs > 0) {
-    const abortController = new AbortController();
-    const timeoutHandle = setTimeout(() => {
-      abortController.abort();
-      nodeLoopController.emit("degraded", {
-        agentId: params.agentId,
-        title: params.title,
-        reason: `Node timeout after ${params.timeoutMs}ms`,
-      });
-    }, params.timeoutMs);
-    nodeTimeoutSignal = abortController.signal;
-    const externalSignal = deps.signal;
-    if (externalSignal) {
-      externalSignal.addEventListener("abort", () => {
-        abortController.abort();
-        clearTimeout(timeoutHandle);
-      }, { once: true });
-    }
+  let nodeTimeoutError: NodeRuntimeTimeoutError | undefined;
+  const idleTimeoutMs =
+    typeof params.timeoutMs === "number" && Number.isFinite(params.timeoutMs) && params.timeoutMs > 0
+      ? params.timeoutMs
+      : undefined;
+  const hardTimeoutMs = idleTimeoutMs ? idleTimeoutMs * NODE_RUNTIME_HARD_TIMEOUT_MULTIPLIER : undefined;
+  if (idleTimeoutMs && hardTimeoutMs) {
+    let idleTimeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    let hardTimeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    let disposed = false;
+    const triggerTimeout = (kind: "idle" | "hard", timeoutMs: number) => {
+      if (disposed || nodeTimeoutError) {
+        return;
+      }
+      nodeTimeoutError = new NodeRuntimeTimeoutError(kind, timeoutMs, nodeLoopController.state);
+      activeOperationAbortController?.abort(nodeTimeoutError);
+      const currentState = nodeLoopController.state;
+      if (currentState === "running_model" || currentState === "tool_running" || currentState === "failed") {
+        nodeLoopController.emitRecoveryState("degraded", {
+          agentId: params.agentId,
+          title: params.title,
+          reason: kind === "idle" ? "node_idle_timeout" : "node_hard_timeout",
+          detail: nodeTimeoutError.message,
+        });
+      }
+    };
+    const armIdleTimeout = () => {
+      if (disposed || nodeTimeoutError) {
+        return;
+      }
+      if (idleTimeoutHandle) {
+        clearTimeout(idleTimeoutHandle);
+      }
+      idleTimeoutHandle = setTimeout(() => {
+        triggerTimeout("idle", idleTimeoutMs);
+      }, idleTimeoutMs);
+    };
+    recordWatchdogActivity = () => {
+      if (disposed || nodeTimeoutError) {
+        return;
+      }
+      armIdleTimeout();
+    };
+    disposeNodeWatchdog = () => {
+      disposed = true;
+      if (idleTimeoutHandle) {
+        clearTimeout(idleTimeoutHandle);
+        idleTimeoutHandle = undefined;
+      }
+      if (hardTimeoutHandle) {
+        clearTimeout(hardTimeoutHandle);
+        hardTimeoutHandle = undefined;
+      }
+    };
+    hardTimeoutHandle = setTimeout(() => {
+      triggerTimeout("hard", hardTimeoutMs);
+    }, hardTimeoutMs);
+    armIdleTimeout();
   }
 
-  const emitNodeRuntimeState = nodeLoopController.emit;
+  const emitNodeRuntimeStateDirect = nodeLoopController.emit;
   const completionScope = { agentId: params.agentId, nodeId: params.nodeId };
   const enabledTools = runtimeToolExecutor.enabledToolIds(params.toolIds);
   const nativeTools = providerSupportsNativeTools(config)
@@ -454,6 +589,7 @@ export async function runNodeRuntimeLoop(
           text: string;
           raw?: unknown;
         }) => {
+          recordWatchdogActivity("stream:text_delta");
           const visibility = isInternalProviderAssistantText(chunk.text)
             ? "internal"
             : undefined;
@@ -472,6 +608,9 @@ export async function runNodeRuntimeLoop(
           );
         },
         onStreamEvent: (event: ModelStreamEvent) => {
+          if (shouldTrackProviderStreamActivity(event)) {
+            recordWatchdogActivity(`stream:${event.kind}`);
+          }
           if (!shouldEmitProviderStreamEvent(event, emittedProviderStreamFrameForInvocation)) {
             return;
           }
@@ -507,10 +646,11 @@ export async function runNodeRuntimeLoop(
     },
   };
   const withAbortSignal = (request: ModelRequest): ModelRequest => {
-    const effectiveSignal = nodeTimeoutSignal ?? deps.signal;
+    activeOperationAbortController = new AbortController();
+    const effectiveSignal = mergeAbortSignals(request.signal, deps.signal, activeOperationAbortController.signal);
     return {
       ...request,
-      signal: request.signal ?? effectiveSignal,
+      signal: effectiveSignal,
     };
   };
 
@@ -545,6 +685,17 @@ export async function runNodeRuntimeLoop(
         lastRequestCacheDiagnostics = cacheDiagnostics;
         return response;
       } catch (error) {
+        if (nodeTimeoutError) {
+          const incident = classifyRecoveryError(nodeTimeoutError, {
+            surface: "node",
+            nodeId: params.nodeId,
+            agentId: params.agentId,
+            currentState: nodeTimeoutError.state,
+          });
+          const recoveryDecision = recoveryCoordinator.resolve(incident);
+          emitRecoveryDecision(incident, recoveryDecision);
+          throw new RecoveryExhaustedError(incident, recoveryDecision);
+        }
         retryCount += 1;
         const detail = error instanceof Error ? error.message : String(error);
         const incident = classifyRecoveryError(error, {
@@ -667,7 +818,7 @@ export async function runNodeRuntimeLoop(
       nodeLoopController.emitForcedFinalProviderState(state, emitParams);
       return;
     }
-    nodeLoopController.emit(state, emitParams);
+    emitNodeRuntimeStateDirect(state, emitParams);
   };
   const toolExecutionContext: RuntimeToolExecutionContext = {
     ...middlewareContext,
@@ -699,6 +850,10 @@ export async function runNodeRuntimeLoop(
               allowRisky,
               currentAgentId: params.agentId,
               currentNodeId: params.nodeId,
+              signal: (() => {
+                activeOperationAbortController = new AbortController();
+                return mergeAbortSignals(deps.signal, activeOperationAbortController.signal);
+              })(),
             });
         if (cacheKey && !cacheHit) {
           runtimeToolResultCache.set(cacheKey, execution.output);

@@ -301,7 +301,8 @@ describe("runtime kernel architecture guards", () => {
     expect(source).toContain("onInvalidTransition: \"throw\"");
     expect(source).toContain("kind: \"runtime_diagnostic\"");
     expect(source).toContain("source: \"node_loop_transition\"");
-    expect(source).toContain("const emitNodeRuntimeState = nodeLoopController.emit");
+    expect(source).toContain("const emitNodeRuntimeState: RunNodeRuntimeLoopDeps[\"emitNodeRuntimeState\"]");
+    expect(source).toContain("const emitNodeRuntimeStateDirect = nodeLoopController.emit");
     expect(transitionSource).toContain("export class NodeLoopReducer");
     expect(transitionSource).toContain("deps.allowedTransitions ?? CORE_NODE_RUNTIME_TRANSITIONS");
     expect(transitionSource).toContain("reduce(state: NodeRuntimeLoopState): NodeLoopReduction");

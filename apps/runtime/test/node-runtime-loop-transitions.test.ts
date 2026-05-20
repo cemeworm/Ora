@@ -42,6 +42,19 @@ function expectNoTransitionDiagnostics(events: Parameters<typeof nodeLoopTransit
   expect(nodeLoopTransitionDiagnostics(events)).toEqual([]);
 }
 
+async function waitFor(predicate: () => boolean | Promise<boolean>, timeoutMs = 1_000) {
+  const startedAt = Date.now();
+  while (true) {
+    if (await predicate()) {
+      return;
+    }
+    if (Date.now() - startedAt > timeoutMs) {
+      throw new Error(`Timed out after ${timeoutMs}ms.`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
 describe("node runtime loop transition contract", () => {
   it("does not treat provider stream frames as node loop states by default", () => {
     const events = [
@@ -285,6 +298,36 @@ describe("node runtime loop transition contract", () => {
       { from: "tool_running", to: "degraded" },
       { from: "degraded", to: "repairing" },
       { from: "repairing", to: "running_model" },
+    ]);
+  });
+
+  it("accepts running_model to degraded as a controlled recovery transition", () => {
+    expect(nodeLoopTransitionResult("recovery_decision", {
+      from: "running_model",
+      to: "degraded",
+    })).toEqual({
+      kind: "recovery_decision",
+      transition: {
+        from: "running_model",
+        to: "degraded",
+      },
+      valid: true,
+    });
+
+    const controller = new NodeLoopController({
+      emit: () => undefined,
+      onInvalidTransition: "throw",
+    });
+    controller.emit("pending", { agentId: ORA_ROOT_AGENT_ID });
+    controller.emitModelRequest({ agentId: ORA_ROOT_AGENT_ID });
+    controller.emitRecoveryState("degraded", {
+      agentId: ORA_ROOT_AGENT_ID,
+      reason: "node_idle_timeout",
+    });
+
+    expect(controller.transitions).toEqual([
+      { from: "pending", to: "running_model" },
+      { from: "running_model", to: "degraded" },
     ]);
   });
 
@@ -2030,6 +2073,295 @@ describe("node runtime loop transition contract", () => {
       }
     }
   });
+
+  it("fails cleanly when tool execution goes idle past the node timeout", async () => {
+    const handle = createRuntimeMethodHandler(createTempStore());
+    const previousFetch = globalThis.fetch;
+    const previousKey = process.env.NODE_LOOP_TOOL_TIMEOUT_KEY;
+    process.env.NODE_LOOP_TOOL_TIMEOUT_KEY = "test";
+    let providerCalls = 0;
+
+    globalThis.fetch = (async (input, init) => {
+      if (String(input) === "https://example.com/node-loop-tool-timeout") {
+        return await new Promise((_resolve, reject) => {
+          const abort = () => reject(init?.signal?.reason ?? new Error("aborted"));
+          if (init?.signal?.aborted) {
+            abort();
+            return;
+          }
+          init?.signal?.addEventListener("abort", abort, { once: true });
+        });
+      }
+
+      providerCalls += 1;
+      return new Response(JSON.stringify({
+        choices: [{
+          finish_reason: "tool_calls",
+          message: {
+            content: null,
+            tool_calls: [{
+              id: "call-timeout",
+              type: "function",
+              function: {
+                name: "web__fetch",
+                arguments: "{\"url\":\"https://example.com/node-loop-tool-timeout\"}",
+              },
+            }],
+          },
+        }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    try {
+      const cloned = await handle({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "modes.cloneFromPreset",
+        params: {
+          sourceModeId: SINGLE_AGENT_MODE_ID,
+          modeId: "node-loop-tool-timeout",
+          label: "Node Loop Tool Timeout",
+        },
+      }) as any;
+
+      await handle({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "modes.update",
+        params: {
+          modeId: cloned.id,
+          spec: {
+            ...cloned,
+            nodes: cloned.nodes.map((node: any) => ({
+              ...node,
+              config: {
+                ...node.config,
+                timeoutMs: 20,
+              },
+            })),
+          },
+        },
+      });
+
+      const run = await handle({
+        jsonrpc: "2.0",
+        id: 3,
+        method: "runs.start",
+        params: {
+          input: { prompt: "Fetch the page even if the tool hangs." },
+          config: {
+            modeId: cloned.id,
+            providerId: "node-loop-tool-timeout",
+            modelRef: "node-loop-tool-timeout-model",
+            providerConfig: {
+              id: "node-loop-tool-timeout",
+              label: "Node Loop Tool Timeout",
+              type: "openai_compatible",
+              modelId: "node-loop-tool-timeout-model",
+              baseUrl: "https://node-loop-tool-timeout.test/v1",
+              apiKeyEnv: "NODE_LOOP_TOOL_TIMEOUT_KEY",
+              capabilities: ["chat", "tool_use"],
+              headers: {},
+            },
+            toolIds: ["web.fetch"],
+          },
+        },
+      }) as { runId: string; status: string };
+
+      const state = StateSnapshotSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: 4,
+        method: "runs.state",
+        params: { runId: run.runId },
+      }));
+      const states = nodeRuntimeStateSequence(state.events, { agentId: ORA_ROOT_AGENT_ID });
+
+      expect(run.status).toBe("failed");
+      expect(state.status).toBe("failed");
+      expect(providerCalls).toBeGreaterThanOrEqual(1);
+      expect(containsStateSubsequence(states, [
+        "pending",
+        "running_model",
+        "tool_requested",
+        "tool_running",
+        "degraded",
+      ]), states.join(" -> ")).toBe(true);
+      expect(nodeLoopTransitionDiagnostics(state.events)).toEqual([]);
+      expect(state.toolCalls).toEqual([
+        expect.objectContaining({
+          providerCallId: "call-timeout",
+          toolId: "web.fetch",
+          status: "failed",
+        }),
+      ]);
+      expect(state.events.map((event) => event.type)).toContain("run.failed");
+      expect(state.error).toContain("Node idle timeout after 20ms without progress.");
+    } finally {
+      globalThis.fetch = previousFetch;
+      if (previousKey === undefined) {
+        delete process.env.NODE_LOOP_TOOL_TIMEOUT_KEY;
+      } else {
+        process.env.NODE_LOOP_TOOL_TIMEOUT_KEY = previousKey;
+      }
+    }
+  });
+
+  it("allows streaming keepalive progress to outlive the old absolute timeout threshold", async () => {
+    const handle = createRuntimeMethodHandler(createTempStore());
+    const previousFetch = globalThis.fetch;
+    const previousKey = process.env.NODE_LOOP_KEEPALIVE_KEY;
+    const encoder = new TextEncoder();
+    const timeoutMs = 50;
+    const streamIntervalMs = 10;
+    const streamedChunks = [
+      "alpha ",
+      "beta ",
+      "gamma ",
+      "delta ",
+      "epsilon ",
+      "zeta ",
+      "eta ",
+      "theta ",
+      "iota ",
+      "kappa ",
+      "lambda ",
+      "mu",
+    ];
+    process.env.NODE_LOOP_KEEPALIVE_KEY = "test";
+    let providerCalls = 0;
+
+    globalThis.fetch = (async () => {
+      providerCalls += 1;
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          let chunkIndex = 0;
+          const emitNext = () => {
+            if (chunkIndex >= streamedChunks.length) {
+              controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+              controller.close();
+              return;
+            }
+            const chunk = streamedChunks[chunkIndex++];
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify({
+              choices: [{ delta: { content: chunk } }],
+            })}\n\n`));
+            setTimeout(emitNext, streamIntervalMs);
+          };
+          setTimeout(emitNext, streamIntervalMs);
+        },
+      });
+
+      return new Response(body, {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    }) as typeof fetch;
+
+    try {
+      const cloned = await handle({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "modes.cloneFromPreset",
+        params: {
+          sourceModeId: SINGLE_AGENT_MODE_ID,
+          modeId: "node-loop-stream-keepalive",
+          label: "Node Loop Stream Keepalive",
+        },
+      }) as any;
+
+      await handle({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "modes.update",
+        params: {
+          modeId: cloned.id,
+          spec: {
+            ...cloned,
+            nodes: cloned.nodes.map((node: any) => ({
+              ...node,
+              config: {
+                ...node.config,
+                timeoutMs,
+              },
+            })),
+          },
+        },
+      });
+
+      const startedAt = Date.now();
+      const run = await handle({
+        jsonrpc: "2.0",
+        id: 3,
+        method: "runs.startStreaming",
+        params: {
+          input: { prompt: "Keep streaming progress without timing out." },
+          config: {
+            modeId: cloned.id,
+            providerId: "node-loop-stream-keepalive",
+            modelRef: "node-loop-stream-keepalive-model",
+            providerConfig: {
+              id: "node-loop-stream-keepalive",
+              label: "Node Loop Stream Keepalive",
+              type: "openai_compatible",
+              modelId: "node-loop-stream-keepalive-model",
+              baseUrl: "https://node-loop-stream-keepalive.test/v1",
+              apiKeyEnv: "NODE_LOOP_KEEPALIVE_KEY",
+              capabilities: ["chat"],
+              headers: {},
+              timeoutMs,
+            },
+          },
+        },
+      }) as { runId: string; status: string };
+
+      expect(run.status).toBe("running");
+
+      let terminalStatus = "running";
+      await waitFor(async () => {
+        const current = StateSnapshotSchema.parse(await handle({
+          jsonrpc: "2.0",
+          id: 4,
+          method: "runs.state",
+          params: { runId: run.runId },
+        }));
+        terminalStatus = current.status;
+        return current.status !== "running";
+      }, 10_000);
+
+      const elapsedMs = Date.now() - startedAt;
+      const state = StateSnapshotSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: 5,
+        method: "runs.state",
+        params: { runId: run.runId },
+      }));
+      const states = nodeRuntimeStateSequence(state.events, { agentId: ORA_ROOT_AGENT_ID });
+      const eventTypes = state.events.map((event) => event.type);
+      const tokenDeltaEvents = state.events.filter((event) => event.type === "token.delta");
+
+      expect(terminalStatus).toBe("succeeded");
+      expect(state.status).toBe("succeeded");
+      expect(providerCalls).toBeGreaterThanOrEqual(1);
+      expect(elapsedMs).toBeGreaterThan(timeoutMs * 2);
+      expect(containsStateSubsequence(states, [
+        "pending",
+        "running_model",
+        "completed",
+      ]), states.join(" -> ")).toBe(true);
+      expect(states).not.toContain("degraded");
+      expectNoTransitionDiagnostics(state.events);
+      expect(eventTypes).not.toContain("run.failed");
+      expect(tokenDeltaEvents.length).toBeGreaterThanOrEqual(streamedChunks.length);
+      expect(state.output?.text).toContain(streamedChunks.join(""));
+    } finally {
+      globalThis.fetch = previousFetch;
+      if (previousKey === undefined) {
+        delete process.env.NODE_LOOP_KEEPALIVE_KEY;
+      } else {
+        process.env.NODE_LOOP_KEEPALIVE_KEY = previousKey;
+      }
+    }
+  }, 15_000);
 
   it("documents the retry recovery transition path", async () => {
     const handle = createRuntimeMethodHandler(createTempStore());
