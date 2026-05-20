@@ -334,6 +334,63 @@ describe("run streaming", () => {
     expect(streams[0]?.snapshot).toBeUndefined();
   });
 
+  it("attaches a running snapshot after multiple public message deltas accumulate", () => {
+    const firstDelta = event({
+      seq: 0,
+      type: "message.delta",
+      payload: { role: "assistant", content: "Hel", delta: "Hel", streaming: true },
+    });
+    const secondDelta = event({
+      seq: 1,
+      type: "message.delta",
+      payload: { role: "assistant", content: "lo", delta: "lo", streaming: true },
+    });
+    const afterFirst = applyStreamingRunEvent(snapshot(), firstDelta);
+    const afterSecond = applyStreamingRunEvent(afterFirst, secondDelta);
+    const streams: Parameters<NonNullable<Parameters<typeof publishRunStream>[0]["onStream"]>>[0][] = [];
+
+    publishRunStream({
+      onStream: (stream) => streams.push(stream),
+      runId: "run-test",
+      events: [secondDelta, event({ seq: 2, type: "node.updated" })],
+      liveSnapshot: afterSecond,
+    });
+
+    expect(streams[0]?.snapshot?.events).toHaveLength(2);
+    expect(streams[0]?.snapshot?.events.at(-1)?.seq).toBe(1);
+  });
+
+  it("does not count collaboration deltas toward running snapshot attachment", () => {
+    const publicDelta = event({
+      seq: 0,
+      type: "message.delta",
+      payload: { role: "assistant", content: "hello", delta: "hello", streaming: true },
+    });
+    const collaborationDelta = event({
+      seq: 1,
+      type: "message.delta",
+      payload: {
+        role: "assistant",
+        content: "internal",
+        delta: "internal",
+        streaming: true,
+        visibility: "collaboration",
+      },
+    });
+    const afterPublic = applyStreamingRunEvent(snapshot(), publicDelta);
+    const afterCollaboration = applyStreamingRunEvent(afterPublic, collaborationDelta);
+    const streams: Parameters<NonNullable<Parameters<typeof publishRunStream>[0]["onStream"]>>[0][] = [];
+
+    publishRunStream({
+      onStream: (stream) => streams.push(stream),
+      runId: "run-test",
+      events: [collaborationDelta, event({ seq: 2, type: "node.updated" })],
+      liveSnapshot: afterCollaboration,
+    });
+
+    expect(streams[0]?.snapshot).toBeUndefined();
+  });
+
   it("publishes pure delta before cache so visible stream is not blocked by ledger flush", () => {
     const callOrder: string[] = [];
     const cacheRun = vi.fn(() => { callOrder.push("cacheRun"); });

@@ -208,37 +208,48 @@ function compareCaseResult(
 }
 
 function buildMetricAggregates(cases: CaseComparison[]): MetricAggregate[] {
-  const metricMap = new Map<string, number[]>();
+  const metricMap = new Map<string, {
+    deltas: number[];
+    sumA: number;
+    sumB: number;
+    count: number;
+    wins: number;
+    losses: number;
+    ties: number;
+  }>();
   for (const c of cases) {
     for (const m of c.metricDeltas) {
-      const deltas = metricMap.get(m.metricId) ?? [];
-      deltas.push(m.delta);
-      metricMap.set(m.metricId, deltas);
+      const aggregate = metricMap.get(m.metricId) ?? {
+        deltas: [],
+        sumA: 0,
+        sumB: 0,
+        count: 0,
+        wins: 0,
+        losses: 0,
+        ties: 0,
+      };
+      aggregate.deltas.push(m.delta);
+      aggregate.sumA += m.scoreA;
+      aggregate.sumB += m.scoreB;
+      aggregate.count += 1;
+      if (m.delta > 0.01) {
+        aggregate.wins += 1;
+      } else if (m.delta < -0.01) {
+        aggregate.losses += 1;
+      } else {
+        aggregate.ties += 1;
+      }
+      metricMap.set(m.metricId, aggregate);
     }
   }
 
   const aggregates: MetricAggregate[] = [];
-  for (const [metricId, deltas] of metricMap) {
+  for (const [metricId, aggregate] of metricMap) {
+    const { deltas, sumA, sumB, count, wins, losses, ties } = aggregate;
     const sorted = [...deltas].sort((a, b) => a - b);
     const mean = deltas.reduce((s, d) => s + d, 0) / deltas.length;
     const median = sorted[Math.floor(sorted.length / 2)] ?? 0;
-    const wins = deltas.filter((d) => d > 0.01).length;
-    const losses = deltas.filter((d) => d < -0.01).length;
-    const ties = deltas.filter((d) => Math.abs(d) <= 0.01).length;
     const n = deltas.length || 1;
-
-    // Compute means of A and B from the cases
-    let sumA = 0;
-    let sumB = 0;
-    let count = 0;
-    for (const c of cases) {
-      const entry = c.metricDeltas.find((m) => m.metricId === metricId);
-      if (entry) {
-        sumA += entry.scoreA;
-        sumB += entry.scoreB;
-        count++;
-      }
-    }
 
     // Paired t-test and Cohen's d
     const stats = n >= 2 ? pairedTTest(deltas) : { pValue: undefined, cohensD: undefined, significant: undefined };
@@ -375,7 +386,8 @@ function computeNetLift(
   configAId?: string,
   configBId?: string
 ): NetLift {
-  const byId = (id: string) => aggregates.find((a) => a.metricId === id)?.meanDelta ?? 0;
+  const aggregateById = new Map(aggregates.map((aggregate) => [aggregate.metricId, aggregate]));
+  const byId = (id: string) => aggregateById.get(id)?.meanDelta ?? 0;
 
   const outcomeLift =
     byId("task_success_rate") * 0.30 +
@@ -410,7 +422,8 @@ function computeVerdict(
   aggregates: MetricAggregate[],
   cases: CaseComparison[]
 ): { conditions: ConditionCheck[]; overall: ComparisonVerdict } {
-  const byId = (id: string) => aggregates.find((a) => a.metricId === id);
+  const aggregateById = new Map(aggregates.map((aggregate) => [aggregate.metricId, aggregate]));
+  const byId = (id: string) => aggregateById.get(id);
 
   const effInt = byId("effective_intervention");
   const intentRes = byId("intent_resolution");

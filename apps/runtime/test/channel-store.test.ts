@@ -114,4 +114,53 @@ describe("ChannelStore", () => {
     expect(store.retryDelivery({ deliveryId: delivery.deliveryId }).status).toBe("queued");
     expect(store.listDeliveries({ channelId: config.channelId })).toHaveLength(1);
   });
+
+  it("returns empty channel lists when limit is zero", () => {
+    const backend = new SqliteRuntimePersistence(path.join(tempDir, "runtime.db"));
+    const store = new ChannelStore(backend, { clock, idFactory });
+    const config = store.createConfig({
+      label: "HTTP Webhook",
+      kind: "http_webhook",
+      config: {
+        callbackUrl: "http://localhost:9876/callback",
+        token: "secret-token",
+      },
+    });
+
+    const binding = store.createBinding({
+      channelId: config.channelId,
+      externalChatId: "chat-1",
+      sessionId: "session-1",
+    });
+    store.recordInbound({
+      id: "inbound-1",
+      channelId: config.channelId,
+      channelKind: config.kind,
+      externalMessageId: "msg-1",
+      externalChatId: "chat-1",
+      type: "chat",
+      text: "hello",
+      attachments: [],
+      receivedAt: 1,
+      metadata: {},
+    });
+    store.createDelivery({
+      id: "outbound-1",
+      channelId: config.channelId,
+      bindingId: binding.bindingId,
+      sessionId: binding.sessionId,
+      runId: "run-1",
+      externalChatId: "chat-1",
+      text: "hello back",
+      isFinal: true,
+      kind: "final",
+      attachments: [],
+      createdAt: 2,
+      metadata: {},
+    });
+
+    expect(backend.listChannelBindings({ limit: 0 })).toEqual([]);
+    expect(backend.listChannelMessages({ limit: 0 })).toEqual([]);
+    expect(backend.listChannelDeliveries({ limit: 0 })).toEqual([]);
+  });
 });

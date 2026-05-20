@@ -1301,38 +1301,44 @@ export function deriveParentCoordinationUpdate(params: {
   ParentCoordinationState,
   "phase" | "activeChildIds" | "waitingChildIds" | "blockedByChildIds" | "stalledChildIds" | "recoverableChildIds" | "partialResultChildIds" | "summary"
 > {
-  const activeChildren = params.children
-    .filter((child) => {
-      const phase = child.lifecyclePhase ?? defaultBackgroundLifecyclePhase({
-        status: child.status,
-        hasMeaningfulOutput: child.resultAvailability === "visible_output" || child.resultAvailability === "partial",
-      });
-      return isBackgroundLifecycleActive(phase);
+  const activeChildIds: string[] = [];
+  const waitingChildIds: string[] = [];
+  const blockedByChildIds: string[] = [];
+  const stalledChildIds: string[] = [];
+  const recoverableChildIds: string[] = [];
+  const partialResultChildIds: string[] = [];
+
+  for (const child of params.children) {
+    const phase = child.lifecyclePhase ?? defaultBackgroundLifecyclePhase({
+      status: child.status,
+      hasMeaningfulOutput: child.resultAvailability === "visible_output" || child.resultAvailability === "partial",
     });
-  const activeChildIds = activeChildren.map((child) => child.id);
-  const waitingChildIds = activeChildren
-    .filter((child) => child.coordinationBarrier === "required")
-    .map((child) => child.id);
-  const stalledChildIds = params.children
-    .filter((child) => child.lifecyclePhase === "stalled")
-    .map((child) => child.id);
-  const blockedByChildIds = params.children
-    .filter((child) =>
-      child.coordinationBarrier === "required" &&
-      (waitingChildIds.includes(child.id) || child.lifecyclePhase === "stalled"),
-    )
-    .map((child) => child.id);
-  const recoverableChildIds = params.children
-    .filter((child) => child.lifecyclePhase === "stalled")
-    .map((child) => child.id);
-  const partialResultChildIds = params.children
-    .filter((child) =>
+    const isActive = isBackgroundLifecycleActive(phase);
+    const isRequired = child.coordinationBarrier === "required";
+    const isStalled = child.lifecyclePhase === "stalled";
+    const hasPartialResult =
       child.resultAvailability === "visible_output" ||
       child.resultAvailability === "queued_for_parent" ||
       child.resultAvailability === "consumed" ||
-      child.resultAvailability === "partial",
-    )
-    .map((child) => child.id);
+      child.resultAvailability === "partial";
+
+    if (isActive) {
+      activeChildIds.push(child.id);
+      if (isRequired) {
+        waitingChildIds.push(child.id);
+      }
+    }
+    if (isStalled) {
+      stalledChildIds.push(child.id);
+      recoverableChildIds.push(child.id);
+    }
+    if (isRequired && (isActive || isStalled)) {
+      blockedByChildIds.push(child.id);
+    }
+    if (hasPartialResult) {
+      partialResultChildIds.push(child.id);
+    }
+  }
   const phase = blockedByChildIds.length > 0
     ? "waiting_on_required_children"
     : activeChildIds.length > 0

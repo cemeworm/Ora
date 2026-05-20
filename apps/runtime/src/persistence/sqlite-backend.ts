@@ -159,6 +159,21 @@ CREATE TABLE IF NOT EXISTS channel_deliveries (
 );
 `;
 
+const CREATE_CHANNEL_BINDINGS_LIST_INDEX = `
+CREATE INDEX IF NOT EXISTS idx_channel_bindings_lookup
+ON channel_bindings (channelId, externalChatId, sessionId, updatedAt DESC, bindingId ASC);
+`;
+
+const CREATE_CHANNEL_MESSAGES_LIST_INDEX = `
+CREATE INDEX IF NOT EXISTS idx_channel_messages_lookup
+ON channel_messages (channelId, bindingId, sessionId, createdAt DESC, messageId ASC);
+`;
+
+const CREATE_CHANNEL_DELIVERIES_LIST_INDEX = `
+CREATE INDEX IF NOT EXISTS idx_channel_deliveries_lookup
+ON channel_deliveries (channelId, status, sessionId, runId, updatedAt DESC, deliveryId ASC);
+`;
+
 const SEED_MANIFEST = `
 INSERT INTO manifest (schemaVersion, nextRunNumber, nextSessionNumber, nextProjectNumber)
 SELECT ?, ?, ?, ?
@@ -205,13 +220,10 @@ export class SqliteRuntimePersistence implements RuntimePersistenceBackend {
   private readonly stmtGetChannelConfig: Database.Statement;
   private readonly stmtDeleteChannelConfig: Database.Statement;
   private readonly stmtSaveChannelBinding: Database.Statement;
-  private readonly stmtListChannelBindings: Database.Statement;
   private readonly stmtGetChannelBindingByExternalKey: Database.Statement;
   private readonly stmtSaveChannelMessage: Database.Statement;
-  private readonly stmtListChannelMessages: Database.Statement;
   private readonly stmtGetChannelMessageByExternalId: Database.Statement;
   private readonly stmtSaveChannelDelivery: Database.Statement;
-  private readonly stmtListChannelDeliveries: Database.Statement;
   private readonly stmtGetChannelDelivery: Database.Statement;
 
   constructor(private readonly dbPath: string) {
@@ -232,6 +244,9 @@ export class SqliteRuntimePersistence implements RuntimePersistenceBackend {
     this.db.exec(CREATE_CHANNEL_BINDINGS_TABLE);
     this.db.exec(CREATE_CHANNEL_MESSAGES_TABLE);
     this.db.exec(CREATE_CHANNEL_DELIVERIES_TABLE);
+    this.db.exec(CREATE_CHANNEL_BINDINGS_LIST_INDEX);
+    this.db.exec(CREATE_CHANNEL_MESSAGES_LIST_INDEX);
+    this.db.exec(CREATE_CHANNEL_DELIVERIES_LIST_INDEX);
     this.ensureColumn("manifest", "nextSessionNumber", "INTEGER NOT NULL DEFAULT 1");
     this.ensureColumn("manifest", "nextProjectNumber", "INTEGER NOT NULL DEFAULT 1");
     this.ensureColumn("session_ledger_meta", "updatedAt", "INTEGER NOT NULL DEFAULT 0");
@@ -301,17 +316,14 @@ export class SqliteRuntimePersistence implements RuntimePersistenceBackend {
     this.stmtSaveChannelBinding = this.db.prepare(
       "INSERT INTO channel_bindings (bindingId, channelId, externalChatId, externalThreadId, sessionId, externalUserId, data, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(bindingId) DO UPDATE SET channelId = excluded.channelId, externalChatId = excluded.externalChatId, externalThreadId = excluded.externalThreadId, sessionId = excluded.sessionId, externalUserId = excluded.externalUserId, data = excluded.data, updatedAt = excluded.updatedAt"
     );
-    this.stmtListChannelBindings = this.db.prepare("SELECT data FROM channel_bindings ORDER BY updatedAt DESC, bindingId ASC");
     this.stmtGetChannelBindingByExternalKey = this.db.prepare("SELECT data FROM channel_bindings WHERE channelId = ? AND externalChatId = ? AND COALESCE(externalThreadId, '') = COALESCE(?, '') LIMIT 1");
     this.stmtSaveChannelMessage = this.db.prepare(
       "INSERT INTO channel_messages (messageId, channelId, externalMessageId, bindingId, sessionId, runId, direction, type, data, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(messageId) DO UPDATE SET bindingId = excluded.bindingId, sessionId = excluded.sessionId, runId = excluded.runId, data = excluded.data"
     );
-    this.stmtListChannelMessages = this.db.prepare("SELECT data FROM channel_messages ORDER BY createdAt DESC, messageId ASC");
     this.stmtGetChannelMessageByExternalId = this.db.prepare("SELECT data FROM channel_messages WHERE channelId = ? AND externalMessageId = ? LIMIT 1");
     this.stmtSaveChannelDelivery = this.db.prepare(
       "INSERT INTO channel_deliveries (deliveryId, channelId, outboundMessageId, sessionId, runId, status, attemptCount, nextAttemptAt, lastError, data, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(deliveryId) DO UPDATE SET status = excluded.status, attemptCount = excluded.attemptCount, nextAttemptAt = excluded.nextAttemptAt, lastError = excluded.lastError, data = excluded.data, updatedAt = excluded.updatedAt"
     );
-    this.stmtListChannelDeliveries = this.db.prepare("SELECT data FROM channel_deliveries ORDER BY updatedAt DESC, deliveryId ASC");
     this.stmtGetChannelDelivery = this.db.prepare("SELECT data FROM channel_deliveries WHERE deliveryId = ?");
   }
 
@@ -710,13 +722,31 @@ export class SqliteRuntimePersistence implements RuntimePersistenceBackend {
   }
 
   listChannelBindings(params: { channelId?: string; externalChatId?: string; sessionId?: string; limit?: number } = {}): StoredChannelBinding[] {
-    const rows = this.stmtListChannelBindings.all() as { data: string }[];
-    return rows
-      .map((row) => ChannelBindingSchema.parse(JSON.parse(row.data)))
-      .filter((binding) => params.channelId ? binding.channelId === params.channelId : true)
-      .filter((binding) => params.externalChatId ? binding.externalChatId === params.externalChatId : true)
-      .filter((binding) => params.sessionId ? binding.sessionId === params.sessionId : true)
-      .slice(0, params.limit);
+    if (params.limit !== undefined && params.limit <= 0) {
+      return [];
+    }
+    const clauses: string[] = [];
+    const values: Array<string | number> = [];
+    if (params.channelId) {
+      clauses.push("channelId = ?");
+      values.push(params.channelId);
+    }
+    if (params.externalChatId) {
+      clauses.push("externalChatId = ?");
+      values.push(params.externalChatId);
+    }
+    if (params.sessionId) {
+      clauses.push("sessionId = ?");
+      values.push(params.sessionId);
+    }
+    const where = clauses.length > 0 ? ` WHERE ${clauses.join(" AND ")}` : "";
+    const limit = params.limit && params.limit > 0 ? " LIMIT ?" : "";
+    if (limit) {
+      values.push(params.limit!);
+    }
+    const query = `SELECT data FROM channel_bindings${where} ORDER BY updatedAt DESC, bindingId ASC${limit}`;
+    const rows = this.db.prepare(query).all(...values) as { data: string }[];
+    return rows.map((row) => ChannelBindingSchema.parse(JSON.parse(row.data)));
   }
 
   getChannelBindingByExternalKey(channelId: string, externalChatId: string, externalThreadId?: string): StoredChannelBinding | undefined {
@@ -741,13 +771,31 @@ export class SqliteRuntimePersistence implements RuntimePersistenceBackend {
   }
 
   listChannelMessages(params: { channelId?: string; bindingId?: string; sessionId?: string; limit?: number } = {}): StoredChannelMessage[] {
-    const rows = this.stmtListChannelMessages.all() as { data: string }[];
-    return rows
-      .map((row) => ChannelMessageRecordSchema.parse(JSON.parse(row.data)))
-      .filter((message) => params.channelId ? message.channelId === params.channelId : true)
-      .filter((message) => params.bindingId ? message.bindingId === params.bindingId : true)
-      .filter((message) => params.sessionId ? message.sessionId === params.sessionId : true)
-      .slice(0, params.limit);
+    if (params.limit !== undefined && params.limit <= 0) {
+      return [];
+    }
+    const clauses: string[] = [];
+    const values: Array<string | number> = [];
+    if (params.channelId) {
+      clauses.push("channelId = ?");
+      values.push(params.channelId);
+    }
+    if (params.bindingId) {
+      clauses.push("bindingId = ?");
+      values.push(params.bindingId);
+    }
+    if (params.sessionId) {
+      clauses.push("sessionId = ?");
+      values.push(params.sessionId);
+    }
+    const where = clauses.length > 0 ? ` WHERE ${clauses.join(" AND ")}` : "";
+    const limit = params.limit && params.limit > 0 ? " LIMIT ?" : "";
+    if (limit) {
+      values.push(params.limit!);
+    }
+    const query = `SELECT data FROM channel_messages${where} ORDER BY createdAt DESC, messageId ASC${limit}`;
+    const rows = this.db.prepare(query).all(...values) as { data: string }[];
+    return rows.map((row) => ChannelMessageRecordSchema.parse(JSON.parse(row.data)));
   }
 
   getChannelMessageByExternalId(channelId: string, externalMessageId: string): StoredChannelMessage | undefined {
@@ -774,14 +822,35 @@ export class SqliteRuntimePersistence implements RuntimePersistenceBackend {
   }
 
   listChannelDeliveries(params: { channelId?: string; status?: string; sessionId?: string; runId?: string; limit?: number } = {}): StoredChannelDelivery[] {
-    const rows = this.stmtListChannelDeliveries.all() as { data: string }[];
-    return rows
-      .map((row) => ChannelDeliverySchema.parse(JSON.parse(row.data)))
-      .filter((delivery) => params.channelId ? delivery.channelId === params.channelId : true)
-      .filter((delivery) => params.status ? delivery.status === params.status : true)
-      .filter((delivery) => params.sessionId ? delivery.sessionId === params.sessionId : true)
-      .filter((delivery) => params.runId ? delivery.runId === params.runId : true)
-      .slice(0, params.limit);
+    if (params.limit !== undefined && params.limit <= 0) {
+      return [];
+    }
+    const clauses: string[] = [];
+    const values: Array<string | number> = [];
+    if (params.channelId) {
+      clauses.push("channelId = ?");
+      values.push(params.channelId);
+    }
+    if (params.status) {
+      clauses.push("status = ?");
+      values.push(params.status);
+    }
+    if (params.sessionId) {
+      clauses.push("sessionId = ?");
+      values.push(params.sessionId);
+    }
+    if (params.runId) {
+      clauses.push("runId = ?");
+      values.push(params.runId);
+    }
+    const where = clauses.length > 0 ? ` WHERE ${clauses.join(" AND ")}` : "";
+    const limit = params.limit && params.limit > 0 ? " LIMIT ?" : "";
+    if (limit) {
+      values.push(params.limit!);
+    }
+    const query = `SELECT data FROM channel_deliveries${where} ORDER BY updatedAt DESC, deliveryId ASC${limit}`;
+    const rows = this.db.prepare(query).all(...values) as { data: string }[];
+    return rows.map((row) => ChannelDeliverySchema.parse(JSON.parse(row.data)));
   }
 
   getChannelDelivery(deliveryId: string): StoredChannelDelivery | undefined {

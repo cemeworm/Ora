@@ -2,6 +2,8 @@ import {
   AgentConversationMessageSchema,
   ChildSessionSummarySchema,
   DELTA_EVENT_TYPES,
+  isCollaborationDeltaPayload,
+  isInternalDeltaPayload,
   normalizeRunAttention,
   OraEventEnvelope,
   PASSIVE_EVENT_TYPES,
@@ -14,6 +16,8 @@ import {
   type AgentConversationMessage
 } from "@cemeworm/shared";
 import { createFailedRunEvent, createInterruptedRunEvent, statusForRunEvent } from "./run-orchestration.js";
+
+const publicMessageDeltaCountCache = new WeakMap<StateSnapshot, number>();
 
 export function publishRunStream(params: {
   onStream?: (stream: RunEventStream) => void;
@@ -72,6 +76,7 @@ export function applyStreamingRunEvent(
     liveSnapshot.events.push(event);
     liveSnapshot.status = statusForRunEvent(event.type, liveSnapshot.status);
     liveSnapshot.updatedAt = event.createdAt;
+    notePublicMessageDelta(liveSnapshot, event);
     return liveSnapshot;
   }
 
@@ -79,6 +84,7 @@ export function applyStreamingRunEvent(
     liveSnapshot.events.push(event);
     liveSnapshot.status = statusForRunEvent(event.type, liveSnapshot.status);
     liveSnapshot.updatedAt = event.createdAt;
+    notePublicMessageDelta(liveSnapshot, event);
     if (event.type === "agent.message") {
       liveSnapshot.agentMessages = mergeStreamingAgentMessage(liveSnapshot.agentMessages, event);
     }
@@ -89,6 +95,7 @@ export function applyStreamingRunEvent(
     liveSnapshot.events.push(event);
     liveSnapshot.status = statusForRunEvent(event.type, liveSnapshot.status);
     liveSnapshot.updatedAt = event.createdAt;
+    notePublicMessageDelta(liveSnapshot, event);
     return liveSnapshot;
   }
 
@@ -101,7 +108,12 @@ export function applyStreamingRunEvent(
     agentMessages: mergeStreamingAgentMessage(liveSnapshot.agentMessages, event),
     updatedAt: event.createdAt,
   };
-  return normalizeRunAttention(StateSnapshotSchema.parse(next));
+  const normalized = normalizeRunAttention(StateSnapshotSchema.parse(next));
+  setPublicMessageDeltaCount(
+    normalized,
+    getPublicMessageDeltaCount(liveSnapshot) + (isPublicMessageDeltaEvent(event) ? 1 : 0),
+  );
+  return normalized;
 }
 
 export const noProjectionEventTypes = new Set([
@@ -409,10 +421,44 @@ function shouldAttachRunningLiveSnapshot(events: readonly OraEventEnvelope[], li
   if (!events.some((event) => event.type === "message.delta" || event.type === "token.delta")) {
     return false;
   }
-  return liveSnapshot.events.filter((event) =>
-    event.type === "message.delta" &&
-    (!event.payload || typeof event.payload !== "object" || (event.payload as Record<string, unknown>).visibility !== "internal")
-  ).length > 1;
+  return getPublicMessageDeltaCount(liveSnapshot) > 1;
+}
+
+function notePublicMessageDelta(snapshot: StateSnapshot, event: OraEventEnvelope): void {
+  if (!isPublicMessageDeltaEvent(event)) {
+    return;
+  }
+  setPublicMessageDeltaCount(snapshot, getPublicMessageDeltaCount(snapshot) + 1);
+}
+
+function getPublicMessageDeltaCount(snapshot: StateSnapshot): number {
+  const cached = publicMessageDeltaCountCache.get(snapshot);
+  if (cached !== undefined) {
+    return cached;
+  }
+  let count = 0;
+  for (const event of snapshot.events) {
+    if (isPublicMessageDeltaEvent(event)) {
+      count += 1;
+    }
+  }
+  publicMessageDeltaCountCache.set(snapshot, count);
+  return count;
+}
+
+function setPublicMessageDeltaCount(snapshot: StateSnapshot, count: number): void {
+  publicMessageDeltaCountCache.set(snapshot, count);
+}
+
+function isPublicMessageDeltaEvent(event: OraEventEnvelope): boolean {
+  if (event.type !== "message.delta") {
+    return false;
+  }
+  if (!isRecord(event.payload)) {
+    return true;
+  }
+  const payload = event.payload as Record<string, unknown>;
+  return !isInternalDeltaPayload(payload) && !isCollaborationDeltaPayload(payload);
 }
 
 export function createStreamingFailure(params: {
