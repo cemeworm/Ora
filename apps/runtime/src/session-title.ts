@@ -104,7 +104,7 @@ export function defaultSessionTitle(prompt: string): string {
   return trimmed.length > 0 ? trimmed.slice(0, 120) : DEFAULT_SESSION_TITLE;
 }
 
-function shouldGenerateSessionTitle(snapshot: StateSnapshot, existingTitle: string | undefined): boolean {
+export function shouldGenerateSessionTitle(snapshot: StateSnapshot, existingTitle: string | undefined): boolean {
   if (!snapshot.sessionId || snapshot.status === "queued" || snapshot.status === "running") {
     return false;
   }
