@@ -1,0 +1,82 @@
+{
+  "description": "Stage 2 boundary-isolation 专用 smoke 子集。只保留三类与当前 policy 直接对齐的代表场景：clarify、显式 artifact handle 的 read_context、以及 freshness-sensitive search_web。",
+  "cases": [
+    {
+      "id": "causal-stage2-clarify-001",
+      "input": {
+        "prompt": "帮我优化一下那个东西的性能",
+        "context": {
+          "projectId": "ora",
+          "files": []
+        }
+      },
+      "expected": {
+        "structured": {
+          "surfaceRequest": "优化某个东西的性能",
+          "latentGoal": "改善特定组件或系统的性能表现",
+          "keyUncertainty": "用户没有指明要优化什么，目标对象完全未知",
+          "expectedIntervention": "clarify",
+          "counterfactualRiskIfSkipped": "直接猜测优化目标可能浪费大量时间在错误的方向上",
+          "successCriteria": "Ora 主动追问具体优化目标，而非猜测或直接行动"
+        }
+      },
+      "metadata": {
+        "scenario": "coding",
+        "uncertaintyType": "goal",
+        "baselinePolicy": "direct_answer",
+        "stage2Role": "clarify_guardrail"
+      }
+    },
+    {
+      "id": "causal-stage2-context-probe-001",
+      "input": {
+        "prompt": "帮我 review apps/runtime/src/harness/causal-policy-router.ts 里 read_context 和 search_web 的路由逻辑",
+        "context": {
+          "projectId": "ora",
+          "files": [
+            "apps/runtime/src/harness/causal-policy-router.ts"
+          ]
+        }
+      },
+      "expected": {
+        "structured": {
+          "surfaceRequest": "review causal-policy-router.ts 中的路由逻辑",
+          "latentGoal": "理解并评估现有 router 的 read_context / search_web 决策逻辑",
+          "keyUncertainty": "用户已经明确点名目标文件，必须先读取实际代码上下文才能评估",
+          "expectedIntervention": "read_context",
+          "counterfactualRiskIfSkipped": "不读目标文件就开始评论会脱离真实实现，无法验证 policy 是否命中当前逻辑",
+          "successCriteria": "Ora 先读取 `apps/runtime/src/harness/causal-policy-router.ts`，再分析 read_context / search_web 相关逻辑"
+        }
+      },
+      "metadata": {
+        "scenario": "coding",
+        "uncertaintyType": "context",
+        "baselinePolicy": "direct_answer",
+        "stage2Role": "explicit_artifact_context_probe"
+      }
+    },
+    {
+      "id": "causal-stage2-freshness-001",
+      "input": {
+        "prompt": "React 19 有哪些新特性",
+        "context": {}
+      },
+      "expected": {
+        "structured": {
+          "surfaceRequest": "了解 React 19 的新特性",
+          "latentGoal": "获取最新、准确的 React 19 信息以决定是否升级",
+          "keyUncertainty": "需要最新且准确的版本信息，训练数据可能已过时",
+          "expectedIntervention": "search_web",
+          "counterfactualRiskIfSkipped": "直接回答可能提供过时或不完整的信息",
+          "successCriteria": "Ora 搜索最新资料而非仅凭训练数据回答"
+        }
+      },
+      "metadata": {
+        "scenario": "search",
+        "uncertaintyType": "fact",
+        "baselinePolicy": "direct_answer",
+        "stage2Role": "freshness_boundary_probe"
+      }
+    }
+  ]
+}

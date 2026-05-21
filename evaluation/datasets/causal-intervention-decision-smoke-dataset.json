@@ -1,0 +1,82 @@
+{
+  "description": "Causal intervention decision 的 3-case smoke 子集。用于在最小成本下覆盖 clarify、read_context、search_web 三类核心决策边界，并为 Stage 2 boundary-isolation 评测提供可复现输入。",
+  "cases": [
+    {
+      "id": "causal-agent-001",
+      "input": {
+        "prompt": "帮我优化一下那个东西的性能",
+        "context": {
+          "projectId": "ora",
+          "files": []
+        }
+      },
+      "expected": {
+        "structured": {
+          "surfaceRequest": "优化某个东西的性能",
+          "latentGoal": "改善特定组件或系统的性能表现",
+          "keyUncertainty": "用户没有指明要优化什么，目标对象完全未知",
+          "expectedIntervention": "clarify",
+          "counterfactualRiskIfSkipped": "直接猜测优化目标可能浪费大量时间在错误的方向上",
+          "successCriteria": "Ora 主动追问具体优化目标，而非猜测或直接行动"
+        }
+      },
+      "metadata": {
+        "scenario": "coding",
+        "uncertaintyType": "goal",
+        "baselinePolicy": "direct_answer",
+        "smokeRole": "clarify_representative"
+      }
+    },
+    {
+      "id": "causal-agent-004",
+      "input": {
+        "prompt": "帮我写一个函数处理用户登录",
+        "context": {
+          "projectId": "ora",
+          "files": [
+            "auth.ts"
+          ]
+        }
+      },
+      "expected": {
+        "structured": {
+          "surfaceRequest": "编写登录处理函数",
+          "latentGoal": "实现安全的用户认证功能",
+          "keyUncertainty": "认证方式未明确，缺少现有auth.ts的上下文",
+          "expectedIntervention": "read_context",
+          "counterfactualRiskIfSkipped": "不读现有代码可能与现有架构冲突",
+          "successCriteria": "Ora 先读取auth.ts了解现有认证逻辑再编写代码"
+        }
+      },
+      "metadata": {
+        "scenario": "coding",
+        "uncertaintyType": "context",
+        "baselinePolicy": "direct_answer",
+        "smokeRole": "context_probe_representative"
+      }
+    },
+    {
+      "id": "causal-agent-005",
+      "input": {
+        "prompt": "React 19 有哪些新特性",
+        "context": {}
+      },
+      "expected": {
+        "structured": {
+          "surfaceRequest": "了解React 19的新特性",
+          "latentGoal": "获取最新、准确的React 19信息以决定是否升级",
+          "keyUncertainty": "需要最新且准确的版本信息，训练数据可能已过时",
+          "expectedIntervention": "search_web",
+          "counterfactualRiskIfSkipped": "直接回答可能提供过时或不完整的信息",
+          "successCriteria": "Ora 搜索最新资料而非仅凭训练数据回答"
+        }
+      },
+      "metadata": {
+        "scenario": "search",
+        "uncertaintyType": "fact",
+        "baselinePolicy": "direct_answer",
+        "smokeRole": "freshness_boundary_representative"
+      }
+    }
+  ]
+}

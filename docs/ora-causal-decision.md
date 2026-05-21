@@ -2,7 +2,7 @@
 
 Ora 的 Causal Decision 已经不是单一的策略路由器，而是一套贯穿 runtime、Trail、Evaluation 和 feedback loop 的五层系统。
 
-> **最近更新（2026-05-19）**：补入低频 `CausalTaskState` 语义提取、native semantic state 继承、episode 共享语义、结果导向 metrics、three-way comparison、以及按 semantic gap / intervention gap 拆分的 causal insights。
+> **最近更新（2026-05-21）**：`router-v2` 已成为 runtime 默认主线，`freshness_block_policy` 与 `context_probe_policy` 仍保留为显式实验开关；最新 isolated smoke 只支持继续保守保留 `router-v2`，暂不支持把两类 Stage 2 boundary 作为默认行为放量。
 
 ## 阅读地图
 
@@ -65,6 +65,8 @@ prompt / clarification / tool context
 - `action`
 - `policyDecision`
 - `decisionRecord`
+
+当前 runtime 默认使用 `router-v2`。若需要阶段性回滚，可通过 `RunConfig.metadata.causalRouterVersion = "v1"` 显式恢复旧路由。
 
 动作优先级当前是：
 
@@ -217,7 +219,22 @@ Net Lift 已调整成 **结果优先**，不再主要依赖过程启发式。
 - `evaluation/specs/causal-full-three-way.json`
 - `evaluation/specs/causal-ab-comparison.spec.json`
 
-### 5.3 failure taxonomy
+### 5.3 dual reporting 与 dataset split
+
+Stage 3 现在已经补上了最小 dual reporting 结构：
+
+- `EvaluationScorecard.reportingViews`
+  - 当前内建两种视角：`legacy_oracle_result` 与 `value_aligned_result`
+- `report.scorecard.slices`
+  - 除了原有 tag / taskType / difficulty，现还会按 `scenario`、`uncertaintyType`、`reportingView`、`contextProbeClass`、`freshnessClass` 等维度聚合
+- `decisionSurface`
+  - 如果 dataset metadata 没显式填写，会自动从 `expected.structured.expectedIntervention` 推断，避免为了切片把所有旧 case 全手工重写一遍
+- rollout guard
+  - 该结构目前 behind `spec.metadata.evalV2Reporting === true`，便于 Stage 3 单独回滚
+
+当前设计重点不是“同一 case 用两套 scorer 重算两次”，而是让 dataset 能把旧 oracle 更在意的 case 和 value-aligned case 切开看，从而解释为什么某些 rollout 在旧口径和新口径下会出现分歧。
+
+### 5.4 failure taxonomy
 
 目前因果相关 failure tags 已经开始区分：
 

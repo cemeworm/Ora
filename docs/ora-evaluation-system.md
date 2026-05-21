@@ -2,7 +2,7 @@
 
 本文描述 Ora 的 Evaluation 系统 —— 包括评测数据集管理、Evaluation Compare（A/B 与多配置对比）、结果导向 Net Lift、failure taxonomy，以及评估结果的结构化报告。读完本文，应能理解如何比较两个或多个 evaluation config（如 `record_only` / `advisory` / `enforcing`），以及 verdict 如何从 outcome、过程信号与成本共同推导。
 
-> **最近更新 (2026-05-19)**：three-way comparison、结果优先的 Net Lift、causal outcome metrics、semantic-state / intervention failure taxonomy、multi-config 报告。
+> **最近更新 (2026-05-21)**：新增 Stage 3 dual reporting 基础结构。scorecard/report 现在可以在 `eval_v2_reporting` 开关下同时展示 `legacy_oracle_result` 与 `value_aligned_result` 两种视角，并按 `reportingView`、`contextProbeClass`、`freshnessClass` 等切片解释旧/新口径冲突。
 
 ## 阅读地图
 

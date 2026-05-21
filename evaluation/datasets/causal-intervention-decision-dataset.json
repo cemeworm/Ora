@@ -95,7 +95,11 @@
     "metadata": {
       "scenario": "coding",
       "uncertaintyType": "context",
-      "baselinePolicy": "direct_answer"
+      "baselinePolicy": "direct_answer",
+      "reportingViews": [
+        "legacy_oracle_result"
+      ],
+      "contextProbeClass": "implicit_context_file"
     }
   },
   {
@@ -117,7 +121,8 @@
     "metadata": {
       "scenario": "search",
       "uncertaintyType": "fact",
-      "baselinePolicy": "direct_answer"
+      "baselinePolicy": "direct_answer",
+      "freshnessClass": "pure_info_query"
     }
   },
   {
@@ -243,7 +248,7 @@
   {
     "id": "causal-agent-011",
     "input": {
-      "prompt": "帮我理解这个项目的架构",
+      "prompt": "帮我基于 CLAUDE.md 理解这个项目的架构",
       "context": {
         "projectId": "ora",
         "files": [
@@ -255,16 +260,20 @@
       "structured": {
         "surfaceRequest": "理解项目架构",
         "latentGoal": "建立对项目的整体认知以便后续开发",
-        "keyUncertainty": "需要读取关键文件来了解项目结构",
+        "keyUncertainty": "需要读取用户明确指向的 CLAUDE.md 来了解项目结构",
         "expectedIntervention": "read_context",
         "counterfactualRiskIfSkipped": "没有上下文的解释可能不准确",
-        "successCriteria": "Ora 先读取README/CLAUDE.md/package.json等关键文件"
+        "successCriteria": "Ora 先读取 CLAUDE.md，再基于文档解释项目架构"
       }
     },
     "metadata": {
       "scenario": "coding",
       "uncertaintyType": "context",
-      "baselinePolicy": "direct_answer"
+      "baselinePolicy": "direct_answer",
+      "reportingViews": [
+        "value_aligned_result"
+      ],
+      "contextProbeClass": "explicit_artifact_handle"
     }
   },
   {
