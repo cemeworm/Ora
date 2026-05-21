@@ -4065,4 +4065,40 @@ describe("deriveRenderableTurnSnapshots", () => {
 
     expect(result[runId]).toBeUndefined();
   });
+
+  it("reuses a single runId grouping when latestSnapshot contains interleaved events for multiple turns", () => {
+    const latestSnapshot = testSnapshot({
+      runId: "run-current",
+      sessionId,
+      status: "running",
+      events: [
+        { id: "event-1", runId: "run-older", seq: 1, createdAt: 1_000, type: "message.delta", payload: { content: "older-1" } },
+        { id: "event-2", runId: "run-current", seq: 2, createdAt: 1_001, type: "message.delta", payload: { content: "current" } },
+        { id: "event-3", runId: "run-older", seq: 3, createdAt: 1_002, type: "node.updated", payload: {} },
+      ] as OraStateSnapshot["events"],
+    });
+    const detail: OraSessionDetail = {
+      session: sessionSummary(sessionId),
+      turns: [
+        { runId: "run-older", turnIndex: 1, status: "succeeded", createdAt: 1_000, updatedAt: 1_002 },
+        { runId: "run-current", turnIndex: 2, status: "running", createdAt: 1_001, updatedAt: 1_002 },
+      ],
+      transcript: [],
+      latestSnapshot,
+    };
+
+    const result = deriveRenderableTurnSnapshots({
+      detail,
+      activeSnapshot: latestSnapshot,
+      turnSnapshots: {},
+      selectedSessionId: sessionId,
+      preservedSettledSnapshots: {},
+    });
+
+    expect(result["run-current"]).toBe(latestSnapshot);
+    expect(result["run-older"]).toBeDefined();
+    expect(result["run-older"]?.runId).toBe("run-older");
+    expect(result["run-older"]?.turnIndex).toBe(1);
+    expect(result["run-older"]?.events.map((event) => event.id)).toEqual(["event-1", "event-3"]);
+  });
 });

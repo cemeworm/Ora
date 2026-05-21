@@ -247,6 +247,29 @@ describe("desktop run actions", () => {
     expect(getInteractiveRunId(state)).toBe("run-plan");
   });
 
+  it("prefers the explicitly selected turn runId over the active snapshot when routing interactive commands", () => {
+    const state = stateWithSession({
+      selectedTurnRunId: "run-selected",
+      runLifecycle: {
+        stage: "settled",
+        runId: "run-active",
+        sessionId: "session-empty",
+        prompt: "Active run",
+        createdAt: 1,
+        snapshot: {
+          runId: "run-active",
+          sessionId: "session-empty",
+          status: "running",
+          input: { prompt: "Active run" },
+          updatedAt: 2,
+        } as OraStateSnapshot,
+      },
+    });
+
+    expect(getPlanDecisionResumeRunId(state)).toBe("run-selected");
+    expect(getInteractiveRunId(state)).toBe("run-selected");
+  });
+
   it("falls back to the session attention sourceRunId when accepted plan resume lacks snapshots", () => {
     const state = stateWithSession({
       selectedTurnRunId: undefined,

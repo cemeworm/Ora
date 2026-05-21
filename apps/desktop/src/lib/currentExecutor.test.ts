@@ -15,7 +15,7 @@ function baseSnapshot() {
     topology: { nodes: [], edges: [] },
     agentMessages: [],
     events: [],
-  };
+  } as unknown as Parameters<typeof deriveCurrentExecutorProjection>[0];
 }
 
 describe("deriveCurrentExecutorProjection", () => {
@@ -32,12 +32,12 @@ describe("deriveCurrentExecutorProjection", () => {
         updatedAt: 20,
         startedAt: 10,
         artifactIds: [],
-      }],
+      } as unknown as NonNullable<Parameters<typeof deriveCurrentExecutorProjection>[0]["childSessions"]>[number]],
       activeAgents: [ORA_ROOT_AGENT_ID, "builder"],
       topology: {
         nodes: [
           { id: ORA_ROOT_AGENT_ID, label: ORA_ROOT_AGENT_LABEL, kind: "agent", agentId: ORA_ROOT_AGENT_ID, status: "running", metadata: {} },
-        ],
+        ] as unknown as Parameters<typeof deriveCurrentExecutorProjection>[0]["topology"]["nodes"],
         edges: [],
       },
       events: [{

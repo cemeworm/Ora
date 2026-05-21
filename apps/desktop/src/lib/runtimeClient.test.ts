@@ -253,10 +253,10 @@ describe("desktop runtime client agent catalog", () => {
     expect(builder).toBeDefined();
     expect(ora?.usages.some((usage) => usage.modeId === "global_entry")).toBe(true);
     expect(ora?.usages.some((usage) => usage.modeId === "single_agent")).toBe(true);
-    expect(builder?.usages.some((usage) => usage.modeId === "agent_teams")).toBe(true);
+    expect(builder?.usages.some((usage) => usage.modeId === "code_development")).toBe(true);
     expect(builder?.usages.some((usage) => usage.modeId === "ora_self_builder")).toBe(true);
-    expect(reviewer?.usages.some((usage) => usage.modeId === "agent_teams")).toBe(true);
-    expect(reviewer?.usages.some((usage) => usage.modeId === "deerflow_harness")).toBe(true);
+    expect(reviewer?.usages.some((usage) => usage.modeId === "code_development")).toBe(true);
+    expect(reviewer?.usages.some((usage) => usage.modeId === "review_critique")).toBe(true);
     expect(await client.checkAgentName("builder")).toMatchObject({ available: false, name: "builder" });
     expect(await client.checkAgentName("ora")).toMatchObject({ available: false, name: "ora" });
     await expect(client.createAgent({
@@ -287,7 +287,7 @@ describe("desktop runtime client agent catalog", () => {
     const modes = await client.listModes();
     expect(
       modes.some((mode) =>
-        mode.id === "agent_teams" &&
+        mode.id === "code_development" &&
         mode.profiles.some((profile) => profile.id === "builder" && profile.label === "Build Captain")
       )
     ).toBe(true);

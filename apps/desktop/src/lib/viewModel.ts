@@ -1379,9 +1379,13 @@ export function adaptChatMessages(
       const suppressStoredAssistant = turn.snapshot
         ? shouldSuppressStoredAssistantFallback(turn.snapshot)
         : false;
+      const snapshotAssistantContent = snapshotAssistantView?.content;
       const assistantContent =
-        snapshotAssistantView?.content ??
+        (typeof snapshotAssistantContent === "string" && snapshotAssistantContent.trim().length > 0
+          ? snapshotAssistantContent
+          : undefined) ??
         (suppressStoredAssistant ? undefined : turn.assistant?.content) ??
+        snapshotAssistantContent ??
         placeholderAssistantCopy(turn.snapshot);
       const presentedAssistantTurn = turn.snapshot
         ? assistantTurn
@@ -2177,9 +2181,28 @@ type SnapshotAssistantOverlayIndex = {
   firstAssistantEventSeqByMessageKey: ReadonlyMap<string, number>;
 };
 
+type TurnLiveOverlayIndex = {
+  assistantItemIndexByEventSeq: ReadonlyMap<number, number>;
+  assistantItemIndexById: ReadonlyMap<string, number>;
+  representedTimelineTexts: ReadonlySet<string>;
+  representedTimelineText: string;
+};
+
+type MutableTurnLiveOverlayIndex = {
+  assistantItemIndexByEventSeq: Map<number, number>;
+  assistantItemIndexById: Map<string, number>;
+  representedTimelineTexts: Set<string>;
+  representedTimelineText: string;
+};
+
 const snapshotAssistantOverlayIndexCache = new WeakMap<
   OraStateSnapshot,
   SnapshotAssistantOverlayIndex
+>();
+
+const turnLiveOverlayIndexCache = new WeakMap<
+  AssistantTurnAttachment,
+  TurnLiveOverlayIndex
 >();
 
 function cachedTimelineProjection(snapshot: OraStateSnapshot) {
@@ -2218,6 +2241,52 @@ function cachedSnapshotAssistantOverlayIndex(
   return index;
 }
 
+function cachedTurnLiveOverlayIndex(turn: AssistantTurnAttachment): TurnLiveOverlayIndex {
+  const cached = turnLiveOverlayIndexCache.get(turn);
+  if (cached) {
+    return cached;
+  }
+  const assistantItemIndexByEventSeq = new Map<number, number>();
+  const assistantItemIndexById = new Map<string, number>();
+  const representedTimelineTexts = new Set<string>();
+  let representedTimelineText = "";
+  for (const [index, item] of (turn.timelineItems ?? []).entries()) {
+    if (item.kind === "assistant_text") {
+      if (typeof item.eventSeq === "number") {
+        assistantItemIndexByEventSeq.set(item.eventSeq, index);
+      }
+      assistantItemIndexById.set(item.id, index);
+    }
+    if (!("content" in item)) {
+      continue;
+    }
+    const normalized = normalizeTimelineText(item.content);
+    if (!normalized) {
+      continue;
+    }
+    representedTimelineTexts.add(normalized);
+    representedTimelineText += normalized;
+  }
+  const index = {
+    assistantItemIndexByEventSeq,
+    assistantItemIndexById,
+    representedTimelineTexts,
+    representedTimelineText,
+  } satisfies TurnLiveOverlayIndex;
+  turnLiveOverlayIndexCache.set(turn, index);
+  return index;
+}
+
+function mutableTurnLiveOverlayIndex(turn: AssistantTurnAttachment): MutableTurnLiveOverlayIndex {
+  const cached = cachedTurnLiveOverlayIndex(turn);
+  return {
+    assistantItemIndexByEventSeq: new Map(cached.assistantItemIndexByEventSeq),
+    assistantItemIndexById: new Map(cached.assistantItemIndexById),
+    representedTimelineTexts: new Set(cached.representedTimelineTexts),
+    representedTimelineText: cached.representedTimelineText,
+  };
+}
+
 function overlayLiveTimelineItems(
   turn: AssistantTurnAttachment,
   snapshot: OraStateSnapshot,
@@ -2227,6 +2296,7 @@ function overlayLiveTimelineItems(
   let nextItems = existingItems;
   const projection = cachedTimelineProjection(snapshot);
   const overlayIndex = cachedSnapshotAssistantOverlayIndex(snapshot, projection);
+  const turnOverlayIndex = mutableTurnLiveOverlayIndex(turn);
 
   for (const entry of liveEntries) {
     const content = timelineTextExcludingProposedPlan(entry.content);
@@ -2235,9 +2305,9 @@ function overlayLiveTimelineItems(
     }
     const snapshotItemIndex = findSnapshotAssistantTimelineItemIndexForLiveEntry(
       snapshot,
-      nextItems,
       entry,
       overlayIndex.firstAssistantEventSeqByMessageKey,
+      turnOverlayIndex,
     );
     if (snapshotItemIndex >= 0) {
       const existing = nextItems[snapshotItemIndex];
@@ -2256,25 +2326,88 @@ function overlayLiveTimelineItems(
         agentId: existing.agentId ?? entry.agentId,
         agentLabel: existing.agentLabel ?? agentLabelForTimeline(projection.agentLabels, entry.agentId),
       };
+      rememberRepresentedTimelineText(turnOverlayIndex, content);
       continue;
     }
-    if (isTimelineTextAlreadyRepresented(content, nextItems)) {
+    if (isRepresentedTimelineText(content, turnOverlayIndex)) {
       continue;
     }
     if (nextItems === existingItems) {
       nextItems = [...existingItems];
     }
-    nextItems = insertLiveTimelineItemByCreatedAt(nextItems, overlayIndex.eventTimeBySeq, entry.createdAt, {
+    const insertedItem = {
       id: `${snapshot.runId}:timeline:live:${entry.messageId}`,
       kind: "assistant_text",
       content,
       timestamp: formatElapsed(projection.baseTime, entry.createdAt),
       agentId: entry.agentId,
       agentLabel: agentLabelForTimeline(projection.agentLabels, entry.agentId),
-    });
+    } satisfies TurnTimelineItem;
+    nextItems = insertLiveTimelineItemByCreatedAt(nextItems, overlayIndex.eventTimeBySeq, entry.createdAt, insertedItem);
+    syncTurnLiveOverlayIndexAfterInsert(turnOverlayIndex, nextItems, insertedItem);
   }
 
   return nextItems === existingItems ? turn : { ...turn, timelineItems: nextItems };
+}
+
+function rememberRepresentedTimelineText(
+  overlayIndex: MutableTurnLiveOverlayIndex,
+  content: string,
+): void {
+  const normalized = normalizeTimelineText(content);
+  if (!normalized || overlayIndex.representedTimelineTexts.has(normalized)) {
+    return;
+  }
+  overlayIndex.representedTimelineTexts.add(normalized);
+  overlayIndex.representedTimelineText += normalized;
+}
+
+function isRepresentedTimelineText(
+  content: string,
+  overlayIndex: MutableTurnLiveOverlayIndex,
+): boolean {
+  const normalized = normalizeTimelineText(content);
+  if (!normalized) {
+    return true;
+  }
+  if (overlayIndex.representedTimelineTexts.has(normalized)) {
+    return true;
+  }
+  if (!overlayIndex.representedTimelineText) {
+    return false;
+  }
+  if (overlayIndex.representedTimelineText.includes(normalized)) {
+    return true;
+  }
+  return normalized.includes(overlayIndex.representedTimelineText) &&
+    overlayIndex.representedTimelineText.length >= normalized.length * 0.8;
+}
+
+function syncTurnLiveOverlayIndexAfterInsert(
+  overlayIndex: MutableTurnLiveOverlayIndex,
+  items: readonly TurnTimelineItem[],
+  insertedItem: TurnTimelineItem,
+): void {
+  const insertedIndex = items.findIndex((item) => item.id === insertedItem.id);
+  if (insertedIndex < 0) {
+    return;
+  }
+  for (const [eventSeq, index] of overlayIndex.assistantItemIndexByEventSeq.entries()) {
+    if (index >= insertedIndex) {
+      overlayIndex.assistantItemIndexByEventSeq.set(eventSeq, index + 1);
+    }
+  }
+  for (const [itemId, index] of overlayIndex.assistantItemIndexById.entries()) {
+    if (index >= insertedIndex) {
+      overlayIndex.assistantItemIndexById.set(itemId, index + 1);
+    }
+  }
+  if (insertedItem.kind === "assistant_text") {
+    overlayIndex.assistantItemIndexById.set(insertedItem.id, insertedIndex);
+  }
+  if ("content" in insertedItem) {
+    rememberRepresentedTimelineText(overlayIndex, insertedItem.content);
+  }
 }
 
 function insertLiveTimelineItemByCreatedAt(
@@ -2313,19 +2446,18 @@ function shouldReplaceSnapshotAssistantTextWithLiveContent(
 
 function findSnapshotAssistantTimelineItemIndexForLiveEntry(
   snapshot: OraStateSnapshot,
-  items: readonly TurnTimelineItem[],
   entry: LiveMessageDeltaPreview,
   firstAssistantEventSeqByMessageKey: ReadonlyMap<string, number>,
+  turnOverlayIndex: MutableTurnLiveOverlayIndex,
 ): number {
   const firstSnapshotEventSeq = firstAssistantEventSeqByMessageKey.get(entry.messageId);
   if (firstSnapshotEventSeq === undefined) {
     return -1;
   }
   const expectedItemId = assistantTimelineItemId(snapshot.runId, firstSnapshotEventSeq);
-  return items.findIndex((item) =>
-    item.kind === "assistant_text" &&
-    (item.eventSeq === firstSnapshotEventSeq || item.id === expectedItemId)
-  );
+  return turnOverlayIndex.assistantItemIndexByEventSeq.get(firstSnapshotEventSeq) ??
+    turnOverlayIndex.assistantItemIndexById.get(expectedItemId) ??
+    -1;
 }
 
 function assistantTimelineItemId(runId: string, eventSeq: number): string {
@@ -3204,8 +3336,11 @@ function deriveTimelineItems(
   const hasCompleteFinalProposedPlan = proposedPlan?.hasCompletePlan === true;
   const agentLabels = projection.agentLabels;
   const processStepByEventId = new Map(processSteps.map((step) => [step.id, step]));
+  const visibleEventIds = new Set(visibleEvents.map((event) => event.id));
   const items: Array<{ rawTime: number; eventSeq: number; item: TurnTimelineItem }> = [];
   const emittedNarratives = new Set<string>();
+  const representedTimelineTexts = new Set<string>();
+  let representedTimelineText = "";
   let pendingSteps: TurnProcessStep[] = [];
   let pendingStartedAt = baseTime;
   let pendingSeq = 0;
@@ -3214,6 +3349,41 @@ function deriveTimelineItems(
   let pendingTextSeq = 0;
   let pendingTextAgentId: string | undefined;
   let pendingTextKey: string | undefined;
+
+  function rememberTimelineItemText(item: TurnTimelineItem) {
+    if (!("content" in item)) {
+      return;
+    }
+    const normalized = normalizeTimelineText(item.content);
+    if (!normalized) {
+      return;
+    }
+    representedTimelineTexts.add(normalized);
+    representedTimelineText += normalized;
+  }
+
+  function pushTimelineItem(rawTime: number, eventSeq: number, item: TurnTimelineItem) {
+    items.push({ rawTime, eventSeq, item });
+    rememberTimelineItemText(item);
+  }
+
+  function isRepresentedTimelineText(text: string): boolean {
+    const normalizedText = normalizeTimelineText(text);
+    if (!normalizedText) {
+      return true;
+    }
+    if (representedTimelineTexts.has(normalizedText)) {
+      return true;
+    }
+    if (!representedTimelineText) {
+      return false;
+    }
+    if (representedTimelineText.includes(normalizedText)) {
+      return true;
+    }
+    return normalizedText.includes(representedTimelineText) &&
+      representedTimelineText.length >= normalizedText.length * 0.8;
+  }
 
   function flushPendingText() {
     const content = timelineTextExcludingProposedPlan(pendingTextParts.join(""));
@@ -3230,18 +3400,14 @@ function deriveTimelineItems(
       pendingTextKey = undefined;
       return;
     }
-    items.push({
-      rawTime: pendingTextStartedAt,
+    pushTimelineItem(pendingTextStartedAt, pendingTextSeq, {
+      id: assistantTimelineItemId(snapshot.runId, pendingTextSeq),
+      kind: "assistant_text",
+      content,
+      timestamp: formatElapsed(baseTime, pendingTextStartedAt),
+      agentId,
+      agentLabel: agentLabelForTimeline(agentLabels, agentId),
       eventSeq: pendingTextSeq,
-      item: {
-        id: assistantTimelineItemId(snapshot.runId, pendingTextSeq),
-        kind: "assistant_text",
-        content,
-        timestamp: formatElapsed(baseTime, pendingTextStartedAt),
-        agentId,
-        agentLabel: agentLabelForTimeline(agentLabels, agentId),
-        eventSeq: pendingTextSeq,
-      },
     });
     pendingTextParts = [];
     pendingTextAgentId = undefined;
@@ -3255,20 +3421,16 @@ function deriveTimelineItems(
     const steps = pendingSteps;
     const agentId = dominantStepAgentId(steps);
     const itemStatus = aggregateStepStatus(steps);
-    items.push({
-      rawTime: pendingStartedAt,
+    pushTimelineItem(pendingStartedAt, pendingSeq, {
+      id: `${snapshot.runId}:timeline:status:${pendingSeq}`,
+      kind: "status_group",
+      summary: summarizeProcessSteps(steps, snapshot.status),
+      steps,
+      timestamp: formatElapsed(baseTime, pendingStartedAt),
+      status: itemStatus,
+      agentId,
+      agentLabel: agentLabelForTimeline(agentLabels, agentId),
       eventSeq: pendingSeq,
-      item: {
-        id: `${snapshot.runId}:timeline:status:${pendingSeq}`,
-        kind: "status_group",
-        summary: summarizeProcessSteps(steps, snapshot.status),
-        steps,
-        timestamp: formatElapsed(baseTime, pendingStartedAt),
-        status: itemStatus,
-        agentId,
-        agentLabel: agentLabelForTimeline(agentLabels, agentId),
-        eventSeq: pendingSeq,
-      },
     });
     pendingSteps = [];
   }
@@ -3283,16 +3445,12 @@ function deriveTimelineItems(
       if (!narrativeKey || !emittedNarratives.has(narrativeKey)) {
         flushPendingText();
         flushPendingSteps();
-        items.push({
-          rawTime: event.createdAt,
-          eventSeq: event.seq - 0.25,
-          item: {
-            id: `${event.id}:public-narrative`,
-            kind: "assistant_text",
-            content: publicNarrative,
-            timestamp: formatElapsed(baseTime, event.createdAt),
-            eventSeq: event.seq,
-          },
+        pushTimelineItem(event.createdAt, event.seq - 0.25, {
+          id: `${event.id}:public-narrative`,
+          kind: "assistant_text",
+          content: publicNarrative,
+          timestamp: formatElapsed(baseTime, event.createdAt),
+          eventSeq: event.seq,
         });
         if (narrativeKey) {
           emittedNarratives.add(narrativeKey);
@@ -3311,10 +3469,9 @@ function deriveTimelineItems(
         const agentId = event.agentId ?? "__default__";
         const textKey = assistantDeltaMessageKey(event);
         const pendingText = pendingTextParts.join("");
-        const contentItems = items.map(({ item }) => item);
         const finalDuplicate = isFinalAssistantDelta(event) && (
           (pendingText && isTimelineTextDuplicate(text, pendingText)) ||
-          isTimelineTextAlreadyRepresented(text, contentItems)
+          isRepresentedTimelineText(text)
         );
         if (!finalDuplicate && text) {
           if (
@@ -3350,18 +3507,14 @@ function deriveTimelineItems(
       }
       flushPendingText();
       flushPendingSteps();
-      items.push({
-        rawTime: event.createdAt,
+      pushTimelineItem(event.createdAt, event.seq, {
+        id: `${event.id}:plan-update`,
+        kind: "plan_update",
+        summary: planUpdateSummary(event.payload),
+        timestamp: formatElapsed(baseTime, event.createdAt),
+        agentId: eventAgentId,
+        agentLabel: agentLabelForTimeline(agentLabels, eventAgentId),
         eventSeq: event.seq,
-        item: {
-          id: `${event.id}:plan-update`,
-          kind: "plan_update",
-          summary: planUpdateSummary(event.payload),
-          timestamp: formatElapsed(baseTime, event.createdAt),
-          agentId: eventAgentId,
-          agentLabel: agentLabelForTimeline(agentLabels, eventAgentId),
-          eventSeq: event.seq,
-        },
       });
       continue;
     }
@@ -3373,24 +3526,20 @@ function deriveTimelineItems(
       }
       flushPendingText();
       flushPendingSteps();
-      items.push({
-        rawTime: event.createdAt,
+      pushTimelineItem(event.createdAt, event.seq, {
+        id: `${event.id}:artifact`,
+        kind: "artifact",
+        summary: processStepDetail(event) || processStepLabel(event),
+        artifactId: artifactIdFromEvent(event),
+        timestamp: formatElapsed(baseTime, event.createdAt),
+        agentId: eventAgentId,
+        agentLabel: agentLabelForTimeline(agentLabels, eventAgentId),
         eventSeq: event.seq,
-        item: {
-          id: `${event.id}:artifact`,
-          kind: "artifact",
-          summary: processStepDetail(event) || processStepLabel(event),
-          artifactId: artifactIdFromEvent(event),
-          timestamp: formatElapsed(baseTime, event.createdAt),
-          agentId: eventAgentId,
-          agentLabel: agentLabelForTimeline(agentLabels, eventAgentId),
-          eventSeq: event.seq,
-        },
       });
       continue;
     }
 
-    if (!visibleEvents.some((visibleEvent) => visibleEvent.id === event.id)) {
+    if (!visibleEventIds.has(event.id)) {
       continue;
     }
     const step = processStepByEventId.get(event.id);
@@ -3436,20 +3585,16 @@ function deriveTimelineItems(
     ) {
       continue;
     }
-    items.push({
-      rawTime: message.createdAt,
-      eventSeq: Number.MAX_SAFE_INTEGER - 1 + index / 1000,
-      item: {
-        id: `${message.id}:timeline`,
-        kind: "agent_message",
-        messageKind: message.kind,
-        fromAgentLabel: agentLabels.get(message.fromAgentId) ?? message.fromAgentId,
-        toAgentLabels: message.toAgentIds.map((agentId) => agentLabels.get(agentId) ?? agentId),
-        content: message.content.trim(),
-        timestamp: formatElapsed(baseTime, message.createdAt),
-        agentId: message.fromAgentId,
-        agentLabel: agentLabels.get(message.fromAgentId) ?? message.fromAgentId,
-      },
+    pushTimelineItem(message.createdAt, Number.MAX_SAFE_INTEGER - 1 + index / 1000, {
+      id: `${message.id}:timeline`,
+      kind: "agent_message",
+      messageKind: message.kind,
+      fromAgentLabel: agentLabels.get(message.fromAgentId) ?? message.fromAgentId,
+      toAgentLabels: message.toAgentIds.map((agentId) => agentLabels.get(agentId) ?? agentId),
+      content: message.content.trim(),
+      timestamp: formatElapsed(baseTime, message.createdAt),
+      agentId: message.fromAgentId,
+      agentLabel: agentLabels.get(message.fromAgentId) ?? message.fromAgentId,
     });
   }
 
@@ -3458,19 +3603,15 @@ function deriveTimelineItems(
     : undefined;
   if (
     finalIntroText &&
-    !isTimelineTextAlreadyRepresented(finalIntroText, items.map(({ item }) => item))
+    !isRepresentedTimelineText(finalIntroText)
   ) {
-    items.push({
-      rawTime: snapshot.updatedAt,
-      eventSeq: Number.MAX_SAFE_INTEGER - 1,
-      item: {
-        id: `${snapshot.runId}:timeline:final-intro`,
-        kind: "assistant_text",
-        content: finalIntroText,
-        timestamp: formatElapsed(baseTime, snapshot.updatedAt),
-        agentId: finalOutputAgentId(snapshot),
-        agentLabel: agentLabelForTimeline(agentLabels, finalOutputAgentId(snapshot)),
-      },
+    pushTimelineItem(snapshot.updatedAt, Number.MAX_SAFE_INTEGER - 1, {
+      id: `${snapshot.runId}:timeline:final-intro`,
+      kind: "assistant_text",
+      content: finalIntroText,
+      timestamp: formatElapsed(baseTime, snapshot.updatedAt),
+      agentId: finalOutputAgentId(snapshot),
+      agentLabel: agentLabelForTimeline(agentLabels, finalOutputAgentId(snapshot)),
     });
   }
 
@@ -3479,19 +3620,15 @@ function deriveTimelineItems(
     : "";
   if (
     finalTimelineText &&
-    !isTimelineTextAlreadyRepresented(finalTimelineText, items.map(({ item }) => item))
+    !isRepresentedTimelineText(finalTimelineText)
   ) {
-    items.push({
-      rawTime: snapshot.updatedAt,
-      eventSeq: Number.MAX_SAFE_INTEGER,
-      item: {
-        id: `${snapshot.runId}:timeline:final`,
-        kind: "final_text",
-        content: finalTimelineText,
-        timestamp: formatElapsed(baseTime, snapshot.updatedAt),
-        agentId: finalOutputAgentId(snapshot),
-        agentLabel: agentLabelForTimeline(agentLabels, finalOutputAgentId(snapshot)),
-      },
+    pushTimelineItem(snapshot.updatedAt, Number.MAX_SAFE_INTEGER, {
+      id: `${snapshot.runId}:timeline:final`,
+      kind: "final_text",
+      content: finalTimelineText,
+      timestamp: formatElapsed(baseTime, snapshot.updatedAt),
+      agentId: finalOutputAgentId(snapshot),
+      agentLabel: agentLabelForTimeline(agentLabels, finalOutputAgentId(snapshot)),
     });
   }
 
@@ -3507,17 +3644,13 @@ function deriveTimelineItems(
         ? timelineTextExcludingProposedPlan(finalText ?? "")
         : "";
       if (bodyText) {
-        items.push({
-          rawTime: snapshot.updatedAt,
-          eventSeq: Number.MAX_SAFE_INTEGER,
-          item: {
-            id: `${snapshot.runId}:timeline:body`,
-            kind: "final_text",
-            content: bodyText,
-            timestamp: formatElapsed(baseTime, snapshot.updatedAt),
-            agentId: finalOutputAgentId(snapshot),
-            agentLabel: agentLabelForTimeline(agentLabels, finalOutputAgentId(snapshot)),
-          },
+        pushTimelineItem(snapshot.updatedAt, Number.MAX_SAFE_INTEGER, {
+          id: `${snapshot.runId}:timeline:body`,
+          kind: "final_text",
+          content: bodyText,
+          timestamp: formatElapsed(baseTime, snapshot.updatedAt),
+          agentId: finalOutputAgentId(snapshot),
+          agentLabel: agentLabelForTimeline(agentLabels, finalOutputAgentId(snapshot)),
         });
       }
     }
@@ -3867,6 +4000,10 @@ function shouldShowProcessEvent(event: OraEventEnvelope): boolean {
       return isPublicChildSessionMilestoneEvent(event);
     case "tool.repaired":
       return hasToolId(event);
+    case "node.updated":
+      return isSignificantNodeUpdate(event);
+    case "completion.updated":
+      return true;
     case "run.done":
     case "run.failed":
       return true;

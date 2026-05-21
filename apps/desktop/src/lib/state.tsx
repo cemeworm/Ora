@@ -1538,12 +1538,21 @@ export function deriveRenderableTurnSnapshots(params: {
 
   if (latestSnapshot && latestSnapshot.sessionId === activeSessionId) {
     scopedSnapshots[latestSnapshot.runId] = latestSnapshot;
+    const latestEventsByRunId = new Map<string, OraStateSnapshot["events"]>();
+    for (const event of latestSnapshot.events) {
+      const existing = latestEventsByRunId.get(event.runId);
+      if (existing) {
+        existing.push(event);
+      } else {
+        latestEventsByRunId.set(event.runId, [event]);
+      }
+    }
     for (const turn of detail.turns) {
       if (scopedSnapshots[turn.runId]) continue;
       if (latestSnapshot.runId === turn.runId) {
         scopedSnapshots[turn.runId] = latestSnapshot;
       } else {
-        const turnEvents = latestSnapshot.events.filter((e) => e.runId === turn.runId);
+        const turnEvents = latestEventsByRunId.get(turn.runId) ?? [];
         if (turnEvents.length > 0) {
           scopedSnapshots[turn.runId] = { ...latestSnapshot, runId: turn.runId, turnIndex: turn.turnIndex, events: turnEvents };
         }

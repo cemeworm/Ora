@@ -173,8 +173,8 @@ export function getSelectedInteractiveSnapshot(
 export function getPlanDecisionResumeRunId(
   state: Pick<WorkbenchState, "runLifecycle" | "selectedTurnRunId" | "activeSessionDetail">,
 ): string | undefined {
-  return getSelectedInteractiveSnapshot(state)?.runId
-    ?? state.selectedTurnRunId
+  return state.selectedTurnRunId
+    ?? getSelectedInteractiveSnapshot(state)?.runId
     ?? state.activeSessionDetail?.latestSnapshot?.runId
     ?? state.activeSessionDetail?.session.attention?.sourceRunId;
 }
@@ -1074,7 +1074,7 @@ export function useRunActions() {
     dispatch({ type: "SET_BUSY_COMMAND", command: "Interrupt" });
     try {
       const snapshot = await runtimeClient.interruptRun(runId, USER_INTERRUPTED_MESSAGE);
-      await refreshCurrentSession(snapshot, `Interrupt completed against ${snapshot.runId}.`);
+      await refreshCurrentSession(snapshot, `Interrupt completed against ${runId}.`);
     } catch (error) {
       dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: error instanceof Error ? error.message : "Interrupt failed." });
       dispatch({ type: "SET_BUSY_COMMAND", command: undefined });
@@ -1111,7 +1111,7 @@ export function useRunActions() {
         { approvedActionIds },
       );
       const snapshot = await runtimeClient.getRunState(handle.runId);
-      await refreshCurrentSession(snapshot, `Approve completed against ${snapshot.runId}.`);
+      await refreshCurrentSession(snapshot, `Approve completed against ${handle.runId}.`);
     } catch (error) {
       dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: error instanceof Error ? error.message : "Approve failed." });
       dispatch({ type: "SET_BUSY_COMMAND", command: undefined });
@@ -1130,7 +1130,7 @@ export function useRunActions() {
     try {
       const snapshot = await runtimeClient.cancelRun(runId, USER_CANCELLED_MESSAGE);
       dispatch({ type: "SELECT_TURN", runId: snapshot.runId, snapshot });
-      dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: `Cancel completed against ${snapshot.runId}.` });
+      dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: `Cancel completed against ${runId}.` });
       void refreshCurrentSession(snapshot).catch((error) => {
         dispatch({
           type: "SET_COMMAND_FEEDBACK",
