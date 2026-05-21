@@ -69,6 +69,7 @@ import {
   EvaluationObjectiveSchema,
   EvaluationObservation,
   EvaluationProfileKind,
+  EvaluationReportingViewSummary,
   EvaluationRecipeId,
   EvaluationPromoteBaselineParamsSchema,
   EvaluationRun,
@@ -864,7 +865,7 @@ export class LocalEvaluationStore {
     // Build final results
     const baseline = spec.baselineId ? this.baselines.get(spec.baselineId) : undefined;
     const caseResults = buildCaseResults(dataset.cases, spec.configs, attempts, baseline ? this.runs.get(baseline.evaluationRunId)?.detail : undefined, baseline);
-    const scorecard = buildScorecard(spec.configs, attempts, caseResults);
+    const scorecard = buildScorecard(spec.configs, attempts, caseResults, dualReportingEnabled(spec));
     const run = EvaluationRunSchema.parse({
       id: evaluationRunId,
       spec,
@@ -1728,7 +1729,12 @@ export class LocalEvaluationStore {
         averageScore: scoreFromEvaluatorResults(evaluatorResults.filter((candidate) => typeof candidate.score === "number"), persisted.detail.run.spec.profileId, false),
       });
     });
-    const scorecard = buildScorecard(persisted.detail.configs, attempts, caseResults);
+    const scorecard = buildScorecard(
+      persisted.detail.configs,
+      attempts,
+      caseResults,
+      dualReportingEnabled(persisted.detail.run.spec),
+    );
     persisted.detail = EvaluationRunDetailSchema.parse({
       ...persisted.detail,
       attempts,
@@ -3027,11 +3033,17 @@ function emptyScorecard(configs: EvaluationConfig[]): EvaluationScorecard {
       regressionCount: 0,
       failureTagCounts: {},
     })),
+    reportingViews: [],
     slices: [],
   });
 }
 
-function buildScorecard(configs: EvaluationConfig[], attempts: EvaluationAttempt[], caseResults: EvaluationCaseResult[]): EvaluationScorecard {
+function buildScorecard(
+  configs: EvaluationConfig[],
+  attempts: EvaluationAttempt[],
+  caseResults: EvaluationCaseResult[],
+  enableDualReporting = false,
+): EvaluationScorecard {
   const overallScore = roundScore(average(attempts.map((attempt) => attempt.score.overallScore)));
   const passRate = roundScore(average(attempts.map((attempt) => attempt.score.overallScore >= 0.70 ? 1 : 0)));
   const averageRuntimeMs = Math.round(average(attempts.map((attempt) => attempt.runtimeMs)));
@@ -3039,24 +3051,9 @@ function buildScorecard(configs: EvaluationConfig[], attempts: EvaluationAttempt
   const configSummaries: EvaluationConfigSummary[] = configs.map((config) => {
     const configAttempts = attempts.filter((attempt) => attempt.configId === config.id);
     const configCaseResults = caseResults.filter((result) => result.configId === config.id);
-    const failureTagCounts: Record<string, number> = {};
-    for (const attempt of configAttempts) {
-      for (const tag of attempt.score.failureTags) {
-        failureTagCounts[tag] = (failureTagCounts[tag] ?? 0) + 1;
-      }
-    }
-    return {
-      configId: config.id,
-      label: config.label,
-      overallScore: roundScore(average(configAttempts.map((attempt) => attempt.score.overallScore))),
-      passRate: roundScore(average(configAttempts.map((attempt) => attempt.score.overallScore >= 0.70 ? 1 : 0))),
-      averageRuntimeMs: Math.round(average(configAttempts.map((attempt) => attempt.runtimeMs))),
-      averageCostUsd: Number(average(configAttempts.map((attempt) => attempt.costUsd)).toFixed(4)),
-      caseCount: configCaseResults.length,
-      regressionCount: configCaseResults.filter((result) => result.comparisonToBaseline?.regressed).length,
-      failureTagCounts,
-    };
+    return buildConfigSummary(config, configAttempts, configCaseResults);
   });
+  const reportingViews = enableDualReporting ? buildReportingViews(configs, attempts, caseResults) : [];
   const slices = buildSlices(caseResults);
   return EvaluationScorecardSchema.parse({
     overallScore,
@@ -3066,8 +3063,94 @@ function buildScorecard(configs: EvaluationConfig[], attempts: EvaluationAttempt
     regressionCount: caseResults.filter((result) => result.comparisonToBaseline?.regressed).length,
     pendingAnnotationCount: attempts.reduce((count, attempt) => count + attempt.evaluatorResults.filter((result) => result.evaluatorKind === "human_annotation" && result.status === "pending").length, 0),
     configSummaries,
+    reportingViews,
     slices,
   });
+}
+
+function buildConfigSummary(
+  config: EvaluationConfig,
+  configAttempts: EvaluationAttempt[],
+  configCaseResults: readonly EvaluationCaseResult[],
+): EvaluationConfigSummary {
+  const failureTagCounts: Record<string, number> = {};
+  for (const attempt of configAttempts) {
+    for (const tag of attempt.score.failureTags) {
+      failureTagCounts[tag] = (failureTagCounts[tag] ?? 0) + 1;
+    }
+  }
+  return {
+    configId: config.id,
+    label: config.label,
+    overallScore: roundScore(average(configAttempts.map((attempt) => attempt.score.overallScore))),
+    passRate: roundScore(average(configAttempts.map((attempt) => attempt.score.overallScore >= 0.70 ? 1 : 0))),
+    averageRuntimeMs: Math.round(average(configAttempts.map((attempt) => attempt.runtimeMs))),
+    averageCostUsd: Number(average(configAttempts.map((attempt) => attempt.costUsd)).toFixed(4)),
+    caseCount: configCaseResults.length,
+    regressionCount: configCaseResults.filter((result) => result.comparisonToBaseline?.regressed).length,
+    failureTagCounts,
+  };
+}
+
+const REPORTING_VIEW_LABELS: Record<string, string> = {
+  legacy_oracle_result: "Legacy Oracle Result",
+  value_aligned_result: "Value Aligned Result",
+};
+
+function buildReportingViews(
+  configs: EvaluationConfig[],
+  attempts: EvaluationAttempt[],
+  caseResults: EvaluationCaseResult[],
+): EvaluationReportingViewSummary[] {
+  const attemptsByCaseConfig = new Map<string, EvaluationAttempt[]>();
+  for (const attempt of attempts) {
+    const key = `${attempt.caseId}:${attempt.configId}`;
+    const bucket = attemptsByCaseConfig.get(key) ?? [];
+    bucket.push(attempt);
+    attemptsByCaseConfig.set(key, bucket);
+  }
+
+  const viewToResults = new Map<string, EvaluationCaseResult[]>();
+  for (const result of caseResults) {
+    for (const viewId of reportingViewIds(result.metadata)) {
+      const bucket = viewToResults.get(viewId) ?? [];
+      bucket.push(result);
+      viewToResults.set(viewId, bucket);
+    }
+  }
+
+  return [...viewToResults.entries()]
+    .map(([viewId, viewCaseResults]) => {
+      const viewAttempts = viewCaseResults.flatMap((result) => attemptsByCaseConfig.get(`${result.caseId}:${result.configId}`) ?? []);
+      if (viewAttempts.length === 0) {
+        return undefined;
+      }
+      return {
+        viewId,
+        label: labelForReportingView(viewId),
+        overallScore: roundScore(average(viewAttempts.map((attempt) => attempt.score.overallScore))),
+        passRate: roundScore(average(viewAttempts.map((attempt) => attempt.score.overallScore >= 0.70 ? 1 : 0))),
+        averageRuntimeMs: Math.round(average(viewAttempts.map((attempt) => attempt.runtimeMs))),
+        averageCostUsd: Number(average(viewAttempts.map((attempt) => attempt.costUsd)).toFixed(4)),
+        caseCount: viewCaseResults.length,
+        regressionCount: viewCaseResults.filter((result) => result.comparisonToBaseline?.regressed).length,
+        configSummaries: configs.map((config) => buildConfigSummary(
+          config,
+          viewAttempts.filter((attempt) => attempt.configId === config.id),
+          viewCaseResults.filter((result) => result.configId === config.id),
+        )),
+      } satisfies EvaluationReportingViewSummary;
+    })
+    .filter((candidate): candidate is EvaluationReportingViewSummary => candidate !== undefined)
+    .sort((left, right) => left.label.localeCompare(right.label));
+}
+
+function labelForReportingView(viewId: string) {
+  return REPORTING_VIEW_LABELS[viewId] ?? viewId
+    .split(/[_-]+/)
+    .filter(Boolean)
+    .map((part) => `${part[0]?.toUpperCase() ?? ""}${part.slice(1)}`)
+    .join(" ");
 }
 
 function buildSlices(caseResults: EvaluationCaseResult[]): EvaluationSliceSummary[] {
@@ -3082,10 +3165,11 @@ function buildSlices(caseResults: EvaluationCaseResult[]): EvaluationSliceSummar
     for (const tag of metadataTags(result.metadata)) {
       addSlice("tag", tag);
     }
-    const taskType = typeof result.metadata.taskType === "string" ? result.metadata.taskType : undefined;
-    if (taskType) addSlice("taskType", taskType);
-    const difficulty = typeof result.metadata.difficulty === "string" ? result.metadata.difficulty : undefined;
-    if (difficulty) addSlice("difficulty", difficulty);
+    for (const [dimension, values] of sliceEntriesForCaseResult(result)) {
+      for (const value of values) {
+        addSlice(dimension, value);
+      }
+    }
   }
   return [...accumulators.values()]
     .map((entry) => ({
@@ -3096,6 +3180,63 @@ function buildSlices(caseResults: EvaluationCaseResult[]): EvaluationSliceSummar
       overallScore: roundScore(average(entry.scores)),
     }))
     .sort((a, b) => a.dimension.localeCompare(b.dimension) || a.value.localeCompare(b.value) || a.configId.localeCompare(b.configId));
+}
+
+function sliceEntriesForCaseResult(result: EvaluationCaseResult): Array<[string, string[]]> {
+  const metadata = result.metadata;
+  const entries: Array<[string, string[]]> = [];
+  const add = (dimension: string, values: string[]) => {
+    if (values.length > 0) {
+      entries.push([dimension, values]);
+    }
+  };
+  add("taskType", metadataValues(metadata, "taskType"));
+  add("difficulty", metadataValues(metadata, "difficulty"));
+  add("scenario", metadataValues(metadata, "scenario"));
+  add("uncertaintyType", metadataValues(metadata, "uncertaintyType"));
+  add("decisionSurface", metadataValues(metadata, "decisionSurface").length > 0
+    ? metadataValues(metadata, "decisionSurface")
+    : inferredDecisionSurfaces(result.expected));
+  add("oracleView", metadataValues(metadata, "oracleView"));
+  add("reportingView", reportingViewIds(metadata));
+  add("contextProbeClass", metadataValues(metadata, "contextProbeClass"));
+  add("freshnessClass", metadataValues(metadata, "freshnessClass"));
+  return entries;
+}
+
+function metadataValues(metadata: Record<string, unknown>, key: string): string[] {
+  const value = metadata[key];
+  if (typeof value === "string" && value.trim().length > 0) {
+    return [value.trim()];
+  }
+  if (Array.isArray(value)) {
+    return value.flatMap((entry) => typeof entry === "string" && entry.trim().length > 0 ? [entry.trim()] : []);
+  }
+  return [];
+}
+
+function reportingViewIds(metadata: Record<string, unknown>): string[] {
+  const explicitViews = metadataValues(metadata, "reportingViews");
+  if (explicitViews.length > 0) {
+    return [...new Set(explicitViews)];
+  }
+  const oracleViews = metadataValues(metadata, "oracleView");
+  if (oracleViews.length > 0) {
+    return [...new Set(oracleViews)];
+  }
+  return ["legacy_oracle_result", "value_aligned_result"];
+}
+
+function inferredDecisionSurfaces(expected: EvaluationExpected | undefined): string[] {
+  if (!expected || !expected.structured || typeof expected.structured !== "object") {
+    return [];
+  }
+  const candidate = (expected.structured as Record<string, unknown>).expectedIntervention;
+  return typeof candidate === "string" && candidate.trim().length > 0 ? [candidate.trim()] : [];
+}
+
+function dualReportingEnabled(spec: EvaluationSpec): boolean {
+  return spec.metadata?.evalV2Reporting === true;
 }
 
 function averageScoreFromAttempts(attempts: EvaluationAttempt[]): EvaluationScore {
@@ -5019,6 +5160,19 @@ function renderReportToMarkdown(report: EvaluationReport): string {
     lines.push(`| ${cs.label} | ${cs.overallScore.toFixed(4)} | ${(cs.passRate * 100).toFixed(1)}% | ${cs.averageRuntimeMs}ms | $${cs.averageCostUsd.toFixed(4)} | ${cs.caseCount} | ${cs.regressionCount} |`);
   }
   lines.push("");
+
+  if (sc.reportingViews.length > 0) {
+    lines.push("### Dual Reporting");
+    lines.push("");
+    lines.push(`| View | Config | Score | Pass Rate | Runtime | Cost | Cases |`);
+    lines.push(`|------|--------|-------|-----------|---------|------|-------|`);
+    for (const view of sc.reportingViews) {
+      for (const summary of view.configSummaries) {
+        lines.push(`| ${view.label} | ${summary.label} | ${summary.overallScore.toFixed(4)} | ${(summary.passRate * 100).toFixed(1)}% | ${summary.averageRuntimeMs}ms | $${summary.averageCostUsd.toFixed(4)} | ${summary.caseCount} |`);
+      }
+    }
+    lines.push("");
+  }
 
   if (report.slices.length > 0) {
     lines.push("### Slices");

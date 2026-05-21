@@ -619,6 +619,19 @@ export const EvaluationConfigSummarySchema = z.object({
 });
 export type EvaluationConfigSummary = z.infer<typeof EvaluationConfigSummarySchema>;
 
+export const EvaluationReportingViewSummarySchema = z.object({
+  viewId: z.string().min(1),
+  label: z.string().min(1),
+  overallScore: z.number().min(0).max(1),
+  passRate: z.number().min(0).max(1),
+  averageRuntimeMs: z.number().int().nonnegative(),
+  averageCostUsd: z.number().nonnegative(),
+  caseCount: z.number().int().nonnegative(),
+  regressionCount: z.number().int().nonnegative(),
+  configSummaries: z.array(EvaluationConfigSummarySchema).default([]),
+});
+export type EvaluationReportingViewSummary = z.infer<typeof EvaluationReportingViewSummarySchema>;
+
 export const EvaluationSliceSummarySchema = z.object({
   dimension: z.string().min(1),
   value: z.string().min(1),
@@ -636,6 +649,7 @@ export const EvaluationScorecardSchema = z.object({
   regressionCount: z.number().int().nonnegative(),
   pendingAnnotationCount: z.number().int().nonnegative().default(0),
   configSummaries: z.array(EvaluationConfigSummarySchema),
+  reportingViews: z.array(EvaluationReportingViewSummarySchema).default([]),
   slices: z.array(EvaluationSliceSummarySchema).default([]),
 });
 export type EvaluationScorecard = z.infer<typeof EvaluationScorecardSchema>;
