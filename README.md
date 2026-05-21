@@ -14,6 +14,10 @@
 
 实现上，Ora 用因果决策约束 Agent 的下一步，用事件溯源模型保存运行事实，用可编辑的模式图组织多 Agent 协作，再把对话结果沉淀成能继续修改的组件。想看具体实现，可以从 [因果决策系统](docs/ora-causal-decision.md)、[Gate 与恢复](docs/ora-gates-and-resume.md)、[工具系统](docs/ora-tool-system.md) 和 [Snapshot 与 Trails](docs/ora-snapshot-projection-trails.md) 开始。
 
+<p align="center">
+  <img src="docs/ora_presentation.png" alt="Ora 截图" width="100%">
+</p>
+
 ## 三个核心差异
 
 ### 决策过程能回放
