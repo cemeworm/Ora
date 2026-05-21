@@ -6,6 +6,17 @@ import { agentMessageContent, asText, dispatchNodeTemplate, initializeQueueSumma
 import { runGenericModeNode } from "./generic-node-executor.js";
 import { type ExecutionBag, type GeneratorVerifierBag } from "./mode-driver-helpers.js";
 
+const INITIAL_DRAFT_FALLBACK_PROMPT = [
+  "Prompt: {{prompt}}",
+  "Attempt: {{attempt}}",
+  "",
+  "RESEARCH CONTEXT:",
+  "{{research}}",
+  "",
+  "YOUR TASK: Produce the initial candidate based on the research context above.",
+  "Produce exactly ONE candidate — do not iterate or produce multiple versions inline.",
+].join("\n");
+
 export async function executeGeneratorVerifier(input: ModeExecutionInput): Promise<PatternExecutionResult> {
   const { context, prompt, config, modeSpec } = input;
   const nodes = orderedEnabledModeNodes(modeSpec);
@@ -79,7 +90,9 @@ export async function executeGeneratorVerifier(input: ModeExecutionInput): Promi
             title: titleForNode(node, `Draft attempt ${attempt}`),
             prompt: promptTemplate(
               node,
-              runtimeFallbackPrompt(modeSpec.family, node.template),
+              attempt === 1
+                ? INITIAL_DRAFT_FALLBACK_PROMPT
+                : runtimeFallbackPrompt(modeSpec.family, node.template),
               { ...bag, attempt },
             ),
             system: nodeSystemPrompt(context, modeSpec, node, { ...bag, attempt }),
