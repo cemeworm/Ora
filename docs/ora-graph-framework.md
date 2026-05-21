@@ -2,7 +2,7 @@
 
 这份文档描述 Ora 当前如何把工作模式、智能体、运行阶段和运行时能力统一建模为有向图。重点看四层：共享契约里的拓扑原语、`ModeSpec` 的可编辑图、`PatternDefinition` 的运行时投影，以及 runtime kernel 如何消费这张图。
 
-> **最近更新 (2026-05-16)**：DAG 并行执行、Bag 类型安全（16 个 Zod schema）、generator_verifier 三节点（research → draft → verify）、TranscriptLayoutStyle 清理（移除 6 种未实现风格）、Evidence Board 移除（由 Shared State 的 writeSharedState 替代）、modeUsesSingleOwner 统一到 shared 包。
+> **最近更新 (2026-05-21)**：补入 `ModeNodeSpec.config.requiredCapabilityGroups` 的 stage capability contract 语义，并同步近期 `single_agent` / `ora_self_builder` 的 runtime 投影边界。
 
 ## 1. 概述
 
@@ -227,6 +227,7 @@ export const ModeNodeSpecSchema = z.object({
     customAgentId: z.string().optional(),
     clarificationQuestion: z.string().optional(),
     clarificationKey: z.string().optional(),
+    requiredCapabilityGroups: z.array(ToolCapabilityGroupSchema).optional(),
     story: z.unknown().optional(),
     timeoutMs: z.number().int().positive().optional(),
   }).passthrough().default({}),
@@ -236,6 +237,8 @@ export const ModeNodeSpecSchema = z.object({
 内置节点模板仍是 17 种：`draft`、`verify`、`decide`、`decompose`、`research`、`review`、`synthesize`、`triage`、`build`、`check`、`handoff`、`publish`、`route`、`handle`、`respond`、`seed`、`converge`。schema 同样允许自定义模板字符串。
 
 每个模板的运行时默认说明、展示 story 和 fallback prompt 定义在 `MODE_NODE_RUNTIME_TEMPLATE_LIBRARY`。Mode Studio 读取这些定义来生成节点文案和预览；runtime drivers 也会用它们补齐未显式配置的 prompt 和 instructions。
+
+这里需要特别区分：`requiredCapabilityGroups` 属于 **节点配置契约**，不是拓扑边语义。它声明的是“这个 stage 至少要具备哪些能力组才允许启动”，由 runtime 在 mode-stage launch 前做 preflight 检查。也就是说，它控制的是执行可行性，不参与 `TopologyEdge.kind`、拓扑排序或条件边路由。更偏编辑态/保存链路的解释见 [ora-mode-authoring-and-studio.md](/Users/quintenchen/developer/Ora/docs/ora-mode-authoring-and-studio.md)。
 
 ### 4.2 `ModeEdgeSpec`
 

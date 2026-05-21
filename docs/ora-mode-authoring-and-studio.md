@@ -2,7 +2,7 @@
 
 这份文档解释如何在 Ora 中创建、编辑、校验、保存和运行一个 mode。它是 `ora-graph-framework.md` 的延伸——那篇文档解释了模式图的数据模型和运行时消费，这篇聚焦在”如何从零产出一个可用的 mode”。
 
-> **最近更新 (2026-05-18)**：TranscriptLayoutStyle 清理（移除 6 种未实现风格）、Evidence Board 移除、自定义 family 崩溃修复（可选链）、Stance Lock 污染修复（adversarialStance 显式标记）、dynamic_stage_skipping 死代码移除、code_development profile 元数据修正、decide/publish 模板补全。
+> **最近更新 (2026-05-21)**：补入 `deep_research` 系统预设、`ModeNodeSpec.config.requiredCapabilityGroups` stage 能力契约，以及 mode-stage preflight 的编辑态说明。
 
 ## 阅读地图
 
@@ -44,6 +44,7 @@ Ora 中的 mode 分两类：
 | `debate` | `orchestrator_subagent` | 双面对抗性审查（red team / blue team） |
 | `mode_studio_builder` | `orchestrator_subagent` | Mode Studio 自身的 builder mode |
 | `code_development` | `orchestrator_subagent` | 代码开发专用 mode |
+| `deep_research` | `orchestrator_subagent` | 多阶段研究、验收与最终综合 |
 | `ora_self_builder` | `agent_teams` | Ora 自我迭代 mode |
 | `deerflow_harness` | `orchestrator_subagent` | DeerFlow 风格 harness |
 
@@ -214,6 +215,7 @@ config: z.object({
   customAgentId: z.string().optional(),             // 覆盖默认 agent 的自定义 agent ID
   clarificationQuestion: z.string().optional(),     // 澄清问题文本
   clarificationKey: z.string().optional(),          // 澄清回答的 key
+  requiredCapabilityGroups: z.array(z.string()).optional(), // stage 最低能力契约
   story: z.unknown().optional(),                    // 阶段描述（Mode Studio builder 生成）
   timeoutMs: z.number().int().positive().optional(), // 阶段超时
 }).passthrough().default({})
@@ -234,6 +236,19 @@ node-scope runtime atom 列表。与 `mode.runtimeAtoms`（mode scope）不同�
 ### 5.3 `clarificationQuestion` / `clarificationKey`
 
 用于在 stage 入口触发澄清中断。当节点设置了 `clarificationQuestion`，runtime 会在进入该 stage 前暂停执行，向用户展示问题并等待回答。答案通过 `clarificationKey` 注入到 prompt 变量中。
+
+### 5.4 `requiredCapabilityGroups`
+
+这个字段声明的是 **stage 级能力契约**。它不是展示标签，也不是第二套 `toolIds` 清单，而是告诉 runtime：这个节点至少要拿到哪些能力组，才允许真正进入模型调用。
+
+当前语义是：
+
+- 字段放在 `ModeNodeSpec.config`，因为它绑定的是某个 stage 的执行要求，而不是整张图的拓扑关系。
+- runtime 会先按 mode/node 解析实际 preset，再用 `resolveModeStageToolPreflight()` 检查解析后的工具面是否满足这些能力组。
+- 如果能力不足，stage 会在 launch-time 被 block，不会把 prompt 发给模型。
+- blocked 结果会发出 `mode_stage_preflight.completed`，并把 `modeStagePreflight` / `modeStageDiagnostic` 写进 child session 投影，供 Trails、协作区和调试路径消费。
+
+这层契约现在最典型的消费者是 `ora_self_builder`：`build` / `check` / `handoff` 节点分别声明 `package_build_candidate`、`package_verify`、`package_promote` 等最低能力要求。更完整的运行时语义见 [ora-runtime-loop.md](/Users/quintenchen/developer/Ora/docs/ora-runtime-loop.md)。
 
 ## 6. Runtime Atom 的双重语义
 

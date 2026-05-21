@@ -2,7 +2,7 @@
 
 本文描述当前 Ora runtime loop 的主结构：Task Flow 兼容层、run 外层生命周期、continuation dispatcher、mode 编排层、单个 node 内部的 model-tool loop，以及 plan list、gate、streaming finalization 如何进入持久 projection。
 
-> **最近更新 (2026-05-20)**：child session 投影现已显式区分 `mode_stage` 与 `dynamic_spawn` authority source，并把 `requestedToolPreset` / `resolvedToolPreset` 写入 `child_session.updated`；`dynamic_spawn` contract 现支持 `subject.normalization`、`resource_bindings.locator = value | handle` 与 `validation_policy = enforce | diagnostics_only`；Code Development 的 `debug` stage 最终收敛到 `repo_forensics`（允许诊断性 `shell.execute`，仍禁止写入）。
+> **最近更新 (2026-05-21)**：`mode_stage` 现已具备显式 capability contract 与 preflight/block 诊断；`single_agent + implement` root 走 `single_agent_implement`；`deep_research` staged path 已收敛到结构化 bag、pure-review verify 和 accepted-artifact-only synthesis；`code_development` 补齐结构化 stage contract 与交付 gate 语义。
 
 ## 阅读地图
 
@@ -283,6 +283,7 @@ Mode 编排影响 loop 的方式：
 - 带 `subagent_delegate` atom 的 node 会通过 delegated task 事件显式标记任务委派。
 - 带 `dynamic_delegation` atom 的 `orchestrator_subagent` mode 会让 decompose 节点输出 `<delegation_plan>`，driver 解析后用 `skipNodeIds` 跳过不需要的 research/review 节点，并把 `research_focus` / `review_focus` 注入对应 subagent 的 system prompt。解析失败时安全回退为所有节点正常执行。
 - `dynamic_orchestrator` 是基于 `orchestrator_subagent` family 的系统预设 mode，不是新 family。它保留固定节点的 owner/risk/approval 边界，只把“是否执行该 subagent、执行时聚焦什么”交给 runtime delegation plan。
+- `mode_stage` 路径现在也有 launch-time preflight。节点可通过 `ModeNodeSpec.config.requiredCapabilityGroups` 声明最低能力契约；runtime 会先解析 stage preset，再用 `resolveModeStageToolPreflight()` 检查能力是否充足。若不足，节点会在真正发 prompt 前被 block，并产出 `mode_stage_preflight.completed`、`modeStagePreflight` 和 `modeStageDiagnostic` 这些结构化事实。
 - plan 模式中一旦产出完整 `<proposed_plan>`，后续 node 可以被跳过，避免计划已经完备后继续跑无关阶段。
 
 ## 3. 单个 node 的 model-tool loop
@@ -522,6 +523,34 @@ Ledger projection 层也有对应的非法状态处理：`deriveLedgerRunAttenti
 
 ## 特殊路径
 
+### Mode-stage capability preflight
+
+`mode_stage` 现在不再只是“按 node owner 直接开跑”的隐式路径。它和 `dynamic_spawn` 一样，有自己的 launch-time 结构校验，只是权威来源不同：
+
+- `dynamic_spawn` 看的是调用方传入的 `tool_bundle` / `spawn_contract`
+- `mode_stage` 看的是 mode 节点自身声明的 `requiredCapabilityGroups`
+
+当前链路是：
+
+1. runtime 先按 `modeSpec + node + agent + taskIntent` 解析 stage 实际 preset，比如 `builder_write`、`repo_forensics`、`self_builder_build`、`self_builder_root`。
+2. 若节点声明了 `requiredCapabilityGroups`，`resolveModeStageToolPreflight()` 会基于解析后的 `resolvedToolIds` 做 sufficiency 检查。
+3. `status = ready` 时正常进入 `callAgent() -> runNodeRuntimeLoop()`。
+4. `status = blocked` 时，不会把 stage prompt 发给模型，而是：
+   - emit `mode_stage_preflight.completed`
+   - 把目标 topology node 标成 `blocked`
+   - 在 child session 上写入 `modeStagePreflight` / `modeStageDiagnostic`
+
+这层机制的目标不是替代 tool visibility resolver，而是在“preset 已经解析完成”之后，再确认该 stage 对当前任务是否真的可执行。
+
+### Single Agent implement root
+
+`single_agent` 现在明确把“协作拓扑简单”与“root 是否只读”拆开了。当前语义是：
+
+- `taskIntent = chat | plan` 时，root 继续走只读 root 语义
+- `taskIntent = implement` 时，root 走 `single_agent_implement`
+
+这意味着 `single_agent` 不再等同于“永远是只读 root”。当用户明确要直接施工时，单智能体 root 可以拿到 builder 级写入工具面，同时保留 `plan.update`、`agent.spawn`、`agent.wait`、`message.send` 这些根级协调能力。
+
 ### Code Development boundary
 
 `code_development` mode 下，orchestrator 不能执行 mutation 类工具，例如：
@@ -540,6 +569,28 @@ Ledger projection 层也有对应的非法状态处理：`deriveLedgerRunAttenti
 orchestrator 负责计划和协调，实际代码修改必须落到 builder 阶段。
 
 从 2026-05-20 这一轮 authority 收口开始，`coding_root` 默认也不再暴露 `agent.spawn`。也就是说，Code Development 的 root orchestrator 不再拥有一条“再临时拉一个只读子代理”的并行主路径；需要的结构化协作由 mode stage 自己承担，动态只读委派不再作为默认出口留在 root prompt/tool surface 上。
+
+`code_development` 当前也不再只靠自由文本交接。它已经收敛到一组结构化 stage contract：
+
+- `triage` 产出任务目标、`successCriteria`、`verificationPlan`、`taskJournalPath`
+- `build` 产出 `changedFiles`、`commandsRun`、`verificationEvidence`
+- `review` 是第一道 verdict gate，负责 `acceptedArtifactIds`、`blockingIssues` 和返工裁定
+- `debug` 是 resolution gate，状态为 `clear | needs_fix | blocked`
+- `handoff` 只在 review/debug/DONE gate 都满足时产出正常移交，消费 `todoScanResult`、`doneGate`、`verificationSummary`
+
+这仍然复用 `orchestrator_subagent` driver，但交接真相已经从“上一阶段自由文本说了什么”收口到结构化 bag 契约。
+
+### Deep Research staged contract
+
+`deep_research` 虽然也复用 `orchestrator_subagent` family，但当前运行语义已经是一条更严格的 staged contract：
+
+- 阶段顺序固定为 `scope -> gather -> analyze -> gap_analysis -> compile -> verify -> synthesize`
+- `scope/gather/analyze/gap_analysis/compile/verify` 会写入结构化 bag，同时保留对应的 `<key>_raw`
+- 解析失败时，runtime 会把该项降级成 `{ text, _degraded: true }`，而不是假装拿到了结构化产物
+- `verify` 现在是 pure-review 节点，`toolIds: []`，不允许自己补搜；它负责给出 `verdict`、`reworkNodeIds`、`acceptedArtifactIds`
+- `synthesize` 在 runtime 层只接收已验收研究产物的完整内容，不再把所有前序研究文本一股脑塞进去
+
+如果 `verify = pass` 但没有返回 `acceptedArtifactIds`，runtime 当前会回退为默认验收 `gather/analyze/gap_analysis/compile`，确保最终综合阶段仍有清晰的 accepted-artifact 边界。
 
 ### Dynamic orchestrator delegation
 

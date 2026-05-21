@@ -2,7 +2,7 @@
 
 本文档是 Ora runtime 工具系统的权威参考，覆盖架构设计、治理链机制、执行管道、基础设施和当前状态。Ora 的工具系统不是一个简单的"函数调用列表"，而是一个以 **runtime governance** 为中心的产品级 agent 工具平台。
 
-> **最近更新 (2026-05-20)**：`agent.spawn` 现在明确区分 dynamic spawn authority 与 mode-stage authority；blocked writable spawn 会返回 `spawn_authority_mismatch` 诊断；Code Development 的 `debug` stage 最终固定为非写入的 `repo_forensics`。
+> **最近更新 (2026-05-21)**：补齐 `task_intent` child intent contract、`single_agent_implement` / `self_builder_*` preset、以及 `mode_stage` capability contract 与 preflight 语义；`agent.spawn` 继续聚焦 dynamic spawn authority，不与 stage-owned child contract 混用。
 
 ## 1. 设计理念与架构概览
 
@@ -288,9 +288,14 @@ interface RuntimeToolDefinition<TContext, TArgs, TResult> {
 
 - `availableToolIds` 是硬上界；resolver 不能凭空引入新工具
 - `ToolDescriptor.family` 现在显式区分 `explore / execute / coordinate / environment / evolve`
-- `ToolVisibilityPresetId` 当前包括 `root_default`、`coding_root`、`builder_write`、`review_readonly`、`research_readonly`、`repo_forensics`、`system_evolution`
+- `ToolVisibilityPresetId` 当前包括 `root_default`、`coding_root`、`single_agent_implement`、`self_builder_root`、`self_builder_build`、`self_builder_review`、`builder_write`、`review_readonly`、`research_readonly`、`repo_forensics`、`system_evolution`
 - `decisionSource` 用来标记本次 visible surface 主要来自 `explicit_override`、`bundle_preset`、`resolver_default` 或 `legacy_fallback`
 - `appliedConstraints` 记录 task intent 收缩、hard boundary 等实际生效的限制
+
+其中几组新增 preset 的职责边界是：
+
+- `single_agent_implement`：`single_agent + implement` 的 root 工具面。它表达“单智能体直接施工”，不是 child builder preset。
+- `self_builder_root` / `self_builder_build` / `self_builder_review`：`ora_self_builder` 的 package/self-upgrade 专用 stage preset，分别对应 root promotion、builder candidate build、review/verify。
 
 它的职责只是“收缩当前 agent 可见工具面”，不替代 approval、budget、result validation 或 runtime 末端 safety gate。`RuntimeToolExecutor.systemPrompt()`、provider tool list、child bundle resolution 现在都应消费 resolver 的 `visibleToolIds`，而不是序列化全量工具列表。
 
@@ -1079,6 +1084,11 @@ computer:    permissionStatus, observe, click, type, press, scroll, window
     - `locator=handle` 绑定 runtime-native handle，例如 `artifact`、`browser_session`、`browser_snapshot`、`child_session`、`run`。
   - `agent.spawn` 只适用于 `dynamic_spawn` authority：它永远不能绕过 invoking agent 当前工具边界去拿到更强 preset。
   - mode topology 自己派发的 child 不走这条 authority 规则；那是独立的 `mode_stage` contract。
+  - `mode_stage` 与 `dynamic_spawn` 现在也不共享同一套 preflight：
+    - `dynamic_spawn` 读取调用方请求的 `tool_bundle` / `spawn_contract`
+    - `mode_stage` 读取 `ModeNodeSpec.config.requiredCapabilityGroups`
+    - stage contract 不满足时，runtime 会在 launch-time 直接 block，并发出 `mode_stage_preflight.completed`
+  - blocked 的 `mode_stage` 不会把 stage prompt 发给模型。相关结构事实会写入 child session 的 `modeStagePreflight` / `modeStageDiagnostic`，供 Trails 和协作区消费。
   - `result_contract` 用来声明子 agent 产出期望，比如 `final_answer`、`evidence_report`、`diff_report`、`plan_only`。runtime 现在会同时结合 `spawn_contract` 做结果有效性校验。
   - `task_intent`（新增，可选）显式覆盖 child agent 的 task intent。允许值为 `chat` | `plan` | `implement`。仅影响 spawned child，不改变 parent run 的 `metadata.taskIntent`。
     - 显式 override 与 contract/tool surface 冲突时，launch-time 直接 block（`diagnostic_type = spawn_task_intent_contract_mismatch`），不启动 child。
