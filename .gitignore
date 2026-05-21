@@ -22,3 +22,4 @@ CLAUDE.md
 .workbuddy/
 .codebuddy/
 runtime.db
+release.json
