@@ -1,6 +1,6 @@
 import { useMemo, useRef } from "react";
 import { flushSync } from "react-dom";
-import { DEFAULT_WEB_TOOL_IDS } from "@cemeworm/shared";
+import { DEFAULT_WEB_TOOL_IDS, deriveSnapshotGateProjection } from "@cemeworm/shared";
 import { USER_CANCELLED_MESSAGE, USER_INTERRUPTED_MESSAGE, USER_RESUMED_MESSAGE, getSharedRuntimeClient, type OraProjectSummary, type OraProviderConfig, type OraSessionBranchGroupCreateParams, type OraSessionDetail, type OraSessionSummary, type OraStateSnapshot } from "./runtimeClient";
 import { buildRunSearchConfig } from "./searchSettings";
 import { loadDesktopToolModelSettings } from "./toolModelSettings";
@@ -168,6 +168,37 @@ export function getSelectedInteractiveSnapshot(
     return latestSnapshot;
   }
   return activeSnapshot;
+}
+
+export interface PlanDecisionGateAuthority {
+  sessionId: string;
+  decisionId: string;
+  sourceRunId: string;
+}
+
+export function getPlanDecisionGateAuthority(
+  state: Pick<WorkbenchState, "runLifecycle" | "activeSessionDetail" | "selectedSessionId">,
+): PlanDecisionGateAuthority | undefined {
+  const sessionId = state.activeSessionDetail?.session.sessionId ?? state.selectedSessionId;
+  if (!sessionId) return undefined;
+
+  const activeSnapshot = getActiveSnapshot(state.runLifecycle);
+  if (activeSnapshot) {
+    const gate = deriveSnapshotGateProjection(activeSnapshot);
+    if (gate?.kind === "plan_decision" && gate.planDecisionId) {
+      return { sessionId, decisionId: gate.planDecisionId, sourceRunId: activeSnapshot.runId };
+    }
+  }
+
+  const latestSnapshot = state.activeSessionDetail?.latestSnapshot;
+  if (latestSnapshot) {
+    const gate = deriveSnapshotGateProjection(latestSnapshot);
+    if (gate?.kind === "plan_decision" && gate.planDecisionId) {
+      return { sessionId, decisionId: gate.planDecisionId, sourceRunId: latestSnapshot.runId };
+    }
+  }
+
+  return undefined;
 }
 
 export function getPlanDecisionResumeRunId(
@@ -390,8 +421,8 @@ export function useRunActions() {
   const sessionPrefetchesRef = useRef(new Set<string>());
 
   // Stable viewModel parts — cached across streaming frames but invalidated when composer mode changes.
-  const stableViewModelRef = useRef<ReturnType<typeof buildStableViewModel>>();
-  const lastStableCacheKeyRef = useRef<string>();
+  const stableViewModelRef = useRef<ReturnType<typeof buildStableViewModel> | undefined>(undefined);
+  const lastStableCacheKeyRef = useRef<string | undefined>(undefined);
 
   const activeSessionId = state.activeSessionDetail?.session.sessionId;
   if (state.patterns.length > 0 && state.activeSessionDetail) {
@@ -1147,16 +1178,12 @@ export function useRunActions() {
     if (state.pendingPlanDecisionResolution) {
       return false;
     }
-    const sessionId = state.activeSessionDetail?.session.sessionId ?? state.selectedSessionId;
-    const resumeRunId = getInteractiveRunId(state);
-    const decisionId =
-      state.activeSessionDetail?.session.attention?.planDecisionId ??
-      getActiveSnapshot(state.runLifecycle)?.attention?.planDecisionId ??
-      getActiveSnapshot(state.runLifecycle)?.planDecisions.find((decision) => decision.status === "pending")?.id;
-    if (!sessionId || !decisionId) {
+    const gateAuthority = getPlanDecisionGateAuthority(state);
+    if (!gateAuthority) {
       dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: "No pending plan decision found." });
       return false;
     }
+    const { sessionId, decisionId, sourceRunId: resumeRunId } = gateAuthority;
     const currentTaskIntent = state.taskIntent;
     const startedAt = Date.now();
     flushSync(() => {
@@ -1183,13 +1210,6 @@ export function useRunActions() {
       if (status === "declined") {
         dispatch({ type: "SET_TASK_INTENT", taskIntent: currentTaskIntent });
         return true;
-      }
-      if (!resumeRunId) {
-        dispatch({
-          type: "SET_COMMAND_FEEDBACK",
-          feedback: "Plan accepted, but no run is available to resume.",
-        });
-        return false;
       }
       flushSync(() => {
         dispatch({

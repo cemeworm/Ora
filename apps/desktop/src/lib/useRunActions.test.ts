@@ -4,6 +4,7 @@ import {
   buildClarificationSubmissionPrompt,
   buildDesktopRunContext,
   getInteractiveRunId,
+  getPlanDecisionGateAuthority,
   getPlanDecisionResumeRunId,
   getSelectedInteractiveSnapshot,
   isDisposableEmptySession,
@@ -317,6 +318,167 @@ describe("desktop run actions", () => {
     });
 
     expect(getInteractiveRunId(state)).toBe("run-gate");
+  });
+
+  describe("getPlanDecisionGateAuthority", () => {
+    it("derives decisionId and sourceRunId from the same active snapshot gate", () => {
+      const state = stateWithSession({
+        runLifecycle: {
+          stage: "settled",
+          runId: "run-plan",
+          sessionId: "session-empty",
+          prompt: "Plan the work",
+          createdAt: 1,
+          snapshot: {
+            runId: "run-plan",
+            sessionId: "session-empty",
+            status: "succeeded",
+            input: { prompt: "Plan the work" },
+            planDecisions: [{
+              id: "decision-1",
+              runId: "run-plan",
+              sessionId: "session-empty",
+              status: "pending",
+              createdAt: 2,
+            }],
+            updatedAt: 2,
+          } as OraStateSnapshot,
+        },
+      });
+
+      const authority = getPlanDecisionGateAuthority(state);
+      expect(authority).toBeDefined();
+      expect(authority!.decisionId).toBe("decision-1");
+      expect(authority!.sourceRunId).toBe("run-plan");
+      expect(authority!.sessionId).toBe("session-empty");
+    });
+
+    it("ignores selectedTurnRunId when deriving gate authority", () => {
+      const state = stateWithSession({
+        selectedTurnRunId: "run-historical",
+        runLifecycle: {
+          stage: "settled",
+          runId: "run-plan",
+          sessionId: "session-empty",
+          prompt: "Plan the work",
+          createdAt: 1,
+          snapshot: {
+            runId: "run-plan",
+            sessionId: "session-empty",
+            status: "succeeded",
+            input: { prompt: "Plan the work" },
+            planDecisions: [{
+              id: "decision-1",
+              runId: "run-plan",
+              sessionId: "session-empty",
+              status: "pending",
+              createdAt: 2,
+            }],
+            updatedAt: 2,
+          } as OraStateSnapshot,
+        },
+      });
+
+      const authority = getPlanDecisionGateAuthority(state);
+      expect(authority!.sourceRunId).toBe("run-plan");
+      // getInteractiveRunId would return the selected turn
+      expect(getInteractiveRunId(state)).toBe("run-historical");
+    });
+
+    it("returns undefined when no plan decision gate exists in any snapshot", () => {
+      const state = stateWithSession({
+        runLifecycle: {
+          stage: "settled",
+          runId: "run-done",
+          sessionId: "session-empty",
+          prompt: "Do the work",
+          createdAt: 1,
+          snapshot: {
+            runId: "run-done",
+            sessionId: "session-empty",
+            status: "succeeded",
+            input: { prompt: "Do the work" },
+            planDecisions: [],
+            updatedAt: 2,
+          } as unknown as OraStateSnapshot,
+        },
+      });
+
+      expect(getPlanDecisionGateAuthority(state)).toBeUndefined();
+    });
+
+    it("falls back to latestSnapshot when no active snapshot exists", () => {
+      const latestSnapshot = {
+        runId: "run-plan",
+        sessionId: "session-empty",
+        status: "succeeded",
+        input: { prompt: "Plan the work" },
+        planDecisions: [{
+          id: "decision-2",
+          runId: "run-plan",
+          sessionId: "session-empty",
+          status: "pending",
+          createdAt: 2,
+        }],
+        updatedAt: 2,
+      } as OraStateSnapshot;
+
+      const state = stateWithSession({
+        runLifecycle: { stage: "idle" },
+        activeSessionDetail: {
+          session: sessionSummary("session-empty"),
+          turns: [],
+          transcript: [],
+          latestSnapshot,
+        },
+      });
+
+      const authority = getPlanDecisionGateAuthority(state);
+      expect(authority).toBeDefined();
+      expect(authority!.decisionId).toBe("decision-2");
+      expect(authority!.sourceRunId).toBe("run-plan");
+    });
+
+    it("uses the attention-based plan_decision gate from active snapshot", () => {
+      const state = stateWithSession({
+        runLifecycle: {
+          stage: "settled",
+          runId: "run-plan",
+          sessionId: "session-empty",
+          prompt: "Plan the work",
+          createdAt: 1,
+          snapshot: {
+            runId: "run-plan",
+            sessionId: "session-empty",
+            status: "succeeded",
+            attention: {
+              kind: "needs_plan_decision",
+              blocking: true,
+              sourceRunId: "run-plan",
+              reason: "plan_decision_required",
+              planDecisionId: "decision-attn",
+              pendingActionIds: [],
+              pendingToolCallIds: [],
+              pendingClarificationIds: [],
+            },
+            input: { prompt: "Plan the work" },
+            planDecisions: [{
+              id: "decision-attn",
+              runId: "run-plan",
+              sessionId: "session-empty",
+              status: "pending",
+              createdAt: 2,
+            }],
+            updatedAt: 2,
+          } as unknown as OraStateSnapshot,
+        },
+      });
+
+      const authority = getPlanDecisionGateAuthority(state);
+      expect(authority).toBeDefined();
+      expect(authority!.decisionId).toBe("decision-attn");
+      expect(authority!.sourceRunId).toBe("run-plan");
+    });
   });
 
   it("includes attached local files in run context", () => {
