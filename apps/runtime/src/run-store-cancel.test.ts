@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { getModePreset, SINGLE_AGENT_MODE_ID, type StateSnapshot } from "@cemeworm/shared";
+import { createModeSpecFromPattern, getModePreset, SINGLE_AGENT_MODE_ID, type StateSnapshot } from "@cemeworm/shared";
 import { LocalRunStore } from "./run-store.js";
 
 function snapshot(runId: string): StateSnapshot {
@@ -54,6 +54,7 @@ function snapshot(runId: string): StateSnapshot {
 
 function storeWithRun(runId: string) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "ora-run-store-cancel-"));
+  seedLegacyModes(dataDir);
   const store = new LocalRunStore({ dataDir, autoStartChannels: false });
   (store as any).cacheRun(snapshot(runId), true);
   return store;
@@ -61,9 +62,26 @@ function storeWithRun(runId: string) {
 
 function storeWithSnapshot(source: StateSnapshot) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "ora-run-store-recovery-"));
+  seedLegacyModes(dataDir);
   const store = new LocalRunStore({ dataDir, autoStartChannels: false });
   (store as any).cacheRun(source, true);
   return store;
+}
+
+function seedLegacyModes(runtimeDataDir: string): void {
+  const modesDir = path.join(runtimeDataDir, "modes");
+  fs.mkdirSync(modesDir, { recursive: true });
+  const modePath = path.join(modesDir, "orchestrator_subagent.json");
+  if (!fs.existsSync(modePath)) {
+    fs.writeFileSync(
+      modePath,
+      `${JSON.stringify({
+        ...createModeSpecFromPattern("orchestrator_subagent"),
+        systemPreset: false,
+      }, null, 2)}\n`,
+      "utf8",
+    );
+  }
 }
 
 describe("run store cancellation", () => {

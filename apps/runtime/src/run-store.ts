@@ -4175,7 +4175,14 @@ export class LocalRunStore {
   }
 
   private cancelledSnapshot(runId: string): StateSnapshot | undefined {
-    const snapshot = this.ledgerRebasedRunSnapshot(runId) ?? this.runs.get(runId);
+    const cached = this.runs.get(runId);
+    if (cached?.status === "cancelled") {
+      return cached;
+    }
+    if (cached?.status === "queued" || cached?.status === "running") {
+      return undefined;
+    }
+    const snapshot = this.ledgerRebasedRunSnapshot(runId) ?? cached;
     if (snapshot?.status === "cancelled") {
       return snapshot;
     }
