@@ -24,6 +24,7 @@ Agent 在直接回答、追问澄清、搜索、读上下文、调用工具、�
 - 低风险操作可以直接执行，高风险操作会进入审批门控
 - 每次关键决策都能回放，能看到它选择这条路径的依据
 - 评估层以任务结果为先，再结合干预质量和成本，支持 `record_only`、`advisory`、`enforcing` 三档策略的 three-way comparison，并把失败归因为语义状态问题或干预选择问题
+- 详见 [因果决策系统评测报告v1](evaluation/reports/因果决策系统评测报告v1.md)
 
 详见 [因果决策系统](docs/ora-causal-decision.md)。
 
