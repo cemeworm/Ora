@@ -188,9 +188,9 @@ describe("desktop runtime client agent catalog", () => {
       dropParams: [],
       headers: {},
     })).resolves.toMatchObject({
-      status: "ok",
-      authoritative: true,
-      models: [{ id: "smoke-model", source: "local" }],
+      status: "unsupported",
+      authoritative: false,
+      models: [],
     });
 
     await expect(client.listProviderModels({

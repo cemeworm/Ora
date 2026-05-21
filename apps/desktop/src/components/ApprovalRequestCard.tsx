@@ -92,8 +92,8 @@ function approvalCopy(action: ActionRecord) {
 }
 
 interface StructuredApprovalPreview {
-  icon: JSX.Element;
-  content: JSX.Element;
+  icon: React.JSX.Element;
+  content: React.JSX.Element;
 }
 
 function buildStructuredApprovalPreview(action: ActionRecord): StructuredApprovalPreview | undefined {

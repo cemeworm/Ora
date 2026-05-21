@@ -679,7 +679,7 @@ function WorkbenchInner() {
     );
   }, [state.activeSessionDetail]);
 
-  const loadedHistorySnapshotsRef = useRef<string | undefined>();
+  const loadedHistorySnapshotsRef = useRef<string | undefined>(undefined);
 
   useEffect(() => {
     const detail = state.activeSessionDetail;
@@ -1284,7 +1284,7 @@ function DebugTimingOverlay() {
   const [records, setRecords] = useState(getRecords());
   const [visible, setVisible] = useState(false);
   const clickCountRef = useRef(0);
-  const clickTimerRef = useRef<ReturnType<typeof setTimeout>>();
+  const clickTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   useEffect(() => {
     if (!visible) return;

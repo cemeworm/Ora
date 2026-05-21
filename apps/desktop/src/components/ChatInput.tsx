@@ -888,7 +888,7 @@ export function ChatInput({
 
   const overlayRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<HTMLDivElement>(null);
-  const lastOverlayHeightRef = useRef<number | undefined>();
+  const lastOverlayHeightRef = useRef<number | undefined>(undefined);
   const shouldScrollPastedTextRef = useRef(false);
   const skillPickerRef = useRef<HTMLDivElement>(null);
   const pendingSelectionRef = useRef<ComposerSelectionBookmark | null>(null);

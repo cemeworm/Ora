@@ -696,7 +696,7 @@ describe("ChatInput content editable chips", () => {
 
     expect(html).toContain("任务清单 · 3 待办");
     expect(html).toContain("release-helper");
-    expect(html).toContain('contenteditable="true"');
+    expect(html).toContain('contentEditable="true"');
   });
 
   it("translates the empty composer placeholder for Chinese", () => {

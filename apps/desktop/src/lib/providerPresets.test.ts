@@ -274,7 +274,7 @@ describe("provider options", () => {
     ]);
   });
 
-  it("does not fall back to local smoke when no keyed providers are runnable", () => {
+  it("falls back to enabled local smoke when no keyed providers are runnable", () => {
     const providers: OraProviderConfig[] = [
       {
         id: "local-smoke",
@@ -288,6 +288,6 @@ describe("provider options", () => {
       },
     ];
 
-    expect(runnableProviderOptions(providers, [])).toEqual([]);
+    expect(runnableProviderOptions(providers, [])).toEqual(providers);
   });
 });
