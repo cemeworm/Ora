@@ -1401,6 +1401,7 @@ export function buildDelegationGuidance(
         ? `- The requested mode was ${strategy.requestedModeId}, but this run remains in ${strategy.sourceModeId}.`
         : "- This run remains in single-agent execution, so collaboration must happen through a delegated child task.",
       "- Before providing the final answer, you must delegate at least one substantial top-level subtask with agent.spawn.",
+      "- Only delegate substantial top-level work. Do not use agent.spawn for lightweight local reads, single-file inspection, or simple one-step lookups.",
       "- Use the delegated result in your synthesis rather than answering entirely from the root agent.",
       ...(delegationIntent?.reason ? [`- Reason: ${delegationIntent.reason}`] : []),
     ].join("\n");
@@ -1412,7 +1413,9 @@ export function buildDelegationGuidance(
     return [
       "Delegation guidance for this turn:",
       "- The user explicitly allowed sub-agent help for this turn.",
-      "- You may use agent.spawn if delegation would materially improve the outcome.",
+      "- Treat this as explicit user permission, not as a requirement to delegate.",
+      "- Prefer staying local for lightweight reads, local file inspection, single-step checks, and simple searches.",
+      "- Use agent.spawn only if the delegated work is clearly substantial or benefits from fresh context or parallel execution.",
       ...(delegationIntent?.reason ? [`- Reason: ${delegationIntent.reason}`] : []),
     ].join("\n");
   }
@@ -1420,7 +1423,10 @@ export function buildDelegationGuidance(
     "Delegation guidance for this turn:",
     "- The user explicitly requested team-style collaboration or sub-agent coordination for this turn.",
     "- Even in single-agent mode, treat this as explicit permission to delegate.",
-    "- If the work can be split into substantial, self-contained subtasks, prefer using agent.spawn instead of doing everything locally.",
+    "- Prefer using agent.spawn only when the work can be split into substantial, self-contained, parallelizable subtasks.",
+    "- Good delegation candidates include fan-out research, investigating multiple independent directions, or collecting results from several distinct subtasks before synthesis.",
+    "- Do not use agent.spawn for lightweight local reads, local file viewing, single-step checks, or simple searches that the root agent can complete directly.",
+    "- If the task is complex but still mostly serial, prefer doing it locally unless the user clearly wants coordinated sub-agent work.",
     ...(delegationIntent?.reason ? [`- Reason: ${delegationIntent.reason}`] : []),
   ].join("\n");
 }
@@ -3052,6 +3058,51 @@ export async function executeRuntimeKernel(
       .filter((value): value is string => typeof value === "string"),
     );
 
+  const EXPLICIT_LOCAL_PATH_PATTERN = /(?:^|[\s("'`])((?:\/|\.{1,2}\/|\.ora\/)[^\s"'`<>]+|(?:[A-Za-z0-9._-]+\/)+[A-Za-z0-9._-]+\.[A-Za-z0-9_-]+)/g;
+
+  const trimPathCandidate = (value: string): string =>
+    value
+      .trim()
+      .replaceAll("\\", "/")
+      .replace(/[),.;:]+$/g, "");
+
+  const classifyPathSubjectKind = (value: string): "file" | "document" =>
+    /\.(?:pdf|docx?|pptx?|xlsx?)$/i.test(value) ? "document" : "file";
+
+  const looksLikeExplicitLocalPath = (value: string): boolean => {
+    const normalized = trimPathCandidate(value);
+    if (!normalized || /^https?:\/\//i.test(normalized)) {
+      return false;
+    }
+    if (
+      normalized.startsWith("/")
+      || normalized.startsWith("./")
+      || normalized.startsWith("../")
+      || normalized.startsWith(".ora/")
+    ) {
+      return true;
+    }
+    return /^(?:[A-Za-z0-9._-]+\/)+[A-Za-z0-9._-]+\.[A-Za-z0-9_-]+$/.test(normalized);
+  };
+
+  const extractFirstExplicitLocalPath = (text: string): { path: string; kind: "file" | "document" } | undefined => {
+    const candidates = uniqueStrings([
+      ...[...text.matchAll(/`([^`\n]+)`/g)].map((match) => match[1] ?? ""),
+      ...[...text.matchAll(EXPLICIT_LOCAL_PATH_PATTERN)].map((match) => match[1] ?? ""),
+    ]);
+    for (const candidate of candidates) {
+      if (!looksLikeExplicitLocalPath(candidate)) {
+        continue;
+      }
+      const pathValue = normalizePathValue(trimPathCandidate(candidate));
+      return {
+        path: pathValue,
+        kind: classifyPathSubjectKind(pathValue),
+      };
+    }
+    return undefined;
+  };
+
   const normalizePathValue = (value: string): string => path.posix.normalize(value.trim().replaceAll("\\", "/"));
 
   const normalizeCasefold = (value: string): string => value.trim().replace(/\s+/g, " ").toLowerCase();
@@ -3149,12 +3200,19 @@ export async function executeRuntimeKernel(
     const resultRules = new Set<"subject_match_required" | "resource_binding_match_required" | "source_reference_required">();
     const allText = `${params.description}\n${params.prompt}`;
     const firstUrl = extractUrls(allText)[0];
+    const localPathReference = firstUrl ? undefined : extractFirstExplicitLocalPath(allText);
     const scriptLike = /(?:\/|\b)(?:[^\s]+\.sh)\b|(?:^|\s)(?:bash|zsh|sh|python3?|node|pnpm|npm|yarn)\b/i.test(allText);
     if (scriptLike) {
       requiredAffordances.add("shell_execute");
     }
     if (firstUrl) {
       requiredAffordances.add("web_read");
+      resultRules.add("subject_match_required");
+      resultRules.add("source_reference_required");
+      resultRules.add("resource_binding_match_required");
+    }
+    if (localPathReference) {
+      requiredAffordances.add("repo_read");
       resultRules.add("subject_match_required");
       resultRules.add("source_reference_required");
       resultRules.add("resource_binding_match_required");
@@ -3169,9 +3227,25 @@ export async function executeRuntimeKernel(
           normalization: "url_canonical" as const,
           normalizedValue: firstUrl,
         }
+      : localPathReference
+        ? {
+            kind: localPathReference.kind,
+            value: localPathReference.path,
+            normalization: "path_canonical" as const,
+            normalizedValue: localPathReference.path,
+          }
       : undefined;
     const resourceBindings = firstUrl
       ? [{ locator: "value" as const, kind: "url" as const, value: firstUrl, normalization: "url_canonical" as const, normalizedValue: firstUrl, required: true }]
+      : localPathReference
+        ? [{
+            locator: "value" as const,
+            kind: localPathReference.kind,
+            value: localPathReference.path,
+            normalization: "path_canonical" as const,
+            normalizedValue: localPathReference.path,
+            required: true,
+          }]
       : [];
     if (
       requiredAffordances.size === 0 &&
@@ -3189,7 +3263,7 @@ export async function executeRuntimeKernel(
       resourceBindings,
       sideEffectPolicy,
       resultRules: [...resultRules],
-      validationPolicy: "diagnostics_only",
+      validationPolicy: localPathReference ? "enforce" : "diagnostics_only",
     });
   };
 
