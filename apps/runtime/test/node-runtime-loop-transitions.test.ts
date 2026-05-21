@@ -114,6 +114,7 @@ describe("node runtime loop transition contract", () => {
     ]);
   });
 
+
   it("emits only the first provider sse frame per model invocation", () => {
     expect(shouldEmitNodeRuntimeProviderStreamEvent({ kind: "sse_frame" }, false)).toBe(true);
     expect(shouldEmitNodeRuntimeProviderStreamEvent({ kind: "sse_frame" }, true)).toBe(false);

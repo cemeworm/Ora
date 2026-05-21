@@ -637,12 +637,14 @@ describe("trail debugger view model", () => {
         id: "child-builder",
         agentId: "builder",
         label: "Builder",
+        sessionClass: "mode_subagent",
         status: "running",
         authoritySource: "mode_stage",
         delegationKind: "mode_stage",
         updatedAt: 10,
         startedAt: 9,
         artifactIds: [],
+        recoveryAttemptCount: 0,
       }],
     });
 

@@ -26,7 +26,7 @@ describe("runtime kernel delegation guidance", () => {
         providerThinkingEnabled: true,
         providerPolicyStatus: "applied",
       },
-    }))).toContain("You may use agent.spawn if delegation would materially improve the outcome.");
+    }))).toContain("Treat this as explicit user permission, not as a requirement to delegate.");
   });
 
   it("returns stronger prefer guidance when the user explicitly requests coordination", () => {
@@ -55,7 +55,8 @@ describe("runtime kernel delegation guidance", () => {
     }));
 
     expect(guidance).toContain("Even in single-agent mode, treat this as explicit permission to delegate.");
-    expect(guidance).toContain("prefer using agent.spawn instead of doing everything locally.");
+    expect(guidance).toContain("parallelizable subtasks");
+    expect(guidance).toContain("Do not use agent.spawn for lightweight local reads");
   });
 
   it("returns required guidance when the run is under a degraded collaboration contract", () => {
@@ -87,7 +88,37 @@ describe("runtime kernel delegation guidance", () => {
     }));
 
     expect(guidance).toContain("must delegate at least one substantial top-level subtask with agent.spawn");
+    expect(guidance).toContain("Do not use agent.spawn for lightweight local reads");
     expect(guidance).toContain("requested mode was agent_teams");
+  });
+
+  it("keeps lightweight work out of the explicit allow guidance", () => {
+    const guidance = buildDelegationGuidance(config({
+      delegationIntent: {
+        requestedByUser: true,
+        preference: "allow",
+        reason: "The user said sub-agent help is allowed if needed.",
+        source: "classifier",
+      },
+      effectiveStrategy: {
+        sourceModeId: "single_agent",
+        sourceModeSelection: "manual",
+        thinking: "standard",
+        reasoningEffort: "medium",
+        budgetProfile: "balanced",
+        budget: { maxTokens: 18000, maxToolCalls: 256, maxRuntimeMs: 300000, maxCostUsd: 3 },
+        planning: "light",
+        planningEnabled: true,
+        delegation: "allowed",
+        delegationEnabled: true,
+        delegationRequestedByUser: true,
+        providerThinkingEnabled: true,
+        providerPolicyStatus: "applied",
+      },
+    }));
+
+    expect(guidance).toContain("Prefer staying local for lightweight reads, local file inspection, single-step checks, and simple searches.");
+    expect(guidance).toContain("fresh context or parallel execution");
   });
 
   it("returns no guidance for none intents or absent intents", () => {
