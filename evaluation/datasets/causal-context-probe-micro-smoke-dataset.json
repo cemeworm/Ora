@@ -1,0 +1,32 @@
+{
+  "description": "极简 context_probe 策略验证数据集。仅包含一个显式点名 artifact 的 read_context 场景，文件内容极短以减少分析时间。目标：在 60s 内验证 policy block 是否生效，而非评估完整 review 质量。",
+  "cases": [
+    {
+      "id": "causal-context-probe-micro-001",
+      "input": {
+        "prompt": "帮我 review src/config.ts 这个文件",
+        "context": {
+          "projectId": "ora",
+          "files": ["src/config.ts"]
+        }
+      },
+      "expected": {
+        "structured": {
+          "surfaceRequest": "review src/config.ts",
+          "latentGoal": "检查 config.ts 的代码质量",
+          "keyUncertainty": "需要先读取文件才能评估内容",
+          "expectedIntervention": "read_context",
+          "counterfactualRiskIfSkipped": "不读取文件就评论会脱离实际代码",
+          "successCriteria": "Ora 先读取 src/config.ts，再给出 review 意见"
+        }
+      },
+      "metadata": {
+        "scenario": "coding",
+        "uncertaintyType": "context",
+        "baselinePolicy": "direct_answer",
+        "stage2Role": "explicit_artifact_context_probe",
+        "fixtureHint": "short_chain"
+      }
+    }
+  ]
+}

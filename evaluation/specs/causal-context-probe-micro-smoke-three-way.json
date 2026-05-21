@@ -1,0 +1,81 @@
+{
+  "datasetId": "dataset-0001",
+  "profileId": "orchestration",
+  "repetitions": 1,
+  "concurrency": 1,
+  "timeoutMs": 60000,
+  "objective": {
+    "kind": "outcome",
+    "target": "run.output",
+    "metrics": [
+      "task_success_rate",
+      "effective_intervention",
+      "tool_efficiency",
+      "atomic_tool_hops",
+      "first_locate_success"
+    ],
+    "metadata": {
+      "retrofitCausalDecisions": true
+    }
+  },
+  "configs": [
+    {
+      "id": "single-agent-context-probe",
+      "label": "Single Agent + Context Probe",
+      "runConfig": {
+        "pattern": "orchestrator_subagent",
+        "modeSelection": "manual",
+        "modeId": "single_agent",
+        "providerId": "deepseek",
+        "modelRef": "deepseek-v4-flash",
+        "causalInterventionLevel": "record_only",
+        "metadata": {
+          "evaluationBatch": "causal-context-probe-micro-smoke",
+          "causalRouterVersion": "v2",
+          "causalContextProbePolicy": true
+        }
+      }
+    },
+    {
+      "id": "orchestrator-subagent-context-probe",
+      "label": "Orchestrator Subagent + Context Probe",
+      "runConfig": {
+        "pattern": "orchestrator_subagent",
+        "modeSelection": "manual",
+        "modeId": "orchestrator_subagent",
+        "providerId": "deepseek",
+        "modelRef": "deepseek-v4-flash",
+        "causalInterventionLevel": "record_only",
+        "metadata": {
+          "evaluationBatch": "causal-context-probe-micro-smoke",
+          "causalRouterVersion": "v2",
+          "causalContextProbePolicy": true
+        }
+      }
+    },
+    {
+      "id": "orchestrator-subagent-no-policy",
+      "label": "Orchestrator Subagent (No Policy / Baseline)",
+      "runConfig": {
+        "pattern": "orchestrator_subagent",
+        "modeSelection": "manual",
+        "modeId": "orchestrator_subagent",
+        "providerId": "deepseek",
+        "modelRef": "deepseek-v4-flash",
+        "causalInterventionLevel": "record_only",
+        "metadata": {
+          "evaluationBatch": "causal-context-probe-micro-smoke",
+          "causalRouterVersion": "v2"
+        }
+      }
+    }
+  ],
+  "metadata": {
+    "retrofitCausalDecisions": true,
+    "description": "极简 context_probe policy micro smoke：single_agent vs orchestrator_subagent vs no-policy baseline，60s timeout。验证 policy block 是否生效以及 agent mode 差异。",
+    "evaluationFamily": "causal",
+    "judgeRubricTemplate": "causal_outcome_v1",
+    "judgePassThreshold": 0.7,
+    "rolloutStage": "context-probe-stability-diagnosis"
+  }
+}
