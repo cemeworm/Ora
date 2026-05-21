@@ -544,7 +544,7 @@ export class RuntimeToolExecutor {
         typeof definition?.execute === "function" &&
         isRuntimeToolImplemented(toolId) &&
         this.toolAvailableForTaskIntent(toolId) &&
-        (rootPath || !WORKSPACE_ROOT_REQUIRED_TOOL_IDS.has(toolId))
+        (Boolean(rootPath) || !WORKSPACE_ROOT_REQUIRED_TOOL_IDS.has(toolId))
       );
     });
   }

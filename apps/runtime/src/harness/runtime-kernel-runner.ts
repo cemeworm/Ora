@@ -54,6 +54,10 @@ type KernelEmit = (
 
 type KernelTopologyStatus = StateSnapshot["topology"]["nodes"][number]["status"];
 
+function causalRouterVersion(config: RunConfig): "v1" | "v2" {
+  return config.metadata.causalRouterVersion === "v1" ? "v1" : "v2";
+}
+
 type FinalSnapshotParams = {
   status: StateSnapshot["status"];
   input: UserTaskInput;
@@ -279,6 +283,7 @@ export class KernelRunner {
       hasPendingPlanDecisions: false,
       hasUnresolvedPlanItems: false,
       modelResponseText: "",
+      routerVersion: causalRouterVersion(config),
       decisionContext: {
         phase: "run_start",
         turnIndex: options.turnIndex,
@@ -402,6 +407,7 @@ export class KernelRunner {
         hasPendingPlanDecisions: false,
         hasUnresolvedPlanItems: false,
         modelResponseText: "",
+        routerVersion: causalRouterVersion(config),
         decisionContext: {
           phase: "clarification_resume",
           turnIndex: options.turnIndex,

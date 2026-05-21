@@ -78,7 +78,7 @@ describe("causal task-state extractor", () => {
 
     expect(state.surfaceRequest).toBe("请先搜索最新资料");
     expect(state.keyUncertainties).toContain("事实信息缺失");
-    expect(state.selectedLatentGoal ?? "").toBe("");
+    expect(state.selectedLatentGoal?.length ?? 0).toBeGreaterThan(0);
   });
 
   it("merges structured LLM output into the task state", async () => {
@@ -125,9 +125,21 @@ describe("causal task-state extractor", () => {
       } as never),
     });
 
-    expect(state.selectedLatentGoal ?? "").toBe("");
+    expect(state.selectedLatentGoal?.length ?? 0).toBeGreaterThan(0);
     expect(state.counterfactualRiskIfSkipped).toBe("可能答错对象");
     expect(state.keyUncertainties).toContain("用户目标不明确");
+  });
+
+  it("produces a non-empty heuristic latent goal for context-heavy prompts", async () => {
+    const state = await extractCausalTaskState({
+      prompt: "帮我review这个PR",
+      config: mockConfig(),
+      phase: "run_start",
+      allowLlmExtraction: false,
+    });
+
+    expect(state.selectedLatentGoal).toBe("基于现有上下文完成审查并给出结论");
+    expect(state.latentGoalHypotheses).toContain("基于现有上下文完成审查并给出结论");
   });
 
   it("tracks the latest native task state and first primary tool request", () => {

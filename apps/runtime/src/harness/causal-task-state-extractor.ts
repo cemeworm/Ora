@@ -170,13 +170,44 @@ async function extractSemanticStateWithLlm(
 
 function buildHeuristicTaskState(params: ExtractCausalTaskStateParams): Partial<CausalTaskState> {
   const current = params.currentTaskState ?? {};
+  const heuristicLatentGoal = inferHeuristicLatentGoal(params);
   return mergeCausalTaskState(current, {
     surfaceRequest: pickString(current.surfaceRequest, params.prompt),
+    latentGoalHypotheses: current.latentGoalHypotheses?.length ? current.latentGoalHypotheses : (heuristicLatentGoal ? [heuristicLatentGoal] : []),
+    selectedLatentGoal: pickString(current.selectedLatentGoal, heuristicLatentGoal),
     keyUncertainties: current.keyUncertainties?.length ? current.keyUncertainties : inferKeyUncertainties(params),
     constraints: current.constraints ?? [],
     counterfactualRiskIfSkipped: pickString(params.counterfactualRiskIfSkipped, current.counterfactualRiskIfSkipped),
     confidence: pickNumber(current.confidence, heuristicConfidence(params)),
   });
+}
+
+function inferHeuristicLatentGoal(params: ExtractCausalTaskStateParams): string {
+  const prompt = params.prompt.trim();
+  const lower = prompt.toLowerCase();
+  if (!prompt) return "";
+  if ((params.clarificationMissingVariables?.length ?? 0) > 0 || params.phase === "clarification_triggered") {
+    return "明确任务目标与关键变量后再继续执行";
+  }
+  if (isPromptFreshnessSensitive(lower)) {
+    return `获取最新且可验证的${extractPromptTopic(prompt)}信息`;
+  }
+  if (hasPromptArtifactHandle(lower)) {
+    if (includesAny(lower, ["review", "审查", "评审", "pr", "diff"])) {
+      return "基于现有上下文完成审查并给出结论";
+    }
+    if (includesAny(lower, ["报告", "report", "报表"])) {
+      return "基于现有上下文整理结果并输出报告";
+    }
+    if (includesAny(lower, ["分析", "analy", "趋势", "数据"])) {
+      return "基于现有数据或上下文完成分析";
+    }
+    return "基于现有上下文完成用户请求";
+  }
+  if (includesAny(lower, ["什么是", "解释", "explain"])) {
+    return "解释概念并帮助用户理解";
+  }
+  return normalizePromptAsGoal(prompt);
 }
 
 function inferKeyUncertainties(params: ExtractCausalTaskStateParams): string[] {
@@ -218,6 +249,34 @@ function heuristicConfidence(params: ExtractCausalTaskStateParams): number {
     default:
       return 0.5;
   }
+}
+
+function isPromptFreshnessSensitive(text: string): boolean {
+  if (text.includes("天气")) return false;
+  return includesAny(text, ["最新", "当前", "截至", "latest", "current", "新特性", "支持情况", "兼容性", "版本"]) &&
+    includesAny(text, ["react", "vue", "webassembly", "wasm", "浏览器", "browser", "support", "特性", "api"]);
+}
+
+function hasPromptArtifactHandle(text: string): boolean {
+  if (/\b[\w./-]+\.(ts|tsx|js|jsx|json|md|sql|py|yaml|yml|csv|txt|log|sh)\b/i.test(text)) {
+    return true;
+  }
+  return includesAny(text, ["pr", "diff", "日志", "log", "trace", "报表", "数据", "文档", "方案", "代码", "函数", "循环"]);
+}
+
+function includesAny(text: string, signals: readonly string[]): boolean {
+  return signals.some((signal) => text.includes(signal));
+}
+
+function extractPromptTopic(prompt: string): string {
+  return prompt
+    .replace(/^(帮我|请|请先|请帮我|告诉我|了解一下)/u, "")
+    .replace(/(有哪些新特性|最新支持情况|新特性|支持情况|怎么样|是什么)$/u, "")
+    .trim() || "相关";
+}
+
+function normalizePromptAsGoal(prompt: string): string {
+  return prompt.replace(/[。！？!?]+$/u, "").trim();
 }
 
 function normalizeExtractedState(parsed: ExtractedCausalSemanticState): Partial<CausalTaskState> {

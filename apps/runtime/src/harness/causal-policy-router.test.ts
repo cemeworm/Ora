@@ -242,6 +242,78 @@ describe("causal policy router", () => {
       expect(result.policyDecision.factUncertainty).toBeGreaterThanOrEqual(0.35);
     });
 
+    it("recommends search_web in router v2 for freshness-sensitive prompts before the model guesses", () => {
+      const result = routeIntervention({
+        surfaceRequest: "React 19 有哪些新特性",
+        taskState: undefined,
+        proposedToolId: undefined,
+        proposedToolRisk: "low",
+        toolCallCount: 0,
+        clarificationCount: 0,
+        hasPendingApprovals: false,
+        hasPendingPlanDecisions: false,
+        hasUnresolvedPlanItems: false,
+        modelResponseText: "",
+        routerVersion: "v2",
+      });
+
+      expect(result.action).toBe("search_web");
+    });
+
+    it("keeps router v1 rollback available for freshness-sensitive prompts", () => {
+      const result = routeIntervention({
+        surfaceRequest: "React 19 有哪些新特性",
+        taskState: undefined,
+        proposedToolId: undefined,
+        proposedToolRisk: "low",
+        toolCallCount: 0,
+        clarificationCount: 0,
+        hasPendingApprovals: false,
+        hasPendingPlanDecisions: false,
+        hasUnresolvedPlanItems: false,
+        modelResponseText: "",
+        routerVersion: "v1",
+      });
+
+      expect(result.action).not.toBe("search_web");
+    });
+
+    it("does not let freshness signals override explicit artifact review prompts in router v2", () => {
+      const result = routeIntervention({
+        surfaceRequest: "帮我 review apps/runtime/src/harness/causal-policy-router.ts，顺便看看 React 19 新特性会不会影响这里的逻辑",
+        taskState: undefined,
+        proposedToolId: undefined,
+        proposedToolRisk: "low",
+        toolCallCount: 0,
+        clarificationCount: 0,
+        hasPendingApprovals: false,
+        hasPendingPlanDecisions: false,
+        hasUnresolvedPlanItems: false,
+        modelResponseText: "",
+        routerVersion: "v2",
+      });
+
+      expect(result.action).toBe("read_context");
+    });
+
+    it("does not treat implementation-oriented freshness prompts as search_web in router v2", () => {
+      const result = routeIntervention({
+        surfaceRequest: "请基于 React 19 新特性改造 src/auth.ts",
+        taskState: undefined,
+        proposedToolId: undefined,
+        proposedToolRisk: "low",
+        toolCallCount: 0,
+        clarificationCount: 0,
+        hasPendingApprovals: false,
+        hasPendingPlanDecisions: false,
+        hasUnresolvedPlanItems: false,
+        modelResponseText: "",
+        routerVersion: "v2",
+      });
+
+      expect(result.action).toBe("read_context");
+    });
+
     it("recommends read_context when task needs file reading before tool execution", () => {
       const result = routeIntervention({
         surfaceRequest: "帮我重构auth模块",
@@ -257,6 +329,42 @@ describe("causal policy router", () => {
       });
       // Has unresolved plan items + proposed tool + high context uncertainty → read_context
       expect(result.action).toBe("read_context");
+    });
+
+    it("recommends read_context in router v2 when the prompt already points to a concrete artifact", () => {
+      const result = routeIntervention({
+        surfaceRequest: "帮我写一个函数处理用户登录，现有 auth.ts 里已经有相关逻辑",
+        taskState: undefined,
+        proposedToolId: undefined,
+        proposedToolRisk: "low",
+        toolCallCount: 0,
+        clarificationCount: 0,
+        hasPendingApprovals: false,
+        hasPendingPlanDecisions: false,
+        hasUnresolvedPlanItems: false,
+        modelResponseText: "",
+        routerVersion: "v2",
+      });
+
+      expect(result.action).toBe("read_context");
+    });
+
+    it("keeps clarify for prompts that still need user-supplied scope in router v2", () => {
+      const result = routeIntervention({
+        surfaceRequest: "帮我生成一份性能测试报告",
+        taskState: undefined,
+        proposedToolId: undefined,
+        proposedToolRisk: "low",
+        toolCallCount: 0,
+        clarificationCount: 0,
+        hasPendingApprovals: false,
+        hasPendingPlanDecisions: false,
+        hasUnresolvedPlanItems: false,
+        modelResponseText: "",
+        routerVersion: "v2",
+      });
+
+      expect(result.action).toBe("clarify");
     });
 
     it("recommends plan when there are unresolved plan items and no tool proposed", () => {
@@ -710,6 +818,14 @@ describe("causal eval smoke", () => {
       const mockExecutor = async ({ input }: { input: { prompt: string }; config: unknown }) => {
         const events = [
           causalDecisionEvent(1),
+          {
+            id: "evt-clarification-required",
+            runId: "run-smoke-1",
+            seq: 101,
+            type: "clarification.required" as const,
+            createdAt: Date.now() + 1,
+            payload: { clarification: { id: "clar-1" } },
+          },
         ];
         return mockSnapshot({
           runId: `eval-run-${Date.now()}`,
@@ -813,6 +929,14 @@ describe("causal eval taxonomy", () => {
               stopCondition: "",
             },
           }),
+          {
+            id: "evt-clarification-required-taxonomy",
+            runId: "run-smoke-1",
+            seq: 102,
+            type: "clarification.required" as const,
+            createdAt: Date.now() + 1,
+            payload: { clarification: { id: "clar-taxonomy-1" } },
+          },
         ],
         output: "你具体想优化哪个组件或系统的性能？",
       }),
@@ -866,6 +990,18 @@ describe("causal eval taxonomy", () => {
               wouldChangeOutcomeIfWrong: false,
             },
           }),
+          {
+            id: "evt-message-delta-answer",
+            runId: "run-smoke-1",
+            seq: 103,
+            type: "message.delta" as const,
+            createdAt: Date.now() + 1,
+            payload: {
+              role: "assistant",
+              messageId: "msg-answer-1",
+              text: "可以先检查日志和最近改动。",
+            },
+          },
         ],
         output: "",
       }),

@@ -50,7 +50,16 @@ import {
   NodeLoopController,
 } from "./node-loop-transitions.js";
 import { routeIntervention, applyCausalPolicyGate, interventionActionToLabel } from "./causal-policy-router.js";
-import { classifyToolRisk, ORA_ROOT_AGENT_ID } from "@cemeworm/shared";
+import {
+  classifyToolRisk,
+  isReadContextTool,
+  isSearchTool,
+  ORA_ROOT_AGENT_ID,
+} from "@cemeworm/shared";
+import {
+  promptHasArtifactHandleSignal,
+  promptNeedsFreshnessEvidence,
+} from "./causal-policy-router.js";
 import {
   extractCausalTaskState as defaultExtractCausalTaskState,
   hasPrimaryCausalDecisionInPhase,
@@ -87,6 +96,65 @@ export function shouldEmitProviderStreamEvent(
   emittedProviderStreamFrameForInvocation: boolean,
 ): boolean {
   return event.kind !== "sse_frame" || !emittedProviderStreamFrameForInvocation;
+}
+
+export function shouldBlockFinalForFreshnessPolicy(params: {
+  enabled: boolean;
+  prompt: string;
+  toolCalls: readonly OraToolCallEnvelope[];
+  currentTaskState?: Partial<CausalTaskState>;
+  toolCallCount: number;
+  clarificationCount: number;
+  hasUnresolvedPlanItems: boolean;
+  responseText: string;
+  routerVersion: "v1" | "v2";
+}): boolean {
+  if (!params.enabled || params.routerVersion !== "v2") return false;
+  if (!promptNeedsFreshnessEvidence(params.prompt.toLowerCase())) return false;
+  if (hasSucceededSearchEvidence(params.toolCalls)) return false;
+  const policyResult = routeIntervention({
+    surfaceRequest: params.prompt,
+    taskState: params.currentTaskState,
+    proposedToolId: undefined,
+    proposedToolRisk: "low",
+    toolCallCount: params.toolCallCount,
+    clarificationCount: params.clarificationCount,
+    hasPendingApprovals: false,
+    hasPendingPlanDecisions: false,
+    hasUnresolvedPlanItems: params.hasUnresolvedPlanItems,
+    modelResponseText: params.responseText,
+    routerVersion: params.routerVersion,
+  });
+  return policyResult.action === "search_web";
+}
+
+export function shouldBlockToolForContextProbePolicy(params: {
+  enabled: boolean;
+  prompt: string;
+  toolCalls: readonly OraToolCallEnvelope[];
+  proposedToolId: string;
+  recommendedAction: string;
+  routerVersion: "v1" | "v2";
+}): boolean {
+  if (!params.enabled || params.routerVersion !== "v2") return false;
+  if (params.recommendedAction !== "read_context") return false;
+  if (!promptHasArtifactHandleSignal(params.prompt.toLowerCase())) return false;
+  if (isReadContextTool(params.proposedToolId)) return false;
+  if (hasReadContextEvidence(params.toolCalls)) return false;
+  return true;
+}
+
+function hasSucceededSearchEvidence(toolCalls: readonly OraToolCallEnvelope[]): boolean {
+  return toolCalls.some((call) =>
+    isSearchTool(call.toolId) && (call.status === "succeeded" || call.status === "repaired")
+  );
+}
+
+function hasReadContextEvidence(toolCalls: readonly OraToolCallEnvelope[]): boolean {
+  return toolCalls.some((call) =>
+    isReadContextTool(call.toolId) &&
+    (call.status === "proposed" || call.status === "running" || call.status === "succeeded" || call.status === "repaired")
+  );
 }
 
 const NODE_RUNTIME_HARD_TIMEOUT_MULTIPLIER = 6;
@@ -440,6 +508,9 @@ export async function runNodeRuntimeLoop(
   deps: RunNodeRuntimeLoopDeps,
 ): Promise<ModelResponse> {
   const extractCausalTaskState = deps.extractCausalTaskState ?? defaultExtractCausalTaskState;
+  const routerVersion = deps.config.metadata.causalRouterVersion === "v1" ? "v1" : "v2";
+  const freshnessBlockPolicyEnabled = deps.config.metadata.causalFreshnessBlockPolicy === true;
+  const contextProbePolicyEnabled = deps.config.metadata.causalContextProbePolicy === true;
   const {
     config,
     modeSpec,
@@ -1010,6 +1081,7 @@ export async function runNodeRuntimeLoop(
   const guardCycleCounts = new Map<string, number>();
   let lastAutoAdvanceEvidenceKey = "";
   let emptyFinalOutputRepairUsed = false;
+  let freshnessPolicyRepairUsed = false;
   const continueOrCompleteNaturally = async (
     currentResponse: ModelResponse,
     iteration: number,
@@ -1045,6 +1117,53 @@ export async function runNodeRuntimeLoop(
       stalledBackgroundChildren: stalledBackgroundChildren(),
     });
     if (guardResult.allowComplete) {
+      const planList = deps.planList();
+      const hasUnresolvedPlanItems = planList.some(s => s.status !== "completed");
+      const currentTaskState = latestCausalTaskState(deps.events());
+      const shouldBlockForFreshness = shouldBlockFinalForFreshnessPolicy({
+        enabled: freshnessBlockPolicyEnabled,
+        prompt: input.prompt,
+        toolCalls: deps.toolCalls(),
+        currentTaskState,
+        toolCallCount: completion.toolAttempts,
+        clarificationCount: deps.clarificationCount(),
+        hasUnresolvedPlanItems,
+        responseText: currentResponse.text,
+        routerVersion,
+      });
+      if (shouldBlockForFreshness && !freshnessPolicyRepairUsed) {
+        freshnessPolicyRepairUsed = true;
+        nodeLoopController.emitTransitionResult("model_request", "running_model", {
+          agentId: params.agentId,
+          title: params.title,
+          reason: "freshness_policy_blocked",
+          detail: "Current-information request lacks fresh search evidence.",
+          iteration,
+        });
+        messages = [
+          ...messages,
+          { role: "assistant", content: currentResponse.text },
+          {
+            role: "user",
+            content: completion.toolsAllowed(completionScope)
+              ? "[Freshness Policy] This request needs current, verifiable information. Before finalizing, use a web/search tool to gather fresh evidence."
+              : "[Freshness Policy] You cannot verify the latest state with tools right now. Revise your answer to explicitly say that the latest status is unverified and avoid unsupported current claims.",
+          },
+        ];
+        return {
+          kind: "continue",
+          response: await invokeFollowUpModel({
+            messages,
+            system: params.system,
+            providerCache: params.providerCache,
+            cacheDiagnosticsContext: params.cacheDiagnosticsContext,
+            maxTokens: config.budget?.maxTokens,
+            tools: nativeTools,
+            toolChoice: completion.toolsAllowed(completionScope) && nativeTools.length > 0 ? "auto" : "none",
+          }, currentResponse, "freshness_policy_blocked"),
+        };
+      }
+
       // Final-output guard: refuse to complete when the candidate answer is empty.
       const outputGuardResult = finalOutputGuard(currentResponse.text, { isPostTool });
       if (!outputGuardResult.allowComplete) {
@@ -1088,9 +1207,6 @@ export async function runNodeRuntimeLoop(
         title: params.title,
         iteration,
       });
-      const planList = deps.planList();
-      const hasUnresolvedPlanItems = planList.some(s => s.status !== "completed");
-      const currentTaskState = latestCausalTaskState(deps.events());
       const completionTaskState = await extractCausalTaskState({
         prompt: input.prompt,
         config,
@@ -1113,6 +1229,7 @@ export async function runNodeRuntimeLoop(
         hasPendingPlanDecisions: false,
         hasUnresolvedPlanItems,
         modelResponseText: currentResponse.text,
+        routerVersion,
         decisionContext: {
           phase: "completion",
           turnIndex: deps.turnIndex,
@@ -1368,14 +1485,6 @@ export async function runNodeRuntimeLoop(
       continue;
     }
 
-    const toolRequestedParams = {
-      agentId: params.agentId,
-      title: params.title,
-      toolId: toolCall.tool,
-      iteration,
-    };
-    nodeLoopController.emitToolRequested(toolRequestedParams);
-
     const toolRisk = classifyToolRisk(toolCall.tool);
     const planList = deps.planList();
     const hasUnresolvedPlanItems = planList.some(s => s.status !== "completed");
@@ -1405,6 +1514,7 @@ export async function runNodeRuntimeLoop(
       hasPendingPlanDecisions: false,
       hasUnresolvedPlanItems,
       modelResponseText: response.text,
+      routerVersion,
       decisionContext: {
         phase: "tool_request",
         turnIndex: deps.turnIndex,
@@ -1420,6 +1530,59 @@ export async function runNodeRuntimeLoop(
       agentId: params.agentId,
       nodeId: params.nodeId,
     });
+
+    if (shouldBlockToolForContextProbePolicy({
+      enabled: contextProbePolicyEnabled,
+      prompt: input.prompt,
+      toolCalls: deps.toolCalls(),
+      proposedToolId: toolCall.tool,
+      recommendedAction: policyResult.action,
+      routerVersion,
+    })) {
+      emit("causal.decision.rejected", {
+        toolId: toolCall.tool,
+        recommendedAction: policyResult.action,
+        reason: "Context probe policy requires reading the referenced artifact/context before other tool execution.",
+        level: "context_probe_policy",
+      }, {
+        agentId: params.agentId,
+        nodeId: params.nodeId,
+      });
+      nodeLoopController.emitTransitionResult("model_request", "running_model", {
+        agentId: params.agentId,
+        title: params.title,
+        toolId: toolCall.tool,
+        reason: "context_probe_policy",
+        detail: "Read the referenced file/PR/diff/data context first.",
+        iteration,
+      });
+      messages = [
+        ...messages,
+        { role: "assistant", content: response.text },
+        {
+          role: "user",
+          content: "[Context Probe Policy] The request already points to a concrete artifact or repository context. Read that context first before using other tools or answering.",
+        },
+      ];
+      response = await invokeFollowUpModel({
+        messages,
+        system: params.system,
+        providerCache: params.providerCache,
+        cacheDiagnosticsContext: params.cacheDiagnosticsContext,
+        maxTokens: config.budget?.maxTokens,
+        tools: nativeTools,
+        toolChoice: nativeTools.length > 0 ? "auto" : undefined,
+      }, response, "context_probe_policy_blocked");
+      continue;
+    }
+
+    const toolRequestedParams = {
+      agentId: params.agentId,
+      title: params.title,
+      toolId: toolCall.tool,
+      iteration,
+    };
+    nodeLoopController.emitToolRequested(toolRequestedParams);
 
     // Causal policy gate: in advisory/enforcing mode, the causal decision
     // may override or block the proposed tool call.
