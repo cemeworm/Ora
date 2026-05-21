@@ -30,6 +30,7 @@ const MAX_WIDGET_ROW_SPAN = 3;
 const CANVAS_GRID_GAP_PX = 16;
 const CANVAS_ROW_HEIGHT_PX = 180;
 const DESKTOP_CANVAS_MIN_WIDTH_PX = 768;
+const NOOP = () => {};
 
 interface CanvasWidgetPlacement {
   widget: OraWidget;
@@ -173,6 +174,77 @@ export function SpaceDashboardView() {
     }];
   }, [selectedWidget]);
   const bottomPad = composerOverlayHeight > 0 ? composerOverlayHeight + 32 : 160;
+
+  const handleModeChange = useCallback((modeId: string) => {
+    dispatch({ type: "SET_MODE", modeId });
+  }, [dispatch]);
+
+  const handleModeSelectionChange = useCallback((selection: typeof workbench.selectedModeSelection) => {
+    dispatch({ type: "SET_MODE_SELECTION", selection });
+  }, [dispatch, workbench.selectedModeSelection]);
+
+  const handleProviderChange = useCallback((providerId: string) => {
+    dispatch({ type: "SET_PROVIDER", providerId });
+  }, [dispatch]);
+
+  const handleSelectedSkillIdsChange = useCallback((skillIds: string[]) => {
+    dispatch({ type: "SET_SELECTED_SKILL_IDS", skillIds });
+  }, [dispatch]);
+
+  const handlePermissionModeChange = useCallback((mode: typeof workbench.permissionMode) => {
+    dispatch({ type: "SET_PERMISSION_MODE", permissionMode: mode });
+  }, [dispatch, workbench.permissionMode]);
+
+  const handleTaskIntentChange = useCallback((taskIntent: typeof workbench.taskIntent) => {
+    dispatch({ type: "SET_TASK_INTENT", taskIntent });
+  }, [dispatch, workbench.taskIntent]);
+
+  const handleOverlayHeightChange = useCallback((height: number) => {
+    setComposerOverlayHeight(height);
+  }, []);
+
+  const handleStartRun = useCallback(() => {
+    if (!workbench.selectedSessionId || !composerPrompt.trim()) return;
+    const prompt = composerPrompt;
+    void actions.startRunWithPrompt({
+      prompt,
+      taskIntent: workbench.taskIntent,
+      extraContext: selectedWidgetContext
+        ? { selectedWidgetContext }
+        : undefined,
+      extraMetadata: selectedWidget
+        ? {
+            selectedWidgetId: selectedWidget.id,
+            selectedWidgetSourceView: detailWidget ? "detail" : "dashboard",
+          }
+        : undefined,
+    });
+    setComposerPrompt("");
+  }, [
+    actions,
+    composerPrompt,
+    detailWidget,
+    selectedWidget,
+    selectedWidgetContext,
+    workbench.selectedSessionId,
+    workbench.taskIntent,
+  ]);
+
+  const handleStopRun = useCallback(() => {
+    const runId =
+      workbench.runLifecycle.stage === "streaming" ||
+      workbench.runLifecycle.stage === "pending"
+        ? workbench.runLifecycle.runId
+        : undefined;
+    if (runId) {
+      dispatch({
+        type: "REQUEST_RUN_CANCEL",
+        runId,
+        reason: "user cancelled",
+        updatedAt: Date.now(),
+      });
+    }
+  }, [dispatch, workbench.runLifecycle]);
 
   useEffect(() => {
     if (selectedWidgetId && !widgets.some((widget) => widget.id === selectedWidgetId && widget.status !== "archived")) {
@@ -364,7 +436,7 @@ export function SpaceDashboardView() {
     setSelectedWidgetId((prev) => (prev === widgetId ? undefined : widgetId));
   }, [isSavingLayout]);
 
-  function renderChatInput() {
+  const renderChatInput = useCallback(() => {
     return (
       <ChatInput
         sessionId={workbench.selectedSessionId ?? ""}
@@ -384,68 +456,51 @@ export function SpaceDashboardView() {
         projectFileAttachments={[]}
         localFileAttachments={[]}
         imageAttachments={[]}
-        onRemoveImageAttachment={() => {}}
-        onAddImageAttachment={() => {}}
-        onModeChange={(modeId) => dispatch({ type: "SET_MODE", modeId })}
-        onModeSelectionChange={(selection) =>
-          dispatch({ type: "SET_MODE_SELECTION", selection })
-        }
-        onProviderChange={(providerId) =>
-          dispatch({ type: "SET_PROVIDER", providerId })
-        }
+        onRemoveImageAttachment={NOOP}
+        onAddImageAttachment={NOOP}
+        onModeChange={handleModeChange}
+        onModeSelectionChange={handleModeSelectionChange}
+        onProviderChange={handleProviderChange}
         onPromptChange={setComposerPrompt}
-        onSelectedSkillIdsChange={(skillIds) =>
-          dispatch({ type: "SET_SELECTED_SKILL_IDS", skillIds })
-        }
-        onRemoveProjectFileAttachment={() => {}}
-        onRemoveLocalFileAttachment={() => {}}
-        onOpenLocalFiles={() => {}}
+        onSelectedSkillIdsChange={handleSelectedSkillIdsChange}
+        onRemoveProjectFileAttachment={NOOP}
+        onRemoveLocalFileAttachment={NOOP}
+        onOpenLocalFiles={NOOP}
         permissionMode={workbench.permissionMode}
-        onPermissionModeChange={(mode) =>
-          dispatch({ type: "SET_PERMISSION_MODE", permissionMode: mode })
-        }
+        onPermissionModeChange={handlePermissionModeChange}
         taskIntent={workbench.taskIntent}
-        onTaskIntentChange={(ti) =>
-          dispatch({ type: "SET_TASK_INTENT", taskIntent: ti })
-        }
-        onOverlayHeightChange={setComposerOverlayHeight}
+        onTaskIntentChange={handleTaskIntentChange}
+        onOverlayHeightChange={handleOverlayHeightChange}
         surfaceFrameWidthClassName={CHAT_VIEW_STABLE_CONTENT_WIDTH_CLASS}
-        onStartRun={() => {
-          if (!workbench.selectedSessionId || !composerPrompt.trim()) return;
-          const prompt = composerPrompt;
-          void actions.startRunWithPrompt({
-            prompt,
-            taskIntent: workbench.taskIntent,
-            extraContext: selectedWidgetContext
-              ? { selectedWidgetContext }
-              : undefined,
-            extraMetadata: selectedWidget
-              ? {
-                  selectedWidgetId: selectedWidget.id,
-                  selectedWidgetSourceView: detailWidget ? "detail" : "dashboard",
-                }
-              : undefined,
-          });
-          setComposerPrompt("");
-        }}
-        onStopRun={() => {
-          const runId =
-            workbench.runLifecycle.stage === "streaming" ||
-            workbench.runLifecycle.stage === "pending"
-              ? workbench.runLifecycle.runId
-              : undefined;
-          if (runId) {
-            dispatch({
-              type: "REQUEST_RUN_CANCEL",
-              runId,
-              reason: "user cancelled",
-              updatedAt: Date.now(),
-            });
-          }
-        }}
+        onStartRun={handleStartRun}
+        onStopRun={handleStopRun}
       />
     );
-  }
+  }, [
+    activeMode,
+    composerPrompt,
+    contextChips,
+    handleModeChange,
+    handleModeSelectionChange,
+    handleOverlayHeightChange,
+    handlePermissionModeChange,
+    handleProviderChange,
+    handleSelectedSkillIdsChange,
+    handleStartRun,
+    handleStopRun,
+    handleTaskIntentChange,
+    modeCards,
+    providerOptions,
+    runInteractionState,
+    workbench.isLoading,
+    workbench.language,
+    workbench.permissionMode,
+    workbench.selectedModeSelection,
+    workbench.selectedSessionId,
+    workbench.selectedSkillIds,
+    workbench.skillRegistry?.skills,
+    workbench.taskIntent,
+  ]);
 
   if (detailWidget) {
     return (

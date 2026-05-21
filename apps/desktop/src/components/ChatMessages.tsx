@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useRef } from "react";
 import { FileText } from "lucide-react";
 import { MessageBubble } from "./MessageBubble";
 import { AssistantTurnCard } from "./AssistantTurnCard";
 import { BranchComparisonTurn } from "./BranchComparisonTurn";
-import type { ActionRecord, AgentProfile, ChatMessage, PlanItem } from "../types";
+import type { ActionRecord, AgentProfile, AssistantTurnAttachment, ChatMessage, PlanItem } from "../types";
 import type { OraSessionBranchGroup, OraStateSnapshot } from "../lib/runtimeClient";
 import { Conversation, ConversationContent } from "./ai-elements/conversation";
 import { cn } from "../lib/utils";
@@ -37,6 +37,10 @@ interface ChatMessagesProps {
 export const CHAT_MESSAGES_SCROLL_CLASS =
   `h-full min-h-0 w-full flex-1 overflow-x-hidden overflow-y-auto overscroll-contain ${CHAT_SURFACE_SCROLLBAR_COMPENSATION_CLASS}`;
 
+const EMPTY_BRANCH_GROUPS: OraSessionBranchGroup[] = [];
+const EMPTY_TURN_SNAPSHOTS: Record<string, OraStateSnapshot | undefined> = {};
+const EMPTY_ACTION_RECORDS: ActionRecord[] = [];
+
 export function messageBottomPaddingPx({
   hasTray,
   bottomInsetPx,
@@ -57,13 +61,13 @@ function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-export function ChatMessages({
+export const ChatMessages = memo(function ChatMessages({
   chatMessages,
-  branchGroups = [],
-  turnSnapshots = {},
+  branchGroups = EMPTY_BRANCH_GROUPS,
+  turnSnapshots = EMPTY_TURN_SNAPSHOTS,
   language = "zh",
   agents: _agents,
-  actionRecords: _actionRecords = [],
+  actionRecords: _actionRecords = EMPTY_ACTION_RECORDS,
   planItems: _planItems,
   hasApprovalTray = false,
   hasClarificationTray = false,
@@ -122,33 +126,18 @@ export function ChatMessages({
             >
               {chatMessages.map((message) => {
                 if (message.role === "assistant") {
-                  const branchComparison = branchComparisonForMessage(branchGroups, message);
-                  if (branchComparison) {
-                    return (
-                      <div key={message.id} className="w-full">
-                        <BranchComparisonTurn
-                          group={branchComparison}
-                          snapshots={turnSnapshots}
-                          language={language}
-                          onAdoptBranchGroup={onAdoptBranchGroup}
-                        />
-                      </div>
-                    );
-                  }
-
                   return (
-                    <div key={message.id} className="w-full">
-                      <AssistantTurnCard
-                        content={message.content}
-                        turn={message.turn}
-                        isPlaceholder={message.isPlaceholder}
-                        onOpenArtifact={onOpenArtifact}
-                        onSubmitFeedback={message.turn && onSubmitFeedback
-                          ? ({ feedbackText }) => onSubmitFeedback(message, feedbackText)
-                          : undefined}
-                        projectRootPath={projectRootPath}
-                      />
-                    </div>
+                    <AssistantMessageCard
+                      key={message.id}
+                      message={message}
+                      branchGroups={branchGroups}
+                      turnSnapshots={turnSnapshots}
+                      language={language}
+                      onOpenArtifact={onOpenArtifact}
+                      onSubmitFeedback={onSubmitFeedback}
+                      onAdoptBranchGroup={onAdoptBranchGroup}
+                      projectRootPath={projectRootPath}
+                    />
                   );
                 }
 
@@ -184,7 +173,68 @@ export function ChatMessages({
       </Conversation>
     </div>
   );
-}
+});
+
+ChatMessages.displayName = "ChatMessages";
+
+const AssistantMessageCard = memo(function AssistantMessageCard({
+  message,
+  branchGroups,
+  turnSnapshots,
+  language,
+  onOpenArtifact,
+  onSubmitFeedback,
+  onAdoptBranchGroup,
+  projectRootPath,
+}: {
+  message: ChatMessage;
+  branchGroups: readonly OraSessionBranchGroup[];
+  turnSnapshots: Record<string, OraStateSnapshot | undefined>;
+  language: AppLanguage;
+  onOpenArtifact?: (artifactId: string) => void;
+  onSubmitFeedback?: (message: ChatMessage, feedbackText: string) => Promise<void>;
+  onAdoptBranchGroup?: (branchGroupId: string, runId: string) => void;
+  projectRootPath?: string;
+}) {
+  const branchComparison = branchComparisonForMessage(branchGroups, message);
+  const handleSubmitFeedback = useCallback(
+    ({ feedbackText }: { turn: AssistantTurnAttachment; feedbackText: string }) => {
+      if (!onSubmitFeedback) {
+        return Promise.resolve();
+      }
+      return onSubmitFeedback(message, feedbackText);
+    },
+    [message, onSubmitFeedback],
+  );
+
+  if (branchComparison) {
+    return (
+      <div className="w-full">
+        <BranchComparisonTurn
+          group={branchComparison}
+          snapshots={turnSnapshots}
+          language={language}
+          onAdoptBranchGroup={onAdoptBranchGroup}
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div className="w-full">
+      <AssistantTurnCard
+        content={message.content}
+        turn={message.turn}
+        isPlaceholder={message.isPlaceholder}
+        onOpenArtifact={onOpenArtifact}
+        onSubmitFeedback={message.turn && onSubmitFeedback ? handleSubmitFeedback : undefined}
+        projectRootPath={projectRootPath}
+      />
+    </div>
+  );
+});
+
+AssistantMessageCard.displayName = "AssistantMessageCard";
 
 function logAssistantDuplicateDiagnostics(chatMessages: ChatMessage[]) {
   if (typeof window === "undefined" || import.meta.env.PROD) {

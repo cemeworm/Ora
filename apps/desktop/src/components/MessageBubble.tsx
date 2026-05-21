@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { memo, useCallback, useState, type ReactNode } from "react";
 import { Check, Copy } from "lucide-react";
 import type { ChatMessage } from "../types";
 import { cn } from "../lib/utils";
@@ -11,12 +11,17 @@ interface MessageBubbleProps {
   className?: string;
 }
 
-export function MessageBubble({ role, content, children, className }: MessageBubbleProps) {
+export const MessageBubble = memo(function MessageBubble({
+  role,
+  content,
+  children,
+  className,
+}: MessageBubbleProps) {
   const isUser = role === "user";
   const [copied, setCopied] = useState(false);
   const canCopyContent = isUser && content.trim().length > 0;
 
-  async function handleCopyContent() {
+  const handleCopyContent = useCallback(async () => {
     if (!content.trim()) {
       return;
     }
@@ -45,7 +50,7 @@ export function MessageBubble({ role, content, children, className }: MessageBub
     } catch {
       setCopied(false);
     }
-  }
+  }, [content]);
 
   if (role === "system") {
     return (
@@ -92,4 +97,6 @@ export function MessageBubble({ role, content, children, className }: MessageBub
       </div>
     </div>
   );
-}
+});
+
+MessageBubble.displayName = "MessageBubble";

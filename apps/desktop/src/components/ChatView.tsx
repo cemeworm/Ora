@@ -916,7 +916,7 @@ export function ChatView({
   const branchGroups = state.activeSessionDetail?.branchGroups ?? [];
   const [branchPanelOpen, setBranchPanelOpen] = useState(false);
 
-  async function openLocalFiles() {
+  const openLocalFiles = useCallback(async () => {
     try {
       const files = await pickLocalChatFiles();
       if (files.length === 0) return;
@@ -936,9 +936,9 @@ export function ChatView({
             : "File selection failed.",
       });
     }
-  }
+  }, [dispatch, selectedSession.id]);
 
-  async function handleFilesDropped(fileList: FileList) {
+  const handleFilesDropped = useCallback(async (fileList: FileList) => {
     try {
       const files = await Promise.all(
         Array.from(fileList).map(readBrowserFileAttachment),
@@ -960,22 +960,79 @@ export function ChatView({
             : "File drop failed.",
       });
     }
-  }
+  }, [dispatch, selectedSession.id]);
 
-  function handleImagePasted(image: ComposerImageAttachment) {
+  const handleImagePasted = useCallback((image: ComposerImageAttachment) => {
     dispatch({
       type: "ADD_IMAGE_ATTACHMENT",
       sessionId: selectedSession.id,
       image,
     });
-  }
+  }, [dispatch, selectedSession.id]);
+
+  const handleBranchPanelToggle = useCallback(() => {
+    setBranchPanelOpen((open) => !open);
+  }, []);
+
+  const handleBranchGroupCreate = useCallback((params: OraSessionBranchGroupCreateParams) => {
+    onCreateAndRunBranchGroup(params);
+    setBranchPanelOpen(false);
+  }, [onCreateAndRunBranchGroup]);
+
+  const handleProviderChange = useCallback((providerId: string) => {
+    dispatch({ type: "SET_PROVIDER", providerId });
+  }, [dispatch]);
+
+  const handleSelectedSkillIdsChange = useCallback((skillIds: string[]) => {
+    dispatch({ type: "SET_SELECTED_SKILL_IDS", skillIds });
+  }, [dispatch]);
+
+  const handleRemoveProjectFileAttachment = useCallback((path: string) => {
+    dispatch({
+      type: "REMOVE_PROJECT_FILE_ATTACHMENT",
+      sessionId: selectedSession.id,
+      path,
+    });
+  }, [dispatch, selectedSession.id]);
+
+  const handleRemoveLocalFileAttachment = useCallback((path: string) => {
+    dispatch({
+      type: "REMOVE_LOCAL_FILE_ATTACHMENT",
+      sessionId: selectedSession.id,
+      path,
+    });
+  }, [dispatch, selectedSession.id]);
+
+  const handleRemoveImageAttachment = useCallback((name: string) => {
+    dispatch({
+      type: "REMOVE_IMAGE_ATTACHMENT",
+      sessionId: selectedSession.id,
+      name,
+    });
+  }, [dispatch, selectedSession.id]);
+
+  const handlePermissionModeChange = useCallback((mode: typeof state.permissionMode) => {
+    dispatch({ type: "SET_PERMISSION_MODE", permissionMode: mode });
+  }, [dispatch]);
+
+  const handleTaskIntentChange = useCallback((taskIntent: typeof state.taskIntent) => {
+    dispatch({ type: "SET_TASK_INTENT", taskIntent });
+  }, [dispatch]);
+
+  const handleDeclinePlanDecision = useCallback(() => {
+    return onResolvePlanDecision("declined");
+  }, [onResolvePlanDecision]);
+
+  const handleOpenLocalFiles = useCallback(() => {
+    void openLocalFiles();
+  }, [openLocalFiles]);
 
   return (
     <div className={CHAT_VIEW_ROOT_CLASS}>
       <ChatHeader
         busyCommand={busyCommand}
         selectedSession={selectedSession}
-        onOpenBranches={() => setBranchPanelOpen((open) => !open)}
+        onOpenBranches={handleBranchPanelToggle}
         onToggleDetailDrawer={onToggleDetailDrawer}
         detailDrawer={detailDrawer}
         language={state.language}
@@ -994,10 +1051,7 @@ export function ChatView({
             permissionMode={state.permissionMode}
             language={state.language}
             disabled={busyCommand !== undefined || runInteractionState.isProcessing}
-            onCreateAndRunBranchGroup={(params) => {
-              onCreateAndRunBranchGroup(params);
-              setBranchPanelOpen(false);
-            }}
+            onCreateAndRunBranchGroup={handleBranchGroupCreate}
           />
         )}
         <div ref={setContentRowElement} className={CHAT_VIEW_CONTENT_ROW_CLASS}>
@@ -1073,47 +1127,25 @@ export function ChatView({
                 onSubmitAllClarifications={onSubmitAllClarifications}
                 onModeChange={onSelectMode}
                 onModeSelectionChange={onSelectModeSelection}
-                onProviderChange={(providerId) =>
-                  dispatch({ type: "SET_PROVIDER", providerId })
-                }
+                onProviderChange={handleProviderChange}
                 onPromptChange={onComposerPromptChange}
-                onSelectedSkillIdsChange={(skillIds) =>
-                  dispatch({ type: "SET_SELECTED_SKILL_IDS", skillIds })
-                }
-                onRemoveProjectFileAttachment={(path) =>
-                  dispatch({
-                    type: "REMOVE_PROJECT_FILE_ATTACHMENT",
-                    sessionId: selectedSession.id,
-                    path,
-                  })
-                }
-                onRemoveLocalFileAttachment={(path) =>
-                  dispatch({
-                    type: "REMOVE_LOCAL_FILE_ATTACHMENT",
-                    sessionId: selectedSession.id,
-                    path,
-                  })
-                }
+                onSelectedSkillIdsChange={handleSelectedSkillIdsChange}
+                onRemoveProjectFileAttachment={handleRemoveProjectFileAttachment}
+                onRemoveLocalFileAttachment={handleRemoveLocalFileAttachment}
                 imageAttachments={imageAttachments}
-                onRemoveImageAttachment={(name) =>
-                  dispatch({
-                    type: "REMOVE_IMAGE_ATTACHMENT",
-                    sessionId: selectedSession.id,
-                    name,
-                  })
-                }
+                onRemoveImageAttachment={handleRemoveImageAttachment}
                 onAddImageAttachment={handleImagePasted}
                 permissionMode={state.permissionMode}
-                onPermissionModeChange={(mode) => dispatch({ type: "SET_PERMISSION_MODE", permissionMode: mode })}
+                onPermissionModeChange={handlePermissionModeChange}
                 taskIntent={state.taskIntent}
-                onTaskIntentChange={(ti) => dispatch({ type: "SET_TASK_INTENT", taskIntent: ti })}
+                onTaskIntentChange={handleTaskIntentChange}
                 planDecisionPending={planDecisionPending}
                 planSteps={inlinePlanSteps}
                 onConfirmPlanDecision={onAcceptPlanDecisionAndStartImplementation}
-                onDeclinePlanDecision={() => onResolvePlanDecision("declined")}
+                onDeclinePlanDecision={handleDeclinePlanDecision}
                 onOverlayHeightChange={handleOverlayHeightChange}
                 surfaceFrameWidthClassName={chatSurfaceContentWidthClassName}
-                onOpenLocalFiles={() => void openLocalFiles()}
+                onOpenLocalFiles={handleOpenLocalFiles}
                 onFilesDropped={handleFilesDropped}
                 onClearSelectedCustomAgent={onClearSelectedCustomAgent}
                 onStartRun={onStartRun}
