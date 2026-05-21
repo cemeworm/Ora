@@ -7165,6 +7165,7 @@ function buildMockScorecard(configs: OraEvaluationSpec["configs"], attempts: Ora
         failureTagCounts,
       };
     }),
+    reportingViews: [],
     slices: caseResults.flatMap((result) => {
       const slices: Array<{ dimension: string; value: string; configId: string; caseCount: number; overallScore: number }> = [];
       if (typeof result.metadata.taskType === "string") {
