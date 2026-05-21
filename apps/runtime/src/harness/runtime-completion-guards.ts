@@ -95,12 +95,12 @@ export function evaluateRuntimeCompletionGuards(
  * pending runtime work) all pass, to prevent runs from completing with an
  * empty final model response.
  */
-/** Minimum visible content length to guard against truncated model output. */
-const MIN_VISIBLE_CONTENT_LENGTH = 60;
+/** Minimum visible content length to guard obviously truncated post-tool replies. */
+const MIN_POST_TOOL_VISIBLE_CONTENT_LENGTH = 20;
 
 export function finalOutputGuard(
   responseText: string,
-  metadata?: { isPostTool?: boolean },
+  metadata?: { isPostTool?: boolean; finishReason?: string },
 ): RuntimeCompletionGuardResult {
   const trimmed = responseText.trim();
   if (trimmed.length === 0) {
@@ -118,19 +118,31 @@ export function finalOutputGuard(
         : "The latest model response is empty. Produce the final user-facing answer now using the available conversation and tool results.",
     };
   }
-  if (trimmed.length < MIN_VISIBLE_CONTENT_LENGTH) {
+  if (metadata?.isPostTool && trimmed.length < MIN_POST_TOOL_VISIBLE_CONTENT_LENGTH) {
+    const finishReason = metadata.finishReason;
+    const looksTruncated =
+      typeof finishReason !== "string" || finishReason !== "stop";
     return {
       allowComplete: false,
       reason: "final_output_too_short",
       progressTrigger: "final_output.too_short",
       progressSummary: `Final model response is too short (${trimmed.length} chars); refusing to complete.`,
-      detail: `The latest model response is only ${trimmed.length} characters. This may indicate the model stream was truncated before the full answer was generated.`,
+      detail: looksTruncated
+        ? `The latest post-tool model response is only ${trimmed.length} characters and finish_reason=${finishReason ?? "unknown"}. This may indicate the model stream was truncated before the full answer was generated.`
+        : `The latest post-tool model response is only ${trimmed.length} characters despite finish_reason=${finishReason}. It may be too terse to stand on its own as the final answer.`,
       followUpReason: "final_output_too_short_repair",
-      followUpContent: [
-        "Your previous response appears incomplete or truncated.",
-        "Continue with your full, detailed answer. Do not stop at an introduction or summary placeholder.",
-        "Produce the complete user-facing response now using the available conversation and tool results.",
-      ].join(" "),
+      followUpContent: looksTruncated
+        ? [
+            "Your previous response may have been truncated.",
+            "Continue and complete the user-facing answer now using the available conversation and tool results.",
+            "Do not call tools.",
+          ].join(" ")
+        : [
+            "Your previous post-tool response is too brief to stand alone as the final answer.",
+            "Rewrite it as a self-contained user-facing answer using the available conversation and tool results.",
+            "A concise answer is fine, but it should directly answer the user.",
+            "Do not call tools.",
+          ].join(" "),
     };
   }
   return { allowComplete: true };

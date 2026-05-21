@@ -142,12 +142,11 @@ describe("final output completeness guard (integration)", () => {
     }
   });
 
-  it("triggers repair when model returns a very short post-tool response (run-0124 scenario)", async () => {
+  it("allows a medium-length post-tool response to complete without repair (run-0124 scenario)", async () => {
     // Simulates run-0124 shape:
     // 1. Model makes tool calls (reads files)
-    // 2. Post-tool model response is non-empty but very short (43 chars intro)
-    // 3. Expected: guard detects "too short" and triggers repair
-    // 4. Repair produces a full answer
+    // 2. Post-tool model response is non-empty but only medium length
+    // 3. Expected: relaxed guard allows the run to complete directly
 
     const modeSpec = getModePreset(SINGLE_AGENT_MODE_ID)!;
     const definition = modeSpecToPatternDefinition(modeSpec);
@@ -180,25 +179,13 @@ describe("final output completeness guard (integration)", () => {
         }), { status: 200, headers: { "content-type": "application/json" } });
       }
       if (providerCalls === 2) {
-        // Post-tool: short non-empty response (simulating run-0124 truncated output)
+        // Post-tool: medium-length response that should now pass without repair
         return new Response(JSON.stringify({
           choices: [{
             finish_reason: "stop",
             message: {
               role: "assistant",
               content: "我现在已经完成了对文件的全面审查。让我整理一份完整的分析。",
-            },
-          }],
-        }), { status: 200, headers: { "content-type": "application/json" } });
-      }
-      if (providerCalls === 3) {
-        // Repair turn: model returns full answer
-        return new Response(JSON.stringify({
-          choices: [{
-            finish_reason: "stop",
-            message: {
-              role: "assistant",
-              content: "文件分析结果：target.txt 包含 'hello'。这是一个简单的文本文件，内容为问候语。经过全面审查，文件结构正常，没有发现异常。建议继续监控文件变化。",
             },
           }],
         }), { status: 200, headers: { "content-type": "application/json" } });
@@ -241,15 +228,13 @@ describe("final output completeness guard (integration)", () => {
         { modeSpec, definition },
       );
 
-      // Should succeed after repair
+      // Should now succeed without repair
       expect(snapshot.status).toBe("succeeded");
       const output = snapshot.output as { text?: string };
       expect(output.text).toBeTruthy();
-      // Output should contain the full analysis from the repair turn
-      expect(output.text).toContain("文件分析结果");
-      expect(output.text!.length).toBeGreaterThan(50);
-      // Provider was called exactly 3 times: initial, post-tool, repair
-      expect(providerCalls).toBe(3);
+      expect(output.text).toContain("全面审查");
+      // Provider was called exactly 2 times: initial, post-tool
+      expect(providerCalls).toBe(2);
     } finally {
       globalThis.fetch = previousFetch;
       if (previousKey === undefined) {

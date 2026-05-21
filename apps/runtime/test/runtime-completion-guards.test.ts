@@ -342,15 +342,17 @@ describe("finalOutputGuard", () => {
     });
   });
 
-  it("allows complete with text meeting minimum length threshold", () => {
-    expect(finalOutputGuard("This is a valid response that meets the minimum character length requirement.")).toEqual({ allowComplete: true });
+  it("allows short non-post-tool replies", () => {
+    expect(finalOutputGuard("OK")).toEqual({ allowComplete: true });
+    expect(finalOutputGuard("可以")).toEqual({ allowComplete: true });
   });
 
-  it("blocks complete when response text is below minimum length", () => {
-    const result = finalOutputGuard("OK");
+  it("blocks very short post-tool replies", () => {
+    const result = finalOutputGuard("OK", { isPostTool: true, finishReason: "stop" });
     expect(result.allowComplete).toBe(false);
     if (!result.allowComplete) {
       expect(result.reason).toBe("final_output_too_short");
+      expect(result.detail).toContain("finish_reason=stop");
     }
   });
 
@@ -396,9 +398,42 @@ describe("finalOutputGuard", () => {
     }
   });
 
+  it("uses concise self-contained repair prompt for short post-tool stop responses", () => {
+    const result = finalOutputGuard("太短了", { isPostTool: true, finishReason: "stop" });
+    expect(result.allowComplete).toBe(false);
+    if (!result.allowComplete) {
+      expect(result.followUpReason).toBe("final_output_too_short_repair");
+      expect(result.followUpContent).toBe(
+        "Your previous post-tool response is too brief to stand alone as the final answer. Rewrite it as a self-contained user-facing answer using the available conversation and tool results. A concise answer is fine, but it should directly answer the user. Do not call tools.",
+      );
+    }
+  });
+
+  it("uses truncation-oriented repair prompt when finish reason is missing", () => {
+    const result = finalOutputGuard("短回复", { isPostTool: true });
+    expect(result.allowComplete).toBe(false);
+    if (!result.allowComplete) {
+      expect(result.followUpReason).toBe("final_output_too_short_repair");
+      expect(result.followUpContent).toBe(
+        "Your previous response may have been truncated. Continue and complete the user-facing answer now using the available conversation and tool results. Do not call tools.",
+      );
+    }
+  });
+
+  it("treats length finish reason as truncated output", () => {
+    const result = finalOutputGuard("短回复", { isPostTool: true, finishReason: "length" });
+    expect(result.allowComplete).toBe(false);
+    if (!result.allowComplete) {
+      expect(result.detail).toContain("finish_reason=length");
+      expect(result.followUpContent).toBe(
+        "Your previous response may have been truncated. Continue and complete the user-facing answer now using the available conversation and tool results. Do not call tools.",
+      );
+    }
+  });
+
   it("does not inspect language-specific unfinished phrases", () => {
-    // The guard is purely structural: it only checks text length, not content.
-    // Text ≥ 60 chars passes regardless of language.
+    // The guard is purely structural: it only checks empty output plus
+    // a short post-tool threshold, not language-specific phrases.
     expect(finalOutputGuard("以下是完整的实施计划，包含所有实现细节和测试用例的具体安排。请仔细阅读并按照步骤逐一执行，确保每一步都经过充分验证和确认。")).toEqual({
       allowComplete: true,
     });

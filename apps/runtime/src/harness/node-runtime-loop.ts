@@ -1164,10 +1164,20 @@ export async function runNodeRuntimeLoop(
         };
       }
 
-      // Final-output guard: refuse to complete when the candidate answer is empty.
-      const outputGuardResult = finalOutputGuard(currentResponse.text, { isPostTool });
+      // Final-output guard: refuse to complete when the candidate answer is empty
+      // or obviously too short after tool use.
+      const hasToolResultContext = messages.some((message) =>
+        message.role === "tool" ||
+        (message.role === "user" &&
+          typeof message.content === "string" &&
+          message.content.includes("Workspace tool result for ")),
+      );
+      const outputGuardResult = finalOutputGuard(currentResponse.text, {
+        isPostTool: isPostTool || hasToolResultContext || completion.toolAttempts > 0,
+        finishReason: currentResponse.finishReason,
+      });
       if (!outputGuardResult.allowComplete) {
-        // Only allow one repair turn for empty post-tool responses.
+        // Only allow one repair turn for final-output guard failures.
         if (!emptyFinalOutputRepairUsed) {
           emptyFinalOutputRepairUsed = true;
           nodeLoopController.emitTransitionResult("model_request", "running_model", {
