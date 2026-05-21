@@ -1125,6 +1125,93 @@ describe("assistant turn display helpers", () => {
     expect(html.split(finalVerdict).length - 1).toBe(1);
   });
 
+  it("recomputes presentation from current props instead of trusting stale cached presentation", () => {
+    const finalVerdict = "最终裁决：采用方案A。";
+    const turn: AssistantTurnAttachment = {
+      runId: "run-1",
+      turnIndex: 1,
+      status: "done",
+      pattern: "orchestrator_subagent",
+      sources: [],
+      processSteps: [],
+      timelineItems: [{
+        id: "timeline-1",
+        kind: "agent_message",
+        messageKind: "reply",
+        fromAgentLabel: "Moderator",
+        toAgentLabels: ["Debate Agent"],
+        content: finalVerdict,
+        timestamp: "+1s",
+      }],
+      agentMessages: [],
+      artifacts: [],
+      todos: [],
+      planList: [],
+      approvalCount: 0,
+      clarificationCount: 0,
+      hasProposedPlan: false,
+      presentation: {
+        primarySurface: "body",
+        bodyContent: finalVerdict,
+        showStandaloneBody: true,
+        visibleTimelineItems: [{
+          id: "timeline-1",
+          kind: "agent_message",
+          messageKind: "reply",
+          fromAgentLabel: "Moderator",
+          toAgentLabels: ["Debate Agent"],
+          content: finalVerdict,
+          timestamp: "+1s",
+        }],
+      },
+    };
+
+    const html = renderToStaticMarkup(
+      <AssistantTurnCard content={finalVerdict} turn={turn} />,
+    );
+
+    expect(html.split(finalVerdict).length - 1).toBe(1);
+  });
+
+  it("deduplicates repeated timeline text before rendering", () => {
+    const finalVerdict = "最终裁决：采用方案A。";
+    const turn: AssistantTurnAttachment = {
+      runId: "run-1",
+      turnIndex: 1,
+      status: "running",
+      pattern: "orchestrator_subagent",
+      sources: [],
+      processSteps: [],
+      timelineItems: [
+        {
+          id: "timeline-1",
+          kind: "assistant_text",
+          content: finalVerdict,
+          timestamp: "+1s",
+        },
+        {
+          id: "timeline-2",
+          kind: "final_text",
+          content: finalVerdict,
+          timestamp: "+2s",
+        },
+      ],
+      agentMessages: [],
+      artifacts: [],
+      todos: [],
+      planList: [],
+      approvalCount: 0,
+      clarificationCount: 0,
+      hasProposedPlan: false,
+    };
+
+    const html = renderToStaticMarkup(
+      <AssistantTurnCard content={finalVerdict} turn={turn} />,
+    );
+
+    expect(html.split(finalVerdict).length - 1).toBe(1);
+  });
+
   it("keeps distinct body text visible alongside projected timeline agent messages", () => {
     const turn: AssistantTurnAttachment = {
       runId: "run-1",

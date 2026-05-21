@@ -24,7 +24,7 @@ export function deriveAssistantTurnPresentation(params: {
     turn,
     bodyContent,
     isPlaceholder,
-  );
+  ).filter(dedupeTimelineItemText());
   const hasPlan = Boolean(turn.hasProposedPlan && turn.planContent);
   const timelineContainsBody = visibleTimelineItems.some((item) => {
     if (item.kind === "assistant_text" || item.kind === "final_text") {
@@ -61,6 +61,24 @@ function isComparableDuplicate(left: string, right: string): boolean {
   const shorter = normalizedLeft.length <= normalizedRight.length ? normalizedLeft : normalizedRight;
   const longer = shorter === normalizedLeft ? normalizedRight : normalizedLeft;
   return shorter.length >= 24 && longer.includes(shorter);
+}
+
+function dedupeTimelineItemText(): (item: TurnTimelineItem) => boolean {
+  const seen: string[] = [];
+  return (item) => {
+    if (!("content" in item)) {
+      return true;
+    }
+    const normalized = normalizeComparableText(item.content);
+    if (!normalized) {
+      return true;
+    }
+    const duplicate = seen.some((existing) => isComparableDuplicate(existing, normalized));
+    if (!duplicate) {
+      seen.push(normalized);
+    }
+    return !duplicate;
+  };
 }
 
 function shouldSuppressClarificationBody(
@@ -107,6 +125,9 @@ function deriveVisibleTimelineItems(
   }
 
   const latestNonStatusIndex = findLatestNonStatusTimelineIndex(withoutTrivialCompletedGroups);
+  if (latestNonStatusIndex < 0) {
+    return withoutTrivialCompletedGroups;
+  }
   return withoutTrivialCompletedGroups.filter((item, index) => (
     item.kind !== "status_group" ||
     item.status !== "complete" ||

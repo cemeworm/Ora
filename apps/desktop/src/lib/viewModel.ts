@@ -1930,6 +1930,8 @@ export function adaptRenderableChatMessages(params: {
   const runAlreadyMaterialized = pendingRunAlreadyMaterialized(
     pendingRun,
     turnSnapshots,
+    withAcceptedPlanDecisionTurns,
+    params.transcript,
   );
   if (runAlreadyMaterialized) {
     return withAcceptedPlanDecisionTurns;
@@ -1987,14 +1989,51 @@ function injectAcceptedPlanDecisionTurns(
 function pendingRunAlreadyMaterialized(
   pendingRun: PendingRunPreview,
   turnSnapshots: Record<string, OraStateSnapshot | undefined>,
+  messages: readonly ChatMessage[] = [],
+  transcript: readonly OraSessionTranscriptMessage[] = [],
 ): boolean {
   if (!pendingRun.runId) {
-    return false;
+    const matchingTranscriptRunIds = new Set(
+      transcript
+        .filter((message) =>
+          message.role === "user" &&
+          message.sessionId === pendingRun.sessionId &&
+          message.content === pendingRun.prompt &&
+          message.createdAt >= pendingRun.createdAt
+        )
+        .map((message) => message.runId),
+    );
+    for (const snapshot of Object.values(turnSnapshots)) {
+      if (
+        snapshot?.sessionId === pendingRun.sessionId &&
+        snapshot.input.prompt === pendingRun.prompt &&
+        (snapshot.input.createdAt ?? snapshot.updatedAt) >= pendingRun.createdAt
+      ) {
+        matchingTranscriptRunIds.add(snapshot.runId);
+      }
+    }
+    if (matchingTranscriptRunIds.size === 0) {
+      return false;
+    }
+    return messages.some((message) => {
+      if (message.role !== "assistant" || !message.content.trim()) {
+        return false;
+      }
+      const runId = message.metadata?.runId;
+      return Boolean(runId && matchingTranscriptRunIds.has(runId));
+    });
   }
   const snapshot = turnSnapshots[pendingRun.runId];
   return Boolean(
     snapshot?.sessionId === pendingRun.sessionId &&
-      (snapshot.status === "queued" || snapshot.status === "running"),
+      (
+        snapshot.status === "queued" ||
+        snapshot.status === "running" ||
+        snapshot.status === "interrupted" ||
+        snapshot.status === "cancelled" ||
+        snapshot.status === "succeeded" ||
+        snapshot.status === "failed"
+      ),
   );
 }
 
@@ -2018,8 +2057,12 @@ function overlayLiveMessageDeltas(
     }
     const liveEntries = liveAssistantEntriesForSnapshot(snapshot, liveMessageDeltas);
     const liveText = liveEntries.at(-1)?.content;
-    const nextTurnBase = message.turn && liveEntries.length > 0
-      ? overlayLiveTimelineItems(message.turn, snapshot, liveEntries)
+    const representedMessageContent = message.content;
+    const filteredLiveEntries = representedMessageContent
+      ? liveEntries.filter((entry) => !isTimelineTextDuplicate(entry.content, representedMessageContent))
+      : liveEntries;
+    const nextTurnBase = message.turn && filteredLiveEntries.length > 0
+      ? overlayLiveTimelineItems(message.turn, snapshot, filteredLiveEntries)
       : message.turn;
     const contentChanged = Boolean(liveText && message.content !== liveText);
     const nextTurn = nextTurnBase && (contentChanged || nextTurnBase !== message.turn)

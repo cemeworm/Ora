@@ -119,6 +119,126 @@ describe("desktop session view model", () => {
     });
   });
 
+  it("does not append a pending placeholder after the run snapshot has settled", () => {
+    const createdAt = 1_714_000_000_000;
+    const sessionId = "session-settled-pending";
+    const runId = "run-settled-pending";
+    const prompt = "介绍 Ora";
+    const messages = adaptRenderableChatMessages({
+      transcript: [{
+        id: `${runId}:user`,
+        sessionId,
+        runId,
+        turnIndex: 1,
+        role: "user",
+        content: prompt,
+        pattern: "orchestrator_subagent",
+        modeId: SINGLE_AGENT_MODE_ID,
+        createdAt,
+      }],
+      turnSnapshots: {
+        [runId]: {
+          runId,
+          sessionId,
+          turnIndex: 1,
+          status: "succeeded",
+          pattern: "orchestrator_subagent",
+          modeId: SINGLE_AGENT_MODE_ID,
+          input: { prompt, createdAt, context: {} },
+          config: {
+            modeId: SINGLE_AGENT_MODE_ID,
+            pattern: "orchestrator_subagent",
+            modeSelection: "manual",
+            profileIds: ["solo_agent"],
+            providerId: "deepseek",
+            modelRef: "deepseek-chat",
+            approvalMode: "high_risk_only",
+            patternOptions: {},
+            metadata: {},
+            deterministicSeed: "view-model-settled-pending-test",
+            skillIds: [],
+            toolIds: [],
+          },
+          topology: { nodes: [], edges: [] },
+          profiles: [],
+          memory: [],
+          plan: [],
+          todos: [],
+          actions: [],
+          toolCalls: [],
+          policyDecisions: [],
+          checkpoints: [],
+          events: [],
+          artifacts: [],
+          activeAgents: [],
+          queueSummary: { mode: "dag", pending: 0, inProgress: 0, completed: 1, topics: [] },
+          sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+          busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+          pendingClarifications: [],
+          pendingApprovals: [],
+          output: { text: "Ora 是一个本地 AI 工作台。" },
+          updatedAt: createdAt + 1_000,
+        } as unknown as OraStateSnapshot,
+      },
+      pendingRun: {
+        sessionId,
+        runId,
+        prompt,
+        createdAt,
+        progressText: "Ora 是一个本地 AI 工作台。",
+      },
+      selectedSessionId: sessionId,
+    });
+
+    expect(messages.map((message) => message.id)).not.toContain(`${sessionId}:pending:assistant`);
+    expect(messages.filter((message) => message.role === "assistant")).toHaveLength(1);
+    expect(messages.find((message) => message.role === "assistant")?.content).toBe("Ora 是一个本地 AI 工作台。");
+  });
+
+  it("does not append an unresolved pending placeholder once a matching transcript turn exists", () => {
+    const createdAt = 1_714_000_000_000;
+    const sessionId = "session-pending-without-run-id";
+    const runId = "run-materialized-before-handle";
+    const prompt = "介绍 Ora";
+    const messages = adaptRenderableChatMessages({
+      transcript: [
+        {
+          id: `${runId}:user`,
+          sessionId,
+          runId,
+          turnIndex: 1,
+          role: "user",
+          content: prompt,
+          pattern: "orchestrator_subagent",
+          modeId: SINGLE_AGENT_MODE_ID,
+          createdAt,
+        },
+        {
+          id: `${runId}:assistant`,
+          sessionId,
+          runId,
+          turnIndex: 1,
+          role: "assistant",
+          content: "Ora 是一个本地 AI 工作台。",
+          pattern: "orchestrator_subagent",
+          modeId: SINGLE_AGENT_MODE_ID,
+          createdAt: createdAt + 1_000,
+        },
+      ],
+      pendingRun: {
+        sessionId,
+        prompt,
+        createdAt,
+        progressText: "Ora 是一个本地 AI 工作台。",
+      },
+      selectedSessionId: sessionId,
+    });
+
+    expect(messages.map((message) => message.id)).not.toContain(`${sessionId}:pending:assistant`);
+    expect(messages.filter((message) => message.role === "assistant")).toHaveLength(1);
+    expect(messages.find((message) => message.role === "assistant")?.content).toBe("Ora 是一个本地 AI 工作台。");
+  });
+
   it("keeps child collaboration deltas out of assistant chat messages", () => {
     const createdAt = 1_714_000_000_000;
     const runId = "run-collaboration-filter";
@@ -6514,6 +6634,97 @@ describe("desktop session view model", () => {
     ).find((message) => message.role === "assistant");
 
     expect(assistant?.content).toBe("Hi there");
+  });
+
+  it("does not overlay live text into the timeline when the current body already represents it", () => {
+    const createdAt = 1_714_000_000_000;
+    const runId = "run-live-overlay-body-dedupe";
+    const sessionId = "session-live-overlay-body-dedupe";
+    const messageId = `${runId}:assistant:solo:solo:0`;
+    const snapshot = {
+      runId,
+      sessionId,
+      turnIndex: 1,
+      status: "running",
+      pattern: "orchestrator_subagent",
+      modeId: SINGLE_AGENT_MODE_ID,
+      input: { prompt: "介绍 Ora", createdAt, context: {} },
+      config: {
+        modeId: SINGLE_AGENT_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["solo_agent"],
+        providerId: "deepseek",
+        modelRef: "deepseek-chat",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-live-overlay-body-dedupe-test",
+        skillIds: [],
+        toolIds: [],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 1, completed: 0, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      updatedAt: createdAt + 100,
+    } as unknown as OraStateSnapshot;
+    const baseMessages = adaptChatMessages(
+      [{
+        id: `${runId}:user`,
+        sessionId,
+        runId,
+        turnIndex: 1,
+        role: "user",
+        content: "介绍 Ora",
+        pattern: "orchestrator_subagent",
+        modeId: SINGLE_AGENT_MODE_ID,
+        createdAt,
+      }],
+      { [runId]: snapshot },
+    ).map((message) =>
+      message.role === "assistant"
+        ? { ...message, content: "Hi there" }
+        : message
+    );
+
+    const assistant = adaptRenderableChatMessages({
+      transcript: [],
+      turnSnapshots: { [runId]: snapshot },
+      selectedSessionId: sessionId,
+      baseMessages,
+      liveMessageDeltas: {
+        [`${runId}:${messageId}`]: {
+          runId,
+          messageId,
+          sessionId,
+          role: "assistant",
+          content: "Hi there",
+          agentId: "solo",
+          nodeId: "solo",
+          createdAt,
+          updatedAt: createdAt + 200,
+        },
+      },
+    }).find((message) => message.role === "assistant");
+    const timelineText = assistant?.turn?.timelineItems
+      ?.flatMap((item) => item.kind === "assistant_text" ? [item.content] : []) ?? [];
+
+    expect(assistant?.content).toBe("Hi there");
+    expect(timelineText.filter((content) => content === "Hi there")).toHaveLength(0);
   });
 
   it("uses the latest messageId instead of concatenating same-agent streaming invocations", () => {

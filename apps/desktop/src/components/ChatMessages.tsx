@@ -1,4 +1,4 @@
-import { useCallback, useLayoutEffect, useRef } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
 import { FileText } from "lucide-react";
 import { MessageBubble } from "./MessageBubble";
 import { AssistantTurnCard } from "./AssistantTurnCard";
@@ -94,6 +94,10 @@ export function ChatMessages({
     }
   }, [chatMessages]);
 
+  useEffect(() => {
+    logAssistantDuplicateDiagnostics(chatMessages);
+  }, [chatMessages]);
+
   return (
     <div
       ref={scrollRef}
@@ -180,6 +184,76 @@ export function ChatMessages({
       </Conversation>
     </div>
   );
+}
+
+function logAssistantDuplicateDiagnostics(chatMessages: ChatMessage[]) {
+  if (typeof window === "undefined" || import.meta.env.PROD) {
+    return;
+  }
+  const assistantMessages = chatMessages.filter((message) => message.role === "assistant");
+  const seen = new Map<string, ChatMessage[]>();
+  for (const message of assistantMessages) {
+    const key = normalizeDiagnosticText(message.content);
+    if (!key || key.length < 24) {
+      continue;
+    }
+    const bucket = seen.get(key) ?? [];
+    bucket.push(message);
+    seen.set(key, bucket);
+  }
+  const duplicatedMessages = [...seen.values()].filter((bucket) => bucket.length > 1);
+  const duplicatedTimeline = assistantMessages.flatMap((message) => {
+    const timelineItems = message.turn?.timelineItems ?? [];
+    const timelineSeen = new Map<string, Array<{ id: string; kind: string; content: string }>>();
+    for (const item of timelineItems) {
+      if (!("content" in item)) {
+        continue;
+      }
+      const key = normalizeDiagnosticText(item.content);
+      if (!key || key.length < 24) {
+        continue;
+      }
+      const bucket = timelineSeen.get(key) ?? [];
+      bucket.push({ id: item.id, kind: item.kind, content: item.content });
+      timelineSeen.set(key, bucket);
+    }
+    return [...timelineSeen.values()]
+      .filter((bucket) => bucket.length > 1)
+      .map((bucket) => ({
+        messageId: message.id,
+        runId: message.metadata?.runId ?? message.turn?.runId,
+        items: bucket,
+      }));
+  });
+  if (duplicatedMessages.length === 0 && duplicatedTimeline.length === 0) {
+    return;
+  }
+  console.warn("[ora-chat] duplicate assistant render candidates", {
+    duplicatedMessages: duplicatedMessages.map((bucket) =>
+      bucket.map((message) => ({
+        id: message.id,
+        runId: message.metadata?.runId ?? message.turn?.runId,
+        isPlaceholder: message.isPlaceholder,
+        content: message.content,
+      }))
+    ),
+    duplicatedTimeline,
+    assistantMessages: assistantMessages.map((message) => ({
+      id: message.id,
+      runId: message.metadata?.runId ?? message.turn?.runId,
+      isPlaceholder: message.isPlaceholder,
+      content: message.content,
+      timeline: (message.turn?.timelineItems ?? []).flatMap((item) =>
+        "content" in item
+          ? [{ id: item.id, kind: item.kind, content: item.content }]
+          : []
+      ),
+    })),
+  });
+}
+
+function normalizeDiagnosticText(text: string) {
+  return text.trim().replace(/\s+/g, "");
 }
 
 function branchComparisonForMessage(

@@ -87,7 +87,7 @@ export const AssistantTurnCard = memo(function AssistantTurnCard({
   );
   const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
   const [copied, setCopied] = useState(false);
-  const presentation = turn?.presentation ?? deriveAssistantTurnPresentation({
+  const presentation = deriveAssistantTurnPresentation({
     content,
     turn,
     isPlaceholder,
