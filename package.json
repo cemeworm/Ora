@@ -1,6 +1,6 @@
 {
   "name": "ora",
-  "version": "0.3.5",
+  "version": "0.3.6",
   "private": true,
   "packageManager": "pnpm@11.1.2",
   "scripts": {

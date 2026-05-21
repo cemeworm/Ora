@@ -1,6 +1,6 @@
 [package]
 name = "ora"
-version = "0.3.4"
+version = "0.3.6"
 description = "Ora Operator Workbench desktop shell"
 authors = ["Ora"]
 edition = "2021"
