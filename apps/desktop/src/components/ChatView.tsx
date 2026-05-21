@@ -51,7 +51,6 @@ export const CHAT_VIEW_MESSAGES_PANEL_CLASS =
   "flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden";
 export const CHAT_VIEW_STABLE_CONTENT_WIDTH_CLASS = CHAT_SURFACE_FRAME_WIDTH_CLASS;
 export const CHAT_VIEW_WELCOME_VIEWPORT_CLASS = CHAT_SURFACE_VIEWPORT_GUTTER_CLASS;
-export const CHAT_VIEW_COLLABORATION_SHIFT_CLASS = "lg:-translate-x-8";
 export const CHAT_VIEW_DESKTOP_OVERLAY_RAIL_CLASS =
   "pointer-events-none absolute right-4 top-3 z-20 hidden lg:block xl:right-6 xl:top-4";
 export const CHAT_VIEW_DESKTOP_OVERLAY_STACK_CLASS =
@@ -735,9 +734,9 @@ export function deriveChatSurfaceContentWidthClassName(
 }
 
 export function deriveChatSurfaceShiftClassName(
-  hasCollaborationOverlay: boolean,
+  _hasDesktopOverlayRail: boolean,
 ): string {
-  return hasCollaborationOverlay ? CHAT_VIEW_COLLABORATION_SHIFT_CLASS : "";
+  return "";
 }
 
 export function ChatView({

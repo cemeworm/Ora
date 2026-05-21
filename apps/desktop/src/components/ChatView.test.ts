@@ -3,7 +3,6 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import {
   canUseDesktopOverlayRail,
-  CHAT_VIEW_COLLABORATION_SHIFT_CLASS,
   CHAT_VIEW_COLLABORATION_DETAIL_CLASS,
   CHAT_VIEW_COLLABORATION_ITEM_CLASS,
   CHAT_VIEW_COLLABORATION_PANEL_CLASS,
@@ -592,15 +591,11 @@ describe("chat view collaboration overlay visibility", () => {
   });
 
   it("does not shift the content rail when the overlay is hidden", () => {
-    expect(deriveChatSurfaceShiftClassName(false)).not.toContain(
-      CHAT_VIEW_COLLABORATION_SHIFT_CLASS,
-    );
+    expect(deriveChatSurfaceShiftClassName(false)).toBe("");
   });
 
-  it("shifts the content rail left on desktop when the overlay is visible", () => {
-    expect(deriveChatSurfaceShiftClassName(true)).toContain(
-      CHAT_VIEW_COLLABORATION_SHIFT_CLASS,
-    );
+  it("keeps the content rail anchored even when the overlay is visible", () => {
+    expect(deriveChatSurfaceShiftClassName(true)).toBe("");
   });
 
   it("anchors the desktop overlay rail near the content area's top-right edge", () => {
