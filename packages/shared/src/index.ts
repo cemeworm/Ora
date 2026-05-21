@@ -1,3 +1,4 @@
+export * from "./cache/index.js";
 export * from "./primitives.js";
 export * from "./memory.js";
 export * from "./actions.js";

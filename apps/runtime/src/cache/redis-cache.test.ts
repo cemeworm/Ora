@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { RedisCache } from "./redis-cache.js";
+import { RedisCache } from "@cemeworm/shared";
 
 // ---------------------------------------------------------------------------
 // Mock ioredis
