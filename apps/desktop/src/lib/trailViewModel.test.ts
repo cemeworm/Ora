@@ -39,6 +39,8 @@ describe("trail debugger view model", () => {
               authoritySource: "mode_stage",
               status: "succeeded",
               resolvedToolPreset: "builder_write",
+              parentTaskIntent: "implement",
+              childTaskIntent: "plan",
               artifactIds: [],
               recoveryAttemptCount: 0,
               startedAt: 900,
@@ -72,6 +74,7 @@ describe("trail debugger view model", () => {
       detail: expect.stringContaining("模式阶段授权"),
     });
     expect(timeline.find((item) => item.eventType === "child_session.updated")?.detail).toContain("工具面 builder_write");
+    expect(timeline.find((item) => item.eventType === "child_session.updated")?.detail).toContain("意图 implement -> plan");
     expect(timeline.find((item) => item.eventType === "agent_spawn_preflight.completed")).toMatchObject({
       kind: "tool",
       label: "子代理预检完成",

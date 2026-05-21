@@ -115,6 +115,8 @@ import {
   isApprovalInterruptError,
   isClarificationInterruptError,
   isAgentDegradedError,
+  isSpawnContractViolationError,
+  SpawnContractViolationError,
   createResumeApprovalMatcher,
   type ApprovedResumeAction,
 } from "./runtime-interrupts.js";
@@ -301,6 +303,8 @@ type BackgroundChildRegistryEntry = {
   modeStagePreflight?: ModeStagePreflightResult;
   modeStageDiagnostic?: ModeStageDiagnostic;
   resultContract?: AgentResultContract;
+  parentTaskIntent?: "chat" | "plan" | "implement";
+  childTaskIntent?: "chat" | "plan" | "implement";
   usedToolCount?: number;
   durationMs?: number;
   replayRef?: ChildSessionSummary["replayRef"];
@@ -381,6 +385,8 @@ function projectBackgroundChildSummary(
     modeStagePreflight: entry.modeStagePreflight,
     modeStageDiagnostic: entry.modeStageDiagnostic,
     resultContract: entry.resultContract,
+    parentTaskIntent: entry.parentTaskIntent,
+    childTaskIntent: entry.childTaskIntent,
     usedToolCount: entry.usedToolCount,
     durationMs: entry.durationMs,
     replayRef: entry.replayRef,
@@ -789,6 +795,8 @@ class KernelRuntimeContext {
       modeStagePreflight: hasModeStagePreflight ? parsed.modeStagePreflight : current?.modeStagePreflight,
       modeStageDiagnostic: hasModeStageDiagnostic ? parsed.modeStageDiagnostic : current?.modeStageDiagnostic,
       resultContract: parsed.resultContract,
+      parentTaskIntent: parsed.parentTaskIntent ?? current?.parentTaskIntent,
+      childTaskIntent: parsed.childTaskIntent ?? current?.childTaskIntent,
       usedToolCount: parsed.usedToolCount,
       durationMs: parsed.durationMs,
       replayRef: parsed.replayRef,
@@ -820,6 +828,11 @@ class KernelRuntimeContext {
     resolvedToolPreset?: ChildSessionSummary["resolvedToolPreset"];
     spawnContract?: AgentSpawnContract;
     spawnValidation?: AgentSpawnResultValidation;
+    toolBundleId?: AgentToolBundleId;
+    resolvedToolIds?: string[];
+    resultContract?: AgentResultContract;
+    parentTaskIntent?: "chat" | "plan" | "implement";
+    childTaskIntent?: "chat" | "plan" | "implement";
   }): void {
     const current = [...this.childSessionsValue.values()].find((entry) => entry.agentId === params.agentId);
     if (!current) {
@@ -831,12 +844,35 @@ class KernelRuntimeContext {
       coordinationBarrier: params.coordinationBarrier ?? current.coordinationBarrier,
       delegationKind: params.delegationKind ?? current.delegationKind,
       authoritySource: params.authoritySource ?? current.authoritySource,
+      toolBundleId: params.toolBundleId ?? current.toolBundleId,
       requestedToolPreset: params.requestedToolPreset ?? current.requestedToolPreset,
       resolvedToolPreset: params.resolvedToolPreset ?? current.resolvedToolPreset,
+      resolvedToolIds: params.resolvedToolIds ?? current.resolvedToolIds,
       spawnContract: params.spawnContract ?? current.spawnContract,
       spawnValidation: params.spawnValidation ?? current.spawnValidation,
+      resultContract: params.resultContract ?? current.resultContract,
+      parentTaskIntent: params.parentTaskIntent ?? current.parentTaskIntent,
+      childTaskIntent: params.childTaskIntent ?? current.childTaskIntent,
     });
     this.syncParentCoordinationFromChildren(current.status);
+  }
+
+  childSessionById(childSessionId: string): ChildSessionSummary | undefined {
+    const child = this.childSessionsValue.get(childSessionId);
+    return child ? projectBackgroundChildSummary(child) : undefined;
+  }
+
+  childSessionByAgentId(agentId: string): ChildSessionSummary | undefined {
+    return this.childSession(agentId);
+  }
+
+  isActiveChildOwnedByParent(parentAgentId: string, childSessionOrAgentId: string): boolean {
+    const child = this.childSessionsValue.get(childSessionOrAgentId)
+      ?? [...this.childSessionsValue.values()].find((entry) => entry.agentId === childSessionOrAgentId);
+    if (!child) {
+      return false;
+    }
+    return child.parentAgentId === parentAgentId && isBackgroundLifecycleActive(child.lifecyclePhase);
   }
 
   setParentCoordination(params: {
@@ -2336,8 +2372,8 @@ export async function executeRuntimeKernel(
     .join("\n\n") || undefined;
   const modelStateContext = buildModelStateContext(config);
   const compressionStateContext = buildCompressionStateContext(options.sessionContextState);
-  const taskIntentContextForAgent = (agentId: string) => {
-    const taskIntent = config.metadata.taskIntent as TaskIntent | undefined;
+  const taskIntentContextForAgent = (agentId: string, overrideTaskIntent?: "chat" | "plan" | "implement") => {
+    const taskIntent = overrideTaskIntent ?? (config.metadata.taskIntent as TaskIntent | undefined);
     const delegationContext = buildDelegationGuidance(config, agentId);
     switch (taskIntent) {
       case "chat":
@@ -2396,6 +2432,7 @@ export async function executeRuntimeKernel(
     system: string,
     params: { agentId: string; nodeId?: string; customAgentId?: string },
     overrideToolIds?: string[],
+    taskIntentOverride?: "chat" | "plan" | "implement",
   ) => {
     const customOverlay = customAgentOverlayFor(params.customAgentId);
     const systemOverlay = params.customAgentId ? undefined : options.systemAgentOverlays?.[params.agentId];
@@ -2426,7 +2463,7 @@ export async function executeRuntimeKernel(
       turnLocalMetadataGuidance,
       temporalContext,
       memoryContext: mergedMemoryContext,
-      taskIntentContext: taskIntentContextForAgent(params.agentId),
+      taskIntentContext: taskIntentContextForAgent(params.agentId, taskIntentOverride),
       modelStateContext,
       availableSkills,
       toolProtocol: toolPrompt,
@@ -3379,6 +3416,8 @@ export async function executeRuntimeKernel(
     modeStagePreflight?: ModeStagePreflightResult | null;
     modeStageDiagnostic?: ModeStageDiagnostic | null;
     resultContract?: AgentResultContract;
+    parentTaskIntent?: "chat" | "plan" | "implement";
+    childTaskIntent?: "chat" | "plan" | "implement";
     deliveryStatus?: ChildSessionSummary["deliveryStatus"];
     usedToolCount?: number;
     durationMs?: number;
@@ -3413,6 +3452,8 @@ export async function executeRuntimeKernel(
       modeStagePreflight: nextModeStagePreflight,
       modeStageDiagnostic: nextModeStageDiagnostic,
       resultContract: params.resultContract ?? current?.resultContract,
+      parentTaskIntent: params.parentTaskIntent ?? current?.parentTaskIntent,
+      childTaskIntent: params.childTaskIntent ?? current?.childTaskIntent,
       usedToolCount: params.usedToolCount ?? current?.usedToolCount,
       durationMs: params.durationMs ?? current?.durationMs,
       recoveryAttemptCount: current?.recoveryAttemptCount ?? 0,
@@ -3437,10 +3478,59 @@ export async function executeRuntimeKernel(
       authoritySource: params.authoritySource,
       requestedToolPreset: params.requestedToolPreset,
       resolvedToolPreset: params.resolvedToolPreset,
+      toolBundleId: params.toolBundleId,
+      resolvedToolIds: params.resolvedToolIds,
       spawnContract: params.spawnContract,
       spawnValidation: params.spawnValidation,
+      resultContract: params.resultContract,
+      parentTaskIntent: params.parentTaskIntent,
+      childTaskIntent: params.childTaskIntent,
     });
     return next;
+  };
+
+  const resolveSpawnTaskIntent = (params: {
+    explicitChildTaskIntent?: "chat" | "plan" | "implement";
+    resultContract: AgentResultContract;
+    spawnContract?: AgentSpawnContract;
+    resolvedToolIds?: string[];
+    toolBundleId?: AgentToolBundleId;
+  }): { childTaskIntent: "chat" | "plan" | "implement"; blocked?: { diagnosticType: string; message: string } } => {
+    const mutatingToolIds = new Set(["file.write", "file.patch", "file.apply_patch", "shell.execute"]);
+    const toolSurfaceHasMutation = params.resolvedToolIds?.some((tid) => mutatingToolIds.has(tid)) ?? false;
+    const sideEffectPolicy = params.spawnContract?.sideEffectPolicy;
+    const allowsMutation =
+      sideEffectPolicy === "workspace_mutation" ||
+      sideEffectPolicy === "external_mutation" ||
+      toolSurfaceHasMutation;
+
+    if (params.explicitChildTaskIntent) {
+      const explicit = params.explicitChildTaskIntent;
+      if (explicit === "plan" && params.resultContract !== "plan_only") {
+        return {
+          childTaskIntent: explicit,
+          blocked: {
+            diagnosticType: "spawn_task_intent_contract_mismatch",
+            message: `Explicit task_intent=plan requires result_contract=plan_only, got ${params.resultContract}.`,
+          },
+        };
+      }
+      if (explicit === "implement" && !allowsMutation) {
+        return {
+          childTaskIntent: explicit,
+          blocked: {
+            diagnosticType: "spawn_task_intent_contract_mismatch",
+            message: "Explicit task_intent=implement requires a mutation-capable tool surface or side-effect policy.",
+          },
+        };
+      }
+      return { childTaskIntent: explicit };
+    }
+
+    // Default matrix — deterministic, no prompt heuristics
+    if (params.resultContract === "plan_only") return { childTaskIntent: "plan" };
+    if (params.resultContract === "diff_report") return { childTaskIntent: "implement" };
+    return { childTaskIntent: allowsMutation ? "implement" : "chat" };
   };
 
   const resolvedSpawnTooling = (params: {
@@ -3452,24 +3542,57 @@ export async function executeRuntimeKernel(
     toolIds?: string[];
     resultContract?: AgentResultContract;
     spawnContract?: AgentSpawnContract;
+    explicitTaskIntent?: "chat" | "plan" | "implement";
   }): {
     toolBundleId?: AgentToolBundleId;
     resolvedToolIds?: string[];
     spawnContract?: AgentSpawnContract;
     spawnPreflight?: AgentSpawnPreflightResult;
     resultContract: AgentResultContract;
+    childTaskIntent: "chat" | "plan" | "implement";
     blockedResult?: Record<string, unknown>;
   } => {
     if (!params.toolBundle && !params.toolIds?.length) {
+      const resolvedResultContract = params.resultContract ?? "final_answer";
       const inferredContract = inferSpawnContract({
         prompt: params.prompt,
         description: params.description,
         resolvedToolIds: undefined,
         explicitContract: params.spawnContract,
       });
+      const { childTaskIntent } = resolveSpawnTaskIntent({
+        explicitChildTaskIntent: params.explicitTaskIntent,
+        resultContract: resolvedResultContract,
+        spawnContract: inferredContract,
+        resolvedToolIds: undefined,
+      });
+      const intentResolution = resolveSpawnTaskIntent({
+        explicitChildTaskIntent: params.explicitTaskIntent,
+        resultContract: resolvedResultContract,
+        spawnContract: inferredContract,
+        resolvedToolIds: undefined,
+      });
+      if (intentResolution.blocked) {
+        return {
+          spawnContract: inferredContract,
+          resultContract: resolvedResultContract,
+          childTaskIntent: intentResolution.childTaskIntent,
+          blockedResult: {
+            status: "blocked",
+            agent_id: params.agentId,
+            authority_source: "dynamic_spawn",
+            diagnostic_type: intentResolution.blocked.diagnosticType,
+            result_contract: resolvedResultContract,
+            spawn_contract: inferredContract,
+            message: `agent.spawn blocked: ${intentResolution.blocked.message}`,
+            suggested_next_step: "Adjust task_intent, result_contract, or the tool surface so they are compatible.",
+          },
+        };
+      }
       return {
         spawnContract: inferredContract,
-        resultContract: params.resultContract ?? "final_answer",
+        resultContract: resolvedResultContract,
+        childTaskIntent,
       };
     }
     if (!params.toolBundle) {
@@ -3486,16 +3609,42 @@ export async function executeRuntimeKernel(
         resolvedToolIds,
         explicitContract: params.spawnContract,
       });
+      const resolvedResultContract = params.resultContract ?? "final_answer";
+      const intentResolution = resolveSpawnTaskIntent({
+        explicitChildTaskIntent: params.explicitTaskIntent,
+        resultContract: resolvedResultContract,
+        spawnContract,
+        resolvedToolIds,
+      });
+      if (intentResolution.blocked) {
+        return {
+          resolvedToolIds,
+          spawnContract,
+          resultContract: resolvedResultContract,
+          childTaskIntent: intentResolution.childTaskIntent,
+          blockedResult: {
+            status: "blocked",
+            agent_id: params.agentId,
+            authority_source: "dynamic_spawn",
+            diagnostic_type: intentResolution.blocked.diagnosticType,
+            resolved_tool_ids: resolvedToolIds,
+            result_contract: resolvedResultContract,
+            spawn_contract: spawnContract,
+            message: `agent.spawn blocked: ${intentResolution.blocked.message}`,
+            suggested_next_step: "Adjust task_intent, result_contract, or the tool surface so they are compatible.",
+          },
+        };
+      }
       const contractAssessment = evaluateSpawnContractForTooling({
         contract: spawnContract,
         resolvedToolIds,
       });
-      const resolvedResultContract = params.resultContract ?? "final_answer";
       if (contractAssessment.blocked) {
         return {
           resolvedToolIds,
           spawnContract,
           resultContract: resolvedResultContract,
+          childTaskIntent: intentResolution.childTaskIntent,
           blockedResult: {
             status: "blocked",
             agent_id: params.agentId,
@@ -3514,6 +3663,7 @@ export async function executeRuntimeKernel(
         resolvedToolIds,
         spawnContract,
         resultContract: resolvedResultContract,
+        childTaskIntent: intentResolution.childTaskIntent,
       };
     }
     const bundle = resolveChildToolBundleDefinition({
@@ -3539,12 +3689,22 @@ export async function executeRuntimeKernel(
       resolvedToolIds: requestedToolIds,
       explicitContract: params.spawnContract,
     });
+    const resolvedResultContract = params.resultContract ?? DEFAULT_RESULT_CONTRACT_BY_BUNDLE[params.toolBundle];
+    const intentResolution = resolveSpawnTaskIntent({
+      explicitChildTaskIntent: params.explicitTaskIntent,
+      resultContract: resolvedResultContract,
+      spawnContract,
+      resolvedToolIds: requestedToolIds,
+      toolBundleId: params.toolBundle,
+    });
     emit(
       "agent_spawn_preflight.completed",
       AgentSpawnPreflightTelemetrySchema.parse({
         ...preflight,
         modeId: config.modeId,
-        taskIntent: resolvedTaskIntent,
+        taskIntent: intentResolution.childTaskIntent,
+        parentTaskIntent: resolvedTaskIntent,
+        childTaskIntent: intentResolution.childTaskIntent,
         parentAgentId: params.parentAgentId,
         nestedSpawn: isNestedAgentSpawn,
         spawnContract,
@@ -3554,7 +3714,31 @@ export async function executeRuntimeKernel(
     if (requestedToolIds.length === 0 && preflight.status !== "blocked") {
       throw new Error(`agent.spawn tool bundle "${params.toolBundle}" resolved to no executable tools in the current run.`);
     }
-    const resolvedResultContract = params.resultContract ?? DEFAULT_RESULT_CONTRACT_BY_BUNDLE[params.toolBundle];
+    if (intentResolution.blocked) {
+      return {
+        toolBundleId: params.toolBundle,
+        resolvedToolIds: requestedToolIds,
+        spawnContract,
+        spawnPreflight: preflight,
+        resultContract: resolvedResultContract,
+        childTaskIntent: intentResolution.childTaskIntent,
+        blockedResult: {
+          status: "blocked",
+          agent_id: params.agentId,
+          authority_source: "dynamic_spawn",
+          diagnostic_type: intentResolution.blocked.diagnosticType,
+          tool_bundle: params.toolBundle,
+          requested_tool_preset: preflight.requestedPreset,
+          resolved_tool_preset: preflight.resolvedPreset,
+          resolved_tool_ids: requestedToolIds,
+          result_contract: resolvedResultContract,
+          spawn_contract: spawnContract,
+          message: `agent.spawn blocked: ${intentResolution.blocked.message}`,
+          suggested_next_step: "Adjust task_intent, result_contract, or the tool surface so they are compatible.",
+          preflight,
+        },
+      };
+    }
     const contractAssessment = evaluateSpawnContractForTooling({
       contract: spawnContract,
       resolvedToolIds: requestedToolIds,
@@ -3572,6 +3756,7 @@ export async function executeRuntimeKernel(
         spawnContract,
         spawnPreflight: preflight,
         resultContract: resolvedResultContract,
+        childTaskIntent: intentResolution.childTaskIntent,
         blockedResult: {
           status: "blocked",
           agent_id: params.agentId,
@@ -3597,6 +3782,7 @@ export async function executeRuntimeKernel(
         spawnContract,
         spawnPreflight: preflight,
         resultContract: resolvedResultContract,
+        childTaskIntent: intentResolution.childTaskIntent,
         blockedResult: {
           status: "blocked",
           agent_id: params.agentId,
@@ -3621,6 +3807,7 @@ export async function executeRuntimeKernel(
       spawnContract,
       spawnPreflight: preflight,
       resultContract: resolvedResultContract,
+      childTaskIntent: intentResolution.childTaskIntent,
     };
   };
 
@@ -3864,7 +4051,7 @@ export async function executeRuntimeKernel(
       params.resultContract !== "plan_only" &&
       /<proposed_plan>\s*[\s\S]+?\s*<\/proposed_plan>/i.test(params.resultText)
     ) {
-      throw new Error(`Sub-agent "${params.description || params.agentId}" returned a proposed plan where an executable result was required.`);
+      throw new SpawnContractViolationError(`Sub-agent "${params.description || params.agentId}" returned a proposed plan where an executable result was required (result_contract=${params.resultContract}).`);
     }
     if (
       (params.toolBundleId === "research_readonly" ||
@@ -3908,6 +4095,7 @@ export async function executeRuntimeKernel(
     spawnContract?: AgentSpawnContract;
     spawnPreflight?: AgentSpawnPreflightResult;
     resultContract: AgentResultContract;
+    childTaskIntent: "chat" | "plan" | "implement";
     resolvedToolIds?: string[];
     customSystemPrompt?: string;
     customToolIds?: string[];
@@ -4041,11 +4229,14 @@ export async function executeRuntimeKernel(
           spawnContract: entry.spawnContract,
           spawnPreflight: entry.spawnPreflight,
           resultContract: entry.resultContract,
+          parentTaskIntent: resolvedTaskIntent,
+          childTaskIntent: entry.childTaskIntent,
         });
         const runtimeCtx = withAgentRuntimeContext(
           entry.customSystemPrompt ?? "",
           { agentId: entry.effectiveAgentId },
           entry.customToolIds,
+          entry.childTaskIntent,
         );
         const result = await callAgent({
           agentId: entry.effectiveAgentId,
@@ -4100,6 +4291,8 @@ export async function executeRuntimeKernel(
           spawnPreflight: entry.spawnPreflight,
           spawnValidation: validated.spawnValidation,
           resultContract: entry.resultContract,
+          parentTaskIntent: resolvedTaskIntent,
+          childTaskIntent: entry.childTaskIntent,
           deliveryStatus: "awaiting_pickup",
           usedToolCount: stats.usedToolCount,
           artifactIds: stats.artifactIds,
@@ -4140,6 +4333,8 @@ export async function executeRuntimeKernel(
             spawnContract: entry.spawnContract,
             spawnPreflight: entry.spawnPreflight,
             resultContract: entry.resultContract,
+            parentTaskIntent: resolvedTaskIntent,
+            childTaskIntent: entry.childTaskIntent,
             deliveryStatus: "awaiting_pickup",
             usedToolCount: stats.usedToolCount,
             artifactIds: stats.artifactIds,
@@ -4179,6 +4374,8 @@ export async function executeRuntimeKernel(
             spawnContract: entry.spawnContract,
             spawnPreflight: entry.spawnPreflight,
             resultContract: entry.resultContract,
+            parentTaskIntent: resolvedTaskIntent,
+            childTaskIntent: entry.childTaskIntent,
             deliveryStatus: "awaiting_pickup",
             usedToolCount: stats.usedToolCount,
             artifactIds: stats.artifactIds,
@@ -4233,16 +4430,30 @@ export async function executeRuntimeKernel(
         child_session_ids: filter.childSessionIds ?? [],
       },
       results: results.map((result) => ({
+        ...(kernelRuntimeContext.childSessionById(result.childSessionId)
+          ? {
+              parent_task_intent: kernelRuntimeContext.childSessionById(result.childSessionId)?.parentTaskIntent,
+              child_task_intent: kernelRuntimeContext.childSessionById(result.childSessionId)?.childTaskIntent,
+            }
+          : {}),
         child_session_id: result.childSessionId,
         agent_id: result.sourceAgentId,
-        title: kernelRuntimeContext.childSession(result.sourceAgentId)?.label ?? result.sourceAgentId,
+        title:
+          kernelRuntimeContext.childSessionById(result.childSessionId)?.label ??
+          kernelRuntimeContext.childSession(result.sourceAgentId)?.label ??
+          result.sourceAgentId,
         tool_bundle: result.toolBundleId,
         resolved_tool_ids: result.resolvedToolIds,
         spawn_contract: result.spawnContract,
         spawn_validation: result.spawnValidation,
         result_contract: result.resultContract,
-        status: kernelRuntimeContext.childSession(result.sourceAgentId)?.status ?? "succeeded",
-        delivery_status: "consumed",
+        status:
+          kernelRuntimeContext.childSessionById(result.childSessionId)?.status ??
+          kernelRuntimeContext.childSession(result.sourceAgentId)?.status ??
+          "succeeded",
+        delivery_status:
+          kernelRuntimeContext.childSessionById(result.childSessionId)?.deliveryStatus ??
+          "consumed",
         result_text: result.result,
         used_tool_count: result.usedToolCount,
         artifact_ids: result.artifactIds,
@@ -4253,13 +4464,40 @@ export async function executeRuntimeKernel(
   };
 
   runtimeToolExecutor.setEnqueueMessage(({ to, message, invokingAgentId }) => {
-    kernelRuntimeContext.enqueueAgentMessage(to, message);
+    const parentAgentId = invokingAgentId || ORA_ROOT_AGENT_ID;
+    const childBySessionId = kernelRuntimeContext.childSessionById(to);
+    const childByAgentId = kernelRuntimeContext.childSessionByAgentId(to);
+    const child = childBySessionId ?? childByAgentId;
+    if (!child) {
+      throw new Error(`message.send target "${to}" is not a known child session in this run.`);
+    }
+    const childSessionId = child.id;
+    if (child.agentId !== to && child.id !== to) {
+      throw new Error(`message.send target "${to}" does not resolve to a unique child session.`);
+    }
+    const activeOrWaiting =
+      child.lifecyclePhase === "queued" ||
+      child.lifecyclePhase === "running" ||
+      child.lifecyclePhase === "produced_output";
+    const visibleToParent = kernelRuntimeContext
+      .childSessions
+      .some((entry) =>
+        entry.id === childSessionId &&
+        entry.agentId === child.agentId &&
+        entry.id.startsWith(`${runId}:`) &&
+        entry.agentId !== parentAgentId,
+      );
+    const ownedByParent = kernelRuntimeContext.isActiveChildOwnedByParent(parentAgentId, childSessionId);
+    if (!activeOrWaiting || !visibleToParent || !ownedByParent) {
+      throw new Error(`message.send target "${to}" is not an active child owned by agent "${parentAgentId}".`);
+    }
+    kernelRuntimeContext.enqueueAgentMessage(child.agentId, message);
     const agentMsg = AgentConversationMessageSchema.parse({
       id: `${runId}:agent-message:${kernelRuntimeContext.agentMessageCount()}`,
       runId,
       createdAt: now(),
       fromAgentId: invokingAgentId || "agent",
-      toAgentIds: [to],
+      toAgentIds: [child.agentId],
       kind: "mention",
       status: "sent",
       content: message,
@@ -4281,7 +4519,7 @@ export async function executeRuntimeKernel(
     })
   );
 
-  runtimeToolExecutor.setSpawnAgent(async ({ description, prompt, agentType, runInBackground, inheritContext, systemPrompt: customSystemPrompt, toolBundle, toolIds: requestedToolIds, resultContract, spawnContract, invokingAgentId }) => {
+  runtimeToolExecutor.setSpawnAgent(async ({ description, prompt, agentType, runInBackground, inheritContext, systemPrompt: customSystemPrompt, toolBundle, toolIds: requestedToolIds, resultContract, spawnContract, invokingAgentId, taskIntent: explicitTaskIntent }) => {
     const agentId = agentType ?? ORA_ROOT_AGENT_ID;
     if (agentId !== ORA_ROOT_AGENT_ID && !profilesById.has(agentId)) {
       throw new Error(`agent.spawn: unknown agent profile "${agentId}". Available: ${[...profilesById.keys()].join(", ")}`);
@@ -4296,6 +4534,7 @@ export async function executeRuntimeKernel(
       toolIds: requestedToolIds,
       resultContract,
       spawnContract,
+      explicitTaskIntent,
     });
     const customToolIds = spawnTooling.resolvedToolIds;
     if (spawnTooling.blockedResult) {
@@ -4346,6 +4585,8 @@ export async function executeRuntimeKernel(
         spawnContract: spawnTooling.spawnContract,
         spawnPreflight: spawnTooling.spawnPreflight,
         resultContract: spawnTooling.resultContract,
+        parentTaskIntent: resolvedTaskIntent,
+        childTaskIntent: spawnTooling.childTaskIntent,
       });
       kernelRuntimeContext.registerBackgroundChild(parentAgentId, queuedAgentId);
       launchBackgroundSpawn({
@@ -4358,6 +4599,7 @@ export async function executeRuntimeKernel(
         spawnContract: spawnTooling.spawnContract,
         spawnPreflight: spawnTooling.spawnPreflight,
         resultContract: spawnTooling.resultContract,
+        childTaskIntent: spawnTooling.childTaskIntent,
         resolvedToolIds: customToolIds,
         customSystemPrompt,
         customToolIds,
@@ -4408,6 +4650,8 @@ export async function executeRuntimeKernel(
       spawnContract: spawnTooling.spawnContract,
       spawnPreflight: spawnTooling.spawnPreflight,
       resultContract: spawnTooling.resultContract,
+      parentTaskIntent: resolvedTaskIntent,
+      childTaskIntent: spawnTooling.childTaskIntent,
     });
 
     spawnDepth += 1;
@@ -4424,6 +4668,7 @@ export async function executeRuntimeKernel(
         customSystemPrompt ?? "",
         { agentId: effectiveAgentId },
         customToolIds,
+        spawnTooling.childTaskIntent,
       );
       const MAX_TITLE_LENGTH = 200;
       const safeTitle = description.length > MAX_TITLE_LENGTH
@@ -4474,6 +4719,8 @@ export async function executeRuntimeKernel(
             spawnContract: spawnTooling.spawnContract,
             spawnPreflight: spawnTooling.spawnPreflight,
             resultContract: spawnTooling.resultContract,
+            parentTaskIntent: resolvedTaskIntent,
+            childTaskIntent: spawnTooling.childTaskIntent,
             usedToolCount: collectChildExecutionStats(effectiveAgentId).usedToolCount,
             durationMs: Math.max(0, now() - startedAt),
           });
@@ -4515,6 +4762,8 @@ export async function executeRuntimeKernel(
           spawnPreflight: spawnTooling.spawnPreflight,
           spawnValidation: validated.spawnValidation,
           resultContract: spawnTooling.resultContract,
+          parentTaskIntent: resolvedTaskIntent,
+          childTaskIntent: spawnTooling.childTaskIntent,
           usedToolCount: stats.usedToolCount,
           artifactIds: stats.artifactIds,
           durationMs,
@@ -4538,6 +4787,8 @@ export async function executeRuntimeKernel(
           spawnContract: spawnTooling.spawnContract,
           spawnPreflight: spawnTooling.spawnPreflight,
           resultContract: spawnTooling.resultContract,
+          parentTaskIntent: resolvedTaskIntent,
+          childTaskIntent: spawnTooling.childTaskIntent,
           usedToolCount: stats.usedToolCount,
           artifactIds: stats.artifactIds,
           durationMs,

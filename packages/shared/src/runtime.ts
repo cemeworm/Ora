@@ -796,6 +796,8 @@ export const ChildSessionSummarySchema = z.object({
   lastToolActivityAt: z.number().int().nonnegative().optional(),
   stallReason: z.string().min(1).optional(),
   recoveryAttemptCount: z.number().int().nonnegative().default(0),
+  parentTaskIntent: z.enum(["chat", "plan", "implement"]).optional(),
+  childTaskIntent: z.enum(["chat", "plan", "implement"]).optional(),
   startedAt: z.number().int().nonnegative(),
   updatedAt: z.number().int().nonnegative(),
   completedAt: z.number().int().nonnegative().optional(),

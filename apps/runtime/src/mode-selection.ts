@@ -660,13 +660,10 @@ async function routeAutoMode(
   const autoTaskIntent = isAutoTaskIntentMode(config.metadata);
   const fallback = (reason: string, detail?: unknown) => ({
     modeId: fallbackModeId,
-    ...(autoTaskIntent ? { taskIntent: "plan" as const } : {}),
     metadata: {
       entryAgentId: ORA_ROOT_AGENT_ID,
       selectedModeId: fallbackModeId,
-      ...(autoTaskIntent ? { selectedTaskIntent: "plan" } : {}),
       confidence: 0,
-      ...(autoTaskIntent ? { taskIntentConfidence: 0 } : {}),
       reason,
       status: "fallback",
       handoffSummary: reason,
@@ -682,12 +679,9 @@ async function routeAutoMode(
   if (requestedModeId && candidateIds.has(requestedModeId)) {
     return {
       modeId: requestedModeId,
-      ...(autoTaskIntent ? { taskIntent: "plan" as const } : {}),
       metadata: {
         selectedModeId: requestedModeId,
-        ...(autoTaskIntent ? { selectedTaskIntent: "plan" } : {}),
         confidence: 1,
-        ...(autoTaskIntent ? { taskIntentConfidence: 1 } : {}),
         reason: explicitTurnSignal?.modeRequest?.reason ?? `Explicit mode request for ${requestedModeId}.`,
         status: "selected",
         entryAgentId: ORA_ROOT_AGENT_ID,
@@ -741,10 +735,10 @@ async function routeAutoMode(
     }
     return {
       modeId: parsed.modeId,
-      ...(autoTaskIntent ? { taskIntent: parsed.taskIntent ?? "plan" } : {}),
+      ...(autoTaskIntent && parsed.taskIntent ? { taskIntent: parsed.taskIntent } : {}),
       metadata: {
         selectedModeId: parsed.modeId,
-        ...(autoTaskIntent ? { selectedTaskIntent: parsed.taskIntent ?? "plan" } : {}),
+        ...(autoTaskIntent && parsed.taskIntent ? { selectedTaskIntent: parsed.taskIntent } : {}),
         confidence: parsed.confidence,
         ...(autoTaskIntent ? { taskIntentConfidence: parsed.taskIntent ? parsed.confidence : 0 } : {}),
         reason: parsed.reason,
@@ -776,7 +770,7 @@ function resolveAutoTaskIntentMetadata(
   }
   return {
     ...metadata,
-    taskIntent: autoRoute?.taskIntent ?? "plan",
+    ...(autoRoute?.taskIntent ? { taskIntent: autoRoute.taskIntent } : {}),
   };
 }
 

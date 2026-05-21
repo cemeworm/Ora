@@ -5218,6 +5218,8 @@ describe("desktop session view model", () => {
         sessionClass: "temporary_spawn",
         status: "succeeded",
         deliveryStatus: "awaiting_pickup",
+        parentTaskIntent: "chat",
+        childTaskIntent: "chat",
         startedAt: createdAt + 1,
         updatedAt: createdAt + 5,
         summary: "完成资料搜集",

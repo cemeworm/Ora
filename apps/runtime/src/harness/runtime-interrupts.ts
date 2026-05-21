@@ -4,6 +4,7 @@ import { stableJson } from "./runtime-tool-loop.js";
 const APPROVAL_INTERRUPT_SYMBOL = Symbol.for("ora.ApprovalInterrupt");
 const CLARIFICATION_INTERRUPT_SYMBOL = Symbol.for("ora.ClarificationInterrupt");
 const AGENT_DEGRADED_SYMBOL = Symbol.for("ora.AgentDegraded");
+const SPAWN_CONTRACT_VIOLATION_SYMBOL = Symbol.for("ora.SpawnContractViolation");
 
 export class ClarificationInterruptError extends Error {
   public readonly [CLARIFICATION_INTERRUPT_SYMBOL] = true;
@@ -63,6 +64,20 @@ export function isAgentDegradedError(error: unknown): error is AgentDegradedErro
   return error instanceof AgentDegradedError ||
     (typeof error === "object" && error !== null &&
       (error as Record<symbol, unknown>)[AGENT_DEGRADED_SYMBOL] === true);
+}
+
+export class SpawnContractViolationError extends Error {
+  public readonly [SPAWN_CONTRACT_VIOLATION_SYMBOL] = true;
+  constructor(message: string) {
+    super(message);
+    this.name = "SpawnContractViolationError";
+  }
+}
+
+export function isSpawnContractViolationError(error: unknown): error is SpawnContractViolationError {
+  return error instanceof SpawnContractViolationError ||
+    (typeof error === "object" && error !== null &&
+      (error as Record<symbol, unknown>)[SPAWN_CONTRACT_VIOLATION_SYMBOL] === true);
 }
 
 export type ApprovedResumeAction = Pick<ActionRecord, "type" | "riskLevel" | "input" | "agentId">;

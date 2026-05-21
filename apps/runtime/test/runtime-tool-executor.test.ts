@@ -379,6 +379,82 @@ describe("RuntimeToolExecutor", () => {
     expect(receivedParams.invokingAgentId).toBe("ora-parent");
   });
 
+  it("parses and forwards task_intent on agent.spawn", async () => {
+    const executor = new RuntimeToolExecutor({ toolDescriptors: MVP_TOOLS });
+    let receivedParams: Record<string, unknown> = {};
+    executor.setSpawnAgent(async (params) => {
+      receivedParams = params as unknown as Record<string, unknown>;
+      return "ok";
+    });
+
+    await executor.execute({
+      tool: "agent.spawn" as never,
+      args: {
+        description: "Chat task",
+        prompt: "Explain this code.",
+        task_intent: "chat",
+      },
+    });
+    expect(receivedParams.taskIntent).toBe("chat");
+  });
+
+  it("parses and forwards task_intent=plan on agent.spawn", async () => {
+    const executor = new RuntimeToolExecutor({ toolDescriptors: MVP_TOOLS });
+    let receivedParams: Record<string, unknown> = {};
+    executor.setSpawnAgent(async (params) => {
+      receivedParams = params as unknown as Record<string, unknown>;
+      return "ok";
+    });
+
+    await executor.execute({
+      tool: "agent.spawn" as never,
+      args: {
+        description: "Plan task",
+        prompt: "Design a solution.",
+        task_intent: "plan",
+        result_contract: "plan_only",
+      },
+    });
+    expect(receivedParams.taskIntent).toBe("plan");
+  });
+
+  it("ignores invalid task_intent values on agent.spawn", async () => {
+    const executor = new RuntimeToolExecutor({ toolDescriptors: MVP_TOOLS });
+    let receivedParams: Record<string, unknown> = {};
+    executor.setSpawnAgent(async (params) => {
+      receivedParams = params as unknown as Record<string, unknown>;
+      return "ok";
+    });
+
+    await executor.execute({
+      tool: "agent.spawn" as never,
+      args: {
+        description: "Default task",
+        prompt: "Do something.",
+        task_intent: "invalid_value",
+      },
+    });
+    expect(receivedParams.taskIntent).toBeUndefined();
+  });
+
+  it("omits task_intent when not provided on agent.spawn", async () => {
+    const executor = new RuntimeToolExecutor({ toolDescriptors: MVP_TOOLS });
+    let receivedParams: Record<string, unknown> = {};
+    executor.setSpawnAgent(async (params) => {
+      receivedParams = params as unknown as Record<string, unknown>;
+      return "ok";
+    });
+
+    await executor.execute({
+      tool: "agent.spawn" as never,
+      args: {
+        description: "Default task",
+        prompt: "Do something.",
+      },
+    });
+    expect(receivedParams.taskIntent).toBeUndefined();
+  });
+
   it("executes agent.wait with waitForAgents callback", async () => {
     const executor = new RuntimeToolExecutor({ toolDescriptors: MVP_TOOLS });
     executor.setWaitForAgents(async ({ agentIds, requireAll }) => ({

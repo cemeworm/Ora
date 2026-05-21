@@ -571,7 +571,9 @@ describe("agent.spawn integration", () => {
     let alphaStarted = false;
     let betaStarted = false;
     let parentStep = 0;
-    let sawWaitToolResult = false;
+    const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ora-agent-spawn-fanin-"));
+    cleanupPaths.push(workspaceRoot);
+    fs.writeFileSync(path.join(workspaceRoot, "README.md"), "fan-in fixture\n", "utf8");
 
     globalThis.fetch = (async (_input, init) => {
       const request = parseProviderRequest(init);
@@ -606,7 +608,6 @@ describe("agent.spawn integration", () => {
         }));
       }
       if (hasWorkspaceToolResult(request, "agent.wait")) {
-        sawWaitToolResult = true;
         return jsonResponse("The final answer combines both delegated findings: alpha is 1, beta is 2, and the parent explicitly waited for both child results before concluding.");
       }
       if (request.latestUserText.includes("Coordinate explicit fan-in") && parentStep === 0) {
@@ -650,7 +651,15 @@ describe("agent.spawn integration", () => {
       const startPromise = handle({
         jsonrpc: "2.0", id: 1, method: "runs.start",
         params: {
-          input: { prompt: "Coordinate explicit fan-in" },
+          input: {
+            prompt: "Coordinate explicit fan-in",
+            context: {
+              projectWorkspace: {
+                label: "Fan-in Validation",
+                rootPath: workspaceRoot,
+              },
+            },
+          },
           config: runConfig({ toolIds: ["agent.spawn", "agent.wait", "file.read", "file.grep"] }),
         },
       }) as Promise<{ runId?: string; error?: unknown }>;
@@ -672,7 +681,104 @@ describe("agent.spawn integration", () => {
 
       const result = await pollUntilDone(handle, start.runId, 80);
       expect(result.status).toBe("succeeded");
-      expect(sawWaitToolResult).toBe(true);
+      const raw = await handle({ jsonrpc: "2.0", id: 88, method: "runs.state", params: { runId: start.runId } });
+      const parsed = StateSnapshotSchema.parse(raw);
+      expect(parsed.childSessions).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          label: "Research alpha",
+          childTaskIntent: "chat",
+          deliveryStatus: "consumed",
+        }),
+        expect.objectContaining({
+          label: "Research beta",
+          childTaskIntent: "chat",
+          deliveryStatus: "consumed",
+        }),
+      ]));
+    } finally {
+      globalThis.fetch = prevFetch;
+    }
+  });
+
+  it("blocks message.send when the target is not an active child owned by the parent", async () => {
+    process.env.NODE_LOOP_TOOL_KEY = "test";
+    const prevFetch = globalThis.fetch;
+    let parentStep = 0;
+    const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ora-agent-spawn-message-gating-"));
+    cleanupPaths.push(workspaceRoot);
+    fs.writeFileSync(path.join(workspaceRoot, "README.md"), "message gating fixture\n", "utf8");
+
+    globalThis.fetch = (async (_input, init) => {
+      const request = parseProviderRequest(init);
+      const infraResponse = maybeHandleInfraProviderRequest(request);
+      if (infraResponse) {
+        return infraResponse;
+      }
+      if (
+        request.systemText.includes("ora-sub-1") &&
+        hasWorkspaceToolResult(request, "file.read")
+      ) {
+        return jsonResponse("Alpha is 1, based on the delegated repository read and summarized clearly for the parent.");
+      }
+      if (request.latestUserText.includes("Find alpha.")) {
+        return jsonResponse(JSON.stringify({
+          tool: "file.read",
+          args: { path: "README.md" },
+        }));
+      }
+      if (request.latestUserText.includes("Validate message gating") && parentStep === 0) {
+        parentStep = 1;
+        return jsonResponse(JSON.stringify({
+          tool: "agent.spawn",
+          args: {
+            description: "Research alpha",
+            prompt: "Find alpha.",
+            tool_bundle: "research_readonly",
+            result_contract: "final_answer",
+          },
+        }));
+      }
+      if (hasWorkspaceToolResult(request, "agent.spawn") && parentStep === 1) {
+        parentStep = 2;
+        return jsonResponse(JSON.stringify({
+          tool: "message.send",
+          args: {
+            to: "ora-sub-1",
+            message: "Please keep going even though you already completed.",
+          },
+        }));
+      }
+      return unexpectedProviderCall(request);
+    }) as typeof fetch;
+
+    try {
+      const handle = createRuntimeMethodHandler(createTempStore());
+      const start = await handle({
+        jsonrpc: "2.0", id: 1, method: "runs.start",
+        params: {
+          input: {
+            prompt: "Validate message gating",
+            context: {
+              projectWorkspace: {
+                label: "Message Gating Validation",
+                rootPath: workspaceRoot,
+              },
+            },
+          },
+          config: runConfig({ toolIds: ["agent.spawn", "message.send", "file.read"] }),
+        },
+      }) as { runId?: string; error?: unknown };
+      if (!start.runId) throw new Error(`Start failed: ${JSON.stringify(start)}`);
+
+      const result = await pollUntilDone(handle, start.runId, 80);
+      expect(result.status).toBe("failed");
+      expect(result.toolCalls).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          toolId: "message.send",
+          status: "failed",
+          error: expect.stringContaining("is not an active child owned by agent"),
+        }),
+      ]));
     } finally {
       globalThis.fetch = prevFetch;
     }
@@ -834,6 +940,68 @@ describe("agent.spawn integration", () => {
               tool_bundle: "builder_write",
               requested_tool_preset: "builder_write",
               resolved_tool_preset: "builder_write",
+            }),
+          }),
+        }),
+      ]));
+    } finally {
+      globalThis.fetch = prevFetch;
+    }
+  });
+
+  it("blocks explicit task_intent/result_contract mismatches even without an explicit tool surface", async () => {
+    process.env.NODE_LOOP_TOOL_KEY = "test";
+    const prevFetch = globalThis.fetch;
+
+    globalThis.fetch = (async (_input, init) => {
+      const request = parseProviderRequest(init);
+      const infraResponse = maybeHandleInfraProviderRequest(request);
+      if (infraResponse) {
+        return infraResponse;
+      }
+      if (request.latestUserText.includes("Draft a plan but require execution")) {
+        return jsonResponse(JSON.stringify({
+          tool: "agent.spawn",
+          args: {
+            description: "Plan mismatch",
+            prompt: "Draft a plan but require execution",
+            task_intent: "plan",
+            result_contract: "final_answer",
+          },
+        }));
+      }
+      if (hasWorkspaceSpawnResult(request)) {
+        return jsonResponse("The runtime correctly blocked the mismatched spawn and I stayed in the parent context.");
+      }
+      return unexpectedProviderCall(request);
+    }) as typeof fetch;
+
+    try {
+      const handle = createRuntimeMethodHandler(createTempStore());
+      const start = await handle({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "runs.start",
+        params: {
+          input: { prompt: "Draft a plan but require execution" },
+          config: runConfig({ toolIds: ["agent.spawn", "file.read"] }),
+        },
+      }) as { runId?: string; error?: unknown };
+      if (!start.runId) throw new Error(`Start failed: ${JSON.stringify(start)}`);
+
+      const result = await pollUntilDone(handle, start.runId, 80);
+      expect(result.status).toBe("succeeded");
+
+      const raw = await handle({ jsonrpc: "2.0", id: 18, method: "runs.state", params: { runId: start.runId } });
+      const parsed = StateSnapshotSchema.parse(raw);
+      expect(parsed.toolCalls).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          toolId: "agent.spawn",
+          status: "succeeded",
+          result: expect.objectContaining({
+            output: expect.objectContaining({
+              status: "blocked",
+              diagnostic_type: "spawn_task_intent_contract_mismatch",
             }),
           }),
         }),

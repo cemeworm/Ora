@@ -1080,6 +1080,30 @@ computer:    permissionStatus, observe, click, type, press, scroll, window
   - `agent.spawn` 只适用于 `dynamic_spawn` authority：它永远不能绕过 invoking agent 当前工具边界去拿到更强 preset。
   - mode topology 自己派发的 child 不走这条 authority 规则；那是独立的 `mode_stage` contract。
   - `result_contract` 用来声明子 agent 产出期望，比如 `final_answer`、`evidence_report`、`diff_report`、`plan_only`。runtime 现在会同时结合 `spawn_contract` 做结果有效性校验。
+  - `task_intent`（新增，可选）显式覆盖 child agent 的 task intent。允许值为 `chat` | `plan` | `implement`。仅影响 spawned child，不改变 parent run 的 `metadata.taskIntent`。
+    - 显式 override 与 contract/tool surface 冲突时，launch-time 直接 block（`diagnostic_type = spawn_task_intent_contract_mismatch`），不启动 child。
+    - 未显式提供时，runtime 只根据 `resultContract`、`spawnContract.sideEffectPolicy`、resolved tool surface 是否包含变更能力，来决定 child 的默认 task intent，**不依赖 prompt 文案或任务措辞**。
+    - **默认 child intent 矩阵**：
+
+      | `resultContract` | sideEffectPolicy / tool surface | 默认 `childTaskIntent` |
+      |---|---|---|
+      | `plan_only` | 任意 | `plan` |
+      | `diff_report` | 任意 | `implement` |
+      | `final_answer` / `evidence_report` | `sideEffectPolicy = none` 或 `draft_artifact` | `chat` |
+      | `final_answer` / `evidence_report` | `sideEffectPolicy = workspace_mutation` 或 `external_mutation` | `implement` |
+      | `final_answer` / `evidence_report` | sideEffectPolicy 未声明，resolved tools 含 `file.write`/`file.patch`/`file.apply_patch`/`shell.execute` | `implement` |
+      | `final_answer` / `evidence_report` | sideEffectPolicy 未声明，resolved tools 只读 | `chat` |
+
+    - **显式 override 判定矩阵**：
+
+      | 显式 `task_intent` | 约束条件 | 结果 |
+      |---|---|---|
+      | `plan` | `result_contract === "plan_only"` | 允许 |
+      | `plan` | `result_contract !== "plan_only"` | block |
+      | `implement` | mutation-capable contract 或 tool surface | 允许 |
+      | `implement` | 只读 contract / 只读 tool surface | block |
+      | `chat` | 任意非变更型 child | 允许 |
+
 - `message.send`
   - 不会立刻驱动目标 agent 执行。
   - 它会同时做两件事：发出 `agent.message` 事件供 UI / snapshot 可见，以及把消息写入目标 agent 的消息队列，供后续 prompt 注入。
@@ -1112,7 +1136,7 @@ computer:    permissionStatus, observe, click, type, press, scroll, window
 子结果不是“只要 loop 结束就算成功”。当前 runtime 还会做一层有效性收口：
 
 - 输出仍是 `<tool_calls>` / `<tool_call>` 等内部工具协议文本时，不记为有效成功结果
-- `result_contract !== "plan_only"` 时，纯 `<proposed_plan>` 不能冒充最终结果
+- `result_contract !== "plan_only"` 时，纯 `<proposed_plan>` 属于 **structural contract failure**，不参与 recovery retry（不同于 provider transient error）
 - 要求 repo / shell / forensics 取证的 bundle，如果 child 没有任何真实工具证据，也不能靠空口回答通过
 - 当 `spawn_contract.result_rules` 要求 `subject_match_required` / `resource_binding_match_required` / `source_reference_required` 时，runtime 会基于 child 实际工具证据检查是否发生 subject drift 或资源污染；这层结果级校验会生成结构化 `spawnValidation`
 - `spawnValidation` 现在显式包含：
@@ -1125,6 +1149,16 @@ computer:    permissionStatus, observe, click, type, press, scroll, window
 - 结果行为：
   - `effect = blocked` 时，`agent.spawn` 失败，污染结果不会交回父 agent
   - `effect = warning` 时，tool result 仍返回，但会带 warning banner，并把完整 `spawnValidation` 投影到 child session / Trails
+
+**Child result recovery 分类矩阵**：
+
+| child 结果 | `resultContract` | 分类 | recovery |
+|---|---|---|---|
+| 纯 `<proposed_plan>` | `plan_only` | success | 无 |
+| 纯 `<proposed_plan>` | 非 `plan_only` | structural contract failure (`SpawnContractViolationError`) | 不重试 |
+| 仅内部工具协议文本 | 任意 | structural result failure | 不重试 |
+| spawn contract `effect=blocked` | 任意 | structural contract failure | 不重试 |
+| 工具/环境瞬时错误 | 任意 | operational/provider failure | 维持现有 recovery 规则 |
 
 当前实现边界：
 

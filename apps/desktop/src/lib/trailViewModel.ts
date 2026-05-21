@@ -1872,12 +1872,21 @@ function childSessionTimelineDetail(childSession: Record<string, unknown>): stri
   const summary = typeof childSession.summary === "string" && childSession.summary.trim()
     ? childSession.summary.trim()
     : undefined;
+  const parentTaskIntent = typeof childSession.parentTaskIntent === "string" && childSession.parentTaskIntent.trim()
+    ? childSession.parentTaskIntent.trim()
+    : undefined;
+  const childTaskIntent = typeof childSession.childTaskIntent === "string" && childSession.childTaskIntent.trim()
+    ? childSession.childTaskIntent.trim()
+    : undefined;
   const parts = [label, status];
   if (authority) {
     parts.push(authority);
   }
   if (preset) {
     parts.push(`工具面 ${preset}`);
+  }
+  if (parentTaskIntent || childTaskIntent) {
+    parts.push(`意图 ${parentTaskIntent ?? "unknown"} -> ${childTaskIntent ?? "unknown"}`);
   }
   if (summary) {
     parts.push(summary);

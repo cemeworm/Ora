@@ -277,7 +277,6 @@ describe("resolveModeSelection delegation intent", () => {
 
     expect(fullConfig.metadata.autoModeRouter).toMatchObject({
       selectedModeId: "agent_teams",
-      selectedTaskIntent: "plan",
       status: "selected",
     });
     expect(fullConfig.modeId).toBe("agent_teams");
@@ -296,6 +295,153 @@ describe("resolveModeSelection delegation intent", () => {
     });
     expect(routerPrompt).toBeUndefined();
     expect(delegationPrompt).toBeUndefined();
+  });
+
+  it("leaves metadata.taskIntent unset when auto router does not return taskIntent", async () => {
+    let routerPrompt: Record<string, unknown> | undefined;
+    globalThis.fetch = (async (_input, init) => {
+      const body = JSON.parse(String(init?.body ?? "{}")) as {
+        messages?: Array<{ role: string; content?: string }>;
+      };
+      const systemText = body.messages
+        ?.filter((message) => message.role === "system")
+        .map((message) => message.content ?? "")
+        .join("\n") ?? "";
+      const promptText = body.messages?.find((message) => message.role === "user")?.content ?? "{}";
+      if (systemText.includes("agent mode router")) {
+        routerPrompt = JSON.parse(promptText) as Record<string, unknown>;
+        return new Response(JSON.stringify({
+          choices: [{ message: { role: "assistant", content: JSON.stringify({
+            modeId: SINGLE_AGENT_MODE_ID,
+            confidence: 0.91,
+            reason: "Simple Q&A — single agent is enough.",
+            // No taskIntent field
+          }) } }],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      throw new Error(`Unexpected provider call: ${systemText}`);
+    }) as typeof fetch;
+
+    const { fullConfig } = await resolveModeSelection(
+      RunConfigSchema.parse({
+        ...baseConfig(),
+        modeSelection: "auto",
+        metadata: { taskIntentMode: "auto" },
+      }),
+      {
+        prompt: "What does git status do?",
+        context: {},
+        createdAt: Date.now(),
+      },
+      { sessionId: "session-auto-nointent" } as SessionSummary,
+      createDeps(tempDir, {
+        modes: [getModePreset(SINGLE_AGENT_MODE_ID)!],
+        buildConversationMessages: () => [{ role: "user", content: "What does git status do?" }],
+      }),
+    );
+
+    expect(fullConfig.metadata.taskIntent).toBeUndefined();
+    expect(fullConfig.metadata.autoModeRouter).toMatchObject({
+      selectedModeId: SINGLE_AGENT_MODE_ID,
+      status: "selected",
+    });
+  });
+
+  it("writes taskIntent when auto router explicitly returns implement", async () => {
+    globalThis.fetch = (async (_input, init) => {
+      const body = JSON.parse(String(init?.body ?? "{}")) as {
+        messages?: Array<{ role: string; content?: string }>;
+      };
+      const systemText = body.messages
+        ?.filter((message) => message.role === "system")
+        .map((message) => message.content ?? "")
+        .join("\n") ?? "";
+      if (systemText.includes("agent mode router")) {
+        return new Response(JSON.stringify({
+          choices: [{ message: { role: "assistant", content: JSON.stringify({
+            modeId: SINGLE_AGENT_MODE_ID,
+            taskIntent: "implement",
+            confidence: 0.88,
+            reason: "The user wants a concrete file change.",
+          }) } }],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      throw new Error(`Unexpected provider call: ${systemText}`);
+    }) as typeof fetch;
+
+    const { fullConfig } = await resolveModeSelection(
+      RunConfigSchema.parse({
+        ...baseConfig(),
+        modeSelection: "auto",
+        metadata: { taskIntentMode: "auto" },
+      }),
+      {
+        prompt: "Fix the bug in auth.ts",
+        context: {},
+        createdAt: Date.now(),
+      },
+      { sessionId: "session-auto-implement" } as SessionSummary,
+      createDeps(tempDir, {
+        modes: [getModePreset(SINGLE_AGENT_MODE_ID)!],
+        buildConversationMessages: () => [{ role: "user", content: "Fix the bug in auth.ts" }],
+      }),
+    );
+
+    expect(fullConfig.metadata.taskIntent).toBe("implement");
+    expect(fullConfig.metadata.autoModeRouter).toMatchObject({
+      selectedModeId: SINGLE_AGENT_MODE_ID,
+      selectedTaskIntent: "implement",
+      status: "selected",
+    });
+  });
+
+  it("does not inject synthetic taskIntent=plan on low-confidence fallback", async () => {
+    globalThis.fetch = (async (_input, init) => {
+      const body = JSON.parse(String(init?.body ?? "{}")) as {
+        messages?: Array<{ role: string; content?: string }>;
+      };
+      const systemText = body.messages
+        ?.filter((message) => message.role === "system")
+        .map((message) => message.content ?? "")
+        .join("\n") ?? "";
+      if (systemText.includes("agent mode router")) {
+        return new Response(JSON.stringify({
+          choices: [{ message: { role: "assistant", content: JSON.stringify({
+            modeId: SINGLE_AGENT_MODE_ID,
+            confidence: 0.12,
+            reason: "I am not sure what to do.",
+          }) } }],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      throw new Error(`Unexpected provider call: ${systemText}`);
+    }) as typeof fetch;
+
+    const { fullConfig } = await resolveModeSelection(
+      RunConfigSchema.parse({
+        ...baseConfig(),
+        modeSelection: "auto",
+        metadata: { taskIntentMode: "auto" },
+      }),
+      {
+        prompt: "Something unclear...",
+        context: {},
+        createdAt: Date.now(),
+      },
+      { sessionId: "session-auto-fallback" } as SessionSummary,
+      createDeps(tempDir, {
+        modes: [getModePreset(SINGLE_AGENT_MODE_ID)!],
+        buildConversationMessages: () => [{ role: "user", content: "Something unclear..." }],
+      }),
+    );
+
+    expect(fullConfig.metadata.taskIntent).toBeUndefined();
+    expect(fullConfig.metadata.autoModeRouter).toMatchObject({
+      status: "fallback",
+      confidence: 0,
+    });
+    // Verify no synthetic selectedTaskIntent on fallback
+    const routerMeta = fullConfig.metadata.autoModeRouter as Record<string, unknown>;
+    expect(routerMeta.selectedTaskIntent).toBeUndefined();
   });
 });
 

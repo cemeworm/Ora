@@ -5,6 +5,7 @@ import {
   type RecoveryErrorType,
   type RecoveryRule,
 } from "@cemeworm/shared";
+import { isSpawnContractViolationError } from "./runtime-interrupts.js";
 
 export interface RecoveryIncident {
   surface?: RecoveryFailureSurface;
@@ -153,7 +154,9 @@ export function classifyRecoveryError(error: unknown, context: {
   const lowered = detail.toLowerCase();
   let errorType: RecoveryErrorType;
 
-  if (/boundary violation/i.test(lowered)) {
+  if (isSpawnContractViolationError(error)) {
+    errorType = "boundary_violation";
+  } else if (/boundary violation/i.test(lowered)) {
     errorType = "boundary_violation";
   } else if (
     context.surface === "provider" ||

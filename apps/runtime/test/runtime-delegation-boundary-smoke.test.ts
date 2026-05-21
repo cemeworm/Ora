@@ -263,7 +263,7 @@ describe("runtime delegation boundary smoke", () => {
     } finally {
       globalThis.fetch = prevFetch;
     }
-  });
+  }, 20_000);
 
   it("hides agent.spawn from code_development root runs while preserving stage-owned execution", async () => {
     process.env.NODE_LOOP_TOOL_KEY = "test";

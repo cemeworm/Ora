@@ -175,6 +175,7 @@ export interface RuntimeToolExecutionContext {
     resultContract?: AgentResultContract;
     spawnContract?: AgentSpawnContract;
     invokingAgentId?: string;
+    taskIntent?: "chat" | "plan" | "implement";
   }) => Promise<unknown>;
   /** Wait for background sub-agents and collect their structured results. */
   waitForAgents?: (params: {
@@ -978,11 +979,15 @@ function agentSpawnToolRuntimeFields(toolId: string): Partial<RuntimeToolDefinit
             validationPolicy: args.spawn_contract.validation_policy,
           })
         : undefined;
+      const taskIntent = typeof args.task_intent === "string" && ["chat", "plan", "implement"].includes(args.task_intent)
+        ? args.task_intent as "chat" | "plan" | "implement"
+        : undefined;
       if (!context.spawnAgent) {
         throw new Error("agent.spawn is not available in this runtime context.");
       }
       const result = await context.spawnAgent({
         description, prompt, agentType, runInBackground, inheritContext, systemPrompt, toolBundle, toolIds, resultContract, spawnContract, invokingAgentId: context.currentAgentId,
+        taskIntent,
       });
       return { output: result };
     },

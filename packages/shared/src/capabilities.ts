@@ -768,6 +768,8 @@ export type AgentSpawnPreflightResult = z.infer<typeof AgentSpawnPreflightResult
 export const AgentSpawnPreflightTelemetrySchema = AgentSpawnPreflightResultSchema.extend({
   modeId: z.string().min(1).optional(),
   taskIntent: z.enum(["chat", "plan", "implement"]).optional(),
+  parentTaskIntent: z.enum(["chat", "plan", "implement"]).optional(),
+  childTaskIntent: z.enum(["chat", "plan", "implement"]).optional(),
   parentAgentId: z.string().min(1).optional(),
   nestedSpawn: z.boolean().default(false),
   spawnContract: AgentSpawnContractSchema.optional(),
@@ -2326,6 +2328,7 @@ const MVP_TOOL_DEFINITIONS: ToolDescriptorInput[] = [
         tool_bundle: { type: "string", enum: AgentToolBundleIdSchema.options, description: "Maintained tool bundle for the sub-agent. Prefer this over hand-authoring tool_ids so the child gets a role-appropriate tool set." },
         tool_ids: { type: "array", items: { type: "string" }, description: "Custom tool IDs for the sub-agent. If not provided, uses the default agent profile's tools." },
         result_contract: { type: "string", enum: AgentResultContractSchema.options, description: "What kind of result the parent expects back from the sub-agent. Use plan_only only when a structured plan is explicitly desired." },
+        task_intent: { type: "string", enum: ["chat", "plan", "implement"], description: "Explicit task intent for the child agent. When set, the child uses this intent regardless of the parent's intent. The runtime blocks the spawn if the intent conflicts with result_contract or the resolved tool surface (e.g. task_intent=plan with result_contract=evidence_report). When not set, the runtime derives the child's intent from result_contract, spawn_contract.side_effect_policy, and whether the resolved tools include mutation capabilities." },
         spawn_contract: {
           type: "object",
           description: "Optional runtime-enforced delegation contract. Use this when the child must stay bound to a specific subject, resource, affordance set, or side-effect envelope.",
