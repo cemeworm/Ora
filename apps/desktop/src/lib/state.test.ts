@@ -4126,3 +4126,84 @@ describe("deriveRenderableTurnSnapshots", () => {
     expect(result["run-older"]?.events.map((event) => event.id)).toEqual(["event-1", "event-3"]);
   });
 });
+
+describe("preservedSettledSnapshots limit enforcement", () => {
+  function makeSettledSnapshot(runId: string, updatedAt: number): OraStateSnapshot {
+    return testSnapshot({ runId, sessionId: "session-test", status: "succeeded", updatedAt });
+  }
+
+  it("keeps preserved snapshots unchanged when below the limit", () => {
+    const state: WorkbenchState = {
+      ...initialWorkbenchState,
+      selectedSessionId: "session-test",
+      runLifecycle: lifecycleFromSnapshot(makeSettledSnapshot("run-1", 100)),
+      preservedSettledSnapshots: Object.fromEntries(
+        Array.from({ length: 5 }, (_, i) => [`run-old-${i}`, makeSettledSnapshot(`run-old-${i}`, i)]),
+      ),
+    };
+
+    const next = workbenchReducer(state, {
+      type: "BEGIN_RUN_REQUEST",
+      sessionId: "session-test",
+      prompt: "test",
+      createdAt: 200,
+    });
+
+    expect(Object.keys(next.preservedSettledSnapshots).length).toBe(6);
+  });
+
+  it("evicts the oldest snapshots when exceeding the limit", () => {
+    const oldSnapshots = Array.from({ length: 25 }, (_, i) =>
+      [`run-old-${i}`, makeSettledSnapshot(`run-old-${i}`, i)] as const,
+    );
+
+    const state: WorkbenchState = {
+      ...initialWorkbenchState,
+      selectedSessionId: "session-test",
+      runLifecycle: lifecycleFromSnapshot(makeSettledSnapshot("run-current", 500)),
+      preservedSettledSnapshots: Object.fromEntries(oldSnapshots),
+    };
+
+    const next = workbenchReducer(state, {
+      type: "BEGIN_RUN_REQUEST",
+      sessionId: "session-test",
+      prompt: "test",
+      createdAt: 600,
+    });
+
+    const keys = Object.keys(next.preservedSettledSnapshots);
+    expect(keys.length).toBe(20);
+
+    // The 6 oldest (index 0-5, updatedAt 0-5) should be evicted
+    for (let i = 0; i <= 5; i++) {
+      expect(next.preservedSettledSnapshots[`run-old-${i}`]).toBeUndefined();
+    }
+    // run-old-6 should be kept (now the oldest, 26 entries → keep last 20)
+    expect(next.preservedSettledSnapshots["run-old-6"]).toBeDefined();
+    // The newly added run should be present
+    expect(next.preservedSettledSnapshots["run-current"]).toBeDefined();
+  });
+
+  it("skips preserve when current snapshot is not settled", () => {
+    const state: WorkbenchState = {
+      ...initialWorkbenchState,
+      selectedSessionId: "session-test",
+      runLifecycle: lifecycleFromSnapshot(testSnapshot({ runId: "run-active", sessionId: "session-test", status: "running" })),
+      preservedSettledSnapshots: {
+        "run-old": makeSettledSnapshot("run-old", 100),
+      },
+    };
+
+    const next = workbenchReducer(state, {
+      type: "BEGIN_RUN_REQUEST",
+      sessionId: "session-test",
+      prompt: "test",
+      createdAt: 200,
+    });
+
+    // Running snapshot should not be preserved
+    expect(Object.keys(next.preservedSettledSnapshots).length).toBe(1);
+    expect(next.preservedSettledSnapshots["run-active"]).toBeUndefined();
+    expect(next.preservedSettledSnapshots["run-old"]).toBeDefined();
+  });
+});

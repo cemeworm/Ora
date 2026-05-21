@@ -1474,6 +1474,36 @@ export function mergeRunStreamSnapshot(
   }), stream));
 }
 
+const PRESERVED_SNAPSHOTS_MAX = 20;
+
+function enforcePreservedSnapshotsLimit(
+  snapshots: Record<string, OraStateSnapshot>,
+): Record<string, OraStateSnapshot> {
+  const entries = Object.entries(snapshots);
+  if (entries.length <= PRESERVED_SNAPSHOTS_MAX) return snapshots;
+  const sorted = entries.sort(
+    ([, a], [, b]) => a.updatedAt - b.updatedAt,
+  );
+  const kept = sorted.slice(-PRESERVED_SNAPSHOTS_MAX);
+  return Object.fromEntries(kept);
+}
+
+function prunePreservedSnapshotsForSession(
+  snapshots: Record<string, OraStateSnapshot>,
+  sessionId: string,
+): Record<string, OraStateSnapshot> {
+  let changed = false;
+  const next: Record<string, OraStateSnapshot> = {};
+  for (const [runId, snapshot] of Object.entries(snapshots)) {
+    if (!snapshot.sessionId || snapshot.sessionId === sessionId) {
+      next[runId] = snapshot;
+    } else {
+      changed = true;
+    }
+  }
+  return changed ? next : snapshots;
+}
+
 export function pruneTurnSnapshotsForActiveSession(
   snapshots: Record<string, OraStateSnapshot>,
   detail: OraSessionDetail | undefined,
@@ -2982,6 +3012,10 @@ export function workbenchReducer(
           normalizedDetail,
         ),
         selectedSessionId: action.detail.session.sessionId,
+        preservedSettledSnapshots: prunePreservedSnapshotsForSession(
+          state.preservedSettledSnapshots,
+          action.detail.session.sessionId,
+        ),
         selectedTurnRunId: effectiveSnapshot?.runId ?? latestTurn?.runId,
         selectedPattern:
           effectiveSnapshot?.pattern ??
@@ -3968,7 +4002,7 @@ export function workbenchReducer(
         },
         liveMessageDeltaBuffer: {},
         preservedSettledSnapshots: currentSnapshot && isSettledRunStatus(currentSnapshot.status)
-          ? { ...state.preservedSettledSnapshots, [currentSnapshot.runId]: currentSnapshot }
+          ? enforcePreservedSnapshotsLimit({ ...state.preservedSettledSnapshots, [currentSnapshot.runId]: currentSnapshot })
           : state.preservedSettledSnapshots,
         preservedSettledSessionId: currentSnapshot && isSettledRunStatus(currentSnapshot.status)
           ? currentSnapshot.sessionId ?? state.selectedSessionId
