@@ -235,10 +235,29 @@ export const ToolFamilySchema = z.enum([
 ]);
 export type ToolFamily = z.infer<typeof ToolFamilySchema>;
 
+export const ToolCapabilityGroupSchema = z.enum([
+  "repo_read",
+  "repo_search",
+  "repo_explore",
+  "repo_patch",
+  "repo_apply_patch",
+  "repo_shell_execute",
+  "package_list",
+  "package_build_candidate",
+  "package_verify",
+  "package_promote",
+  "package_switch",
+  "package_rollback",
+]);
+export type ToolCapabilityGroup = z.infer<typeof ToolCapabilityGroupSchema>;
+
 export const ToolVisibilityPresetIdSchema = z.enum([
   "root_default",
   "coding_root",
   "single_agent_implement",
+  "self_builder_root",
+  "self_builder_build",
+  "self_builder_review",
   "builder_write",
   "review_readonly",
   "research_readonly",
@@ -373,6 +392,60 @@ export const TOOL_VISIBILITY_PRESETS: Record<ToolVisibilityPresetId, ToolVisibil
       "web.fetch",
       "web.search",
     ],
+  },
+  self_builder_root: {
+    id: "self_builder_root",
+    label: "Self Builder Root",
+    allowedFamilies: ["explore", "coordinate", "execute", "environment", "evolve"],
+    toolIds: [
+      "repo.explore",
+      "file.read",
+      "file.list",
+      "file.glob",
+      "file.grep",
+      "plan.update",
+      "agent.wait",
+      "message.send",
+      "package.list",
+      "package.promote",
+      "package.switch",
+      "package.rollback",
+    ],
+    blockedToolIds: ["file.write", "file.patch", "file.apply_patch", "shell.execute", "agent.spawn"],
+  },
+  self_builder_build: {
+    id: "self_builder_build",
+    label: "Self Builder Build",
+    allowedFamilies: ["execute", "explore", "evolve"],
+    toolIds: [
+      "repo.explore",
+      "file.read",
+      "file.list",
+      "file.glob",
+      "file.grep",
+      "file.write",
+      "file.patch",
+      "file.apply_patch",
+      "shell.execute",
+      "package.list",
+      "package.buildCandidate",
+    ],
+  },
+  self_builder_review: {
+    id: "self_builder_review",
+    label: "Self Builder Review",
+    allowedFamilies: ["explore", "execute", "environment", "evolve"],
+    toolIds: [
+      "repo.explore",
+      "file.read",
+      "file.list",
+      "file.glob",
+      "file.grep",
+      "web.fetch",
+      "package.list",
+      "package.verify",
+    ],
+    blockedToolIds: ["file.write", "file.patch", "file.apply_patch", "shell.execute"],
   },
   builder_write: {
     id: "builder_write",
@@ -700,6 +773,37 @@ export const AgentSpawnPreflightTelemetrySchema = AgentSpawnPreflightResultSchem
   spawnContract: AgentSpawnContractSchema.optional(),
 });
 export type AgentSpawnPreflightTelemetry = z.infer<typeof AgentSpawnPreflightTelemetrySchema>;
+
+export const ModeStagePreflightStatusSchema = z.enum([
+  "ready",
+  "blocked",
+]);
+export type ModeStagePreflightStatus = z.infer<typeof ModeStagePreflightStatusSchema>;
+
+export const ModeStagePreflightResultSchema = z.object({
+  status: ModeStagePreflightStatusSchema,
+  presetId: ToolVisibilityPresetIdSchema.optional(),
+  resolvedToolIds: z.array(z.string().min(1)).default([]),
+  missingCapabilities: z.array(ToolCapabilityGroupSchema).default([]),
+});
+export type ModeStagePreflightResult = z.infer<typeof ModeStagePreflightResultSchema>;
+
+export const ModeStageDiagnosticTypeSchema = z.enum([
+  "mode_stage_authority_mismatch",
+]);
+export type ModeStageDiagnosticType = z.infer<typeof ModeStageDiagnosticTypeSchema>;
+
+export const ModeStageDiagnosticSchema = z.object({
+  status: z.literal("blocked"),
+  authoritySource: z.literal("mode_stage"),
+  diagnosticType: ModeStageDiagnosticTypeSchema.default("mode_stage_authority_mismatch"),
+  requestedToolPreset: ToolVisibilityPresetIdSchema.optional(),
+  resolvedToolPreset: ToolVisibilityPresetIdSchema.optional(),
+  resolvedToolIds: z.array(z.string().min(1)).default([]),
+  message: z.string().min(1),
+  preflight: ModeStagePreflightResultSchema,
+});
+export type ModeStageDiagnostic = z.infer<typeof ModeStageDiagnosticSchema>;
 
 export const ToolRegistrySchema = z.object({
   tools: z.array(ToolDescriptorSchema),

@@ -1657,12 +1657,6 @@ export function agentLabelFromSnapshot(snapshot: {
     return profiles.get(latestAgentMessage.fromAgentId) ?? latestAgentMessage.fromAgentId;
   }
 
-  // Fall back to the first non-root profile
-  const firstNonRoot = snapshot.profiles.find((p) => p.id !== ORA_ROOT_AGENT_ID);
-  if (firstNonRoot) {
-    return firstNonRoot.label;
-  }
-
   return undefined;
 }
 

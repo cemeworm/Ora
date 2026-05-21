@@ -201,7 +201,7 @@ import {
 describe("Ora shared contracts", () => {
   it("validates all MVP pattern fixtures", () => {
     expect(MVP_PATTERNS).toHaveLength(5);
-    expect(MVP_MODES).toHaveLength(6);
+    expect(MVP_MODES).toHaveLength(7);
     expect(MVP_PATTERNS.map((pattern) => pattern.id)).toEqual([
       "generator_verifier",
       "orchestrator_subagent",
@@ -216,6 +216,7 @@ describe("Ora shared contracts", () => {
       REVIEW_CRITIQUE_MODE_ID,
       DEBATE_MODE_ID,
       MODE_STUDIO_BUILDER_MODE_ID,
+      ORA_SELF_BUILDER_MODE_ID,
     ]);
 
     for (const pattern of MVP_PATTERNS) {
@@ -382,6 +383,21 @@ describe("Ora shared contracts", () => {
     const builderMode = MVP_MODES.find((mode) => mode.id === MODE_STUDIO_BUILDER_MODE_ID)!;
     expect(builderMode.visibility).toBe("internal");
     expect(builderMode.family).toBe("agent_teams");
+
+    const selfBuilderMode = MVP_MODES.find((mode) => mode.id === ORA_SELF_BUILDER_MODE_ID)!;
+    expect(selfBuilderMode.systemPreset).toBe(true);
+    expect(selfBuilderMode.visibility).toBe("user");
+    expect(selfBuilderMode.family).toBe("agent_teams");
+    expect(selfBuilderMode.nodes.map((node) => node.id)).toEqual(["triage", "build", "check", "handoff"]);
+    expect(selfBuilderMode.nodes.find((node) => node.id === "build")?.config).toMatchObject({
+      requiredCapabilityGroups: ["repo_read", "repo_explore", "repo_apply_patch", "package_build_candidate"],
+    });
+    expect(selfBuilderMode.nodes.find((node) => node.id === "check")?.config).toMatchObject({
+      requiredCapabilityGroups: ["repo_read", "repo_explore", "package_verify"],
+    });
+    expect(selfBuilderMode.nodes.find((node) => node.id === "handoff")?.config).toMatchObject({
+      requiredCapabilityGroups: ["package_promote"],
+    });
   });
 
   it("validates automation contracts and RPC method names", () => {
@@ -502,6 +518,7 @@ describe("Ora shared contracts", () => {
       "gap_analyst",
       "knowledge_compiler",
       "ora",
+      "release_reviewer",
       "researcher",
       "reviewer",
     ]);
@@ -2669,7 +2686,7 @@ describe("RuntimeBootstrapSchema", () => {
 
     expect(parsed.health.mode).toBe("runtime");
     expect(parsed.patterns).toHaveLength(5);
-    expect(parsed.modes.filter((mode) => mode.visibility !== "internal")).toHaveLength(5);
+    expect(parsed.modes.filter((mode) => mode.visibility !== "internal")).toHaveLength(6);
     expect(parsed.atoms.length).toBeGreaterThan(0);
     expect(parsed.tools.tools.length).toBeGreaterThan(0);
     expect(parsed.skills.skills[0]?.id).toBe("runtime.default.review");

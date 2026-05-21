@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { ActionRiskLevelSchema, DEFAULT_MODE_RECOVERY_POLICY, ModeRecoveryPolicySchema } from "./actions.js";
-import { DEFAULT_AGENT_MODE_TOOL_IDS, visibleToolIdsForPreset } from "./capabilities.js";
+import { DEFAULT_AGENT_MODE_TOOL_IDS, ToolCapabilityGroupSchema, visibleToolIdsForPreset } from "./capabilities.js";
 import { AgentProfileSchema, BuiltInCoordinationPatternSchema, CODE_DEVELOPMENT_MODE_ID, COMPLETION_POLICY_PRESETS, CoordinationPatternSchema, DEBATE_MODE_ID, DEEP_RESEARCH_MODE_ID, DEERFLOW_HARNESS_MODE_ID, DEFAULT_MODE_RUNTIME_POLICY, DYNAMIC_ORCHESTRATOR_MODE_ID, MODE_STUDIO_BUILDER_MODE_ID, ModeCompletionPolicySchema, ModeIdSchema, ModeRuntimePolicySchema, ORA_ROOT_AGENT_ID, ORA_ROOT_AGENT_LABEL, ORA_SELF_BUILDER_MODE_ID, ResourceBudgetSchema, REVIEW_CRITIQUE_MODE_ID, SINGLE_AGENT_MODE_ID, completionPolicyForPreset } from "./primitives.js";
 import type { AgentProfile, BuiltInCoordinationPattern, CoordinationPattern, ModeCompletionPolicy, ModeRuntimePolicy, ResourceBudget } from "./primitives.js";
 import { TopologyEdgeSchema, TopologyNodeSchema } from "./topology.js";
@@ -95,6 +95,7 @@ export const ModeNodeSpecSchema = z.object({
     atoms: z.array(z.string()).optional(),
     customAgentId: z.string().optional(),
     toolIds: z.array(z.string().min(1)).optional(),
+    requiredCapabilityGroups: z.array(ToolCapabilityGroupSchema).optional(),
     gateOnReviewVerdict: z.boolean().optional(),
     reworkNodeIds: z.array(z.string().min(1)).optional(),
     clarificationQuestion: z.string().optional(),
@@ -2510,7 +2511,7 @@ function createCodeDevelopmentModeSpec(): ModeSpec {
         ownerAgentId: ORA_ROOT_AGENT_ID,
         enabled: true,
         instructions: "明确请求的代码变更，为非平凡开发工作调用 long-task-protocol，创建或更新任务日志，定义验收标准，识别风险文件，并在实施前选择聚焦的验证关卡。",
-        prompt: "用户请求：\n{{prompt}}\n\n创建一个紧凑的开发计划。输出必须是严格的 JSON 格式：\n\n{\n  \"text\": \"计划摘要\",\n  \"goal\": \"开发目标\",\n  \"successCriteria\": [\"可验证的验收标准\"],\n  \"backlog\": [{\"id\": \"1\", \"owner\": \"builder\", \"description\": \"任务描述\"}],\n  \"scopeBoundaries\": [\"不做的重构\", \"不改的模块\"]\n}\n\nsuccessCriteria 必须可测试可验证。scopeBoundaries 明确 NOT in scope。此阶段不要实施。",
+        prompt: "用户请求：\n{{prompt}}\n\n创建一个紧凑的开发计划。输出必须是严格的 JSON 格式（不要包含 Markdown 或额外说明）：\n\n{\n  \"text\": \"计划摘要\",\n  \"goal\": \"开发目标\",\n  \"successCriteria\": [\"可验证的验收标准\"],\n  \"backlog\": [{\"id\": \"1\", \"owner\": \"builder\", \"description\": \"任务描述\"}],\n  \"scopeBoundaries\": [\"不做的重构\", \"不改的模块\"],\n  \"taskJournalPath\": \"tasks/TASK-xxxx.md\",\n  \"targetFiles\": [\"可能涉及的文件路径\"],\n  \"verificationPlan\": [{\"id\": \"verify-1\", \"commandOrMethod\": \"pnpm test --filter ...\", \"expectation\": \"相关测试通过\"}],\n  \"riskFiles\": [\"高风险文件路径\"],\n  \"doneCriteria\": [\"long-task-protocol DONE gate 条件\"]\n}\n\n要求：successCriteria / verificationPlan / doneCriteria 必须可验证；scopeBoundaries 明确 NOT in scope；taskJournalPath 必须给出本次任务日志路径；此阶段不要实施。",
         config: {},
       },
       {
@@ -2521,7 +2522,7 @@ function createCodeDevelopmentModeSpec(): ModeSpec {
         ownerAgentId: "builder",
         enabled: true,
         instructions: "仅实施已批准的范围，匹配现有代码风格，避免推测性抽象，当变更影响行为时添加或更新聚焦测试。",
-        prompt: "用户请求：\n{{prompt}}\n\n开发计划：\n{{triage}}\n\n做出最小的可行代码变更。输出必须是严格的 JSON 格式（不要包含 Markdown 或其他文字）：\n\n{\n  \"text\": \"实施总结\",\n  \"artifacts\": [\"变更的文件路径1\", \"变更的文件路径2\"]\n}\n\n报告变更的文件、前提假设和聚焦的验证证据。",
+        prompt: "用户请求：\n{{prompt}}\n\n开发计划：\n{{triage_raw}}\n\n做出最小的可行代码变更。输出必须是严格的 JSON 格式（不要包含 Markdown 或其他文字）：\n\n{\n  \"text\": \"实施总结\",\n  \"artifacts\": [\"变更的文件路径1\", \"变更的文件路径2\"],\n  \"changedFiles\": [\"变更的文件路径1\", \"变更的文件路径2\"],\n  \"commandsRun\": [{\"command\": \"pnpm test --filter ...\", \"exitCode\": 0, \"summary\": \"为什么运行它\"}],\n  \"verificationEvidence\": [{\"verificationId\": \"verify-1\", \"result\": \"pass\", \"summary\": \"结果摘要\"}],\n  \"assumptions\": [\"影响正确性的前提假设\"],\n  \"followups\": [\"非阻塞后续事项\"]\n}\n\nchangedFiles / verificationEvidence 必须与实际实施一致，不要虚构未运行的命令。",
         riskLevel: "high",
         config: {},
       },
@@ -2533,7 +2534,7 @@ function createCodeDevelopmentModeSpec(): ModeSpec {
         ownerAgentId: "reviewer",
         enabled: true,
         instructions: "对照请求和验收标准审查实施结果。优先关注回归、缺失测试、模式偏移、不安全的宽范围修改和不清楚的验证证据。",
-        prompt: "用户请求：\n{{prompt}}\n\n开发计划：\n{{triage}}\n\n构建者输出：\n{{build}}\n\n逐条对照开发计划中的 successCriteria 和 scopeBoundaries 审查变更。以 Verdict: PASS | NEEDS_FIX | BLOCKED 开头（必须严格使用此格式）。PASS = 所有验收标准满足，可以移交。NEEDS_FIX = 存在阻塞性问题，必须列出具体问题、受影响文件和修复要求。BLOCKED = 缺少关键信息或外部条件不满足，无法继续。\n\n若裁定 NEEDS_FIX，必须用 `Rework: <节点ID>` 指定需要返工的节点。可选节点ID：build（重新实施修复）。只指定真正有问题的节点：\n- 仅代码缺陷 → Rework: build\n\n若部分实现已合格，用 Accepted: build（已验收的产物）声明。\n\n然后列出阻塞性问题、非阻塞性发现和验证缺口。",
+        prompt: "用户请求：\n{{prompt}}\n\n开发计划：\n{{triage_raw}}\n\n构建者输出：\n{{build_raw}}\n\n逐条对照开发计划中的 successCriteria、verificationPlan 和 scopeBoundaries 审查变更。输出必须是严格的 JSON 格式（不要包含 Markdown 或额外说明）：\n\n{\n  \"text\": \"审查结论摘要\",\n  \"verdict\": \"pass | needs_fix | blocked\",\n  \"acceptedArtifactIds\": [\"build\"],\n  \"findings\": [{\"artifactId\": \"build\", \"severity\": \"blocking\", \"issue\": \"问题描述\"}],\n  \"blockingIssues\": [{\"artifactId\": \"build\", \"file\": \"src/example.ts\", \"issue\": \"阻塞问题\", \"requiredFix\": \"最小修复要求\"}],\n  \"acceptedFiles\": [\"已验收文件路径\"],\n  \"verificationGaps\": [\"未覆盖的验证缺口\"],\n  \"rejectedFiles\": [\"未通过的文件路径\"]\n}\n\n规则：PASS 表示允许进入 debug；NEEDS_FIX 表示必须返工 build；BLOCKED 表示只能降级交付。若 verdict=needs_fix，至少给出一个 blockingIssues。",
         riskLevel: "high",
         config: {
           gateOnReviewVerdict: true,
@@ -2548,7 +2549,7 @@ function createCodeDevelopmentModeSpec(): ModeSpec {
         ownerAgentId: "debugger",
         enabled: true,
         instructions: "根据证据诊断失败的测试、类型错误、运行时错误或审查者阻塞的行为，然后建议最小的修正方案。如果没有故障，明确确认无需调试操作。",
-        prompt: "用户请求：\n{{prompt}}\n\n开发计划：\n{{triage}}\n\n构建者输出：\n{{build}}\n\n审查者裁定：\n{{review}}\n\n审查已通过。执行最终诊断：检查类型错误、测试失败、运行时缺陷和验证缺口。如无问题明确说明无需调试。如有问题，指出根本原因和最小修复路径。",
+        prompt: "用户请求：\n{{prompt}}\n\n开发计划：\n{{triage_raw}}\n\n构建者输出：\n{{build_raw}}\n\n审查者裁定：\n{{review_raw}}\n\n审查已通过。执行最终诊断。输出必须是严格的 JSON 格式（不要包含 Markdown 或额外说明）：\n\n{\n  \"text\": \"调试/诊断摘要\",\n  \"status\": \"clear | needs_fix | blocked\",\n  \"rootCauses\": [\"根因描述\"],\n  \"requiredRework\": [{\"nodeId\": \"build\", \"reason\": \"为什么必须返工\"}],\n  \"diagnosticEvidence\": [{\"commandOrMethod\": \"pnpm test --filter ...\", \"summary\": \"观察到的现象\"}],\n  \"remainingRisks\": [\"仍残留的风险\"]\n}\n\n规则：clear 才允许正常移交；needs_fix 必须明确返工 build 或 review；blocked 表示只能降级交付。",
         riskLevel: "high",
         config: {},
       },
@@ -2560,7 +2561,7 @@ function createCodeDevelopmentModeSpec(): ModeSpec {
         ownerAgentId: ORA_ROOT_AGENT_ID,
         enabled: true,
         instructions: "打包最终开发状态：变更文件、验证证据、long-task-protocol TODO 扫描和 DONE 关卡、未解决的风险以及用户下一步有用的操作。",
-        prompt: "用户请求：\n{{prompt}}\n\n计划：\n{{triage}}\n\n构建者：\n{{build}}\n\n审查者裁定：\n{{review}}\n\n调试者：\n{{debug}}\n\n已验收产物：{{acceptedArtifactIds}}\n\n{{degradedDelivery}}\n\n重要约束：仅引用已验收产物的内容撰写移交报告。不要引入已验收产物中不存在的变更、文件或验证结果。\n\n审查已通过，调试已完成。撰写最终移交报告。包括变更的文件、任务日志路径、TODO 扫描结果、验证证据、剩余风险，以及 long-task-protocol DONE 关卡是否通过或任务是否被阻塞。",
+        prompt: "用户请求：\n{{prompt}}\n\n计划：\n{{triage_raw}}\n\n构建者：\n{{build_raw}}\n\n审查者裁定：\n{{review_raw}}\n\n调试者：\n{{debug_raw}}\n\n已验收产物：{{acceptedArtifactIds}}\n\n{{degradedDelivery}}\n\n重要约束：仅引用已验收产物的内容撰写移交报告。不要引入已验收产物中不存在的变更、文件或验证结果。输出必须是严格的 JSON 格式（不要包含 Markdown 或额外说明）：\n\n{\n  \"text\": \"最终移交摘要\",\n  \"deliveredFiles\": [\"最终交付的文件路径\"],\n  \"acceptedFiles\": [\"已验收文件路径\"],\n  \"taskJournalPath\": \"tasks/TASK-xxxx.md\",\n  \"todoScanResult\": {\"status\": \"clean | followup_only | blocked\", \"summary\": \"TODO 扫描摘要\"},\n  \"doneGate\": {\"status\": \"pass | blocked\", \"blockers\": [\"阻塞原因\"]},\n  \"verificationSummary\": [{\"verificationId\": \"verify-1\", \"result\": \"pass\", \"summary\": \"验证摘要\"}],\n  \"residualRisks\": [\"残余风险\"]\n}\n\n要求：只有在 review 已通过、debug 已 clear、TODO 扫描未阻塞且 long-task-protocol DONE 关卡通过时才输出正常移交；若收到 degradedDelivery 提示，必须明确标注降级原因。",
         config: {},
       },
     ],
@@ -2773,7 +2774,7 @@ function createDeepResearchModeSpec(): ModeSpec {
         ownerAgentId: "researcher",
         enabled: true,
         instructions: "跨多个来源搜索，收集相关证据，记录引用，标记冲突性观点（暂不解决）。",
-        prompt: "用户请求：\n{{prompt}}\n\n研究计划：\n{{scope}}\n\n从多个来源收集证据。输出必须是严格的 JSON 格式（不要包含 Markdown 或其他文字）：\n\n{\n  \"text\": \"简要总结收集到的资料\",\n  \"findings\": [\n    {\"claim\": \"具体论断\", \"source\": \"来源名称或URL\"},\n    ...\n  ],\n  \"confidence\": \"high\" | \"medium\" | \"low\"\n}\n\n每个发现必须包含来源引用和具体论断。标注矛盾的证据。不要综合或得出结论。",
+        prompt: "用户请求：\n{{prompt}}\n\n研究计划：\n{{scope}}\n\n从多个来源收集证据。输出必须是严格的 JSON 格式（不要包含 Markdown 或其他文字）：\n\n{\n  \"text\": \"简要总结收集到的资料\",\n  \"findings\": [\n    {\n      \"claim\": \"具体论断\",\n      \"source\": \"来源名称或URL（兼容字段，仍需填写）\",\n      \"sourceTitle\": \"来源标题\",\n      \"sourceUrl\": \"来源URL\",\n      \"excerpt\": \"支持该论断的短摘录\",\n      \"retrievedAt\": \"YYYY-MM-DD\",\n      \"sourceType\": \"report|news|filing|paper|website|other\",\n      \"confidence\": \"high|medium|low\"\n    }\n  ],\n  \"confidence\": \"high\" | \"medium\" | \"low\"\n}\n\n每个发现必须包含具体论断和可追溯来源。标注矛盾证据，但不要综合或得出最终结论。",
         riskLevel: "high",
         config: {},
       },
@@ -2785,7 +2786,7 @@ function createDeepResearchModeSpec(): ModeSpec {
         ownerAgentId: "researcher",
         enabled: true,
         instructions: "交叉引用发现，评估证据质量，协调或突出矛盾，为每项关键论断标注置信度。",
-        prompt: "用户请求：\n{{prompt}}\n\n研究计划：\n{{scope}}\n\n收集的资料：\n{{gather}}\n\n分析收集到的证据。交叉引用论断，评估来源质量，标记矛盾之处，为每项关键发现标注置信度（高/中/低）。",
+        prompt: "用户请求：\n{{prompt}}\n\n研究计划：\n{{scope}}\n\n收集的资料：\n{{gather}}\n\n分析收集到的证据。输出必须是严格的 JSON 格式（不要包含 Markdown 或其他文字）：\n\n{\n  \"text\": \"分析总结\",\n  \"analysis\": [\n    {\n      \"claim\": \"关键结论\",\n      \"confidence\": \"high|medium|low\",\n      \"rationale\": \"结论为何成立\",\n      \"supportingEvidence\": [\"支撑该结论的来源或证据ID\"],\n      \"conflictingEvidence\": [\"冲突来源或冲突点\"]\n    }\n  ],\n  \"issues\": [\"仍需进一步核实的问题\"]\n}\n\n必须明确哪些结论证据充分，哪些仍然脆弱。不要补充新资料。",
         riskLevel: "high",
         config: {},
       },
@@ -2797,7 +2798,7 @@ function createDeepResearchModeSpec(): ModeSpec {
         ownerAgentId: "gap_analyst",
         enabled: true,
         instructions: "审查收集到的证据和分析，识别缺失的维度、薄弱论断、矛盾发现和方法盲区。标记严重程度和闭合缺口所需的证据。",
-        prompt: "用户请求：\n{{prompt}}\n\n研究计划：\n{{scope}}\n\n收集的资料：\n{{gather}}\n\n分析：\n{{analyze}}\n\n审查研究的覆盖完整性。输出必须是严格的 JSON 格式：\n\n{\n  \"text\": \"缺口分析总结\",\n  \"gaps\": [\n    {\"dimension\": \"缺失维度\", \"severity\": \"critical|major|minor\", \"description\": \"缺口描述\", \"suggestedAction\": \"闭合建议\"}\n  ],\n  \"coverage_score\": 0.7\n}\n\n只分析缺口，不要补充收集或重写分析。",
+        prompt: "用户请求：\n{{prompt}}\n\n研究计划：\n{{scope}}\n\n收集的资料：\n{{gather}}\n\n分析：\n{{analyze}}\n\n审查研究的覆盖完整性。输出必须是严格的 JSON 格式：\n\n{\n  \"text\": \"缺口分析总结\",\n  \"gaps\": [\n    {\"dimension\": \"缺失维度\", \"severity\": \"critical|major|minor\", \"description\": \"缺口描述\", \"suggestedAction\": \"闭合建议\"}\n  ],\n  \"coverageScore\": 0.7,\n  \"suggestedReworkNodeIds\": [\"gather\", \"analyze\", \"compile\"]\n}\n\n只分析缺口，不要补充收集或重写分析。",
         riskLevel: "high",
         config: { toolIds: [] },
       },
@@ -2809,7 +2810,7 @@ function createDeepResearchModeSpec(): ModeSpec {
         ownerAgentId: "knowledge_compiler",
         enabled: true,
         instructions: "将原始发现和分析整理为结构化的证据矩阵，每项发现标注论断、来源、置信度和矛盾。",
-        prompt: "用户请求：\n{{prompt}}\n\n收集的资料：\n{{gather}}\n\n分析：\n{{analyze}}\n\n缺口报告：\n{{gap_analysis}}\n\n将证据整理为结构化矩阵。输出必须是严格的 JSON 格式：\n\n{\n  \"text\": \"证据矩阵总结\",\n  \"findings\": [\n    {\"claim\": \"关键论断\", \"sources\": [\"来源1\"], \"confidence\": \"high|medium|low\", \"contradictions\": []}\n  ]\n}\n\n不要引入新论断或伪造来源。",
+        prompt: "用户请求：\n{{prompt}}\n\n收集的资料：\n{{gather}}\n\n分析：\n{{analyze}}\n\n缺口报告：\n{{gap_analysis}}\n\n将证据整理为结构化矩阵。输出必须是严格的 JSON 格式：\n\n{\n  \"text\": \"证据矩阵总结\",\n  \"findings\": [\n    {\"claim\": \"关键论断\", \"sources\": [\"来源1 或来源URL\"], \"confidence\": \"high|medium|low\", \"contradictions\": [\"冲突点\"]}\n  ]\n}\n\n不要引入新论断或伪造来源。",
         riskLevel: "high",
         config: { toolIds: [] },
       },
@@ -2820,10 +2821,10 @@ function createDeepResearchModeSpec(): ModeSpec {
         title: "核查研究",
         ownerAgentId: "fact_checker",
         enabled: true,
-        instructions: "核查研究资料和分析结果是否已经达到可综合成最终报告的标准。必须输出 Verdict，并点名缺失来源、未经支持的论断、过期信息和仍未解决的冲突。",
-        prompt: "用户请求：\n{{prompt}}\n\n研究计划：\n{{scope}}\n\n资料：\n{{gather}}\n\n分析：\n{{analyze}}\n\n缺口报告：\n{{gap_analysis}}\n\n证据矩阵：\n{{compile}}\n\n逐条对照研究计划中的 successCriteria 和 scopeBoundaries 执行研究验收。\n\n必须以 `Verdict: PASS | NEEDS_FIX | BLOCKED` 开头。\n\n若裁定 NEEDS_FIX，必须用 `Rework: <节点ID>` 指定需要返工的节点。可选节点ID：gather（资料收集）、analyze（分析）、gap_analysis（缺口分析）、compile（证据整理）。只指定真正有问题的节点。\n- 仅缺来源/资料不足 → Rework: gather\n- 仅分析有缺陷/逻辑漏洞 → Rework: analyze\n- 两者都有问题 → Rework: gather, analyze\n- 缺口分析或证据整理需重做 → Rework: gap_analysis, compile\n\n明确列出已验收的产物：\nAccepted: gather（若资料收集合格）或 Accepted: gather, analyze, gap_analysis, compile（若全部合格）\n未列在 Accepted 中的产物视为需要返工。\n\n列出阻塞问题、证据缺口、未经支持的论断，以及在综合报告前必须完成的最小修复。",
+        instructions: "核查研究资料和分析结果是否已经达到可综合成最终报告的标准。此阶段是纯审查，不得自行补搜或引入新资料。必须点名缺失来源、未经支持的论断、过期信息和仍未解决的冲突。",
+        prompt: "用户请求：\n{{prompt}}\n\n研究计划：\n{{scope}}\n\n资料：\n{{gather}}\n\n分析：\n{{analyze}}\n\n缺口报告：\n{{gap_analysis}}\n\n证据矩阵：\n{{compile}}\n\n逐条对照研究计划中的 successCriteria 和 scopeBoundaries 执行研究验收。输出必须是严格的 JSON 格式（不要包含 Markdown 或其他文字）：\n\n{\n  \"text\": \"核查总结\",\n  \"verdict\": \"pass|needs_fix|blocked\",\n  \"reworkNodeIds\": [\"gather\", \"analyze\", \"gap_analysis\", \"compile\"],\n  \"acceptedArtifactIds\": [\"gather\", \"analyze\", \"gap_analysis\", \"compile\"],\n  \"findings\": [\n    {\"artifactId\": \"gather\", \"severity\": \"blocking|concern|suggestion\", \"issue\": \"具体问题\"}\n  ],\n  \"issues\": [\"在综合前必须解决的问题\"]\n}\n\n仅当资料已满足最终综合条件时才给出 verdict=pass。若 verdict=needs_fix，reworkNodeIds 必须只列真正需要返工的节点。未列在 acceptedArtifactIds 中的研究产物视为尚未验收。",
         riskLevel: "high",
-        config: { gateOnReviewVerdict: true, reworkNodeIds: ["gather", "analyze", "gap_analysis", "compile"] },
+        config: { gateOnReviewVerdict: true, reworkNodeIds: ["gather", "analyze", "gap_analysis", "compile"], toolIds: [] },
       },
       {
         id: "synthesize",
@@ -3232,7 +3233,9 @@ function createOraSelfBuilderModeSpec(): ModeSpec {
         instructions: defaultNodeInstructions("agent_teams", "build"),
         prompt: "Make the smallest source changes, run focused checks, and build a candidate package slot with package.buildCandidate.",
         riskLevel: "high",
-        config: {},
+        config: {
+          requiredCapabilityGroups: ["repo_read", "repo_explore", "repo_apply_patch", "package_build_candidate"],
+        },
       },
       {
         id: "check",
@@ -3244,7 +3247,9 @@ function createOraSelfBuilderModeSpec(): ModeSpec {
         instructions: defaultNodeInstructions("agent_teams", "check"),
         prompt: "Review the diff, package manifest, build logs, compatibility status, and rollback target before promotion.",
         riskLevel: "high",
-        config: {},
+        config: {
+          requiredCapabilityGroups: ["repo_read", "repo_explore", "package_verify"],
+        },
       },
       {
         id: "handoff",
@@ -3256,7 +3261,9 @@ function createOraSelfBuilderModeSpec(): ModeSpec {
         instructions: defaultNodeInstructions("agent_teams", "handoff"),
         prompt: "Promote the verified slot only after final approval, otherwise report the candidate status and next fix.",
         riskLevel: "high",
-        config: {},
+        config: {
+          requiredCapabilityGroups: ["package_promote"],
+        },
       },
     ],
     edges: [
@@ -3328,6 +3335,7 @@ export const MVP_MODES = [
   createReviewCritiqueModeSpec(),
   createDebateModeSpec(),
   createModeStudioBuilderModeSpec(),
+  createOraSelfBuilderModeSpec(),
 ];
 
 export function getModePreset(modeId: string): ModeSpec | undefined {

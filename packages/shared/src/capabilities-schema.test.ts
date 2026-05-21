@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  AgentSpawnCapabilityGroupSchema,
   MVP_TOOLS,
   RepoExploreRequestSchema,
   RepoExploreResponseSchema,
   resolveToolVisibility,
+  ToolCapabilityGroupSchema,
   visibleToolIdsForPreset,
 } from "./capabilities.js";
 
@@ -194,5 +196,11 @@ describe("MVP_TOOLS parameter schemas", () => {
 
     expect(request.kind).toBe("trace");
     expect(response.evidence[0]?.kind).toBe("callsite");
+  });
+
+  it("keeps mode-stage capability groups broader than dynamic spawn capability groups", () => {
+    expect(ToolCapabilityGroupSchema.parse("package_build_candidate")).toBe("package_build_candidate");
+    expect(() => AgentSpawnCapabilityGroupSchema.parse("package_build_candidate")).toThrow();
+    expect(AgentSpawnCapabilityGroupSchema.parse("repo_apply_patch")).toBe("repo_apply_patch");
   });
 });

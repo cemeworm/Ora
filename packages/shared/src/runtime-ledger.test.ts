@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  agentLabelFromSnapshot,
   buildVisibleLedger,
   deriveSessionProjection,
   deriveLedgerRunAttention,
@@ -201,6 +202,19 @@ describe("buildVisibleLedger", () => {
     expect(payload.output).toBeUndefined();
     expect(payload.error).toBeUndefined();
     expect(payload.snapshot).toBeUndefined();
+  });
+});
+
+describe("agentLabelFromSnapshot", () => {
+  it("does not fall back to the first non-root profile without execution evidence", () => {
+    expect(agentLabelFromSnapshot({
+      profiles: [
+        { id: "ora", label: "Ora" },
+        { id: "builder", label: "Builder" },
+      ],
+      activeAgents: [],
+      agentMessages: [],
+    })).toBeUndefined();
   });
 });
 
