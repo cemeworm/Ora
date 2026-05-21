@@ -294,29 +294,61 @@ describe("runtime delegation boundary smoke", () => {
           successCriteria: ["Builder completes the scoped change", "Review passes", "Debug confirms no remaining issue"],
           backlog: [{ id: "1", owner: "builder", description: "Update the README wording." }],
           scopeBoundaries: ["No unrelated refactors"],
+          taskJournalPath: "tasks/TASK-readme.md",
+          targetFiles: ["README.md"],
+          verificationPlan: [{ id: "verify-readme", commandOrMethod: "manual diff review", expectation: "README only change stays in scope" }],
+          riskFiles: ["README.md"],
+          doneCriteria: ["TODO scan clean", "DONE gate pass"],
         }));
       }
       if (request.latestUserText.includes("做出最小的可行代码变更")) {
         return jsonResponse(JSON.stringify({
           text: "Updated README wording and captured focused verification evidence.",
           artifacts: ["README.md"],
+          changedFiles: ["README.md"],
+          commandsRun: [{ command: "manual diff review", exitCode: 0, summary: "Confirm only README changed" }],
+          verificationEvidence: [{ verificationId: "verify-readme", result: "pass", summary: "README wording updated in scope" }],
+          assumptions: [],
+          followups: [],
         }));
       }
       if (request.latestUserText.includes("逐条对照开发计划中的 successCriteria")) {
-        return jsonResponse([
-          "Verdict: PASS",
-          "Accepted: build",
-          "Blocking issues: none.",
-          "Non-blocking findings: none.",
-          "Evidence: the builder stayed in scope, reported README.md as the only artifact, and did not claim unrelated changes.",
-          "Verification gaps: none identified for this focused handoff test.",
-        ].join("\n"));
+        return jsonResponse(JSON.stringify({
+          text: "Review passed for the focused README change.",
+          verdict: "pass",
+          acceptedArtifactIds: ["build"],
+          findings: [],
+          blockingIssues: [],
+          acceptedFiles: ["README.md"],
+          verificationGaps: [],
+          rejectedFiles: [],
+        }));
       }
       if (request.latestUserText.includes("审查已通过。执行最终诊断")) {
-        return jsonResponse("No further debugging is needed. The review passed, there is no failing runtime evidence in this test scenario, and no additional fix path is required before handoff.");
+        return jsonResponse(JSON.stringify({
+          text: "No further debugging is needed.",
+          status: "clear",
+          rootCauses: [],
+          requiredRework: [],
+          diagnosticEvidence: [{ commandOrMethod: "manual diff review", summary: "No runtime/debug issue applies to this README-only change" }],
+          remainingRisks: [],
+        }));
       }
-      if (request.latestUserText.includes("撰写最终移交报告")) {
-        return jsonResponse("Handoff complete. Changed file: README.md. Validation: reviewer passed and debugger confirmed no remaining issue.");
+      if (
+        request.latestUserText.includes("撰写最终移交报告")
+        || request.latestUserText.includes("最终移交摘要")
+        || request.latestUserText.includes("verificationSummary")
+      ) {
+        return jsonResponse(JSON.stringify({
+          text: "Handoff complete. Changed file: README.md. Validation passed.",
+          deliveredFiles: ["README.md"],
+          acceptedFiles: ["README.md"],
+          taskJournalPath: "tasks/TASK-readme.md",
+          todoScanResult: { status: "clean", summary: "No blocking TODO items" },
+          doneGate: { status: "pass", blockers: [] },
+          verificationSummary: [{ verificationId: "verify-readme", result: "pass", summary: "Review and debug gates cleared" }],
+          residualRisks: [],
+        }));
       }
       throw new Error(`Unexpected provider call: ${JSON.stringify({
         systemText: request.systemText,

@@ -17,7 +17,27 @@ function executor(rootPath: string): RuntimeToolExecutor {
   });
 }
 
+function executorWithoutWorkspace(): RuntimeToolExecutor {
+  return new RuntimeToolExecutor({
+    toolDescriptors: MVP_TOOLS,
+  });
+}
+
 describe("runtime file tools", () => {
+  it("hides workspace-root-dependent tools when no project folder is selected", () => {
+    const visible = executorWithoutWorkspace().enabledToolIds([
+      "repo.explore",
+      "file.read",
+      "file.write",
+      "shell.execute",
+      "package.list",
+      "web.fetch",
+      "web.search",
+    ]);
+
+    expect(visible).toEqual(["web.fetch", "web.search"]);
+  });
+
   it("resolves workspace package aliases from node_modules for read-only tools", async () => {
     const rootPath = tempWorkspace();
     fs.writeFileSync(path.join(rootPath, "pnpm-workspace.yaml"), "packages:\n  - packages/*\n", "utf8");

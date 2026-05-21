@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { CODE_DEVELOPMENT_MODE_ID, SINGLE_AGENT_MODE_ID, StateSnapshotSchema } from "@cemeworm/shared";
+import { CODE_DEVELOPMENT_MODE_ID, ORA_SELF_BUILDER_MODE_ID, SINGLE_AGENT_MODE_ID, StateSnapshotSchema } from "@cemeworm/shared";
 import { LocalRunStore, createRuntimeMethodHandler } from "../src/index.js";
 
 const cleanupPaths: string[] = [];
@@ -209,6 +209,43 @@ function codeDevelopmentRunConfig(overrides: Partial<{ toolIds: string[] }> = {}
       "message.send",
       "web.fetch",
       "web.search",
+    ],
+  };
+}
+
+function selfBuilderRunConfig(overrides: Partial<{ toolIds: string[] }> = {}) {
+  return {
+    modeId: ORA_SELF_BUILDER_MODE_ID,
+    providerId: "agent-spawn-provider",
+    modelRef: "agent-spawn-model",
+    providerConfig: {
+      id: "agent-spawn-provider",
+      label: "Agent Spawn Provider",
+      type: "openai_compatible" as const,
+      modelId: "agent-spawn-model",
+      baseUrl: "https://agent-spawn.test/v1",
+      apiKeyEnv: "NODE_LOOP_TOOL_KEY",
+      capabilities: ["chat", "tool_use"] as string[],
+      headers: {},
+    },
+    toolIds: overrides.toolIds ?? [
+      "repo.explore",
+      "file.read",
+      "file.list",
+      "file.glob",
+      "file.grep",
+      "file.write",
+      "file.patch",
+      "file.apply_patch",
+      "shell.execute",
+      "plan.update",
+      "agent.wait",
+      "message.send",
+      "package.list",
+      "package.verify",
+      "package.promote",
+      "package.switch",
+      "package.rollback",
     ],
   };
 }
@@ -1122,29 +1159,60 @@ describe("agent.spawn integration", () => {
           successCriteria: ["Builder completes the scoped change", "Review passes", "Debug confirms no remaining issue"],
           backlog: [{ id: "1", owner: "builder", description: "Update the README wording." }],
           scopeBoundaries: ["No unrelated refactors"],
+          taskJournalPath: "tasks/TASK-test.md",
+          targetFiles: ["README.md"],
+          verificationPlan: [{ id: "verify-1", commandOrMethod: "mock review", expectation: "README-only change remains in scope" }],
+          riskFiles: ["README.md"],
+          doneCriteria: ["Focused verification evidence is captured"],
         }));
       }
       if (request.latestUserText.includes("做出最小的可行代码变更")) {
         return jsonResponse(JSON.stringify({
           text: "Updated README wording and captured focused verification evidence.",
           artifacts: ["README.md"],
+          changedFiles: ["README.md"],
+          commandsRun: [{ command: "mock review", exitCode: 0, summary: "Confirmed the README-only change remained scoped." }],
+          verificationEvidence: [{ verificationId: "verify-1", result: "pass", summary: "README.md was the only reported artifact." }],
+          assumptions: ["This integration test simulates the file edit without mutating disk."],
+          followups: [],
         }));
       }
       if (request.latestUserText.includes("逐条对照开发计划中的 successCriteria")) {
-        return jsonResponse([
-          "Verdict: PASS",
-          "Accepted: build",
-          "Blocking issues: none.",
-          "Non-blocking findings: none.",
-          "Evidence: the builder stayed in scope, reported README.md as the only artifact, and did not claim unrelated changes.",
-          "Verification gaps: none identified for this focused handoff test.",
-        ].join("\n"));
+        return jsonResponse(JSON.stringify({
+          text: "Review passed. The builder stayed in scope and provided the expected verification evidence.",
+          verdict: "pass",
+          acceptedArtifactIds: ["build"],
+          findings: [],
+          blockingIssues: [],
+          acceptedFiles: ["README.md"],
+          verificationGaps: [],
+          rejectedFiles: [],
+        }));
       }
       if (request.latestUserText.includes("审查已通过。执行最终诊断")) {
-        return jsonResponse("No further debugging is needed. The review passed, there is no failing runtime evidence in this test scenario, and no additional fix path is required before handoff.");
+        return jsonResponse(JSON.stringify({
+          text: "No further debugging is needed.",
+          status: "clear",
+          rootCauses: [],
+          requiredRework: [],
+          diagnosticEvidence: [{ commandOrMethod: "mock review", summary: "No failing runtime evidence remains in this scenario." }],
+          remainingRisks: [],
+        }));
       }
-      if (request.latestUserText.includes("撰写最终移交报告")) {
-        return jsonResponse("Handoff complete. Changed file: README.md. Validation: reviewer passed and debugger confirmed no remaining issue. Residual risk: this is a mock integration path without real file mutation, but the stage authority flow completed correctly.");
+      if (
+        request.latestUserText.includes("撰写最终移交报告")
+        || (request.latestUserText.includes("已验收产物") && request.latestUserText.includes("todoScanResult"))
+      ) {
+        return jsonResponse(JSON.stringify({
+          text: "Handoff complete for the README-only change.",
+          deliveredFiles: ["README.md"],
+          acceptedFiles: ["README.md"],
+          taskJournalPath: "tasks/TASK-test.md",
+          todoScanResult: { status: "clean", summary: "No blocking TODO items remain in this mock scenario." },
+          doneGate: { status: "pass", blockers: [] },
+          verificationSummary: [{ verificationId: "verify-1", result: "pass", summary: "Reviewer passed and debugger stayed clear." }],
+          residualRisks: ["This integration path is mocked and does not mutate disk."],
+        }));
       }
       return unexpectedProviderCall(request);
     }) as typeof fetch;
@@ -1207,6 +1275,91 @@ describe("agent.spawn integration", () => {
         status: "succeeded",
       });
       expect(parsed.childSessions.some((session) => session.authoritySource === "dynamic_spawn")).toBe(false);
+    } finally {
+      globalThis.fetch = prevFetch;
+    }
+  });
+
+  it("blocks ora_self_builder build stages before model execution when package.buildCandidate is unavailable", async () => {
+    process.env.NODE_LOOP_TOOL_KEY = "test";
+    const prevFetch = globalThis.fetch;
+    const latestUserTexts: string[] = [];
+
+    globalThis.fetch = (async (_input, init) => {
+      const request = parseProviderRequest(init);
+      latestUserTexts.push(request.latestUserText);
+      const infraResponse = maybeHandleInfraProviderRequest(request);
+      if (infraResponse) {
+        return infraResponse;
+      }
+      if (request.latestUserText.includes("Create or update the task journal")) {
+        return jsonResponse("Planned the self-builder task, scoped verification to the candidate package flow, and confirmed the next stage should build only after the required package surface is available.");
+      }
+      return unexpectedProviderCall(request);
+    }) as typeof fetch;
+
+    try {
+      const handle = createRuntimeMethodHandler(createTempStore());
+      const start = await handle({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "runs.start",
+        params: {
+          input: { prompt: "Adjust Ora itself with the self-builder workflow." },
+          config: {
+            ...selfBuilderRunConfig(),
+            metadata: { disableMemoryUpdate: true },
+          },
+        },
+      }) as { runId?: string; error?: unknown };
+      if (!start.runId) throw new Error(`Start failed: ${JSON.stringify(start)}`);
+
+      const result = await pollUntilDone(handle, start.runId, 80);
+      expect(result.status).toBe("failed");
+
+      const raw = await handle({ jsonrpc: "2.0", id: 10, method: "runs.state", params: { runId: start.runId } });
+      const parsed = StateSnapshotSchema.parse(raw);
+      const builderChild = parsed.childSessions.find((session) => session.agentId === "builder");
+
+      expect(parsed.events).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          type: "mode_stage_preflight.completed",
+          payload: expect.objectContaining({
+            status: "blocked",
+            preflight: expect.objectContaining({
+              status: "blocked",
+              presetId: "self_builder_build",
+              missingCapabilities: expect.arrayContaining(["package_build_candidate"]),
+            }),
+            diagnostic: expect.objectContaining({
+              diagnosticType: "mode_stage_authority_mismatch",
+              requestedToolPreset: "self_builder_build",
+              resolvedToolPreset: "self_builder_build",
+            }),
+          }),
+        }),
+      ]));
+      expect(parsed.error).toContain('Mode stage blocked: preset "self_builder_build"');
+      expect(parsed.error).toContain("package_build_candidate");
+      expect(builderChild).toMatchObject({
+        sessionClass: "mode_subagent",
+        delegationKind: "mode_stage",
+        authoritySource: "mode_stage",
+        requestedToolPreset: "self_builder_build",
+        resolvedToolPreset: "self_builder_build",
+        modeStagePreflight: expect.objectContaining({
+          status: "blocked",
+          presetId: "self_builder_build",
+        }),
+        modeStageDiagnostic: expect.objectContaining({
+          diagnosticType: "mode_stage_authority_mismatch",
+          authoritySource: "mode_stage",
+        }),
+        status: "failed",
+      });
+      expect(builderChild?.summary).toContain("package_build_candidate");
+      expect(parsed.topology.nodes.some((node) => node.agentId === "builder" && node.status === "blocked")).toBe(true);
+      expect(latestUserTexts.some((text) => text.includes("Make the smallest source changes, run focused checks"))).toBe(false);
     } finally {
       globalThis.fetch = prevFetch;
     }

@@ -291,6 +291,89 @@ describe("executeOrchestratorSubagent plain plan intent early stop", () => {
 
 // --- code_development hard gate ---
 
+function codeDevTriageJson() {
+  return JSON.stringify({
+    text: "计划已收敛为最小实现路径。",
+    goal: "为 auth 模块补充错误处理。",
+    successCriteria: ["聚焦修改通过审查", "验证证据完整"],
+    backlog: [{ id: "build-1", owner: "builder", description: "实现最小修复并补充验证" }],
+    scopeBoundaries: ["不做无关重构"],
+    taskJournalPath: "tasks/TASK-code-dev.md",
+    targetFiles: ["src/auth.ts"],
+    verificationPlan: [{ id: "verify-auth", commandOrMethod: "pnpm test auth", expectation: "相关测试通过" }],
+    riskFiles: ["src/auth.ts"],
+    doneCriteria: ["TODO 扫描无阻塞项", "DONE gate 通过"],
+  });
+}
+
+function codeDevBuildJson() {
+  return JSON.stringify({
+    text: "已完成最小实现并记录验证证据。",
+    artifacts: ["src/auth.ts"],
+    changedFiles: ["src/auth.ts"],
+    commandsRun: [{ command: "pnpm test auth", exitCode: 0, summary: "验证 auth 相关改动" }],
+    verificationEvidence: [{ verificationId: "verify-auth", result: "pass", summary: "auth 聚焦测试通过" }],
+    assumptions: [],
+    followups: [],
+  });
+}
+
+function codeDevPassReviewJson() {
+  return JSON.stringify({
+    text: "审查通过。",
+    verdict: "pass",
+    acceptedArtifactIds: ["build"],
+    findings: [],
+    blockingIssues: [],
+    acceptedFiles: ["src/auth.ts"],
+    verificationGaps: [],
+    rejectedFiles: [],
+  });
+}
+
+function codeDevNeedsFixReviewJson(issue: string, requiredFix = "补齐缺失测试"): string {
+  return JSON.stringify({
+    text: "审查未通过。",
+    verdict: "needs_fix",
+    acceptedArtifactIds: [],
+    findings: [{ artifactId: "build", severity: "blocking", issue }],
+    blockingIssues: [{ artifactId: "build", file: "src/auth.ts", issue, requiredFix }],
+    acceptedFiles: [],
+    verificationGaps: ["缺少聚焦验证"],
+    rejectedFiles: ["src/auth.ts"],
+  });
+}
+
+function codeDevDebugClearJson() {
+  return JSON.stringify({
+    text: "无需进一步调试。",
+    status: "clear",
+    rootCauses: [],
+    requiredRework: [],
+    diagnosticEvidence: [{ commandOrMethod: "pnpm test auth", summary: "没有观察到剩余故障" }],
+    remainingRisks: [],
+  });
+}
+
+function codeDevHandoffJson() {
+  return JSON.stringify({
+    text: "最终移交已完成。",
+    deliveredFiles: ["src/auth.ts"],
+    acceptedFiles: ["src/auth.ts"],
+    taskJournalPath: "tasks/TASK-code-dev.md",
+    todoScanResult: { status: "clean", summary: "无阻塞 TODO" },
+    doneGate: { status: "pass", blockers: [] },
+    verificationSummary: [{ verificationId: "verify-auth", result: "pass", summary: "auth 聚焦测试通过" }],
+    residualRisks: [],
+  });
+}
+
+function codeDevIncompleteHandoffJson() {
+  return JSON.stringify({
+    text: "最终移交已完成。",
+  });
+}
+
 function createCodeDevContext(callLog: string[]): PatternExecutionContext {
   const queueSummary: QueueSummary = { mode: "backlog", pending: 0, inProgress: 0, completed: 0, topics: [] };
   const sharedStateSummary: SharedStateSummary = { enabled: false, storeKind: "none", version: 0, entries: [] };
@@ -313,8 +396,20 @@ function createCodeDevContext(callLog: string[]): PatternExecutionContext {
     agentLabel: (agentId) => agentId,
     callAgent: async ({ agentId, title }) => {
       callLog.push(`${agentId}:${title}`);
+      if (agentId === "ora" && title.includes("Plan")) {
+        return codeDevTriageJson();
+      }
+      if (agentId === "builder") {
+        return codeDevBuildJson();
+      }
       if (agentId === "reviewer") {
-        return "Verdict: NEEDS_FIX\n- Missing tests for changed files\n- Unsafe wide refactor in utils";
+        return codeDevNeedsFixReviewJson("Missing tests for changed files");
+      }
+      if (agentId === "debugger") {
+        return codeDevDebugClearJson();
+      }
+      if (agentId === "ora" && title.includes("Finalize")) {
+        return codeDevHandoffJson();
       }
       return `${agentId}:${title}`;
     },
@@ -352,11 +447,23 @@ function createCodeDevReworkContext(callLog: string[]): PatternExecutionContext 
     agentLabel: (agentId) => agentId,
     callAgent: async ({ agentId, title }) => {
       callLog.push(`${agentId}:${title}`);
+      if (agentId === "ora" && title.includes("Plan")) {
+        return codeDevTriageJson();
+      }
+      if (agentId === "builder") {
+        return codeDevBuildJson();
+      }
       if (agentId === "reviewer") {
         reviewCount += 1;
         return reviewCount === 1
-          ? "Verdict: NEEDS_FIX\n- Missing tests for changed files"
-          : "Verdict: PASS\n- All issues resolved";
+          ? codeDevNeedsFixReviewJson("Missing tests for changed files")
+          : codeDevPassReviewJson();
+      }
+      if (agentId === "debugger") {
+        return codeDevDebugClearJson();
+      }
+      if (agentId === "ora" && title.includes("Finalize")) {
+        return codeDevHandoffJson();
       }
       return `${agentId}:${title}`;
     },
@@ -393,8 +500,20 @@ function createCodeDevPassContext(callLog: string[]): PatternExecutionContext {
     agentLabel: (agentId) => agentId,
     callAgent: async ({ agentId, title }) => {
       callLog.push(`${agentId}:${title}`);
+      if (agentId === "ora" && title.includes("Plan")) {
+        return codeDevTriageJson();
+      }
+      if (agentId === "builder") {
+        return codeDevBuildJson();
+      }
       if (agentId === "reviewer") {
-        return "Verdict: PASS\n- All acceptance criteria met";
+        return codeDevPassReviewJson();
+      }
+      if (agentId === "debugger") {
+        return codeDevDebugClearJson();
+      }
+      if (agentId === "ora" && title.includes("Finalize")) {
+        return codeDevHandoffJson();
       }
       return `${agentId}:${title}`;
     },
@@ -410,6 +529,75 @@ function createCodeDevPassContext(callLog: string[]): PatternExecutionContext {
 }
 
 describe("executeOrchestratorSubagent code_development review gate", () => {
+  it("stops before builder when triage does not produce a structured implementation contract", async () => {
+    const modeSpec = getModePreset(CODE_DEVELOPMENT_MODE_ID);
+    expect(modeSpec).toBeDefined();
+    const callLog: string[] = [];
+    const queueSummary: QueueSummary = { mode: "backlog", pending: 0, inProgress: 0, completed: 0, topics: [] };
+    const sharedStateSummary: SharedStateSummary = { enabled: false, storeKind: "none", version: 0, entries: [] };
+    const busStats: BusStats = { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} };
+    const context: PatternExecutionContext = {
+      projectId: "test-project",
+      queueSummary,
+      sharedStateSummary,
+      busStats,
+      responseLanguage: () => "zh",
+      systemPrompt: (extra) => extra,
+      setPlanStatus: () => {},
+      setQueueSummary: (patch) => Object.assign(queueSummary, patch),
+      checkpointNode: () => {},
+      runRecoverableNode: async (_params, execute) => ({ status: "completed", output: await execute() }),
+      runDelegatedTask: async (_params, execute) => execute(),
+      ensureClarification: async () => undefined,
+      claimWorker: () => {},
+      releaseWorker: () => {},
+      agentLabel: (agentId) => agentId,
+      callAgent: async ({ agentId, title }) => {
+        callLog.push(`${agentId}:${title}`);
+        if (agentId === "ora" && title.includes("Plan")) {
+          return "{\"text\":\"only partial triage\"}";
+        }
+        return `${agentId}:${title}`;
+      },
+      remember: () => {},
+      captureMemory: () => {},
+      publishArtifact: () => {},
+      publishMessage: () => {},
+      routeMessage: () => {},
+      emitAgentMessage: () => ({ id: `msg-${callLog.length}` }),
+      writeSharedState: () => {},
+      currentSharedState: () => sharedStateSummary,
+    };
+    const config: RunConfig = {
+      pattern: "orchestrator_subagent",
+      modeId: CODE_DEVELOPMENT_MODE_ID,
+      modeSelection: "manual",
+      profileIds: [],
+      skillIds: [],
+      toolIds: [],
+      approvalMode: "high_risk_only",
+      permissionMode: "auto_review",
+      patternOptions: {},
+      metadata: {},
+      causalInterventionLevel: "record_only",
+      deterministicSeed: "test-seed",
+    };
+
+    const result = await executeOrchestratorSubagent({
+      context,
+      prompt: "Add error handling to the auth module",
+      config,
+      modeSpec: modeSpec!,
+      definition: modeSpecToPatternDefinition(modeSpec!),
+    });
+
+    expect(callLog.filter((entry) => entry.includes("builder:Builder Implement"))).toHaveLength(0);
+    expect(result.output).toMatchObject({
+      stoppedAfterInvalidTriage: true,
+      invalidTriageReason: "invalid_or_degraded_triage_contract",
+    });
+  });
+
   it("blocks handoff when review returns NEEDS_FIX after max rework rounds", async () => {
     const modeSpec = getModePreset(CODE_DEVELOPMENT_MODE_ID);
     expect(modeSpec).toBeDefined();
@@ -452,6 +640,7 @@ describe("executeOrchestratorSubagent code_development review gate", () => {
       blockedNodeId: "review",
       reviewReworkCount: 2,
     });
+    expect(((result.output as { degradedKeys?: string[] }).degradedKeys ?? [])).not.toContain("review");
   });
 
   it("re-runs builder and reaches handoff after passing re-review", async () => {
@@ -562,11 +751,26 @@ describe("executeOrchestratorSubagent code_development review gate", () => {
       agentLabel: (agentId) => agentId,
       callAgent: async ({ agentId, title }) => {
         callLog.push(`${agentId}:${title}`);
+        if (agentId === "ora" && title.includes("Plan")) {
+          return codeDevTriageJson();
+        }
+        if (agentId === "builder") {
+          return codeDevBuildJson();
+        }
         if (agentId === "reviewer") {
           reviewCount += 1;
           return reviewCount === 1
-            ? "Verdict: NEEDS_FIX\nRework: build\n- Missing tests for changed files"
-            : "Verdict: PASS\n- Tests added, all issues resolved";
+            ? JSON.stringify({
+                ...JSON.parse(codeDevNeedsFixReviewJson("Missing tests for changed files")),
+                text: "审查未通过，需要重新实施。",
+              })
+            : codeDevPassReviewJson();
+        }
+        if (agentId === "debugger") {
+          return codeDevDebugClearJson();
+        }
+        if (agentId === "ora" && title.includes("Finalize")) {
+          return codeDevHandoffJson();
         }
         return `${agentId}:${title}`;
       },
@@ -612,6 +816,189 @@ describe("executeOrchestratorSubagent code_development review gate", () => {
       reviewReworkCount: 1,
     });
     expect((result.output as { verificationBlocked?: boolean }).verificationBlocked).toBeUndefined();
+  });
+
+  it("does not overwrite a failed re-review with a later debug clear", async () => {
+    const modeSpec = getModePreset(CODE_DEVELOPMENT_MODE_ID);
+    expect(modeSpec).toBeDefined();
+    const callLog: string[] = [];
+    let reviewCount = 0;
+    let debugCount = 0;
+    const queueSummary: QueueSummary = { mode: "backlog", pending: 0, inProgress: 0, completed: 0, topics: [] };
+    const sharedStateSummary: SharedStateSummary = { enabled: false, storeKind: "none", version: 0, entries: [] };
+    const busStats: BusStats = { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} };
+    const context: PatternExecutionContext = {
+      projectId: "test-project",
+      queueSummary,
+      sharedStateSummary,
+      busStats,
+      responseLanguage: () => "zh",
+      systemPrompt: (extra) => extra,
+      setPlanStatus: () => {},
+      setQueueSummary: (patch) => Object.assign(queueSummary, patch),
+      checkpointNode: () => {},
+      runRecoverableNode: async (_params, execute) => ({ status: "completed", output: await execute() }),
+      runDelegatedTask: async (_params, execute) => execute(),
+      ensureClarification: async () => undefined,
+      claimWorker: () => {},
+      releaseWorker: () => {},
+      agentLabel: (agentId) => agentId,
+      callAgent: async ({ agentId, title }) => {
+        callLog.push(`${agentId}:${title}`);
+        if (agentId === "ora" && title.includes("Plan")) {
+          return codeDevTriageJson();
+        }
+        if (agentId === "builder") {
+          return codeDevBuildJson();
+        }
+        if (agentId === "reviewer") {
+          reviewCount += 1;
+          return reviewCount === 1
+            ? codeDevPassReviewJson()
+            : codeDevNeedsFixReviewJson("Review still requires follow-up evidence");
+        }
+        if (agentId === "debugger") {
+          debugCount += 1;
+          return debugCount === 1
+            ? JSON.stringify({
+                text: "需要重新复核验证证据。",
+                status: "needs_fix",
+                rootCauses: ["Review needs a second pass on verification evidence"],
+                requiredRework: [{ nodeId: "review", reason: "Re-check the reported verification evidence" }],
+              })
+            : codeDevDebugClearJson();
+        }
+        if (agentId === "ora" && title.includes("Finalize")) {
+          return codeDevHandoffJson();
+        }
+        return `${agentId}:${title}`;
+      },
+      remember: () => {},
+      captureMemory: () => {},
+      publishArtifact: () => {},
+      publishMessage: () => {},
+      routeMessage: () => {},
+      emitAgentMessage: () => ({ id: `msg-${callLog.length}` }),
+      writeSharedState: () => {},
+      currentSharedState: () => sharedStateSummary,
+    };
+    const config: RunConfig = {
+      pattern: "orchestrator_subagent",
+      modeId: CODE_DEVELOPMENT_MODE_ID,
+      modeSelection: "manual",
+      profileIds: [],
+      skillIds: [],
+      toolIds: [],
+      approvalMode: "high_risk_only",
+      permissionMode: "auto_review",
+      patternOptions: {},
+      metadata: {},
+      causalInterventionLevel: "record_only",
+      deterministicSeed: "test-seed",
+    };
+
+    const result = await executeOrchestratorSubagent({
+      context,
+      prompt: "Add error handling to the auth module",
+      config,
+      modeSpec: modeSpec!,
+      definition: modeSpecToPatternDefinition(modeSpec!),
+    });
+
+    expect(callLog.filter((entry) => entry.includes("reviewer:Reviewer Review")).length).toBe(2);
+    expect(callLog.filter((entry) => entry.includes("debugger:Debugger Debug")).length).toBe(1);
+    expect(result.output).toMatchObject({
+      reviewVerdict: "needs_fix",
+      verificationBlocked: true,
+      degradedDelivery: true,
+      blockedNodeId: "review",
+    });
+  });
+
+  it("blocks normal success when final handoff omits required delivery gate fields", async () => {
+    const modeSpec = getModePreset(CODE_DEVELOPMENT_MODE_ID);
+    expect(modeSpec).toBeDefined();
+    const callLog: string[] = [];
+    const queueSummary: QueueSummary = { mode: "backlog", pending: 0, inProgress: 0, completed: 0, topics: [] };
+    const sharedStateSummary: SharedStateSummary = { enabled: false, storeKind: "none", version: 0, entries: [] };
+    const busStats: BusStats = { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} };
+    const context: PatternExecutionContext = {
+      projectId: "test-project",
+      queueSummary,
+      sharedStateSummary,
+      busStats,
+      responseLanguage: () => "zh",
+      systemPrompt: (extra) => extra,
+      setPlanStatus: () => {},
+      setQueueSummary: (patch) => Object.assign(queueSummary, patch),
+      checkpointNode: () => {},
+      runRecoverableNode: async (_params, execute) => ({ status: "completed", output: await execute() }),
+      runDelegatedTask: async (_params, execute) => execute(),
+      ensureClarification: async () => undefined,
+      claimWorker: () => {},
+      releaseWorker: () => {},
+      agentLabel: (agentId) => agentId,
+      callAgent: async ({ agentId, title }) => {
+        callLog.push(`${agentId}:${title}`);
+        if (agentId === "ora" && title.includes("Plan")) {
+          return codeDevTriageJson();
+        }
+        if (agentId === "builder") {
+          return codeDevBuildJson();
+        }
+        if (agentId === "reviewer") {
+          return codeDevPassReviewJson();
+        }
+        if (agentId === "debugger") {
+          return codeDevDebugClearJson();
+        }
+        if (agentId === "ora" && title.includes("Finalize")) {
+          return codeDevIncompleteHandoffJson();
+        }
+        return `${agentId}:${title}`;
+      },
+      remember: () => {},
+      captureMemory: () => {},
+      publishArtifact: () => {},
+      publishMessage: () => {},
+      routeMessage: () => {},
+      emitAgentMessage: () => ({ id: `msg-${callLog.length}` }),
+      writeSharedState: () => {},
+      currentSharedState: () => sharedStateSummary,
+    };
+    const config: RunConfig = {
+      pattern: "orchestrator_subagent",
+      modeId: CODE_DEVELOPMENT_MODE_ID,
+      modeSelection: "manual",
+      profileIds: [],
+      skillIds: [],
+      toolIds: [],
+      approvalMode: "high_risk_only",
+      permissionMode: "auto_review",
+      patternOptions: {},
+      metadata: {},
+      causalInterventionLevel: "record_only",
+      deterministicSeed: "test-seed",
+    };
+
+    const result = await executeOrchestratorSubagent({
+      context,
+      prompt: "Add error handling to the auth module",
+      config,
+      modeSpec: modeSpec!,
+      definition: modeSpecToPatternDefinition(modeSpec!),
+    });
+
+    expect(callLog.some((entry) => entry.includes("ora:Ora Finalize"))).toBe(true);
+    expect(result.output).toMatchObject({
+      reviewVerdict: "pass",
+      debugStatus: "clear",
+      verificationBlocked: true,
+      degradedDelivery: true,
+      finalDeliveryBlocked: true,
+      blockedNodeId: "handoff",
+      finalDeliveryBlockers: expect.arrayContaining(["handoff contract is missing required structured fields"]),
+    });
   });
 });
 
@@ -787,21 +1174,159 @@ function createToolIdsCaptureContext(
   };
 }
 
+function createAcceptedArtifactFilterContext(
+  callLog: string[],
+  promptsByTitle: Map<string, string>,
+  options?: {
+    acceptedArtifactIds?: string[];
+    invalidGatherContract?: boolean;
+  },
+): PatternExecutionContext {
+  const queueSummary: QueueSummary = { mode: "backlog", pending: 0, inProgress: 0, completed: 0, topics: [] };
+  const sharedStateSummary: SharedStateSummary = { enabled: false, storeKind: "none", version: 0, entries: [] };
+  const busStats: BusStats = { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} };
+  return {
+    projectId: "test-project",
+    queueSummary,
+    sharedStateSummary,
+    busStats,
+    responseLanguage: () => "zh",
+    systemPrompt: (extra) => extra,
+    setPlanStatus: () => {},
+    setQueueSummary: (patch) => Object.assign(queueSummary, patch),
+    checkpointNode: () => {},
+    runRecoverableNode: async (_params, execute) => ({ status: "completed", output: await execute() }),
+    runDelegatedTask: async (_params, execute) => execute(),
+    ensureClarification: async () => undefined,
+    claimWorker: () => {},
+    releaseWorker: () => {},
+    agentLabel: (agentId) => agentId,
+    callAgent: async ({ agentId, title, prompt }) => {
+      callLog.push(`${agentId}:${title}`);
+      promptsByTitle.set(title, prompt ?? "");
+      if (title.includes("规划")) {
+        return JSON.stringify({
+          text: "Plan summary",
+          goal: "Assess company",
+          successCriteria: ["Need sourced claims"],
+          steps: [{ id: "1", description: "Gather evidence" }],
+          scopeBoundaries: ["No valuation"],
+        });
+      }
+      if (title.includes("收集")) {
+        return JSON.stringify({
+          text: "Gather summary",
+          findings: [
+            options?.invalidGatherContract
+              ? {
+                  claim: "accepted-gather-claim",
+                  source: "Source A",
+                }
+              : {
+                  claim: "accepted-gather-claim",
+                  source: "Source A",
+                  sourceTitle: "Primary Source A",
+                  sourceUrl: "https://example.com/a",
+                  excerpt: "accepted gather excerpt",
+                  retrievedAt: "2026-05-21",
+                  sourceType: "report",
+                  confidence: "high",
+                },
+          ],
+          confidence: "high",
+        });
+      }
+      if (title.includes("缺口")) {
+        return JSON.stringify({
+          text: "Gap summary",
+          gaps: [
+            {
+              dimension: "rejected-gap-dimension",
+              severity: "major",
+              description: "gap-only-marker",
+              suggestedAction: "Collect more",
+            },
+          ],
+          coverageScore: 0.65,
+          suggestedReworkNodeIds: ["gather"],
+        });
+      }
+      if (title.includes("分析")) {
+        return JSON.stringify({
+          text: "Analyze summary",
+          analysis: [
+            {
+              claim: "rejected-analysis-claim",
+              confidence: "medium",
+              rationale: "analysis-only-marker",
+              supportingEvidence: ["Source A"],
+            },
+          ],
+          issues: ["analysis issue"],
+        });
+      }
+      if (title.includes("整理")) {
+        return JSON.stringify({
+          text: "Compile summary",
+          findings: [
+            {
+              claim: "accepted-compile-claim",
+              sources: ["https://example.com/a"],
+              confidence: "high",
+              contradictions: [],
+            },
+          ],
+        });
+      }
+      if (title.includes("核查")) {
+        const verifyOutput: Record<string, unknown> = {
+          text: "Verify summary",
+          verdict: "pass",
+          findings: [
+            { artifactId: "analyze", severity: "concern", issue: "Keep analysis out of final synthesis" },
+          ],
+          issues: [],
+        };
+        if (options?.acceptedArtifactIds) {
+          verifyOutput.acceptedArtifactIds = options.acceptedArtifactIds;
+        }
+        return JSON.stringify(verifyOutput);
+      }
+      if (title === "综合报告") {
+        return "Final synthesized report";
+      }
+      return `${agentId}:${title}`;
+    },
+    remember: () => {},
+    captureMemory: () => {},
+    publishArtifact: () => {},
+    publishMessage: () => {},
+    routeMessage: () => {},
+    emitAgentMessage: () => ({ id: `msg-${callLog.length}` }),
+    writeSharedState: () => {},
+    currentSharedState: () => sharedStateSummary,
+  };
+}
+
 describe("deep research tool boundary regression (run-0103)", () => {
-  it("scope and synthesize nodes have toolIds: [] in mode preset", () => {
+  it("scope, verify, and synthesize nodes have toolIds: [] in mode preset", () => {
     const modeSpec = getModePreset(DEEP_RESEARCH_MODE_ID);
     expect(modeSpec).toBeDefined();
     const scopeNode = modeSpec!.nodes.find((n) => n.id === "scope");
+    const verifyNode = modeSpec!.nodes.find((n) => n.id === "verify");
     const synthesizeNode = modeSpec!.nodes.find((n) => n.id === "synthesize");
     const gatherNode = modeSpec!.nodes.find((n) => n.id === "gather");
     expect(scopeNode).toBeDefined();
+    expect(verifyNode).toBeDefined();
     expect(synthesizeNode).toBeDefined();
     expect(gatherNode).toBeDefined();
-    // scope and synthesize must block web tools
+    // scope / verify / synthesize must block web tools
     const scopeConfig = scopeNode!.config as { toolIds?: unknown };
+    const verifyConfig = verifyNode!.config as { toolIds?: unknown };
     const synthConfig = synthesizeNode!.config as { toolIds?: unknown };
     const gatherConfig = gatherNode!.config as { toolIds?: unknown };
     expect(Array.isArray(scopeConfig.toolIds) && scopeConfig.toolIds.length === 0).toBe(true);
+    expect(Array.isArray(verifyConfig.toolIds) && verifyConfig.toolIds.length === 0).toBe(true);
     expect(Array.isArray(synthConfig.toolIds) && synthConfig.toolIds.length === 0).toBe(true);
     // gather must have NO tool restriction (undefined or missing)
     expect(gatherConfig.toolIds).toBeUndefined();
@@ -856,10 +1381,142 @@ describe("deep research tool boundary regression (run-0103)", () => {
     expect(compileEntry).toBeDefined();
     expect(compileEntry![1]).toEqual([]);
 
+    // verify gets empty toolIds
+    const verifyEntry = [...toolIdsByNode.entries()].find(([title]) => title.includes("核查"));
+    expect(verifyEntry).toBeDefined();
+    expect(verifyEntry![1]).toEqual([]);
+
     // synthesize gets empty toolIds
     const synthEntry = [...toolIdsByNode.entries()].find(([title]) => title.includes("综合报告"));
     expect(synthEntry).toBeDefined();
     expect(synthEntry![1]).toEqual([]);
+  });
+});
+
+describe("deep research accepted artifact filtering", () => {
+  it("only injects accepted research artifacts into synthesize", async () => {
+    const modeSpec = getModePreset(DEEP_RESEARCH_MODE_ID);
+    expect(modeSpec).toBeDefined();
+    const callLog: string[] = [];
+    const promptsByTitle = new Map<string, string>();
+    const context = createAcceptedArtifactFilterContext(callLog, promptsByTitle, {
+      acceptedArtifactIds: ["gather", "compile"],
+    });
+    const config: RunConfig = {
+      pattern: "orchestrator_subagent",
+      modeId: DEEP_RESEARCH_MODE_ID,
+      modeSelection: "manual",
+      profileIds: [],
+      skillIds: [],
+      toolIds: [],
+      approvalMode: "high_risk_only",
+      permissionMode: "auto_review",
+      patternOptions: {},
+      metadata: {},
+      causalInterventionLevel: "record_only",
+      deterministicSeed: "test-seed",
+    };
+
+    const result = await executeOrchestratorSubagent({
+      context,
+      prompt: "Research a company",
+      config,
+      modeSpec: modeSpec!,
+      definition: modeSpecToPatternDefinition(modeSpec!),
+    });
+
+    expect(callLog.some((entry) => entry.includes("ora:综合报告"))).toBe(true);
+    const synthPrompt = promptsByTitle.get("综合报告");
+    expect(synthPrompt).toBeDefined();
+    expect(synthPrompt).toContain("accepted-gather-claim");
+    expect(synthPrompt).toContain("accepted-compile-claim");
+    expect(synthPrompt).not.toContain("rejected-analysis-claim");
+    expect(synthPrompt).not.toContain("analysis-only-marker");
+    expect(synthPrompt).not.toContain("rejected-gap-dimension");
+    expect(synthPrompt).not.toContain("gap-only-marker");
+    expect(synthPrompt).toContain("[\"gather\",\"compile\"]");
+    expect(result.output).toMatchObject({
+      reviewVerdict: "pass",
+    });
+  });
+
+  it("falls back to accepting all deep research artifacts when verify omits acceptedArtifactIds", async () => {
+    const modeSpec = getModePreset(DEEP_RESEARCH_MODE_ID);
+    expect(modeSpec).toBeDefined();
+    const callLog: string[] = [];
+    const promptsByTitle = new Map<string, string>();
+    const context = createAcceptedArtifactFilterContext(callLog, promptsByTitle);
+    const config: RunConfig = {
+      pattern: "orchestrator_subagent",
+      modeId: DEEP_RESEARCH_MODE_ID,
+      modeSelection: "manual",
+      profileIds: [],
+      skillIds: [],
+      toolIds: [],
+      approvalMode: "high_risk_only",
+      permissionMode: "auto_review",
+      patternOptions: {},
+      metadata: {},
+      causalInterventionLevel: "record_only",
+      deterministicSeed: "test-seed",
+    };
+
+    const result = await executeOrchestratorSubagent({
+      context,
+      prompt: "Research a company",
+      config,
+      modeSpec: modeSpec!,
+      definition: modeSpecToPatternDefinition(modeSpec!),
+    });
+
+    const synthPrompt = promptsByTitle.get("综合报告");
+    expect(synthPrompt).toBeDefined();
+    expect(synthPrompt).toContain("accepted-gather-claim");
+    expect(synthPrompt).toContain("rejected-analysis-claim");
+    expect(synthPrompt).toContain("rejected-gap-dimension");
+    expect(synthPrompt).toContain("accepted-compile-claim");
+    expect(synthPrompt).toContain("[\"gather\",\"analyze\",\"gap_analysis\",\"compile\"]");
+    expect(result.output).toMatchObject({
+      reviewVerdict: "pass",
+    });
+  });
+
+  it("degrades gather when provenance fields are missing even if the payload is JSON", async () => {
+    const modeSpec = getModePreset(DEEP_RESEARCH_MODE_ID);
+    expect(modeSpec).toBeDefined();
+    const callLog: string[] = [];
+    const promptsByTitle = new Map<string, string>();
+    const context = createAcceptedArtifactFilterContext(callLog, promptsByTitle, {
+      acceptedArtifactIds: ["gather", "compile"],
+      invalidGatherContract: true,
+    });
+    const config: RunConfig = {
+      pattern: "orchestrator_subagent",
+      modeId: DEEP_RESEARCH_MODE_ID,
+      modeSelection: "manual",
+      profileIds: [],
+      skillIds: [],
+      toolIds: [],
+      approvalMode: "high_risk_only",
+      permissionMode: "auto_review",
+      patternOptions: {},
+      metadata: {},
+      causalInterventionLevel: "record_only",
+      deterministicSeed: "test-seed",
+    };
+
+    const result = await executeOrchestratorSubagent({
+      context,
+      prompt: "Research a company",
+      config,
+      modeSpec: modeSpec!,
+      definition: modeSpecToPatternDefinition(modeSpec!),
+    });
+
+    expect(result.output).toMatchObject({
+      degradedKeys: expect.arrayContaining(["gather"]),
+      reviewVerdict: "pass",
+    });
   });
 });
 

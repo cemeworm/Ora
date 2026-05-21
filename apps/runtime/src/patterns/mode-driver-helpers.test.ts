@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseAgentTeamReviewVerdict } from "./mode-driver-helpers.js";
+import { parseAgentTeamReviewVerdict, parseCodeDevelopmentDebugResolution } from "./mode-driver-helpers.js";
 
 describe("parseAgentTeamReviewVerdict", () => {
   it("parses explicit PASS verdict markers", () => {
@@ -45,6 +45,7 @@ describe("parseAgentTeamReviewVerdict", () => {
   it("extracts structured findings from JSON verdict", () => {
     const result = parseAgentTeamReviewVerdict(JSON.stringify({
       verdict: "needs_fix",
+      reworkNodeIds: ["gather"],
       findings: [
         { artifactId: "gather", severity: "blocking", issue: "Missing primary sources" },
         { artifactId: "analyze", severity: "concern", issue: "Weak causal reasoning" },
@@ -57,6 +58,7 @@ describe("parseAgentTeamReviewVerdict", () => {
       severity: "blocking",
       issue: "Missing primary sources",
     });
+    expect(result.reworkNodeIds).toEqual(["gather"]);
   });
 
   it("extracts accepted artifacts from text marker", () => {
@@ -117,6 +119,39 @@ describe("structured TeamTaskPlan parsing", () => {
     writeBag(bag, "scope", "```json\n" + JSON.stringify(plan) + "\n```\n\nHere's the plan.", "decompose");
     expect(bag.scope).toMatchObject({ goal: "test", successCriteria: ["criterion 1"] });
     expect(bag._degradedKeys).toBeUndefined();
+  });
+});
+
+describe("parseCodeDevelopmentDebugResolution", () => {
+  it("parses structured clear status", () => {
+    expect(parseCodeDevelopmentDebugResolution(JSON.stringify({
+      status: "clear",
+      rootCauses: [],
+      diagnosticEvidence: [{ commandOrMethod: "pnpm test", summary: "all clear" }],
+    }))).toMatchObject({
+      status: "clear",
+      source: "json",
+    });
+  });
+
+  it("maps structured needs_fix to build/review rework targets", () => {
+    expect(parseCodeDevelopmentDebugResolution(JSON.stringify({
+      status: "needs_fix",
+      rootCauses: ["Runtime crash remains"],
+      requiredRework: [{ nodeId: "build", reason: "patch the null guard" }],
+    }))).toMatchObject({
+      status: "needs_fix",
+      source: "json",
+      rootCauses: ["Runtime crash remains"],
+      requiredReworkNodeIds: ["build"],
+    });
+  });
+
+  it("treats explicit no-debug-needed text as clear", () => {
+    expect(parseCodeDevelopmentDebugResolution("No further debugging is needed.")).toMatchObject({
+      status: "clear",
+      source: "heuristic",
+    });
   });
 });
 
@@ -184,5 +219,75 @@ describe("writeBag JSON extraction", () => {
     expect(bag._degradedKeys).toEqual(["research", "build"]);
     expect(bag.research).toMatchObject({ _degraded: true });
     expect(bag.build).toMatchObject({ _degraded: true });
+  });
+
+  it("parses enriched deep research gather output", async () => {
+    const { writeBag } = await import("./mode-driver-helpers.js");
+    const bag: Record<string, unknown> = {};
+    writeBag(bag, "gather", JSON.stringify({
+      text: "Gather summary",
+      findings: [
+        {
+          claim: "Claim",
+          source: "Source A",
+          sourceTitle: "Primary Source A",
+          sourceUrl: "https://example.com/a",
+          excerpt: "excerpt",
+          retrievedAt: "2026-05-21",
+          sourceType: "report",
+          confidence: "high",
+        },
+      ],
+      confidence: "high",
+    }), "research");
+    expect(bag.gather).toMatchObject({
+      findings: [
+        {
+          claim: "Claim",
+          sourceTitle: "Primary Source A",
+          sourceUrl: "https://example.com/a",
+          sourceType: "report",
+        },
+      ],
+    });
+  });
+
+  it("parses deep research gap and verify contracts", async () => {
+    const { writeBag } = await import("./mode-driver-helpers.js");
+    const bag: Record<string, unknown> = {};
+    writeBag(bag, "gap_analysis", JSON.stringify({
+      text: "Gap summary",
+      gaps: [
+        {
+          dimension: "coverage",
+          severity: "major",
+          description: "Need more primary evidence",
+          suggestedAction: "Collect filings",
+        },
+      ],
+      coverageScore: 0.6,
+      suggestedReworkNodeIds: ["gather"],
+    }), "check");
+    writeBag(bag, "verify", JSON.stringify({
+      text: "Verify summary",
+      verdict: "needs_fix",
+      reworkNodeIds: ["gather"],
+      acceptedArtifactIds: ["compile"],
+      findings: [
+        { artifactId: "gather", severity: "blocking", issue: "Missing primary sources" },
+      ],
+      issues: ["Need primary sources"],
+    }), "review");
+    expect(bag.gap_analysis).toMatchObject({
+      coverageScore: 0.6,
+      suggestedReworkNodeIds: ["gather"],
+      gaps: [{ dimension: "coverage" }],
+    });
+    expect(bag.verify).toMatchObject({
+      verdict: "needs_fix",
+      reworkNodeIds: ["gather"],
+      acceptedArtifactIds: ["compile"],
+      findings: [{ artifactId: "gather", severity: "blocking" }],
+    });
   });
 });

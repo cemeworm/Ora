@@ -21,17 +21,21 @@ const COMPLETE_PROPOSED_PLAN = [
   "</proposed_plan>",
 ].join("\n");
 
-function buildMockProviderText(request: {
+function buildMockProviderText(
+  request: {
   prompt?: string;
   system?: string;
   messages?: readonly { role: string; content: unknown }[];
-}): string | Error {
+  },
+  providerId?: string,
+): string | Error {
   const messages = (request.messages ?? []).map((message) => ({
     role: message.role,
     content: typeof message.content === "string" ? message.content : JSON.stringify(message.content),
   }));
   const hasToolResult = messages.some((message) => message.content.includes("Workspace tool result for shell.execute"));
   const requestText = [request.prompt ?? "", ...messages.map((message) => message.content)].join("\n");
+  const isBranchCandidateProvider = typeof providerId === "string" && providerId.startsWith("branch-");
   const shouldEscapeShell = request.system?.includes("Workspace tool protocol:")
     && requestText.includes("Try escaping shell")
     && !hasToolResult;
@@ -42,6 +46,9 @@ function buildMockProviderText(request: {
   const isCompactRequest = request.system?.includes("compressing an Ora session history");
   const isMemoryUpdateRequest = request.system?.includes("Ora's memory updater");
   const shouldReturnProposedPlan = requestText.includes("Return a proposed plan");
+  const isVerifierRequest = requestText.includes("Return JSON with keys verdict ('pass'|'fail')");
+  const isResearchRequest = requestText.includes("Gather focused supporting context to inform the draft candidate.");
+  const isDraftRequest = requestText.includes("Produce exactly ONE candidate");
   return isTitleRequest
     ? titleResponses.shift() ?? "Generated Session Title"
     : isCompactRequest
@@ -63,6 +70,14 @@ function buildMockProviderText(request: {
       })
     : shouldReturnProposedPlan
       ? COMPLETE_PROPOSED_PLAN
+    : isBranchCandidateProvider && isVerifierRequest
+    ? JSON.stringify({ verdict: "pass", rationale: "Branch candidate checks passed.", missingRequirements: [] })
+    : isBranchCandidateProvider && isResearchRequest
+    ? "Focused supporting context collected for the branch candidate, including durable state recovery, candidate leaf projection, and reload-safe adoption expectations."
+    : isBranchCandidateProvider && isDraftRequest
+    ? "Branch candidate draft ready for verifier review, with a concrete recovery path, durable terminal state, and reload-safe adoption outcome."
+    : isBranchCandidateProvider
+    ? "Branch candidate follow-up completed with a full, user-visible response that is intentionally deterministic for runtime ledger and reload tests."
     : shouldEscapeShell
     ? JSON.stringify({ tool: "shell.execute", args: { command: "cat /etc/passwd" } })
     : shouldCallShell
@@ -84,7 +99,7 @@ vi.mock("../src/providers/index.js", async () => {
         role: message.role,
         content: typeof message.content === "string" ? message.content : JSON.stringify(message.content),
       }));
-      const text = buildMockProviderText(request);
+      const text = buildMockProviderText(request, config.providerId);
 
       capturedRequests.push({
         prompt: request.prompt,
@@ -114,7 +129,7 @@ vi.mock("../src/providers/index.js", async () => {
         role: message.role,
         content: typeof message.content === "string" ? message.content : JSON.stringify(message.content),
       }));
-      const text = buildMockProviderText(request);
+      const text = buildMockProviderText(request, config.providerId);
 
       capturedRequests.push({
         prompt: request.prompt,
@@ -159,6 +174,18 @@ function localSmokeProviderConfig(providerId: string, modelId: string) {
     modelId,
     capabilities: ["chat"] as const,
     headers: {},
+  };
+}
+
+function branchCandidateConfig(providerId: string, modelId: string) {
+  return {
+    pattern: "generator_verifier" as const,
+    providerId,
+    modelRef: modelId,
+    providerConfig: localSmokeProviderConfig(providerId, modelId),
+    metadata: {
+      disableDefaultWebTools: true,
+    },
   };
 }
 
@@ -1719,7 +1746,10 @@ describe("session thread runtime behavior", () => {
       target: "empty_start",
       prompt: "Try branch lifecycle.",
       candidates: [
-        { label: "Candidate A", config: { pattern: "generator_verifier" } },
+        {
+          label: "Candidate A",
+          config: branchCandidateConfig("branch-lifecycle-provider", "branch-lifecycle-model"),
+        },
       ],
     });
 
@@ -1766,7 +1796,10 @@ describe("session thread runtime behavior", () => {
       target: "empty_start",
       prompt: "Try durable branch candidate.",
       candidates: [
-        { label: "Candidate A", config: { pattern: "generator_verifier" } },
+        {
+          label: "Candidate A",
+          config: branchCandidateConfig("branch-durable-provider", "branch-durable-model"),
+        },
       ],
     });
     await waitFor(
@@ -1793,6 +1826,46 @@ describe("session thread runtime behavior", () => {
     expect(deriveSessionProjection(ledger).runs.map((run) => run.runId)).toEqual([]);
     expect(candidateAssistant).toBeTruthy();
     expect(deriveSessionProjection(ledger, candidateAssistant.id).runs.map((run) => run.runId)).toEqual([candidateRunId]);
+  });
+
+  it("recovers branch group candidate status from candidate leafs after reloading the runtime store", async () => {
+    const dir = freshStoreDir();
+    const store = new LocalRunStore({ dataDir: dir, clock });
+    const session = store.createSession();
+
+    const group = await store.createAndRunSessionBranchGroup({
+      sessionId: session.sessionId,
+      target: "empty_start",
+      prompt: "Recover candidate leaf state after reload.",
+      candidates: [
+        {
+          label: "Candidate A",
+          config: branchCandidateConfig("branch-recovery-provider", "branch-recovery-model"),
+        },
+      ],
+    });
+    await waitFor(
+      () => store.getSessionBranchGroup({ sessionId: session.sessionId, branchGroupId: group.branchGroupId }),
+      (current) => current.status === "ready",
+    );
+
+    const reloaded = new LocalRunStore({ dataDir: dir, clock });
+    const recovered = reloaded.getSessionBranchGroup({
+      sessionId: session.sessionId,
+      branchGroupId: group.branchGroupId,
+    });
+
+    expect(recovered).toEqual(expect.objectContaining({
+      branchGroupId: group.branchGroupId,
+      status: "ready",
+      candidateRunIds: group.candidateRunIds,
+    }));
+    expect(recovered.candidates).toEqual([
+      expect.objectContaining({
+        runId: group.candidateRunIds[0],
+        status: "succeeded",
+      }),
+    ]);
   });
 
   it("keeps candidate gate resolution facts on the candidate leaf path", async () => {
@@ -2054,7 +2127,10 @@ describe("session thread runtime behavior", () => {
       target: "empty_start",
       prompt: "Try reloadable branch adoption.",
       candidates: [
-        { label: "Candidate A", config: { pattern: "generator_verifier" } },
+        {
+          label: "Candidate A",
+          config: branchCandidateConfig("branch-adoption-provider", "branch-adoption-model"),
+        },
       ],
     });
     await waitFor(
@@ -2089,7 +2165,10 @@ describe("session thread runtime behavior", () => {
       target: "empty_start",
       prompt: "Try SQLite reloadable branch adoption.",
       candidates: [
-        { label: "Candidate A", config: { pattern: "generator_verifier" } },
+        {
+          label: "Candidate A",
+          config: branchCandidateConfig("branch-sqlite-provider", "branch-sqlite-model"),
+        },
       ],
     });
     await waitFor(

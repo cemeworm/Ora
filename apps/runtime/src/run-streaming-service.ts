@@ -79,6 +79,7 @@ export class RunStreamingService {
 export class RunStreamingSession {
   private liveSnapshotValue: StateSnapshot;
   private ledgeredEventCount: number;
+  private ledgeredStatus: StateSnapshot["status"];
 
   constructor(
     private readonly params: RunStreamingSessionParams,
@@ -86,6 +87,7 @@ export class RunStreamingSession {
   ) {
     this.liveSnapshotValue = params.liveSnapshot;
     this.ledgeredEventCount = params.ledgeredEventCount;
+    this.ledgeredStatus = params.liveSnapshot.status;
   }
 
   get liveSnapshot(): StateSnapshot {
@@ -109,7 +111,7 @@ export class RunStreamingSession {
 
   flushLedgerEvents(status = this.liveSnapshotValue.status): StateSnapshot {
     const nextEvents = this.liveSnapshotValue.events.slice(this.ledgeredEventCount);
-    if (nextEvents.length === 0) {
+    if (nextEvents.length === 0 && status === this.ledgeredStatus) {
       return this.liveSnapshotValue;
     }
     this.liveSnapshotValue = this.deps.appendRuntimeEventBatchToLedger(
@@ -118,6 +120,7 @@ export class RunStreamingSession {
       status,
     );
     this.ledgeredEventCount = this.liveSnapshotValue.events.length;
+    this.ledgeredStatus = status;
     return this.liveSnapshotValue;
   }
 

@@ -25,6 +25,8 @@ import {
   type ChildSessionDelegationKind,
   type ChildSessionSummary,
   ChildSessionSummarySchema,
+  type ModeStageDiagnostic,
+  type ModeStagePreflightResult,
   type ParentCoordinationPhase,
   type ParentCoordinationState,
   ParentCoordinationStateSchema,
@@ -178,6 +180,7 @@ import {
 } from "./runtime-root-agent.js";
 import {
   resolveChildToolBundleDefinition,
+  resolveModeStageToolPreflight,
   resolveVisibleToolsForAgent,
 } from "./runtime-tool-visibility.js";
 
@@ -295,6 +298,8 @@ type BackgroundChildRegistryEntry = {
   spawnContract?: AgentSpawnContract;
   spawnPreflight?: AgentSpawnPreflightResult;
   spawnValidation?: AgentSpawnResultValidation;
+  modeStagePreflight?: ModeStagePreflightResult;
+  modeStageDiagnostic?: ModeStageDiagnostic;
   resultContract?: AgentResultContract;
   usedToolCount?: number;
   durationMs?: number;
@@ -373,6 +378,8 @@ function projectBackgroundChildSummary(
     spawnContract: entry.spawnContract,
     spawnPreflight: entry.spawnPreflight,
     spawnValidation: entry.spawnValidation,
+    modeStagePreflight: entry.modeStagePreflight,
+    modeStageDiagnostic: entry.modeStageDiagnostic,
     resultContract: entry.resultContract,
     usedToolCount: entry.usedToolCount,
     durationMs: entry.durationMs,
@@ -749,6 +756,8 @@ class KernelRuntimeContext {
   updateChildSession(summary: ChildSessionSummary): ChildSessionSummary {
     const parsed = ChildSessionSummarySchema.parse(summary);
     const current = this.childSessionsValue.get(parsed.id);
+    const hasModeStagePreflight = Object.prototype.hasOwnProperty.call(summary, "modeStagePreflight");
+    const hasModeStageDiagnostic = Object.prototype.hasOwnProperty.call(summary, "modeStageDiagnostic");
     return this.replaceBackgroundChild(parsed.id, {
       id: parsed.id,
       agentId: parsed.agentId,
@@ -777,6 +786,8 @@ class KernelRuntimeContext {
       spawnContract: parsed.spawnContract ?? current?.spawnContract,
       spawnPreflight: parsed.spawnPreflight,
       spawnValidation: parsed.spawnValidation ?? current?.spawnValidation,
+      modeStagePreflight: hasModeStagePreflight ? parsed.modeStagePreflight : current?.modeStagePreflight,
+      modeStageDiagnostic: hasModeStageDiagnostic ? parsed.modeStageDiagnostic : current?.modeStageDiagnostic,
       resultContract: parsed.resultContract,
       usedToolCount: parsed.usedToolCount,
       durationMs: parsed.durationMs,
@@ -2535,6 +2546,15 @@ export async function executeRuntimeKernel(
           resolvedToolIds: effectiveToolIds,
         }
       : undefined;
+    const modeStagePreflight = params.planItemId
+      ? resolveModeStageToolPreflight({
+          modeSpec: resolvedModeSpec,
+          agentId: params.agentId,
+          nodeId: effectiveNodeId,
+          resolvedToolIds: effectiveToolIds,
+          taskIntent: resolvedTaskIntent,
+        })
+      : undefined;
     const syncModeStageChild = (patch: {
       status: ChildSessionSummary["status"];
       summary?: string;
@@ -2542,6 +2562,8 @@ export async function executeRuntimeKernel(
       usedToolCount?: number;
       artifactIds?: string[];
       durationMs?: number;
+      modeStagePreflight?: ModeStagePreflightResult | null;
+      modeStageDiagnostic?: ModeStageDiagnostic | null;
     }) => {
       if (!modeStageChildSessionBase) {
         return;
@@ -2554,6 +2576,8 @@ export async function executeRuntimeKernel(
         usedToolCount: patch.usedToolCount,
         artifactIds: patch.artifactIds,
         durationMs: patch.durationMs,
+        modeStagePreflight: patch.modeStagePreflight,
+        modeStageDiagnostic: patch.modeStageDiagnostic,
       });
       kernelRuntimeContext.setBackgroundChildRuntimeMetadata({
         agentId: params.agentId,
@@ -2565,9 +2589,68 @@ export async function executeRuntimeKernel(
         resolvedToolPreset: modeStageChildSessionBase.resolvedToolPreset,
       });
     };
+    if (modeStagePreflight && modeStagePreflight.status === "ready") {
+      emit(
+        "mode_stage_preflight.completed",
+        {
+          status: modeStagePreflight.status,
+          preflight: modeStagePreflight,
+          requestedToolPreset: modeStageChildSessionBase?.requestedToolPreset ?? effectiveVisibility.presetId,
+          resolvedToolPreset: modeStageChildSessionBase?.resolvedToolPreset ?? effectiveVisibility.presetId,
+          agentId: params.agentId,
+          nodeId: effectiveNodeId,
+          modeId: config.modeId,
+          taskIntent: resolvedTaskIntent,
+        },
+        { agentId: params.agentId, nodeId: effectiveNodeId },
+      );
+    }
+    if (modeStagePreflight?.status === "blocked") {
+      const detail = [
+        `Mode stage blocked: preset "${modeStagePreflight.presetId ?? "unknown"}" is unavailable for ${params.title}.`,
+        `Missing capabilities: ${modeStagePreflight.missingCapabilities.join(", ")}.`,
+      ].join(" ");
+      const modeStageDiagnostic: ModeStageDiagnostic = {
+        status: "blocked",
+        authoritySource: "mode_stage",
+        diagnosticType: "mode_stage_authority_mismatch",
+        requestedToolPreset: modeStageChildSessionBase?.requestedToolPreset ?? effectiveVisibility.presetId,
+        resolvedToolPreset: modeStageChildSessionBase?.resolvedToolPreset ?? effectiveVisibility.presetId,
+        resolvedToolIds: effectiveToolIds,
+        message: detail,
+        preflight: modeStagePreflight,
+      };
+      syncModeStageChild({
+        status: "failed",
+        summary: detail,
+        lastMessage: detail,
+        durationMs: 0,
+        modeStagePreflight,
+        modeStageDiagnostic,
+      });
+      emit(
+        "mode_stage_preflight.completed",
+        {
+          status: "blocked",
+          preflight: modeStagePreflight,
+          diagnostic: modeStageDiagnostic,
+          requestedToolPreset: modeStageDiagnostic.requestedToolPreset,
+          resolvedToolPreset: modeStageDiagnostic.resolvedToolPreset,
+          agentId: params.agentId,
+          nodeId: effectiveNodeId,
+          modeId: config.modeId,
+          taskIntent: resolvedTaskIntent,
+        },
+        { agentId: params.agentId, nodeId: effectiveNodeId },
+      );
+      setTopologyStatus(params.agentId, "blocked");
+      throw new Error(detail);
+    }
     syncModeStageChild({
       status: "running",
       summary: "子 Agent 正在执行任务。",
+      modeStagePreflight: null,
+      modeStageDiagnostic: null,
     });
 
     kernelRuntimeContext.activateAgent(params.agentId);
@@ -3219,6 +3302,8 @@ export async function executeRuntimeKernel(
     spawnContract?: AgentSpawnContract;
     spawnPreflight?: AgentSpawnPreflightResult;
     spawnValidation?: AgentSpawnResultValidation;
+    modeStagePreflight?: ModeStagePreflightResult | null;
+    modeStageDiagnostic?: ModeStageDiagnostic | null;
     resultContract?: AgentResultContract;
     deliveryStatus?: ChildSessionSummary["deliveryStatus"];
     usedToolCount?: number;
@@ -3226,6 +3311,12 @@ export async function executeRuntimeKernel(
   }) => {
     const current = kernelRuntimeContext.childSession(params.agentId);
     const startedAt = current?.startedAt ?? now();
+    const nextModeStagePreflight = params.modeStagePreflight === null
+      ? undefined
+      : params.modeStagePreflight ?? current?.modeStagePreflight;
+    const nextModeStageDiagnostic = params.modeStageDiagnostic === null
+      ? undefined
+      : params.modeStageDiagnostic ?? current?.modeStageDiagnostic;
     const next = kernelRuntimeContext.updateChildSession({
       id: `${runId}:${params.agentId}`,
       agentId: params.agentId,
@@ -3245,6 +3336,8 @@ export async function executeRuntimeKernel(
       spawnContract: params.spawnContract ?? current?.spawnContract,
       spawnPreflight: params.spawnPreflight ?? current?.spawnPreflight,
       spawnValidation: params.spawnValidation ?? current?.spawnValidation,
+      modeStagePreflight: nextModeStagePreflight,
+      modeStageDiagnostic: nextModeStageDiagnostic,
       resultContract: params.resultContract ?? current?.resultContract,
       usedToolCount: params.usedToolCount ?? current?.usedToolCount,
       durationMs: params.durationMs ?? current?.durationMs,

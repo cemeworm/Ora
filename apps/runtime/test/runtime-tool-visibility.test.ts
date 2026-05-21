@@ -3,6 +3,7 @@ import {
   CODE_DEVELOPMENT_MODE_ID,
   DEFAULT_AGENT_MODE_TOOL_IDS,
   MVP_TOOLS,
+  ORA_SELF_BUILDER_MODE_ID,
   type AgentProfile,
   ModeSpecSchema,
   ORA_ROOT_AGENT_ID,
@@ -11,6 +12,7 @@ import {
   type ModeSpec,
 } from "@cemeworm/shared";
 import {
+  resolveModeStageToolPreflight,
   resolveChildToolBundleDefinition,
   resolveVisibleToolsForAgent,
 } from "../src/harness/runtime-tool-visibility.js";
@@ -40,10 +42,11 @@ function makeMode(params: {
   id: string;
   nodes: ModeNodeSpec[];
   profiles?: AgentProfile[];
+  family?: ModeSpec["family"];
 }): ModeSpec {
   return ModeSpecSchema.parse({
     id: params.id,
-    family: "orchestrator_subagent",
+    family: params.family ?? "orchestrator_subagent",
     label: params.id,
     summary: `${params.id} summary`,
     nodes: params.nodes,
@@ -155,6 +158,71 @@ describe("runtime tool visibility", () => {
     expect(resolution.visibleToolIds).toContain("repo.explore");
     expect(resolution.visibleToolIds).toContain("shell.execute");
     expect(resolution.visibleToolIds).not.toContain("agent.spawn");
+  });
+
+  it("gives ora_self_builder build stages package-aware write tools", () => {
+    const mode = makeMode({
+      id: ORA_SELF_BUILDER_MODE_ID,
+      family: "agent_teams",
+      nodes: [
+        {
+          id: "build",
+          template: "build",
+          label: "Build",
+          ownerAgentId: "builder",
+          config: {
+            requiredCapabilityGroups: ["repo_read", "repo_explore", "repo_apply_patch", "package_build_candidate"],
+          },
+        },
+      ],
+      profiles: [makeProfile(ORA_ROOT_AGENT_ID, "Ora"), makeProfile("builder", "Builder")],
+    });
+
+    const resolution = resolveVisibleToolsForAgent({
+      availableToolIds: DEFAULT_AGENT_MODE_TOOL_IDS,
+      toolDescriptors: MVP_TOOLS,
+      modeSpec: mode,
+      agentId: "builder",
+      profileToolIds: mode.profiles[1]!.toolIds,
+      nodeId: "build",
+      taskIntent: "implement",
+    });
+
+    expect(resolution.visibleToolIds).toContain("file.apply_patch");
+    expect(resolution.visibleToolIds).toContain("package.buildCandidate");
+    expect(resolution.visibleToolIds).not.toContain("package.promote");
+  });
+
+  it("gives ora_self_builder handoff root the package promotion surface", () => {
+    const mode = makeMode({
+      id: ORA_SELF_BUILDER_MODE_ID,
+      family: "agent_teams",
+      nodes: [
+        {
+          id: "handoff",
+          template: "handoff",
+          label: "Handoff",
+          ownerAgentId: ORA_ROOT_AGENT_ID,
+          config: {
+            requiredCapabilityGroups: ["package_promote"],
+          },
+        },
+      ],
+    });
+
+    const resolution = resolveVisibleToolsForAgent({
+      availableToolIds: DEFAULT_AGENT_MODE_TOOL_IDS,
+      toolDescriptors: MVP_TOOLS,
+      modeSpec: mode,
+      agentId: ORA_ROOT_AGENT_ID,
+      profileToolIds: mode.profiles[0]!.toolIds,
+      nodeId: "handoff",
+      taskIntent: "implement",
+    });
+
+    expect(resolution.visibleToolIds).toContain("package.promote");
+    expect(resolution.visibleToolIds).toContain("package.switch");
+    expect(resolution.visibleToolIds).not.toContain("file.apply_patch");
   });
 
   it("hides agent.spawn from the code development root agent", () => {
@@ -275,6 +343,49 @@ describe("runtime tool visibility", () => {
     });
 
     expect(resolution.visibleToolIds).not.toContain("agent.spawn");
+  });
+
+  it("blocks a mode stage when its declared package capability is unavailable", () => {
+    const availableToolIds = DEFAULT_AGENT_MODE_TOOL_IDS.filter((toolId) => toolId !== "package.buildCandidate");
+    const mode = makeMode({
+      id: ORA_SELF_BUILDER_MODE_ID,
+      family: "agent_teams",
+      nodes: [
+        {
+          id: "build",
+          template: "build",
+          label: "Build",
+          ownerAgentId: "builder",
+          config: {
+            requiredCapabilityGroups: ["repo_read", "repo_explore", "repo_apply_patch", "package_build_candidate"],
+          },
+        },
+      ],
+      profiles: [makeProfile(ORA_ROOT_AGENT_ID, "Ora"), makeProfile("builder", "Builder")],
+    });
+
+    const resolution = resolveVisibleToolsForAgent({
+      availableToolIds,
+      toolDescriptors: MVP_TOOLS,
+      modeSpec: mode,
+      agentId: "builder",
+      profileToolIds: mode.profiles[1]!.toolIds,
+      nodeId: "build",
+      taskIntent: "implement",
+    });
+    const preflight = resolveModeStageToolPreflight({
+      modeSpec: mode,
+      agentId: "builder",
+      nodeId: "build",
+      resolvedToolIds: resolution.visibleToolIds,
+      taskIntent: "implement",
+    });
+
+    expect(preflight).toMatchObject({
+      status: "blocked",
+      presetId: "self_builder_build",
+    });
+    expect(preflight?.missingCapabilities).toContain("package_build_candidate");
   });
 
   it("resolves child tool bundles from shared presets", () => {

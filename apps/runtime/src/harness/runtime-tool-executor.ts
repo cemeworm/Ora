@@ -91,6 +91,24 @@ export const IMPLEMENTED_RUNTIME_TOOL_IDS = [
   "computer.window",
 ] as const;
 
+const WORKSPACE_ROOT_REQUIRED_TOOL_IDS = new Set<RuntimeToolId>([
+  "repo.explore",
+  "file.read",
+  "file.list",
+  "file.glob",
+  "file.grep",
+  "file.write",
+  "file.patch",
+  "file.apply_patch",
+  "shell.execute",
+  "package.list",
+  "package.buildCandidate",
+  "package.verify",
+  "package.promote",
+  "package.switch",
+  "package.rollback",
+]);
+
 export type RuntimeToolId = typeof IMPLEMENTED_RUNTIME_TOOL_IDS[number];
 
 export interface RuntimeToolCall {
@@ -519,12 +537,14 @@ export class RuntimeToolExecutor {
   }
 
   enabledToolIds(toolIds: readonly string[] = []): RuntimeToolId[] {
+    const rootPath = workspaceRootPath(this.workspace);
     return toolIds.filter((toolId): toolId is RuntimeToolId => {
       const definition = this.definitions.get(toolId);
       return (
         typeof definition?.execute === "function" &&
         isRuntimeToolImplemented(toolId) &&
-        this.toolAvailableForTaskIntent(toolId)
+        this.toolAvailableForTaskIntent(toolId) &&
+        (rootPath || !WORKSPACE_ROOT_REQUIRED_TOOL_IDS.has(toolId))
       );
     });
   }

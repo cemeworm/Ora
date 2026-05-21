@@ -118,6 +118,14 @@ export interface AgentTeamReviewVerdict {
   findings?: Array<{ artifactId?: string; severity: "blocking" | "concern" | "suggestion"; issue: string }>;
 }
 
+export interface CodeDevelopmentDebugResolution {
+  status: "clear" | "needs_fix" | "blocked";
+  source: "json" | "marker" | "heuristic" | "missing";
+  rootCauses: string[];
+  requiredReworkNodeIds?: Array<"build" | "review">;
+  remainingRisks?: string[];
+}
+
 /** Bag keys for message-bus pattern: publish → route → handle → respond. */
 export interface MessageBusBag extends ExecutionBag {
   prompt: string;
@@ -261,6 +269,47 @@ function parseAcceptedLine(text: string): string[] | undefined {
   return ids.length > 0 ? ids : undefined;
 }
 
+function normalizeDebugStatus(value: unknown): CodeDevelopmentDebugResolution["status"] | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (["clear", "resolved", "pass", "passed", "clean", "ok", "无需调试", "已解决", "通过"].includes(normalized)) {
+    return "clear";
+  }
+  if ([
+    "needs_fix",
+    "needs-fix",
+    "needs fix",
+    "needs_rework",
+    "needs-rework",
+    "needs rework",
+    "rework",
+    "fix",
+    "需返工",
+    "需修复",
+    "未解决",
+  ].includes(normalized)) {
+    return "needs_fix";
+  }
+  if (["blocked", "block", "阻塞", "卡住"].includes(normalized)) {
+    return "blocked";
+  }
+  return undefined;
+}
+
+function extractDebugReworkNodeIds(value: unknown): Array<"build" | "review"> | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const nodeIds = value
+    .map((item) => {
+      if (typeof item === "string") return item;
+      if (item && typeof item === "object" && typeof (item as { nodeId?: unknown }).nodeId === "string") {
+        return (item as { nodeId: string }).nodeId;
+      }
+      return undefined;
+    })
+    .filter((nodeId): nodeId is "build" | "review" => nodeId === "build" || nodeId === "review");
+  return nodeIds.length > 0 ? nodeIds : undefined;
+}
+
 export function parseAgentTeamReviewVerdict(output: unknown): AgentTeamReviewVerdict {
   if (output && typeof output === "object" && !Array.isArray(output)) {
     const obj = output as Record<string, unknown>;
@@ -327,6 +376,103 @@ export function parseAgentTeamReviewVerdict(output: unknown): AgentTeamReviewVer
 
 export function parseReviewGateVerdict(output: unknown): AgentTeamReviewVerdict {
   return parseAgentTeamReviewVerdict(output);
+}
+
+export function parseCodeDevelopmentDebugResolution(output: unknown): CodeDevelopmentDebugResolution {
+  if (output && typeof output === "object" && !Array.isArray(output)) {
+    const obj = output as Record<string, unknown>;
+    const status = normalizeDebugStatus(obj.status);
+    if (status) {
+      return {
+        status,
+        source: "json",
+        rootCauses: Array.isArray(obj.rootCauses)
+          ? obj.rootCauses.filter((item): item is string => typeof item === "string")
+          : [],
+        requiredReworkNodeIds: extractDebugReworkNodeIds(obj.requiredRework),
+        remainingRisks: Array.isArray(obj.remainingRisks)
+          ? obj.remainingRisks.filter((item): item is string => typeof item === "string")
+          : undefined,
+      };
+    }
+  }
+
+  const text = asText(output).trim();
+  if (!text) {
+    return {
+      status: "blocked",
+      source: "missing",
+      rootCauses: ["Debugger produced no resolution."],
+    };
+  }
+
+  try {
+    const parsed = JSON.parse(text) as Record<string, unknown>;
+    const status = normalizeDebugStatus(parsed.status);
+    if (status) {
+      return {
+        status,
+        source: "json",
+        rootCauses: Array.isArray(parsed.rootCauses)
+          ? parsed.rootCauses.filter((item): item is string => typeof item === "string")
+          : [],
+        requiredReworkNodeIds: extractDebugReworkNodeIds(parsed.requiredRework),
+        remainingRisks: Array.isArray(parsed.remainingRisks)
+          ? parsed.remainingRisks.filter((item): item is string => typeof item === "string")
+          : undefined,
+      };
+    }
+  } catch {
+    // fall back to textual parsing
+  }
+
+  const markerMatch = /(?:^|\n)\s*(?:status|debug\s*status|调试状态)\s*[:：]\s*([^\n\r]+)/i.exec(text);
+  if (markerMatch) {
+    const status = normalizeDebugStatus(markerMatch[1]);
+    if (status) {
+      const reworkNodeIds = parseReworkLine(text)
+        ?.filter((nodeId): nodeId is "build" | "review" => nodeId === "build" || nodeId === "review");
+      return {
+        status,
+        source: "marker",
+        rootCauses: extractIssuesFromText(text),
+        requiredReworkNodeIds: reworkNodeIds?.length ? reworkNodeIds : undefined,
+      };
+    }
+  }
+
+  if (/(no further debugging is needed|no additional fix path is required|无需调试|无需进一步调试|no remaining issue|已解决)/i.test(text)) {
+    return {
+      status: "clear",
+      source: "heuristic",
+      rootCauses: [],
+    };
+  }
+
+  if (/(blocked|阻塞|卡住)/i.test(text)) {
+    return {
+      status: "blocked",
+      source: "heuristic",
+      rootCauses: extractIssuesFromText(text),
+    };
+  }
+
+  if (/(needs[_\-\s]?fix|needs[_\-\s]?rework|rework|需返工|需修复|根本原因|最小修复路径)/i.test(text)) {
+    const reworkNodeIds = parseReworkLine(text)
+      ?.filter((nodeId): nodeId is "build" | "review" => nodeId === "build" || nodeId === "review");
+    return {
+      status: "needs_fix",
+      source: "heuristic",
+      rootCauses: extractIssuesFromText(text),
+      requiredReworkNodeIds: reworkNodeIds?.length ? reworkNodeIds : ["build"],
+    };
+  }
+
+  return {
+    status: "clear",
+    source: "heuristic",
+    rootCauses: [],
+  };
 }
 
 export const DELEGATION_PLAN_INSTRUCTION = `

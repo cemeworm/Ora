@@ -1,9 +1,24 @@
-import { ORA_ROOT_AGENT_ID, orderedEnabledModeLayers, orderedEnabledModeNodes, type ModeNodeSpec, type ModeSpec, type ModeStageSpec } from "@cemeworm/shared";
+import {
+  CODE_DEVELOPMENT_MODE_ID,
+  DEEP_RESEARCH_MODE_ID,
+  ORA_ROOT_AGENT_ID,
+  deepResearchAnalyzeOutputSchema,
+  deepResearchCompileOutputSchema,
+  deepResearchGapAnalysisOutputSchema,
+  deepResearchGatherOutputSchema,
+  deepResearchScopeOutputSchema,
+  deepResearchVerifyOutputSchema,
+  orderedEnabledModeLayers,
+  orderedEnabledModeNodes,
+  type ModeNodeSpec,
+  type ModeSpec,
+  type ModeStageSpec,
+} from "@cemeworm/shared";
 import type { PatternExecutionContext, PatternExecutionResult } from "./execution-context.js";
 import type { ModeExecutionInput } from "./mode-driver-registry.js";
 import { asText, completeQueueSummary, dispatchNodeTemplate, initializeQueueSummary, interpolate, modeUsesSingleOwner, nodeCustomAgentId, nodeInstructions, nodeSystemPrompt, primaryOwnerAgentId, promptTemplate, publicAgentMessageContent, runtimeFallbackPrompt, titleForNode } from "./driver-utils.js";
 import { runGenericModeNode, runModeLayer } from "./generic-node-executor.js";
-import { containsCompleteProposedPlan, finishPlanModeAfterProposedPlan, type ExecutionBag, type OrchestratorSubagentBag, DELEGATION_PLAN_INSTRUCTION, parseDelegationPlan, parseReviewGateVerdict, type DelegationPlan, writeBag } from "./mode-driver-helpers.js";
+import { containsCompleteProposedPlan, finishPlanModeAfterProposedPlan, type CodeDevelopmentDebugResolution, type ExecutionBag, type OrchestratorSubagentBag, DELEGATION_PLAN_INSTRUCTION, parseCodeDevelopmentDebugResolution, parseDelegationPlan, parseReviewGateVerdict, type DelegationPlan, writeBag } from "./mode-driver-helpers.js";
 
 function stageTranscriptLine(entry: { speakerLabel: string; content: unknown }): string {
   return `${entry.speakerLabel}: ${asText(entry.content).trim()}`;
@@ -69,9 +84,268 @@ function nodeReworkTargets(node: ModeNodeSpec): string[] {
 }
 
 const MAX_STAGED_REWORK_ROUNDS = 2;
+const DEEP_RESEARCH_STRUCTURED_STAGE_KEYS = new Set(["scope", "gather", "analyze", "gap_analysis", "compile", "verify"]);
+const DEEP_RESEARCH_ACCEPTED_ARTIFACT_KEYS = ["gather", "analyze", "gap_analysis", "compile"] as const;
+const DEEP_RESEARCH_OUTPUT_SCHEMAS = {
+  scope: deepResearchScopeOutputSchema,
+  gather: deepResearchGatherOutputSchema,
+  analyze: deepResearchAnalyzeOutputSchema,
+  gap_analysis: deepResearchGapAnalysisOutputSchema,
+  compile: deepResearchCompileOutputSchema,
+  verify: deepResearchVerifyOutputSchema,
+} as const;
+type DeepResearchStructuredStageKey = Extract<keyof typeof DEEP_RESEARCH_OUTPUT_SCHEMAS, string>;
 
 function isChinese(context: PatternExecutionContext): boolean {
   return context.responseLanguage() === "zh";
+}
+
+function isCodeDevelopmentMode(modeSpec: ModeSpec): boolean {
+  return modeSpec.id === CODE_DEVELOPMENT_MODE_ID;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function structuredText(value: unknown): string {
+  if (isRecord(value) && typeof value.text === "string") {
+    return value.text;
+  }
+  return asText(value);
+}
+
+function isDegradedBagEntry(value: unknown): value is { text: string; _degraded: true } {
+  return isRecord(value) && value._degraded === true && typeof value.text === "string";
+}
+
+function isNonEmptyStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.some((item) => typeof item === "string" && item.trim().length > 0);
+}
+
+function hasVerificationPlan(value: unknown): boolean {
+  return Array.isArray(value) && value.some((item) =>
+    isRecord(item) &&
+    typeof item.id === "string" &&
+    typeof item.commandOrMethod === "string" &&
+    typeof item.expectation === "string"
+  );
+}
+
+function hasVerificationEvidence(value: unknown): boolean {
+  return Array.isArray(value) && value.some((item) =>
+    isRecord(item) &&
+    typeof item.verificationId === "string" &&
+    typeof item.result === "string" &&
+    typeof item.summary === "string"
+  );
+}
+
+function hasVerificationSummary(value: unknown): boolean {
+  return Array.isArray(value) && value.some((item) =>
+    isRecord(item) &&
+    typeof item.verificationId === "string" &&
+    typeof item.result === "string" &&
+    typeof item.summary === "string"
+  );
+}
+
+function isCodeDevelopmentTriageContract(value: unknown): boolean {
+  if (!isRecord(value) || isDegradedBagEntry(value)) return false;
+  return typeof value.text === "string" &&
+    typeof value.goal === "string" &&
+    isNonEmptyStringArray(value.successCriteria) &&
+    Array.isArray(value.backlog) &&
+    value.backlog.length > 0 &&
+    isNonEmptyStringArray(value.scopeBoundaries) &&
+    typeof value.taskJournalPath === "string" &&
+    isNonEmptyStringArray(value.targetFiles) &&
+    hasVerificationPlan(value.verificationPlan) &&
+    isNonEmptyStringArray(value.doneCriteria);
+}
+
+function isCodeDevelopmentBuildContract(value: unknown): boolean {
+  if (!isRecord(value) || isDegradedBagEntry(value)) return false;
+  return typeof value.text === "string" &&
+    isNonEmptyStringArray(value.changedFiles ?? value.artifacts) &&
+    hasVerificationEvidence(value.verificationEvidence);
+}
+
+function isCodeDevelopmentHandoffContract(value: unknown): boolean {
+  if (!isRecord(value) || isDegradedBagEntry(value)) return false;
+  return typeof value.text === "string" &&
+    isNonEmptyStringArray(value.deliveredFiles) &&
+    isNonEmptyStringArray(value.acceptedFiles) &&
+    typeof value.taskJournalPath === "string" &&
+    isRecord(value.todoScanResult) &&
+    typeof value.todoScanResult.summary === "string" &&
+    (
+      value.todoScanResult.status === "clean"
+      || value.todoScanResult.status === "followup_only"
+      || value.todoScanResult.status === "blocked"
+    ) &&
+    isRecord(value.doneGate) &&
+    (
+      value.doneGate.status === "pass"
+      || value.doneGate.status === "blocked"
+    ) &&
+    Array.isArray(value.doneGate.blockers) &&
+    hasVerificationSummary(value.verificationSummary);
+}
+
+function handoffDoneGateStatus(value: unknown): "pass" | "blocked" | undefined {
+  if (!isRecord(value) || !isRecord(value.doneGate)) return undefined;
+  return value.doneGate.status === "pass" || value.doneGate.status === "blocked"
+    ? value.doneGate.status
+    : undefined;
+}
+
+function handoffTodoStatus(value: unknown): "clean" | "followup_only" | "blocked" | undefined {
+  if (!isRecord(value) || !isRecord(value.todoScanResult)) return undefined;
+  return value.todoScanResult.status === "clean" ||
+    value.todoScanResult.status === "followup_only" ||
+    value.todoScanResult.status === "blocked"
+    ? value.todoScanResult.status
+    : undefined;
+}
+
+function codeDevelopmentFinalDeliveryBlockers(bag: ExecutionBag): string[] {
+  const blockers: string[] = [];
+  if (!isCodeDevelopmentTriageContract(bag.triage)) {
+    blockers.push("triage contract is missing required structured fields");
+  }
+  if (!isCodeDevelopmentBuildContract(bag.build)) {
+    blockers.push("build contract is missing changedFiles or verificationEvidence");
+  }
+  if (!isCodeDevelopmentHandoffContract(bag.handoff)) {
+    blockers.push("handoff contract is missing required structured fields");
+  }
+  if (bag.reviewVerdict !== "pass") {
+    blockers.push("review gate did not pass");
+  }
+  if (bag.debugStatus !== "clear") {
+    blockers.push("debug gate did not clear");
+  }
+  if (handoffTodoStatus(bag.handoff) === "blocked") {
+    blockers.push("TODO scan is blocked");
+  }
+  if (handoffDoneGateStatus(bag.handoff) === "blocked") {
+    blockers.push("DONE gate is blocked");
+  }
+  return blockers;
+}
+
+function isDeepResearchMode(modeSpec: ModeSpec): boolean {
+  return modeSpec.id === DEEP_RESEARCH_MODE_ID;
+}
+
+function isDeepResearchStructuredStageKey(value: string): value is DeepResearchStructuredStageKey {
+  return value in DEEP_RESEARCH_OUTPUT_SCHEMAS;
+}
+
+function shouldWriteStructuredStageOutput(
+  modeSpec: ModeSpec,
+  node: ModeNodeSpec,
+  stage: ModeStageSpec,
+): boolean {
+  if (isCodeDevelopmentMode(modeSpec)) {
+    return Boolean(stage.outputKey);
+  }
+  if (!isDeepResearchMode(modeSpec)) {
+    return false;
+  }
+  return DEEP_RESEARCH_STRUCTURED_STAGE_KEYS.has(stage.outputKey ?? node.id);
+}
+
+function structuredStageTemplateKey(
+  modeSpec: ModeSpec,
+  node: ModeNodeSpec,
+  stage: ModeStageSpec,
+): ModeNodeSpec["template"] {
+  const bagKey = stage.outputKey ?? node.id;
+  if (isCodeDevelopmentMode(modeSpec) && bagKey === "review") {
+    return "review";
+  }
+  return node.template;
+}
+
+function writeStructuredStageOutput(
+  bag: ExecutionBag,
+  modeSpec: ModeSpec,
+  node: ModeNodeSpec,
+  stage: ModeStageSpec,
+  output: unknown,
+): void {
+  const bagKey = stage.outputKey ?? node.id;
+  const raw = asText(output);
+  writeBag(bag, bagKey, raw, structuredStageTemplateKey(modeSpec, node, stage));
+
+  if (
+    isDeepResearchMode(modeSpec)
+    && isDeepResearchStructuredStageKey(bagKey)
+    && !isDegradedBagEntry(bag[bagKey])
+  ) {
+    const strictSchema = DEEP_RESEARCH_OUTPUT_SCHEMAS[bagKey];
+    try {
+      bag[bagKey] = strictSchema.parse(bag[bagKey]);
+    } catch {
+      bag[bagKey] = { text: raw, _degraded: true } satisfies { text: string; _degraded: true };
+      const degradedKeys: string[] = Array.isArray(bag._degradedKeys) ? (bag._degradedKeys as string[]) : [];
+      if (!degradedKeys.includes(bagKey)) {
+        degradedKeys.push(bagKey);
+        bag._degradedKeys = degradedKeys;
+      }
+      console.warn(
+        `[bag] deep research strict schema validation failed for key "${bagKey}" (template: ${node.template}), stored as degraded text`,
+      );
+    }
+  }
+
+  const normalized = bag[bagKey];
+  bag[stage.id] = normalized;
+  bag[`${stage.id}_raw`] = bag[`${bagKey}_raw`];
+  bag[node.id] = normalized;
+  bag[`${node.id}_raw`] = bag[`${bagKey}_raw`];
+  if (stage.outputKey && stage.outputKey !== node.id) {
+    bag[stage.outputKey] = normalized;
+    bag[`${stage.outputKey}_raw`] = bag[`${bagKey}_raw`];
+  }
+  bag[node.template] = normalized;
+  bag[`${node.template}_raw`] = bag[`${bagKey}_raw`];
+}
+
+function defaultAcceptedArtifactIds(
+  modeSpec: ModeSpec,
+  nodes: ModeNodeSpec[],
+  currentNodeId: string,
+): string[] {
+  if (isDeepResearchMode(modeSpec)) {
+    return [...DEEP_RESEARCH_ACCEPTED_ARTIFACT_KEYS];
+  }
+  const currentIndex = nodes.findIndex((candidate) => candidate.id === currentNodeId);
+  return nodes.slice(0, currentIndex).map((prior) => prior.id);
+}
+
+function valuesForStagePrompt(
+  modeSpec: ModeSpec,
+  node: ModeNodeSpec,
+  bag: ExecutionBag,
+): ExecutionBag {
+  if (!isDeepResearchMode(modeSpec) || node.id !== "synthesize") {
+    return bag;
+  }
+  const values: ExecutionBag = { ...bag };
+  const accepted = new Set(
+    Array.isArray(bag.acceptedArtifactIds)
+      ? bag.acceptedArtifactIds.filter((artifactId): artifactId is string => typeof artifactId === "string")
+      : [],
+  );
+  for (const artifactId of DEEP_RESEARCH_ACCEPTED_ARTIFACT_KEYS) {
+    if (!accepted.has(artifactId)) {
+      values[artifactId] = "";
+    }
+  }
+  return values;
 }
 
 async function executePlainOrchestratorNode(
@@ -146,7 +420,8 @@ async function executeStagedTranscriptMode(input: ModeExecutionInput): Promise<P
       bag.debateTranscript = stageOutputs.map(stageTranscriptLine).join("\n\n");
       const agentId = stage.speakerId ?? node.ownerAgentId ?? primaryOwnerAgentId(modeSpec, [node]);
       const speakerLabel = stageSpeakerLabel(modeSpec, node, stage);
-      const values = stageValues(bag, stage, speakerLabel, priorTranscript);
+      const stageBag = valuesForStagePrompt(modeSpec, node, bag);
+      const values = stageValues(stageBag, stage, speakerLabel, priorTranscript);
       const systemParts = [nodeInstructions(modeSpec, node, values)];
       if (shouldApplyStanceLock(stage)) {
         systemParts.push(`STANCE LOCK: You are now ${speakerLabel}. Your mandatory stance is "${stage.stance}". Every claim you make must support the ${stage.stance} position or attack the opposing position. Neutral evaluation, both-sides framing, and undermining your own side are protocol violations.`);
@@ -211,14 +486,18 @@ async function executeStagedTranscriptMode(input: ModeExecutionInput): Promise<P
       previousStageMessageId = message.id;
       lastStageOutput = output;
       stageOutputs.push({ speakerLabel, content: asText(output) });
-      bag[stage.id] = output;
-      bag[node.id] = output;
-      bag[node.template] = output;
+      if (shouldWriteStructuredStageOutput(modeSpec, node, stage)) {
+        writeStructuredStageOutput(bag, modeSpec, node, stage, output);
+      } else {
+        bag[stage.id] = output;
+        bag[node.id] = output;
+        bag[node.template] = output;
+        if (stage.outputKey) {
+          bag[stage.outputKey] = output;
+        }
+      }
       bag.priorTranscript = stageOutputs.map(stageTranscriptLine).join("\n\n");
       bag.debateTranscript = bag.priorTranscript;
-      if (stage.outputKey) {
-        bag[stage.outputKey] = output;
-      }
     }
     if (nodeStopsOnReviewVerdict(node) && lastStageOutput !== undefined) {
       const verdict = parseReviewGateVerdict(lastStageOutput);
@@ -240,11 +519,57 @@ async function executeStagedTranscriptMode(input: ModeExecutionInput): Promise<P
         gatedReviewVerdict = undefined;
       }
     }
+    if (isCodeDevelopmentMode(modeSpec) && node.id === "debug" && lastStageOutput !== undefined) {
+      const resolution: CodeDevelopmentDebugResolution = parseCodeDevelopmentDebugResolution(lastStageOutput);
+      bag.debugStatus = resolution.status;
+      bag.debugRootCauses = resolution.rootCauses;
+      if (resolution.status !== "clear") {
+        gatedReviewVerdict = {
+          nodeId: node.id,
+          verdict: {
+            verdict: resolution.status === "blocked" ? "blocked" : "needs_fix",
+            issues: resolution.rootCauses.length > 0
+              ? resolution.rootCauses
+              : [zh ? "调试关卡未通过。" : "Debug gate did not clear."],
+            source: resolution.source,
+            reworkNodeIds: resolution.status === "needs_fix"
+              ? (resolution.requiredReworkNodeIds?.length ? resolution.requiredReworkNodeIds : ["build"])
+              : undefined,
+          },
+          output: lastStageOutput,
+        };
+      } else {
+        gatedReviewVerdict = undefined;
+      }
+    }
     return lastStageOutput;
   };
 
   for (const node of nodes) {
     completedNodes = await runGenericModeNode(context, modeSpec, node, totalActiveNodes, completedNodes, () => executeStagedNode(node), bag);
+
+    if (isCodeDevelopmentMode(modeSpec) && !planIntent && node.id === "triage" && !isCodeDevelopmentTriageContract(bag.triage)) {
+      context.setPlanStatus(node.id, "failed");
+      const currentIndex = nodes.findIndex((candidate) => candidate.id === node.id);
+      for (const remaining of nodes.slice(currentIndex + 1)) {
+        context.setPlanStatus(remaining.id, "skipped");
+      }
+      completeQueueSummary(context, totalActiveNodes);
+      return {
+        output: {
+          text: zh
+            ? "Code Development 在进入 Builder 前停止：triage 没有产出可验证的结构化实施契约。"
+            : "Code Development stopped before Builder because triage did not produce a valid structured implementation contract.",
+          pattern: modeSpec.family,
+          modeId: modeSpec.id,
+          stages: stageOutputs,
+          stoppedAfterInvalidTriage: true,
+          invalidTriageReason: "invalid_or_degraded_triage_contract",
+          degradedKeys: bag._degradedKeys,
+          triage: bag.triage,
+        },
+      };
+    }
 
     if (planIntent) {
       const planOutput = stageOutputs.at(-1)?.content ?? asText(bag[node.id] ?? bag[node.template]);
@@ -293,6 +618,12 @@ async function executeStagedTranscriptMode(input: ModeExecutionInput): Promise<P
               reworkRound,
               reviewerOutput: asText(gatedReviewVerdict.output),
             });
+            if (gatedReviewVerdict && gatedReviewVerdict.nodeId !== node.id) {
+              break;
+            }
+          }
+          if (gatedReviewVerdict && gatedReviewVerdict.nodeId !== node.id) {
+            break;
           }
           await executeStagedNode(node, {
             reworkRound,
@@ -305,12 +636,10 @@ async function executeStagedTranscriptMode(input: ModeExecutionInput): Promise<P
       }
     }
 
-    if (!gatedReviewVerdict && !bag.acceptedArtifactIds) {
-      const priorNodeIds = nodes
-        .slice(0, nodes.findIndex((candidate) => candidate.id === node.id))
-        .map((prior) => prior.id);
-      if (priorNodeIds.length > 0) {
-        bag.acceptedArtifactIds = priorNodeIds;
+    if (nodeStopsOnReviewVerdict(node) && !gatedReviewVerdict && !bag.acceptedArtifactIds) {
+      const acceptedArtifactIds = defaultAcceptedArtifactIds(modeSpec, nodes, node.id);
+      if (acceptedArtifactIds.length > 0) {
+        bag.acceptedArtifactIds = acceptedArtifactIds;
       }
     }
 
@@ -350,11 +679,12 @@ async function executeStagedTranscriptMode(input: ModeExecutionInput): Promise<P
       const degradedText = stageOutputs.at(-1)?.content ?? asText(gatedReviewVerdict.output);
       return {
         output: {
-          text: degradedText,
+          text: structuredText(bag.handoff ?? degradedText),
           pattern: modeSpec.family,
           modeId: modeSpec.id,
           stages: stageOutputs,
-          reviewVerdict: gatedReviewVerdict.verdict.verdict,
+          reviewVerdict: bag.reviewVerdict ?? gatedReviewVerdict.verdict.verdict,
+          debugStatus: bag.debugStatus,
           verificationBlocked: true,
           degradedDelivery: true,
           blockedNodeId: gatedReviewVerdict.nodeId,
@@ -374,7 +704,29 @@ async function executeStagedTranscriptMode(input: ModeExecutionInput): Promise<P
     value: { stages: stageOutputs, output: stageOutputs.at(-1)?.content, completedNodes },
   });
 
-  const finalOutput = stageOutputs.at(-1)?.content ?? asText(bag.synthesis || bag.handoff || bag.review || bag.research || bag.plan);
+  const finalDeliveryBlockers = isCodeDevelopmentMode(modeSpec) ? codeDevelopmentFinalDeliveryBlockers(bag) : [];
+  const finalOutput = structuredText(bag.handoff || bag.synthesis || bag.review || bag.research || bag.plan);
+  if (finalDeliveryBlockers.length > 0) {
+    return {
+      output: {
+        text: finalOutput,
+        pattern: modeSpec.family,
+        modeId: modeSpec.id,
+        stages: stageOutputs,
+        reviewVerdict: bag.reviewVerdict,
+        debugStatus: bag.debugStatus,
+        reviewIssues: bag.reviewIssues,
+        reviewReworkCount: bag.reviewReworkCount ?? 0,
+        reviewFindings: bag.reviewFindings,
+        degradedKeys: bag._degradedKeys,
+        verificationBlocked: true,
+        degradedDelivery: true,
+        finalDeliveryBlocked: true,
+        blockedNodeId: "handoff",
+        finalDeliveryBlockers,
+      },
+    };
+  }
   return {
     output: {
       text: finalOutput,
@@ -382,10 +734,14 @@ async function executeStagedTranscriptMode(input: ModeExecutionInput): Promise<P
       modeId: modeSpec.id,
       stages: stageOutputs,
       reviewVerdict: bag.reviewVerdict,
+      debugStatus: bag.debugStatus,
       reviewIssues: bag.reviewIssues,
       reviewReworkCount: bag.reviewReworkCount ?? 0,
       reviewFindings: bag.reviewFindings,
       degradedKeys: bag._degradedKeys,
+      degradedDelivery: false,
+      finalDeliveryBlocked: false,
+      finalDeliveryBlockers,
     },
   };
 }

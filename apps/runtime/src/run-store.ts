@@ -399,6 +399,12 @@ export class LocalRunStore {
   private projects = new Map<string, StoredProject>();
   private sessions = new Map<string, RuntimeSessionReadModel>();
   private runs = new Map<string, RuntimeRunReadModel>();
+  private sessionAllRunsCache = new Map<string, StateSnapshot[]>();
+  private sessionVisibleRunsCache = new Map<string, StateSnapshot[]>();
+  private sessionCandidateLeafIndexCache = new Map<string, {
+    cacheKey: string;
+    entryIdsByRunId: ReadonlyMap<string, readonly string[]>;
+  }>();
   private allSessionIds = new Set<string>();
   private readonly maxCachedSessions: number;
   private readonly autoArchiveThresholdDays: number;
@@ -936,61 +942,84 @@ export class LocalRunStore {
   private mergedSessionBranchGroups(sessionId: string): SessionBranchGroup[] {
     const runtimeGroups = branchGroupsForSession(sessionId, [...this.runs.values()]);
     const runtimeGroupIds = new Set(runtimeGroups.map((group) => group.branchGroupId));
-    const ledger = this.backend.getSessionLedgerExcludingEvents?.(sessionId) ?? this.backend.getSessionLedger(sessionId);
-    const ledgerGroups = ledger
-      ? deriveSessionProjection(ledger).branchGroups.filter((group) => !runtimeGroupIds.has(group.branchGroupId))
+    const projectionLedger = this.backend.getSessionLedgerExcludingEvents?.(sessionId) ?? this.backend.getSessionLedger(sessionId);
+    const candidateRecoveryLedger = this.backend.getSessionLedger(sessionId) ?? projectionLedger;
+    const ledgerGroups = projectionLedger
+      ? deriveSessionProjection(projectionLedger).branchGroups.filter((group) => !runtimeGroupIds.has(group.branchGroupId))
       : [];
-    const resolvedGroups = [...runtimeGroups, ...ledgerGroups.map((group) => {
-      // Ledger branch groups may carry stale creation-time status when all
-      // candidate runs have completed but main-line entries don't reflect it.
-      // Re-derive the status from actual candidate run states.
-      if (group.status !== "running") {
-        return group;
+    return [...runtimeGroups, ...ledgerGroups].map((group) =>
+      this.resolveMergedSessionBranchGroup(sessionId, group, candidateRecoveryLedger),
+    );
+  }
+
+  private resolveMergedSessionBranchGroup(
+    sessionId: string,
+    group: SessionBranchGroup,
+    candidateRecoveryLedger?: RuntimeSessionLedger,
+  ): SessionBranchGroup {
+    if (
+      group.candidateRunIds.length === 0 ||
+      group.status === "adopted" ||
+      group.status === "dismissed"
+    ) {
+      return group;
+    }
+    const derivedCandidates = group.candidateRunIds.map((runId) => {
+      const existing = group.candidates.find((candidate) => candidate.runId === runId);
+      const run = this.bestAvailableBranchCandidateRunSnapshot(sessionId, runId, candidateRecoveryLedger);
+      if (!run) {
+        return undefined;
       }
-      const derivedCandidates = group.candidateRunIds.map((runId) => {
-        let run = this.runs.get(runId);
-        // Candidate runs are on side branches and may not be loaded into
-        // the main-line run cache after a restart. Try loading from any
-        // ledger leaf to recover the final candidate state.
-        if (!run) {
-          run = this.ledgerProjectedRunSnapshotFromAnyLeaf(runId) ?? undefined;
-        }
-        if (!run) return undefined;
-        const existing = group.candidates.find((c) => c.runId === runId);
-        let outputPreview = existing?.outputPreview;
-        if (!outputPreview) {
-          const text = assistantTextForRun(run);
-          outputPreview = text ? text.slice(0, 500) : undefined;
-        }
-        return {
-          runId,
-          status: run.status,
-          label: existing?.label,
-          modeId: run.modeId ?? existing?.modeId,
-          providerId: typeof run.config.providerId === "string" ? run.config.providerId : existing?.providerId,
-          modelRef: run.config.modelRef ?? existing?.modelRef,
-          adopted: run.config.metadata.branchRole === "adopted",
-          prompt: existing?.prompt ?? run.input.prompt,
-          outputPreview,
-          updatedAt: run.updatedAt,
-        };
-      }).filter((c): c is NonNullable<typeof c> => c !== undefined);
-      if (derivedCandidates.length === 0) {
-        return group;
+      let outputPreview = existing?.outputPreview;
+      if (!outputPreview) {
+        const text = assistantTextForRun(run);
+        outputPreview = text ? text.slice(0, 500) : undefined;
       }
-      const derivedStatus = deriveSessionBranchGroupStatus({
-        status: group.status,
-        adoptedRunId: group.adoptedRunId,
-        candidates: derivedCandidates,
-      });
-      return SessionBranchGroupSchema.parse({
-        ...group,
-        status: derivedStatus,
-        candidates: derivedCandidates,
-        updatedAt: Math.max(group.updatedAt, ...derivedCandidates.map((c) => c.updatedAt)),
-      });
-    })];
-    return resolvedGroups;
+      return {
+        runId,
+        status: run.status,
+        label: existing?.label,
+        modeId: run.modeId ?? existing?.modeId,
+        providerId: typeof run.config.providerId === "string" ? run.config.providerId : existing?.providerId,
+        modelRef: run.config.modelRef ?? existing?.modelRef,
+        adopted: run.config.metadata.branchRole === "adopted",
+        prompt: existing?.prompt ?? run.input.prompt,
+        outputPreview,
+        updatedAt: run.updatedAt,
+      };
+    }).filter((candidate): candidate is NonNullable<typeof candidate> => candidate !== undefined);
+    if (derivedCandidates.length === 0) {
+      return group;
+    }
+    const derivedStatus = deriveSessionBranchGroupStatus({
+      status: group.status,
+      adoptedRunId: group.adoptedRunId,
+      candidates: derivedCandidates,
+    });
+    return SessionBranchGroupSchema.parse({
+      ...group,
+      status: derivedStatus,
+      candidates: derivedCandidates,
+      updatedAt: Math.max(group.updatedAt, ...derivedCandidates.map((candidate) => candidate.updatedAt)),
+    });
+  }
+
+  private bestAvailableBranchCandidateRunSnapshot(
+    sessionId: string,
+    runId: string,
+    candidateRecoveryLedger?: RuntimeSessionLedger,
+  ): StateSnapshot | undefined {
+    const cachedRun = this.runs.get(runId);
+    const recoveredRun = candidateRecoveryLedger
+      ? this.ledgerProjectedRunSnapshotFromSessionLeaf(sessionId, runId, candidateRecoveryLedger)
+      : undefined;
+    if (recoveredRun?.config.metadata.branchRole === "candidate") {
+      return recoveredRun;
+    }
+    if (cachedRun?.config.metadata.branchRole === "candidate") {
+      return cachedRun;
+    }
+    return recoveredRun ?? cachedRun ?? this.ledgerProjectedRunSnapshotFromAnyLeaf(runId) ?? undefined;
   }
 
 
@@ -2397,7 +2426,7 @@ export class LocalRunStore {
     const runId = this.requireRunId(params);
     const projected = this.ledgerRebasedRunSnapshot(runId);
     if (projected) {
-      this.runs.set(runId, projected);
+      this.storeRunProjection(projected);
       return attachTraceMetadata(projected);
     }
     return getRunState(params, this.runStateOperationDeps());
@@ -3082,7 +3111,7 @@ export class LocalRunStore {
   }
 
   private appendRuntimeEventBatchToLedger(snapshot: StateSnapshot, events: OraEventEnvelope[], status = snapshot.status): StateSnapshot {
-    if (!snapshot.sessionId || events.length === 0) {
+    if (!snapshot.sessionId) {
       return snapshot;
     }
     const useRunningHotPath = this.canBypassRuntimeEventBatchProjection(snapshot, events, status);
@@ -3102,7 +3131,7 @@ export class LocalRunStore {
     });
     if (snapshot.config.metadata.branchRole === "candidate") {
       const projected = this.ledgerSnapshotOrFallback(snapshot, entry.id);
-      this.runs.set(projected.runId, projected);
+      this.storeRunProjection(projected);
       return projected;
     }
     if (useRunningHotPath) {
@@ -3111,7 +3140,7 @@ export class LocalRunStore {
     }
     this.refreshSessionFromLedger(snapshot.sessionId);
     const projected = this.ledgerSnapshotOrFallback(snapshot);
-    this.runs.set(projected.runId, projected);
+    this.storeRunProjection(projected);
     return projected;
   }
 
@@ -3134,7 +3163,7 @@ export class LocalRunStore {
     if (!snapshot.sessionId) {
       return;
     }
-    this.runs.set(snapshot.runId, snapshot);
+    this.storeRunProjection(snapshot);
     this.sessionLedgerLeafEntryIds.set(snapshot.sessionId, leafEntryId);
     this.sessionRunProjectionModes.set(snapshot.sessionId, "full");
     const session = this.upsertSessionFromRun(snapshot, { deferInitialTitle: true });
@@ -3500,7 +3529,7 @@ export class LocalRunStore {
     const projectedRunIds = new Set(projection.runs.map((run) => run.runId));
     for (const [runId, snapshot] of this.runs.entries()) {
       if (snapshot.sessionId === sessionId && !projectedRunIds.has(runId)) {
-        this.runs.delete(runId);
+        this.deleteRunProjection(runId, sessionId);
       }
     }
     for (const run of projection.runs) {
@@ -3515,7 +3544,7 @@ export class LocalRunStore {
           snapshot.checkpoints = cached.checkpoints;
           snapshot.toolResults = cached.toolResults;
         }
-        this.runs.set(snapshot.runId, snapshot);
+        this.storeRunProjection(snapshot);
       }
     }
     return projection.session;
@@ -3685,7 +3714,7 @@ export class LocalRunStore {
     if (!projected) {
       return snapshot;
     }
-    this.runs.set(projected.runId, projected);
+    this.storeRunProjection(projected);
     this.refreshSessionFromLedger(snapshot.sessionId);
     return projected;
   }
@@ -3729,10 +3758,10 @@ export class LocalRunStore {
     if (!ledger) {
       return undefined;
     }
-    const leafEntryId = cached.config.metadata.branchRole === "candidate"
-      ? this.candidateLedgerLeaf(cached)
-      : ledger.leafEntryId;
-    return deriveRunSnapshot(ledger, cached.runId, leafEntryId);
+    if (cached.config.metadata.branchRole === "candidate") {
+      return this.ledgerProjectedRunSnapshotFromSessionLeaf(cached.sessionId, cached.runId, ledger);
+    }
+    return deriveRunSnapshot(ledger, cached.runId, ledger.leafEntryId);
   }
 
   private candidateLedgerLeaf(snapshot: Pick<StateSnapshot, "runId" | "sessionId">): string | undefined {
@@ -3758,14 +3787,88 @@ export class LocalRunStore {
       const runEntries = ledger.entries
         .filter((entry) => entry.runId === runId)
         .sort((a, b) => b.seq - a.seq || b.createdAt - a.createdAt || b.id.localeCompare(a.id));
-      for (const entry of runEntries) {
-        const projected = deriveRunSnapshot(ledger, runId, entry.id);
-        if (projected) {
-          return projected;
-        }
+      const projected = bestProjectedRunSnapshotFromEntryIds(
+        ledger,
+        runId,
+        runEntries.map((entry) => entry.id),
+      );
+      if (projected) {
+        return projected;
       }
     }
     return undefined;
+  }
+
+  private candidateLeafIndexForSessionLedger(
+    sessionId: string,
+    ledger: RuntimeSessionLedger,
+  ): ReadonlyMap<string, readonly string[]> {
+    const cacheKey = `${ledger.leafEntryId ?? "nil"}:${ledger.entries.length}:${ledger.entries.at(-1)?.id ?? "nil"}`;
+    const cached = this.sessionCandidateLeafIndexCache.get(sessionId);
+    if (cached?.cacheKey === cacheKey) {
+      return cached.entryIdsByRunId;
+    }
+    const entryIdsByRunId = new Map<string, string[]>();
+    for (const entry of ledger.entries) {
+      if (!entry.runId || entry.type === "branch.candidate_started") {
+        continue;
+      }
+      const existing = entryIdsByRunId.get(entry.runId) ?? [];
+      existing.push(entry.id);
+      entryIdsByRunId.set(entry.runId, existing);
+    }
+    this.sessionCandidateLeafIndexCache.set(sessionId, {
+      cacheKey,
+      entryIdsByRunId,
+    });
+    return entryIdsByRunId;
+  }
+
+  private candidateLeafEntryIdForRun(
+    sessionId: string,
+    runId: string,
+    ledger?: RuntimeSessionLedger,
+  ): string | undefined {
+    const sessionLedger = ledger ?? this.backend.getSessionLedger(sessionId);
+    if (!sessionLedger) {
+      return undefined;
+    }
+    const cachedLeaf = this.runLedgerBranchService.cachedCandidateLeaf(runId);
+    if (
+      cachedLeaf &&
+      sessionLedger.entries.some((entry) => entry.id === cachedLeaf && entry.type !== "branch.candidate_started")
+    ) {
+      return cachedLeaf;
+    }
+    const entryIds = this.candidateLeafIndexForSessionLedger(sessionId, sessionLedger).get(runId);
+    const leafEntryId = entryIds?.at(-1);
+    if (leafEntryId) {
+      this.runLedgerBranchService.recordCandidateLeaf(runId, leafEntryId);
+    }
+    return leafEntryId;
+  }
+
+  private ledgerProjectedRunSnapshotFromSessionLeaf(
+    sessionId: string,
+    runId: string,
+    ledger?: RuntimeSessionLedger,
+  ): StateSnapshot | undefined {
+    const sessionLedger = ledger ?? this.backend.getSessionLedger(sessionId);
+    if (!sessionLedger) {
+      return undefined;
+    }
+    const entryIds = this.candidateLeafIndexForSessionLedger(sessionId, sessionLedger).get(runId);
+    if (!entryIds || entryIds.length === 0) {
+      return undefined;
+    }
+    const projected = bestProjectedRunSnapshotFromEntryIds(sessionLedger, runId, entryIds);
+    if (projected) {
+      const leafEntryId = entryIds.at(-1);
+      if (leafEntryId) {
+        this.runLedgerBranchService.recordCandidateLeaf(runId, leafEntryId);
+      }
+    }
+    return projected;
   }
 
 
@@ -3952,7 +4055,7 @@ export class LocalRunStore {
     snapshot = flush
       ? this.normalizeSnapshotForPersistence(snapshot)
       : snapshot;
-    this.runs.set(snapshot.runId, snapshot);
+    this.storeRunProjection(snapshot);
     if (snapshot.sessionId && !isUnadoptedBranchCandidate(snapshot)) {
       const useLedgerHotPathBypass = this.isLedgerBackedSession(snapshot.sessionId)
         && !flush
@@ -3978,7 +4081,7 @@ export class LocalRunStore {
   }
 
   private cacheRunDelta(snapshot: StateSnapshot): void {
-    this.runs.set(snapshot.runId, snapshot);
+    this.storeRunProjection(snapshot);
     if (!snapshot.sessionId || isUnadoptedBranchCandidate(snapshot)) {
       return;
     }
@@ -4092,20 +4195,19 @@ export class LocalRunStore {
       const projected = this.ledgerProjectedRunSnapshotForCachedRun(snapshot);
       if (projected) {
         const rebased = this.rebaseActiveRunSnapshot(projected, snapshot);
-        this.runs.set(runId, rebased);
+        this.storeRunProjection(rebased);
         return rebased;
       }
       return snapshot;
     }
     const projected = this.ledgerProjectedRunSnapshotFromAnyLeaf(runId);
     if (projected) {
-      this.runs.set(runId, projected);
+      this.storeRunProjection(projected);
       if (projected.config.metadata.branchRole === "candidate" && projected.sessionId) {
         const ledger = this.backend.getSessionLedger(projected.sessionId);
-        const leaf = ledger?.entries
-          .filter((entry) => entry.runId === runId && entry.type !== "branch.candidate_started")
-          .sort((a, b) => b.seq - a.seq || b.createdAt - a.createdAt || b.id.localeCompare(a.id))
-          .at(0)?.id;
+        const leaf = ledger
+          ? this.candidateLeafEntryIdForRun(projected.sessionId, runId, ledger)
+          : undefined;
         if (leaf) {
           this.runLedgerBranchService.recordCandidateLeaf(runId, leaf);
         }
@@ -4170,6 +4272,8 @@ export class LocalRunStore {
     const toEvict = sorted.slice(0, this.sessions.size - maxCached);
     for (const [id] of toEvict) {
       this.sessions.delete(id);
+      this.invalidateSessionRunCaches(id);
+      this.sessionCandidateLeafIndexCache.delete(id);
       this.sessionRunProjectionModes.delete(id);
       this.sessionLedgerLeafEntryIds.delete(id);
     }
@@ -4181,15 +4285,46 @@ export class LocalRunStore {
     this.backend.saveManifest(this.manifest);
   }
 
+  private invalidateSessionRunCaches(sessionId: string | undefined): void {
+    if (!sessionId) {
+      return;
+    }
+    this.sessionAllRunsCache.delete(sessionId);
+    this.sessionVisibleRunsCache.delete(sessionId);
+  }
+
+  private storeRunProjection(snapshot: StateSnapshot): void {
+    this.runs.set(snapshot.runId, snapshot);
+    this.invalidateSessionRunCaches(snapshot.sessionId);
+  }
+
+  private deleteRunProjection(runId: string, sessionId?: string): void {
+    const cached = this.runs.get(runId);
+    this.runs.delete(runId);
+    this.invalidateSessionRunCaches(sessionId ?? cached?.sessionId);
+  }
+
   private allRunsForSession(sessionId: string): StateSnapshot[] {
     this.ensureSessionRunsLoaded(sessionId, { includeEvents: false });
-    return [...this.runs.values()]
+    const cached = this.sessionAllRunsCache.get(sessionId);
+    if (cached) {
+      return cached;
+    }
+    const runs = [...this.runs.values()]
       .filter((run) => run.sessionId === sessionId)
       .sort((a, b) => (a.turnIndex ?? 1) - (b.turnIndex ?? 1) || a.updatedAt - b.updatedAt || a.runId.localeCompare(b.runId));
+    this.sessionAllRunsCache.set(sessionId, runs);
+    return runs;
   }
 
   private runsForSession(sessionId: string): StateSnapshot[] {
-    return this.allRunsForSession(sessionId).filter(isVisibleMainlineRun);
+    const cached = this.sessionVisibleRunsCache.get(sessionId);
+    if (cached) {
+      return cached;
+    }
+    const runs = this.allRunsForSession(sessionId).filter(isVisibleMainlineRun);
+    this.sessionVisibleRunsCache.set(sessionId, runs);
+    return runs;
   }
 
   private nextTurnIndex(sessionId: string): number {
@@ -4243,7 +4378,10 @@ export class LocalRunStore {
       throw new OraRuntimeError("Cannot persist run without sessionId.", -32004, { runId: snapshot.runId });
     }
     const existing = this.sessions.get(sessionId);
-    const turnCount = this.runsForSession(sessionId).filter((run) => run.runId !== snapshot.runId).length + 1;
+    const visibleRuns = this.runsForSession(sessionId);
+    const turnCount = visibleRuns.some((run) => run.runId === snapshot.runId)
+      ? visibleRuns.length
+      : visibleRuns.length + 1;
     const title = options.titleOverride
       ?? (existing && existing.title !== DEFAULT_SESSION_TITLE
         ? existing.title
@@ -5714,6 +5852,29 @@ function selectedWidgetContextMessage(context: unknown): ModelMessage[] {
 
 function isTerminalRunStatus(status: StateSnapshot["status"]): boolean {
   return status === "succeeded" || status === "failed" || status === "cancelled";
+}
+
+function bestProjectedRunSnapshotFromEntryIds(
+  ledger: RuntimeSessionLedger,
+  runId: string,
+  entryIds: readonly string[],
+): StateSnapshot | undefined {
+  let fallback: StateSnapshot | undefined;
+  for (let index = entryIds.length - 1; index >= 0; index -= 1) {
+    const entryId = entryIds[index];
+    if (!entryId) {
+      continue;
+    }
+    const projected = deriveRunSnapshot(ledger, runId, entryId);
+    if (!projected) {
+      continue;
+    }
+    fallback ??= projected;
+    if (isTerminalRunStatus(projected.status)) {
+      return projected;
+    }
+  }
+  return fallback;
 }
 
 function acceptedPlanHandoffMessage(handoff: AcceptedPlanHandoff): ModelMessage {

@@ -175,6 +175,37 @@ describe("run streaming", () => {
     expect(appendRuntimeEventBatchToLedger).not.toHaveBeenCalled();
   });
 
+  it("flushes a terminal status change even when no new events were added", () => {
+    const appendRuntimeEventBatchToLedger = vi.fn((liveSnapshot: StateSnapshot) => liveSnapshot);
+    const service = new RunStreamingService({
+      cacheRun: vi.fn(),
+      cacheRunDelta: vi.fn(),
+      appendRuntimeEventBatchToLedger,
+    });
+    const session = service.createSession({
+      runId: "run-test",
+      liveSnapshot: snapshot(),
+      ledgeredEventCount: 0,
+    });
+
+    session.replaceSnapshot({
+      ...session.liveSnapshot,
+      status: "succeeded",
+      output: { text: "done" },
+    });
+    session.flushLedgerEvents("succeeded");
+
+    expect(appendRuntimeEventBatchToLedger).toHaveBeenCalledTimes(1);
+    expect(appendRuntimeEventBatchToLedger).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "succeeded",
+        output: { text: "done" },
+      }),
+      [],
+      "succeeded",
+    );
+  });
+
   it("projects structured runtime events into the live snapshot", () => {
     const planItem = {
       id: "run-test:plan-1",

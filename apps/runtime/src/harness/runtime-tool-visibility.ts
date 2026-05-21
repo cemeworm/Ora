@@ -7,9 +7,13 @@ import {
   DEEP_RESEARCH_MODE_ID,
   type AgentToolBundleId,
   isLegacyDefaultAgentModeToolIds,
+  type ModeStagePreflightResult,
+  ModeStagePreflightResultSchema,
   ORA_ROOT_AGENT_ID,
+  ORA_SELF_BUILDER_MODE_ID,
   SINGLE_AGENT_MODE_ID,
   TOOL_VISIBILITY_PRESETS,
+  type ToolCapabilityGroup,
   resolveToolVisibility,
   REVIEW_CRITIQUE_MODE_ID,
   type ModeNodeSpec,
@@ -50,6 +54,9 @@ function presetForNode(
     if (modeSpec.id === SINGLE_AGENT_MODE_ID && taskIntent === "implement") {
       return "single_agent_implement";
     }
+    if (modeSpec.id === ORA_SELF_BUILDER_MODE_ID) {
+      return "self_builder_root";
+    }
     return modeSpec.id === CODE_DEVELOPMENT_MODE_ID ? "coding_root" : "root_default";
   }
   if (modeSpec.id === DEEP_RESEARCH_MODE_ID) {
@@ -57,6 +64,16 @@ function presetForNode(
   }
   if (modeSpec.id === REVIEW_CRITIQUE_MODE_ID) {
     return "review_readonly";
+  }
+  if (modeSpec.id === ORA_SELF_BUILDER_MODE_ID) {
+    switch (node?.template) {
+      case "build":
+        return "self_builder_build";
+      case "check":
+        return "self_builder_review";
+      default:
+        return "self_builder_root";
+    }
   }
 
   switch (node?.template) {
@@ -127,6 +144,73 @@ export function resolveVisibleToolsForAgent(params: {
     taskIntent: params.taskIntent,
     hardBlockedToolIds,
     defaultDecisionSource: "resolver_default",
+  });
+}
+
+function requiredCapabilityGroupsForNode(node: ModeNodeSpec | undefined): ToolCapabilityGroup[] {
+  const raw = node?.config && typeof node.config === "object"
+    ? (node.config as { requiredCapabilityGroups?: unknown }).requiredCapabilityGroups
+    : undefined;
+  return Array.isArray(raw)
+    ? raw.filter((value): value is ToolCapabilityGroup => typeof value === "string")
+    : [];
+}
+
+function hasCapabilityGroup(group: ToolCapabilityGroup, resolved: ReadonlySet<string>): boolean {
+  switch (group) {
+    case "repo_read":
+      return resolved.has("file.read");
+    case "repo_search":
+      return REPO_SEARCH_TOOL_IDS.some((toolId) => resolved.has(toolId));
+    case "repo_explore":
+      return resolved.has("repo.explore");
+    case "repo_patch":
+      return resolved.has("file.patch");
+    case "repo_apply_patch":
+      return resolved.has("file.apply_patch");
+    case "repo_shell_execute":
+      return resolved.has("shell.execute");
+    case "package_list":
+      return resolved.has("package.list");
+    case "package_build_candidate":
+      return resolved.has("package.buildCandidate");
+    case "package_verify":
+      return resolved.has("package.verify");
+    case "package_promote":
+      return resolved.has("package.promote");
+    case "package_switch":
+      return resolved.has("package.switch");
+    case "package_rollback":
+      return resolved.has("package.rollback");
+    default:
+      return false;
+  }
+}
+
+export function resolveModeStageToolPreflight(params: {
+  modeSpec: ModeSpec;
+  agentId: string;
+  nodeId?: string;
+  resolvedToolIds: readonly string[];
+  taskIntent?: "chat" | "plan" | "implement";
+}): ModeStagePreflightResult | undefined {
+  if (params.agentId === ORA_ROOT_AGENT_ID && !params.nodeId) {
+    return undefined;
+  }
+  const node = params.nodeId
+    ? params.modeSpec.nodes.find((candidate) => candidate.id === params.nodeId)
+    : undefined;
+  const requiredCapabilityGroups = requiredCapabilityGroupsForNode(node);
+  if (requiredCapabilityGroups.length === 0) {
+    return undefined;
+  }
+  const resolved = new Set(params.resolvedToolIds);
+  const missingCapabilities = requiredCapabilityGroups.filter((group) => !hasCapabilityGroup(group, resolved));
+  return ModeStagePreflightResultSchema.parse({
+    status: missingCapabilities.length === 0 ? "ready" : "blocked",
+    presetId: presetForNode(params.modeSpec, params.agentId, node, params.taskIntent),
+    resolvedToolIds: [...params.resolvedToolIds],
+    missingCapabilities,
   });
 }
 

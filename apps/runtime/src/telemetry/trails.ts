@@ -189,6 +189,7 @@ function observationTypeForEvent(type: string): string {
     type === "action.updated"
     || type.startsWith("approval.")
     || type === "agent_spawn_preflight.completed"
+    || type === "mode_stage_preflight.completed"
     || type === "tool.repo_explore.completed"
   ) {
     return "tool";
