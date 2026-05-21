@@ -150,7 +150,7 @@ function hasSucceededSearchEvidence(toolCalls: readonly OraToolCallEnvelope[]): 
   );
 }
 
-function hasReadContextEvidence(toolCalls: readonly OraToolCallEnvelope[]): boolean {
+export function hasReadContextEvidence(toolCalls: readonly OraToolCallEnvelope[]): boolean {
   return toolCalls.some((call) =>
     isReadContextTool(call.toolId) &&
     (call.status === "proposed" || call.status === "running" || call.status === "succeeded" || call.status === "repaired")
@@ -1544,6 +1544,14 @@ export async function runNodeRuntimeLoop(
         recommendedAction: policyResult.action,
         reason: "Context probe policy requires reading the referenced artifact/context before other tool execution.",
         level: "context_probe_policy",
+        diagnostic: {
+          recordedAt: now(),
+          toolCallCount: completion.toolAttempts,
+          hasReadContextEvidence: hasReadContextEvidence(deps.toolCalls()),
+          promptExcerpt: input.prompt.slice(0, 200),
+          proposedToolId: toolCall.tool,
+          iteration,
+        },
       }, {
         agentId: params.agentId,
         nodeId: params.nodeId,
