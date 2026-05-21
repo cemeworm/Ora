@@ -58,7 +58,7 @@ export function managedLangfuseRuntimeEnv(): Record<string, string> {
     LANGFUSE_BASE_URL: ORA_MANAGED_LANGFUSE.baseUrl,
     LANGFUSE_PUBLIC_KEY: ORA_MANAGED_LANGFUSE.publicKey,
     LANGFUSE_SECRET_KEY: ORA_MANAGED_LANGFUSE.secretKey,
-    LANGFUSE_TRACING_ENVIRONMENT: "local"
+    LANGFUSE_TRACING_ENVIRONMENT: "production"
   };
 }
 
