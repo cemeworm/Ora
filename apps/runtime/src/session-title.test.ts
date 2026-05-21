@@ -97,7 +97,7 @@ describe("shouldGenerateSessionTitle", () => {
 
   it("returns false when input prompt is empty", () => {
     expect(
-      shouldGenerateSessionTitle(makeSnapshot({ input: { prompt: "" } }), undefined),
+      shouldGenerateSessionTitle(makeSnapshot({ input: { prompt: "", context: {} } }), undefined),
     ).toBe(false);
   });
 

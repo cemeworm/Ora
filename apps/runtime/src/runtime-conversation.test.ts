@@ -19,7 +19,6 @@ describe("runtimeConversationToModelMessages", () => {
         role: "system",
         content: "You are a helpful assistant.",
         createdAt: 1000,
-        runId: "run-1",
       },
     ];
     const result = runtimeConversationToModelMessages(entries);
@@ -32,7 +31,6 @@ describe("runtimeConversationToModelMessages", () => {
         role: "user",
         content: "Hello",
         createdAt: 1000,
-        runId: "run-1",
       },
     ];
     const result = runtimeConversationToModelMessages(entries);
@@ -49,7 +47,6 @@ describe("runtimeConversationToModelMessages", () => {
           { id: "call-1", toolId: "web_search", args: { query: "test" } },
         ],
         createdAt: 1000,
-        runId: "run-1",
       },
     ];
     const result = runtimeConversationToModelMessages(entries);
@@ -71,7 +68,6 @@ describe("runtimeConversationToModelMessages", () => {
           { id: "call-1", providerCallId: "provider-call-1", toolId: "read_file", args: { path: "./foo" } },
         ],
         createdAt: 1000,
-        runId: "run-1",
       },
     ];
     const result = runtimeConversationToModelMessages(entries);
@@ -85,8 +81,8 @@ describe("runtimeConversationToModelMessages", () => {
         content: "Result data",
         toolCallId: "call-1",
         toolId: "web_search",
+        status: "succeeded",
         createdAt: 1000,
-        runId: "run-1",
       },
     ];
     const result = runtimeConversationToModelMessages(entries);
@@ -104,8 +100,8 @@ describe("runtimeConversationToModelMessages", () => {
         toolCallId: "call-2",
         providerCallId: "provider-call-2",
         toolId: "search",
+        status: "succeeded",
         createdAt: 1000,
-        runId: "run-1",
       },
     ];
     const result = runtimeConversationToModelMessages(entries);
@@ -114,9 +110,9 @@ describe("runtimeConversationToModelMessages", () => {
 
   it("converts a mixed conversation in order", () => {
     const entries: RuntimeConversationEntry[] = [
-      { role: "system", content: "Be helpful.", createdAt: 1000, runId: "run-1" },
-      { role: "user", content: "Hi", createdAt: 1001, runId: "run-1" },
-      { role: "assistant", content: "Hello!", toolCalls: [], createdAt: 1002, runId: "run-1" },
+      { role: "system", content: "Be helpful.", createdAt: 1000 },
+      { role: "user", content: "Hi", createdAt: 1001 },
+      { role: "assistant", content: "Hello!", toolCalls: [], createdAt: 1002 },
     ];
     const result = runtimeConversationToModelMessages(entries);
     expect(result).toHaveLength(3);
