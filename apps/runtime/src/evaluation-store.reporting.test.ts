@@ -129,11 +129,16 @@ describe("evaluation store dual reporting", () => {
     expect(report.slices).toEqual(expect.arrayContaining([
       expect.objectContaining({ dimension: "reportingView", value: "legacy_oracle_result" }),
       expect.objectContaining({ dimension: "reportingView", value: "value_aligned_result" }),
+      expect.objectContaining({ dimension: "reportingMembership", value: "explicit_reporting_view" }),
+      expect.objectContaining({ dimension: "reportingMembership", value: "shared_default_view" }),
       expect.objectContaining({ dimension: "contextProbeClass", value: "explicit_artifact_handle" }),
       expect.objectContaining({ dimension: "decisionSurface", value: "read_context" }),
     ]));
 
     const markdown = store.formatReport({ evaluationRunId: runDetail.run.id, format: "markdown" });
+    expect(markdown).toContain("### Reporting Membership");
+    expect(markdown).toContain("Read this section first.");
+    expect(markdown).toContain("| Membership | Cases | Record |");
     expect(markdown).toContain("### Dual Reporting");
     expect(markdown).toContain("Legacy Oracle Result");
     expect(markdown).toContain("Value Aligned Result");

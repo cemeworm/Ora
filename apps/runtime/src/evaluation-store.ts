@@ -3199,6 +3199,7 @@ function sliceEntriesForCaseResult(result: EvaluationCaseResult): Array<[string,
     : inferredDecisionSurfaces(result.expected));
   add("oracleView", metadataValues(metadata, "oracleView"));
   add("reportingView", reportingViewIds(metadata));
+  add("reportingMembership", reportingMembership(metadata));
   add("contextProbeClass", metadataValues(metadata, "contextProbeClass"));
   add("freshnessClass", metadataValues(metadata, "freshnessClass"));
   return entries;
@@ -3225,6 +3226,18 @@ function reportingViewIds(metadata: Record<string, unknown>): string[] {
     return [...new Set(oracleViews)];
   }
   return ["legacy_oracle_result", "value_aligned_result"];
+}
+
+function reportingMembership(metadata: Record<string, unknown>): string[] {
+  const explicitViews = metadataValues(metadata, "reportingViews");
+  if (explicitViews.length > 0) {
+    return ["explicit_reporting_view"];
+  }
+  const oracleViews = metadataValues(metadata, "oracleView");
+  if (oracleViews.length > 0) {
+    return ["explicit_oracle_view"];
+  }
+  return ["shared_default_view"];
 }
 
 function inferredDecisionSurfaces(expected: EvaluationExpected | undefined): string[] {
@@ -5128,6 +5141,27 @@ function csvCell(value: string) {
   return `"${value.replaceAll("\"", "\"\"")}"`;
 }
 
+function titleCaseDimensionValue(value: string): string {
+  return value
+    .split("_")
+    .filter((part) => part.length > 0)
+    .map((part) => `${part[0]?.toUpperCase() ?? ""}${part.slice(1)}`)
+    .join(" ");
+}
+
+function sliceValuesByDimension(
+  report: EvaluationReport,
+  dimension: string,
+): Map<string, Map<string, EvaluationSliceSummary>> {
+  const result = new Map<string, Map<string, EvaluationSliceSummary>>();
+  for (const slice of report.slices.filter((entry) => entry.dimension === dimension)) {
+    const configMap = result.get(slice.value) ?? new Map<string, EvaluationSliceSummary>();
+    configMap.set(slice.configId, slice);
+    result.set(slice.value, configMap);
+  }
+  return result;
+}
+
 function renderReportToMarkdown(report: EvaluationReport): string {
   const lines: string[] = [];
   lines.push(`# Evaluation Report: ${report.evaluationRunId}`);
@@ -5161,9 +5195,38 @@ function renderReportToMarkdown(report: EvaluationReport): string {
   }
   lines.push("");
 
+  const membershipSlices = sliceValuesByDimension(report, "reportingMembership");
+  if (membershipSlices.size > 0) {
+    lines.push("### Reporting Membership");
+    lines.push("");
+    lines.push("Read this section first. It separates explicitly labeled reporting-view cases from shared-default cases so you can see whether dual-reporting aggregates are being diluted by the unlabeled majority.");
+    lines.push("");
+    const configLabels = report.configs.map((config) => config.label);
+    const configIds = report.configs.map((config) => config.id);
+    const showDelta = configIds.length === 2;
+    const header = ["Membership", "Cases", ...configLabels, ...(showDelta ? [`Delta (${configLabels[1]} - ${configLabels[0]})`] : [])];
+    const divider = header.map(() => "------");
+    lines.push(`| ${header.join(" | ")} |`);
+    lines.push(`| ${divider.join(" | ")} |`);
+    for (const [value, configMap] of membershipSlices) {
+      const rows = configIds.map((configId) => configMap.get(configId));
+      const caseCount = rows.find((row) => row)?.caseCount ?? 0;
+      const scoreCells = rows.map((row) => row ? row.overallScore.toFixed(4) : "n/a");
+      const deltaCell = showDelta && rows[0] && rows[1]
+        ? [(rows[1].overallScore - rows[0].overallScore).toFixed(4)]
+        : showDelta ? ["n/a"] : [];
+      lines.push(`| ${titleCaseDimensionValue(value)} | ${caseCount} | ${[...scoreCells, ...deltaCell].join(" | ")} |`);
+    }
+    lines.push("");
+  }
+
   if (sc.reportingViews.length > 0) {
     lines.push("### Dual Reporting");
     lines.push("");
+    if (membershipSlices.size > 0) {
+      lines.push("Use this aggregate view after checking Reporting Membership above. If the explicit bucket and shared-default bucket pull in different directions, the totals here will mostly reflect whichever bucket has more cases.");
+      lines.push("");
+    }
     lines.push(`| View | Config | Score | Pass Rate | Runtime | Cost | Cases |`);
     lines.push(`|------|--------|-------|-----------|---------|------|-------|`);
     for (const view of sc.reportingViews) {
@@ -5177,7 +5240,14 @@ function renderReportToMarkdown(report: EvaluationReport): string {
   if (report.slices.length > 0) {
     lines.push("### Slices");
     lines.push("");
-    const dimensions = [...new Set(report.slices.map((s) => s.dimension))];
+    const dimensionPriority = new Map<string, number>([
+      ["reportingMembership", 0],
+      ["reportingView", 1],
+      ["contextProbeClass", 2],
+      ["freshnessClass", 3],
+    ]);
+    const dimensions = [...new Set(report.slices.map((s) => s.dimension))]
+      .sort((a, b) => (dimensionPriority.get(a) ?? 99) - (dimensionPriority.get(b) ?? 99) || a.localeCompare(b));
     for (const dim of dimensions) {
       lines.push(`**${dim}:**`);
       for (const slice of report.slices.filter((s) => s.dimension === dim)) {

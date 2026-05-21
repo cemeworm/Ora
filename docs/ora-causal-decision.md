@@ -223,16 +223,35 @@ Net Lift 已调整成 **结果优先**，不再主要依赖过程启发式。
 
 Stage 3 现在已经补上了最小 dual reporting 结构：
 
+- `reportingMembership`
+  - 默认解释入口，先把显式标注的 split case（`explicit_reporting_view`）和未标注、会同时进入两条 view 的 shared case（`shared_default_view`）分开看
+  - 主要用途不是替代 `legacy_oracle_result` / `value_aligned_result`，而是先判断 aggregate 是否被 shared default 大盘稀释
 - `EvaluationScorecard.reportingViews`
   - 当前内建两种视角：`legacy_oracle_result` 与 `value_aligned_result`
 - `report.scorecard.slices`
-  - 除了原有 tag / taskType / difficulty，现还会按 `scenario`、`uncertaintyType`、`reportingView`、`contextProbeClass`、`freshnessClass` 等维度聚合
+  - 除了原有 tag / taskType / difficulty，现还会按 `reportingMembership`、`reportingView`、`scenario`、`uncertaintyType`、`contextProbeClass`、`freshnessClass` 等维度聚合
 - `decisionSurface`
   - 如果 dataset metadata 没显式填写，会自动从 `expected.structured.expectedIntervention` 推断，避免为了切片把所有旧 case 全手工重写一遍
 - rollout guard
   - 该结构目前 behind `spec.metadata.evalV2Reporting === true`，便于 Stage 3 单独回滚
 
 当前设计重点不是“同一 case 用两套 scorer 重算两次”，而是让 dataset 能把旧 oracle 更在意的 case 和 value-aligned case 切开看，从而解释为什么某些 rollout 在旧口径和新口径下会出现分歧。
+
+在当前实现里，推荐的阅读顺序是：
+
+1. 先看 `reportingMembership`
+   - 判断显式 split 子集和 shared default 子集是否方向一致
+2. 再看 `legacy_oracle_result` / `value_aligned_result`
+   - 只把它们当作 aggregate 视角，而不是第一层结论
+3. 最后再下钻 `contextProbeClass` / `freshnessClass`
+   - 定位到底是哪类 case 在拉动差异
+
+当前阶段先不默认渲染 `reportingView × reportingMembership` 的完整交叉矩阵。
+
+- Why:
+  - `reportingMembership` 已经能把“aggregate 被 shared default 稀释”这件事说清楚
+  - 直接上交叉矩阵会增加展示复杂度，但不一定增加新的决策信息
+  - 只有在 membership + view 仍不足以解释时，才值得把矩阵提升为默认展示
 
 ### 5.4 failure taxonomy
 

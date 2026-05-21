@@ -122,7 +122,10 @@
       "scenario": "search",
       "uncertaintyType": "fact",
       "baselinePolicy": "direct_answer",
-      "freshnessClass": "pure_info_query"
+      "reportingViews": [
+        "value_aligned_result"
+      ],
+      "freshnessClass": "freshness_sensitive_query"
     }
   },
   {
@@ -218,7 +221,11 @@
     "metadata": {
       "scenario": "analysis",
       "uncertaintyType": "context",
-      "baselinePolicy": "direct_answer"
+      "baselinePolicy": "direct_answer",
+      "reportingViews": [
+        "legacy_oracle_result"
+      ],
+      "contextProbeClass": "implicit_context_file"
     }
   },
   {
@@ -344,7 +351,11 @@
     "metadata": {
       "scenario": "coding",
       "uncertaintyType": "context",
-      "baselinePolicy": "direct_answer"
+      "baselinePolicy": "direct_answer",
+      "reportingViews": [
+        "legacy_oracle_result"
+      ],
+      "contextProbeClass": "implicit_context_file"
     }
   },
   {
@@ -483,7 +494,11 @@
     "metadata": {
       "scenario": "merchant_diagnosis",
       "uncertaintyType": "context",
-      "baselinePolicy": "direct_answer"
+      "baselinePolicy": "direct_answer",
+      "reportingViews": [
+        "legacy_oracle_result"
+      ],
+      "contextProbeClass": "implicit_context_file"
     }
   },
   {
@@ -583,7 +598,11 @@
     "metadata": {
       "scenario": "coding",
       "uncertaintyType": "context",
-      "baselinePolicy": "direct_answer"
+      "baselinePolicy": "direct_answer",
+      "reportingViews": [
+        "legacy_oracle_result"
+      ],
+      "contextProbeClass": "implicit_context_file"
     }
   },
   {
@@ -1139,7 +1158,11 @@
     "metadata": {
       "scenario": "search",
       "uncertaintyType": "fact",
-      "baselinePolicy": "direct_answer"
+      "baselinePolicy": "direct_answer",
+      "reportingViews": [
+        "value_aligned_result"
+      ],
+      "freshnessClass": "freshness_sensitive_query"
     }
   },
   {
@@ -1161,7 +1184,11 @@
     "metadata": {
       "scenario": "search",
       "uncertaintyType": "fact",
-      "baselinePolicy": "direct_answer"
+      "baselinePolicy": "direct_answer",
+      "reportingViews": [
+        "value_aligned_result"
+      ],
+      "freshnessClass": "freshness_sensitive_query"
     }
   },
   {
@@ -1205,7 +1232,11 @@
     "metadata": {
       "scenario": "search",
       "uncertaintyType": "fact",
-      "baselinePolicy": "direct_answer"
+      "baselinePolicy": "direct_answer",
+      "reportingViews": [
+        "value_aligned_result"
+      ],
+      "freshnessClass": "freshness_sensitive_query"
     }
   },
   {
@@ -1469,7 +1500,11 @@
     "metadata": {
       "scenario": "coding",
       "uncertaintyType": "context",
-      "baselinePolicy": "direct_answer"
+      "baselinePolicy": "direct_answer",
+      "reportingViews": [
+        "value_aligned_result"
+      ],
+      "contextProbeClass": "artifact_without_locator"
     }
   },
   {
@@ -1689,7 +1724,11 @@
     "metadata": {
       "scenario": "search",
       "uncertaintyType": "fact",
-      "baselinePolicy": "direct_answer"
+      "baselinePolicy": "direct_answer",
+      "reportingViews": [
+        "value_aligned_result"
+      ],
+      "freshnessClass": "freshness_sensitive_query"
     }
   },
   {
@@ -1711,7 +1750,11 @@
     "metadata": {
       "scenario": "search",
       "uncertaintyType": "fact",
-      "baselinePolicy": "direct_answer"
+      "baselinePolicy": "direct_answer",
+      "reportingViews": [
+        "value_aligned_result"
+      ],
+      "freshnessClass": "freshness_sensitive_query"
     }
   },
   {
@@ -1733,7 +1776,11 @@
     "metadata": {
       "scenario": "search",
       "uncertaintyType": "fact",
-      "baselinePolicy": "direct_answer"
+      "baselinePolicy": "direct_answer",
+      "reportingViews": [
+        "value_aligned_result"
+      ],
+      "freshnessClass": "freshness_sensitive_query"
     }
   },
   {
@@ -1755,7 +1802,11 @@
     "metadata": {
       "scenario": "search",
       "uncertaintyType": "fact",
-      "baselinePolicy": "direct_answer"
+      "baselinePolicy": "direct_answer",
+      "reportingViews": [
+        "value_aligned_result"
+      ],
+      "freshnessClass": "freshness_sensitive_query"
     }
   },
   {
@@ -1843,7 +1894,8 @@
     "metadata": {
       "scenario": "analysis",
       "uncertaintyType": "context",
-      "baselinePolicy": "direct_answer"
+      "baselinePolicy": "direct_answer",
+      "contextProbeClass": "artifact_without_locator"
     }
   },
   {
@@ -2283,7 +2335,11 @@
     "metadata": {
       "scenario": "search",
       "uncertaintyType": "fact",
-      "baselinePolicy": "direct_answer"
+      "baselinePolicy": "direct_answer",
+      "reportingViews": [
+        "value_aligned_result"
+      ],
+      "freshnessClass": "freshness_sensitive_query"
     }
   }
 ]

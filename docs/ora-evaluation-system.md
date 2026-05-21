@@ -2,7 +2,7 @@
 
 本文描述 Ora 的 Evaluation 系统 —— 包括评测数据集管理、Evaluation Compare（A/B 与多配置对比）、结果导向 Net Lift、failure taxonomy，以及评估结果的结构化报告。读完本文，应能理解如何比较两个或多个 evaluation config（如 `record_only` / `advisory` / `enforcing`），以及 verdict 如何从 outcome、过程信号与成本共同推导。
 
-> **最近更新 (2026-05-21)**：新增 Stage 3 dual reporting 基础结构。scorecard/report 现在可以在 `eval_v2_reporting` 开关下同时展示 `legacy_oracle_result` 与 `value_aligned_result` 两种视角，并按 `reportingView`、`contextProbeClass`、`freshnessClass` 等切片解释旧/新口径冲突。
+> **最近更新 (2026-05-21)**：新增 Stage 3 dual reporting 基础结构。scorecard/report 现在可以在 `eval_v2_reporting` 开关下同时展示 `legacy_oracle_result` 与 `value_aligned_result` 两种视角，并按 `reportingMembership`、`reportingView`、`contextProbeClass`、`freshnessClass` 等切片解释旧/新口径冲突。其中 `reportingMembership` 已提升为默认解释入口，用于先拆开显式 split 子集与 shared-default 大盘。
 
 ## 阅读地图
 
@@ -312,6 +312,8 @@ three-way 不会强行产出一个“永远唯一正确”的模式，而是输�
 ### 7.3 JSON 输出
 
 `formatComparisonReport(report, "json")` 输出完整的 JSON 序列化结果，包含所有原始数据和计算中间值。
+
+这类 JSON 更适合本地排查、切片复核和程序化分析；repo 内 `evaluation/reports/` 默认只归档面向人工阅读的 markdown 报告，不要求同步保存 `.json` 副本。
 
 ## 8. Failure Taxonomy 与常见边界
 
