@@ -1439,12 +1439,18 @@ export function mergeRunStreamSnapshot(
       ? [...merged.events, ...stream.events]
       : mergeEventsBySeq(merged.events, stream.events);
     const planList = mergeStreamPlanListUpdates(merged, stream);
-    return normalizeDesktopSnapshot(mergeStreamLatency(normalizeStateSnapshot({
+    const agentMessages = mergeStreamAgentMessages(merged, stream);
+    const childSessions = mergeStreamChildSessions(merged, stream);
+    const parentCoordination = mergeStreamParentCoordination(merged, stream);
+    return normalizeDesktopSnapshot(mergeStreamLatency({
       ...merged,
       planList,
+      agentMessages,
+      childSessions,
+      parentCoordination,
       events,
       updatedAt: stream.events.at(-1)?.createdAt ?? merged.updatedAt,
-    }), stream));
+    }, stream));
   }
   if (!snapshot || snapshot.runId !== stream.runId) {
     return snapshot;
@@ -1459,8 +1465,10 @@ export function mergeRunStreamSnapshot(
   );
   const planList = mergeStreamPlanListUpdates(snapshot, stream);
   const agentMessages = mergeStreamAgentMessages(snapshot, stream);
+  const childSessions = mergeStreamChildSessions(snapshot, stream);
+  const parentCoordination = mergeStreamParentCoordination(snapshot, stream);
   const activeAgents = mergeStreamActiveAgents(snapshot, stream);
-  return normalizeDesktopSnapshot(mergeStreamLatency(normalizeStateSnapshot({
+  return normalizeDesktopSnapshot(mergeStreamLatency({
     ...snapshot,
     status: streamRunStatus(stream, snapshot) ?? snapshot.status,
     planList,
@@ -1468,10 +1476,12 @@ export function mergeRunStreamSnapshot(
     pendingApprovals: merged.pendingApprovals,
     pendingClarifications,
     agentMessages,
+    childSessions,
+    parentCoordination,
     activeAgents,
     events,
     updatedAt: stream.events.at(-1)?.createdAt ?? snapshot.updatedAt,
-  }), stream));
+  }, stream));
 }
 
 const PRESERVED_SNAPSHOTS_MAX = 20;
@@ -1889,6 +1899,23 @@ function mergeStreamAgentMessages(
     (left, right) =>
       left.createdAt - right.createdAt || left.id.localeCompare(right.id),
   );
+}
+
+function mergeStreamChildSessions(
+  snapshot: OraStateSnapshot,
+  stream: OraRunEventStream,
+): OraStateSnapshot["childSessions"] {
+  return mergeChildSessions(
+    snapshot.childSessions,
+    childSessionsFromEvents(stream.events),
+  );
+}
+
+function mergeStreamParentCoordination(
+  snapshot: OraStateSnapshot,
+  stream: OraRunEventStream,
+): OraStateSnapshot["parentCoordination"] | undefined {
+  return parentCoordinationFromEvents(stream.events) ?? snapshot.parentCoordination;
 }
 
 function mergeStreamActiveAgents(

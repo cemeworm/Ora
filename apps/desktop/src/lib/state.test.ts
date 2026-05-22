@@ -2254,6 +2254,105 @@ describe("desktop workbench state", () => {
     });
   });
 
+  it("incrementally merges event-only stream projections without dropping existing state", () => {
+    const createdAt = 1_714_000_000_000;
+    const existingMessage = debateTranscriptMessage({
+      id: "run-overlay-incremental:agent-message:0",
+      sequence: 0,
+      stance: "affirmative",
+      speakerLabel: "正方主辩",
+      content: "Opening argument.",
+      createdAt,
+      runId: "run-overlay-incremental",
+    });
+    const nextMessage = debateTranscriptMessage({
+      id: "run-overlay-incremental:agent-message:1",
+      sequence: 1,
+      stance: "negative",
+      speakerLabel: "反方主辩",
+      content: "Opening response.",
+      createdAt: createdAt + 2,
+      runId: "run-overlay-incremental",
+    });
+    const snapshot = testSnapshot({
+      runId: "run-overlay-incremental",
+      updatedAt: createdAt,
+      agentMessages: [existingMessage],
+      childSessions: [{
+        id: "run-overlay-incremental:ora-sub-1",
+        agentId: "ora-sub-1",
+        label: "Researcher",
+        sessionClass: "temporary_spawn",
+        status: "queued",
+        startedAt: createdAt,
+        updatedAt: createdAt,
+        artifactIds: [],
+        recoveryAttemptCount: 0,
+      }],
+      parentCoordination: {
+        phase: "waiting_on_required_children",
+        activeChildIds: ["run-overlay-incremental:ora-sub-1"],
+        waitingChildIds: ["run-overlay-incremental:ora-sub-1"],
+        blockedByChildIds: [],
+        stalledChildIds: [],
+        recoverableChildIds: [],
+        partialResultChildIds: [],
+        updatedAt: createdAt,
+      },
+    });
+    const stream: OraRunEventStream = {
+      runId: "run-overlay-incremental",
+      fromSeq: 1,
+      nextSeq: 3,
+      status: "running",
+      events: [
+        {
+          id: "run-overlay-incremental:event:1",
+          runId: "run-overlay-incremental",
+          seq: 1,
+          type: "child_session.updated",
+          createdAt: createdAt + 1,
+          payload: {
+            childSession: {
+              id: "run-overlay-incremental:ora-sub-1",
+              agentId: "ora-sub-1",
+              label: "Researcher",
+              sessionClass: "temporary_spawn",
+              status: "running",
+              startedAt: createdAt,
+              updatedAt: createdAt + 1,
+            },
+          },
+        },
+        {
+          id: "run-overlay-incremental:event:2",
+          runId: "run-overlay-incremental",
+          seq: 2,
+          type: "agent.message",
+          createdAt: createdAt + 2,
+          pattern: "orchestrator_subagent",
+          agentId: nextMessage.fromAgentId,
+          nodeId: nextMessage.nodeId ?? nextMessage.fromAgentId,
+          payload: { message: nextMessage },
+        },
+      ] as unknown as OraRunEventStream["events"],
+    };
+
+    const merged = mergeRunStreamSnapshot(snapshot, stream);
+
+    expect(merged?.agentMessages.map((message) => message.content)).toEqual([
+      "Opening argument.",
+      "Opening response.",
+    ]);
+    expect(merged?.childSessions).toMatchObject([
+      { agentId: "ora-sub-1", status: "running", label: "Researcher" },
+    ]);
+    expect(merged?.parentCoordination).toMatchObject({
+      phase: "waiting_on_required_children",
+      waitingChildIds: ["run-overlay-incremental:ora-sub-1"],
+    });
+  });
+
   it("keeps child session projection when an attached stream snapshot omits collaboration fields", () => {
     const existing = testSnapshot({
       runId: "run-overlay-snapshot",
