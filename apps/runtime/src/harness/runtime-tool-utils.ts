@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import type { FileAccessScope, HostFilesystemCapability, HostFilesystemGrant, HostFilesystemState } from "@cemeworm/shared";
 
 const workspacePackageAliasCache = new Map<string, Map<string, string>>();
 
@@ -170,6 +171,218 @@ function parseWorkspacePackageAlias(requestedPath: string): { packageName: strin
 export function relativeWorkspacePath(rootPath: string, absolutePath: string): string {
   const relative = path.relative(rootPath, absolutePath);
   return relative || ".";
+}
+
+export function normalizeHostFilesystemState(state: HostFilesystemState | undefined): HostFilesystemState {
+  if (!state) {
+    return {
+      grants: [],
+      allowDynamicGrant: false,
+    };
+  }
+  const grants = new Map<string, HostFilesystemGrant>();
+  for (const grant of state.grants ?? []) {
+    if (!grant || typeof grant.id !== "string" || !grant.id.trim()) {
+      continue;
+    }
+    if (typeof grant.rootPath !== "string" || !grant.rootPath.trim() || !path.isAbsolute(grant.rootPath)) {
+      continue;
+    }
+    grants.set(grant.id, {
+      ...grant,
+      id: grant.id.trim(),
+      rootPath: path.resolve(grant.rootPath),
+      label: grant.label.trim(),
+      capabilities: [...new Set(grant.capabilities ?? [])],
+    });
+  }
+  return {
+    grants: [...grants.values()],
+    allowDynamicGrant: state.allowDynamicGrant === true,
+  };
+}
+
+export function hasHostFilesystemAccess(state: HostFilesystemState | undefined): boolean {
+  return normalizeHostFilesystemState(state).grants.length > 0;
+}
+
+export function hasHostFilesystemCapability(
+  state: HostFilesystemState | undefined,
+  capability: HostFilesystemCapability,
+): boolean {
+  return normalizeHostFilesystemState(state).grants.some((grant) => (grant.capabilities ?? []).includes(capability));
+}
+
+export interface ResolvedFileToolTarget {
+  scope: FileAccessScope;
+  grantId?: string;
+  absolutePath: string;
+  displayPath: string;
+  workspaceRoot?: string;
+  anchorRootPath: string;
+  scopeLabel: "project" | "temporary_directory" | "approved_host_directory";
+}
+
+export function resolveFileToolTarget(params: {
+  workspace: unknown;
+  hostFilesystem?: HostFilesystemState;
+  args: Record<string, unknown>;
+  capability: HostFilesystemCapability;
+}): ResolvedFileToolTarget {
+  const scope = fileAccessScopeFromArgs(params.args);
+  if (scope === "workspace") {
+    const rootPath = requireWorkspaceRoot(params.workspace);
+    const absolutePath = resolveWorkspacePath(rootPath, params.args.path);
+    return {
+      scope,
+      absolutePath,
+      displayPath: relativeWorkspacePath(rootPath, absolutePath),
+      workspaceRoot: rootPath,
+      anchorRootPath: rootPath,
+      scopeLabel: "project",
+    };
+  }
+
+  const hostState = normalizeHostFilesystemState(params.hostFilesystem);
+  const grant = scope === "host_grant"
+    ? requireHostGrant(hostState, params.args.grantId)
+    : undefined;
+  const requestedPath = defaultHostScopePath(scope, grant, params.args.path);
+  const resolvedHostPath = resolveHostPath(
+    scope,
+    requestedPath,
+    hostState,
+    params.capability,
+    grant,
+  );
+  return {
+    scope,
+    grantId: grant?.id,
+    absolutePath: resolvedHostPath.absolutePath,
+    displayPath: resolvedHostPath.absolutePath,
+    anchorRootPath: resolvedHostPath.anchorRootPath,
+    scopeLabel: scope === "host_tmp" ? "temporary_directory" : "approved_host_directory",
+  };
+}
+
+function fileAccessScopeFromArgs(args: Record<string, unknown>): FileAccessScope {
+  return args.scope === "host_tmp" || args.scope === "host_grant" ? args.scope : "workspace";
+}
+
+function defaultHostScopePath(
+  scope: Exclude<FileAccessScope, "workspace">,
+  grant: HostFilesystemGrant | undefined,
+  requestedPath: unknown,
+): unknown {
+  if (requestedPath !== undefined) {
+    return requestedPath;
+  }
+  if (scope === "host_tmp") {
+    return "/tmp";
+  }
+  return grant?.rootPath;
+}
+
+function requireHostGrant(state: HostFilesystemState, grantId: unknown): HostFilesystemGrant {
+  if (typeof grantId !== "string" || !grantId.trim()) {
+    throw new Error("Host file grant is required for this path.");
+  }
+  const grant = state.grants.find((candidate) => candidate.id === grantId.trim());
+  if (!grant) {
+    throw new Error("Host file grant is required for this path.");
+  }
+  return grant;
+}
+
+function resolveHostPath(
+  scope: Exclude<FileAccessScope, "workspace">,
+  requestedPath: unknown,
+  state: HostFilesystemState,
+  capability: HostFilesystemCapability,
+  grant?: HostFilesystemGrant,
+): { absolutePath: string; anchorRootPath: string } {
+  const absolutePath = requireAbsoluteHostPath(requestedPath);
+  const approvedRoots = scope === "host_tmp"
+    ? state.grants.filter((candidate) => candidate.source === "system_tmp")
+    : grant
+      ? [grant]
+      : [];
+  const approvedGrant = approvedRoots.find((candidate) => {
+    if (!grantAllowsCapability(candidate, capability)) {
+      return false;
+    }
+    return pathStaysInsideRoot(candidate.rootPath, absolutePath);
+  });
+
+  if (!approvedGrant) {
+    if (scope === "host_grant" && grant && !grantAllowsCapability(grant, capability)) {
+      throw new Error(hostCapabilityDeniedMessage(capability));
+    }
+    if (scope === "host_grant" && grant) {
+      throw new Error("Host file path must stay inside the approved grant root.");
+    }
+    if (scope === "host_tmp") {
+      throw new Error("Host file path must stay inside the approved grant root.");
+    }
+    if (state.allowDynamicGrant) {
+      throw new Error("Host file grant is required for this path.");
+    }
+    throw new Error("Host file grant is required for this path.");
+  }
+
+  return {
+    absolutePath,
+    anchorRootPath: approvedGrant.rootPath,
+  };
+}
+
+function hostCapabilityDeniedMessage(capability: HostFilesystemCapability): string {
+  return capability === "write" || capability === "patch"
+    ? "Host file grant does not allow write access."
+    : "Host file grant does not allow this operation.";
+}
+
+function requireAbsoluteHostPath(requestedPath: unknown): string {
+  if (typeof requestedPath !== "string" || !requestedPath.trim()) {
+    throw new Error("Host file scope requires an absolute path.");
+  }
+  const absolutePath = path.resolve(requestedPath.trim());
+  if (!path.isAbsolute(absolutePath)) {
+    throw new Error("Host file scope requires an absolute path.");
+  }
+  return absolutePath;
+}
+
+function grantAllowsCapability(
+  grant: HostFilesystemGrant,
+  capability: HostFilesystemCapability,
+): boolean {
+  return (grant.capabilities ?? []).includes(capability);
+}
+
+function pathStaysInsideRoot(rootPath: string, absolutePath: string): boolean {
+  const canonicalRoot = canonicalizePathForContainment(rootPath);
+  const canonicalTarget = canonicalizePathForContainment(absolutePath);
+  const relative = path.relative(canonicalRoot, canonicalTarget);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function canonicalizePathForContainment(targetPath: string): string {
+  const missingSegments: string[] = [];
+  let current = path.resolve(targetPath);
+  while (!fs.existsSync(current)) {
+    const parent = path.dirname(current);
+    if (parent === current) {
+      return current;
+    }
+    missingSegments.unshift(path.basename(current));
+    current = parent;
+  }
+  let canonical = fs.realpathSync.native(current);
+  for (const segment of missingSegments) {
+    canonical = path.join(canonical, segment);
+  }
+  return path.resolve(canonical);
 }
 
 export function parseHttpUrl(value: unknown, toolName: string): string {

@@ -6,8 +6,8 @@ import type { RuntimeToolResultPreview } from "./runtime-tool-definition-v2.js";
 import {
   readPositiveInt,
   relativeWorkspacePath,
-  requireWorkspaceRoot,
-  resolveWorkspacePath,
+  resolveFileToolTarget,
+  type ResolvedFileToolTarget,
 } from "./runtime-tool-utils.js";
 import { approvalRequestLanguage, stringArg } from "./runtime-tool-approval.js";
 import { withWorkspaceFileMutationQueue } from "./runtime-file-mutation-queue.js";
@@ -36,25 +36,25 @@ export function fileToolRuntimeFields(toolId: string): Partial<RuntimeToolDefini
     case "file.read":
       return {
         promptExample: "{\"tool\":\"file.read\",\"args\":{\"path\":\"relative/path.ts\"}}",
-        execute: (args, context) => ({ output: readWorkspaceFile(requireWorkspaceRoot(context.workspace), args, context.limits) }),
+        execute: (args, context) => ({ output: readLocalFile(resolveFileToolTarget({ workspace: context.workspace, hostFilesystem: context.hostFilesystem, args, capability: "read" }), args, context.limits) }),
         resultPreview: (result) => fileReadResultPreview((result as { output: unknown }).output),
       };
     case "file.list":
       return {
         promptExample: "{\"tool\":\"file.list\",\"args\":{\"path\":\".\"}}",
-        execute: (args, context) => ({ output: listWorkspaceFiles(requireWorkspaceRoot(context.workspace), args, context.limits) }),
+        execute: (args, context) => ({ output: listLocalFiles(resolveFileToolTarget({ workspace: context.workspace, hostFilesystem: context.hostFilesystem, args: { ...args, path: args.path ?? "." }, capability: "list" }), args, context.limits) }),
         resultPreview: (result) => fileListResultPreview((result as { output: unknown }).output),
       };
     case "file.glob":
       return {
         promptExample: "{\"tool\":\"file.glob\",\"args\":{\"pattern\":\"**/*.ts\"}}",
-        execute: (args, context) => ({ output: globWorkspaceFiles(requireWorkspaceRoot(context.workspace), args, context.limits) }),
+        execute: (args, context) => ({ output: globLocalFiles(resolveFileToolTarget({ workspace: context.workspace, hostFilesystem: context.hostFilesystem, args: { ...args, path: args.path ?? "." }, capability: "search" }), args, context.limits) }),
         resultPreview: (result) => fileGlobResultPreview((result as { output: unknown }).output),
       };
     case "file.grep":
       return {
         promptExample: "{\"tool\":\"file.grep\",\"args\":{\"pattern\":\"functionName\",\"include\":\"**/*.ts\"}}",
-        execute: (args, context) => ({ output: grepWorkspaceFiles(requireWorkspaceRoot(context.workspace), args, context.limits) }),
+        execute: (args, context) => ({ output: grepLocalFiles(resolveFileToolTarget({ workspace: context.workspace, hostFilesystem: context.hostFilesystem, args: { ...args, path: args.path ?? "." }, capability: "search" }), args, context.limits) }),
         resultPreview: (result) => fileGrepResultPreview((result as { output: unknown }).output),
       };
     case "file.write":
@@ -63,7 +63,7 @@ export function fileToolRuntimeFields(toolId: string): Partial<RuntimeToolDefini
         requiresApprovalCopy: true,
         actionRiskLevel: () => "high",
         approvalRequest: fileWriteApprovalRequest,
-        execute: (args, context) => writeWorkspaceFile(requireWorkspaceRoot(context.workspace), args, context.limits),
+        execute: (args, context) => writeLocalFile(resolveFileToolTarget({ workspace: context.workspace, hostFilesystem: context.hostFilesystem, args, capability: "write" }), args, context.limits),
         resultPreview: (result, args) => fileWriteResultPreview((result as { output: unknown; fileChange?: RuntimeFileChangeMetadata }).fileChange, args),
       };
     case "file.patch":
@@ -72,7 +72,7 @@ export function fileToolRuntimeFields(toolId: string): Partial<RuntimeToolDefini
         requiresApprovalCopy: true,
         actionRiskLevel: () => "high",
         approvalRequest: filePatchApprovalRequest,
-        execute: (args, context) => patchWorkspaceFile(requireWorkspaceRoot(context.workspace), args, context.limits),
+        execute: (args, context) => patchLocalFile(resolveFileToolTarget({ workspace: context.workspace, hostFilesystem: context.hostFilesystem, args, capability: "patch" }), args, context.limits),
         resultPreview: (result, args) => filePatchResultPreview((result as { output: unknown; fileChange?: RuntimeFileChangeMetadata }).fileChange, args),
       };
     case "file.apply_patch":
@@ -84,11 +84,11 @@ export function fileToolRuntimeFields(toolId: string): Partial<RuntimeToolDefini
 
 function fileWriteApprovalRequest(args: Record<string, unknown>, context: { userPrompt?: string }) {
   const zh = approvalRequestLanguage({ userPrompt: context.userPrompt }) === "zh";
-  const target = stringArg(args, "path", zh ? "目标文件" : "the target file");
+  const target = approvalTargetLabel(args, zh);
   return zh
     ? {
         title: "需要你确认写入文件",
-        summary: `我准备在项目中写入“${target}”。`,
+        summary: `我准备写入“${target}”。`,
         whatWillChange: "该文件内容会被创建或覆盖。",
         whyNeeded: "这是完成你要求的本地文件变更所必需的步骤。",
         riskNote: "写入文件会改变你的项目内容，请确认路径和变更意图正确。",
@@ -106,11 +106,11 @@ function fileWriteApprovalRequest(args: Record<string, unknown>, context: { user
 
 function filePatchApprovalRequest(args: Record<string, unknown>, context: { userPrompt?: string }) {
   const zh = approvalRequestLanguage({ userPrompt: context.userPrompt }) === "zh";
-  const target = stringArg(args, "path", zh ? "目标文件" : "the target file");
+  const target = approvalTargetLabel(args, zh);
   return zh
     ? {
         title: "需要你确认修改文件",
-        summary: `我准备修改项目中的“${target}”。`,
+        summary: `我准备修改“${target}”。`,
         whatWillChange: "文件中的一段内容会被替换。",
         whyNeeded: "这是完成你要求的本地文件修改所必需的步骤。",
         riskNote: "修改文件会改变你的项目内容，请确认目标文件正确。",
@@ -126,8 +126,29 @@ function filePatchApprovalRequest(args: Record<string, unknown>, context: { user
       };
 }
 
-function readWorkspaceFile(rootPath: string, args: Record<string, unknown>, limits: ResolvedToolLimits) {
-  const absolutePath = resolveWorkspacePath(rootPath, args.path);
+function approvalTargetLabel(args: Record<string, unknown>, zh: boolean): string {
+  const target = stringArg(args, "path", zh ? "目标文件" : "the target file");
+  const scope = typeof args.scope === "string" ? args.scope : "workspace";
+  if (zh) {
+    if (scope === "host_tmp") {
+      return `临时目录中的“${target}”`;
+    }
+    if (scope === "host_grant") {
+      return `宿主授权目录中的“${target}”`;
+    }
+    return `项目中的“${target}”`;
+  }
+  if (scope === "host_tmp") {
+    return `"${target}" in the temporary directory`;
+  }
+  if (scope === "host_grant") {
+    return `"${target}" in the approved host directory`;
+  }
+  return `"${target}" in the project`;
+}
+
+function readLocalFile(target: ResolvedFileToolTarget, args: Record<string, unknown>, limits: ResolvedToolLimits) {
+  const absolutePath = target.absolutePath;
   const stat = fs.statSync(absolutePath);
   if (!stat.isFile()) {
     throw new Error("file.read target must be a file.");
@@ -137,7 +158,8 @@ function readWorkspaceFile(rootPath: string, args: Record<string, unknown>, limi
   }
   if (isProbablyBinaryFile(absolutePath)) {
     return {
-      path: relativeWorkspacePath(rootPath, absolutePath),
+      ...targetScopeOutput(target),
+      path: target.displayPath,
       sizeBytes: stat.size,
       binary: true,
       content: "",
@@ -148,7 +170,8 @@ function readWorkspaceFile(rootPath: string, args: Record<string, unknown>, limi
   const range = readLineRange(content, args);
   if (range) {
     return {
-      path: relativeWorkspacePath(rootPath, absolutePath),
+      ...targetScopeOutput(target),
+      path: target.displayPath,
       sizeBytes: stat.size,
       content: range.content,
       offset: range.offset,
@@ -159,7 +182,8 @@ function readWorkspaceFile(rootPath: string, args: Record<string, unknown>, limi
     };
   }
   return {
-    path: relativeWorkspacePath(rootPath, absolutePath),
+    ...targetScopeOutput(target),
+    path: target.displayPath,
     sizeBytes: stat.size,
     content,
   };
@@ -219,15 +243,16 @@ function readPositiveIntLike(value: unknown, fallback: number): number {
   return fallback;
 }
 
-function listWorkspaceFiles(rootPath: string, args: Record<string, unknown>, limits: ResolvedToolLimits) {
-  const absolutePath = resolveWorkspacePath(rootPath, args.path ?? ".");
+function listLocalFiles(target: ResolvedFileToolTarget, args: Record<string, unknown>, limits: ResolvedToolLimits) {
+  const absolutePath = target.absolutePath;
   let stat: fs.Stats;
   try {
     stat = fs.statSync(absolutePath);
   } catch (error) {
     if (isErrnoCode(error, "ENOENT")) {
       return {
-        path: relativeWorkspacePath(rootPath, absolutePath),
+        ...targetScopeOutput(target),
+        path: target.displayPath,
         entries: [],
         missing: true,
       };
@@ -244,13 +269,14 @@ function listWorkspaceFiles(rootPath: string, args: Record<string, unknown>, lim
       const entryStat = fs.statSync(entryPath);
       return {
         name: entry.name,
-        path: relativeWorkspacePath(rootPath, entryPath),
+        path: displayPathFor(target, entryPath),
         kind: entry.isDirectory() ? "directory" : entry.isFile() ? "file" : "other",
         sizeBytes: entry.isFile() ? entryStat.size : undefined,
       };
     });
   return {
-    path: relativeWorkspacePath(rootPath, absolutePath),
+    ...targetScopeOutput(target),
+    path: target.displayPath,
     entries,
   };
 }
@@ -259,19 +285,19 @@ function isErrnoCode(error: unknown, code: string): error is NodeJS.ErrnoExcepti
   return error instanceof Error && (error as NodeJS.ErrnoException).code === code;
 }
 
-function createWorkspaceSearchMatcher(rootPath: string, basePath: string, rawPattern: string): (filePath: string) => boolean {
+function createSearchMatcher(anchorRootPath: string, basePath: string, rawPattern: string): (filePath: string) => boolean {
   const matcher = globToRegExp(rawPattern);
-  if (!shouldCompatMatchScopedBarePattern(rootPath, basePath, rawPattern)) {
-    return (filePath) => matcher.test(normalizeSearchPath(relativeWorkspacePath(rootPath, filePath)));
+  if (!shouldCompatMatchScopedBarePattern(anchorRootPath, basePath, rawPattern)) {
+    return (filePath) => matcher.test(normalizeSearchPath(relativeWorkspacePath(anchorRootPath, filePath)));
   }
   return (filePath) => {
-    const workspaceRelative = normalizeSearchPath(relativeWorkspacePath(rootPath, filePath));
-    return matcher.test(workspaceRelative) || matcher.test(path.posix.basename(workspaceRelative));
+    const relativePath = normalizeSearchPath(relativeWorkspacePath(anchorRootPath, filePath));
+    return matcher.test(relativePath) || matcher.test(path.posix.basename(relativePath));
   };
 }
 
-function shouldCompatMatchScopedBarePattern(rootPath: string, basePath: string, rawPattern: string): boolean {
-  const relativeBasePath = normalizeSearchPath(relativeWorkspacePath(rootPath, basePath));
+function shouldCompatMatchScopedBarePattern(anchorRootPath: string, basePath: string, rawPattern: string): boolean {
+  const relativeBasePath = normalizeSearchPath(relativeWorkspacePath(anchorRootPath, basePath));
   if (relativeBasePath === ".") {
     return false;
   }
@@ -283,67 +309,75 @@ function normalizeSearchPath(value: string): string {
   return value.split(path.sep).join("/");
 }
 
-function globWorkspaceFiles(rootPath: string, args: Record<string, unknown>, limits: ResolvedToolLimits) {
+function globLocalFiles(target: ResolvedFileToolTarget, args: Record<string, unknown>, limits: ResolvedToolLimits) {
   const pattern = typeof args.pattern === "string" && args.pattern.trim() ? args.pattern : undefined;
   if (!pattern) {
     throw new Error("file.glob requires a non-empty pattern.");
   }
-  const basePath = resolveWorkspacePath(rootPath, args.path ?? ".");
-  const scopePath = relativeWorkspacePath(rootPath, basePath);
-  const matcher = createWorkspaceSearchMatcher(rootPath, basePath, pattern);
+  const basePath = target.absolutePath;
+  const scopePath = target.displayPath;
+  const matcher = createSearchMatcher(target.anchorRootPath, basePath, pattern);
   const limit = readPositiveInt(args.limit, limits.fileListMaxEntries, limits.fileListMaxEntries);
-  const explicitTarget = hasExplicitSearchTarget(rootPath, basePath, pattern, args);
+  const explicitTarget = hasExplicitSearchTarget(target.anchorRootPath, basePath, pattern, args);
   const skipped: SkippedWorkspaceFile[] = [];
   const matches: string[] = [];
-  for (const filePath of walkFiles(rootPath, basePath, limits.fileSearchMaxFiles, { includeDefaultExcluded: explicitTarget, skipped })) {
-    const relative = relativeWorkspacePath(rootPath, filePath);
+  for (const filePath of walkFiles(target.anchorRootPath, basePath, limits.fileSearchMaxFiles, {
+    includeDefaultExcluded: explicitTarget,
+    skipped,
+    displayPath: (absolutePath) => displayPathFor(target, absolutePath),
+  })) {
+    const relative = relativeWorkspacePath(target.anchorRootPath, filePath);
     if (!explicitTarget && isDefaultExcludedFile(relative)) {
-      skipped.push({ path: relative, reason: "default_excluded" });
+      skipped.push({ path: displayPathFor(target, filePath), reason: "default_excluded" });
       continue;
     }
     if (matcher(filePath)) {
-      matches.push(relative);
+      matches.push(displayPathFor(target, filePath));
       if (matches.length >= limit) {
         break;
       }
     }
   }
-  return { path: scopePath, pattern, matches, skipped };
+  return { ...targetScopeOutput(target), path: scopePath, pattern, matches, skipped };
 }
 
-function grepWorkspaceFiles(rootPath: string, args: Record<string, unknown>, limits: ResolvedToolLimits) {
+function grepLocalFiles(target: ResolvedFileToolTarget, args: Record<string, unknown>, limits: ResolvedToolLimits) {
   const pattern = typeof args.pattern === "string" && args.pattern.trim() ? args.pattern : undefined;
   if (!pattern) {
     throw new Error("file.grep requires a non-empty pattern.");
   }
-  const basePath = resolveWorkspacePath(rootPath, args.path ?? ".");
-  const scopePath = relativeWorkspacePath(rootPath, basePath);
+  const basePath = target.absolutePath;
+  const scopePath = target.displayPath;
   const include = typeof args.include === "string" && args.include.trim()
-    ? createWorkspaceSearchMatcher(rootPath, basePath, args.include)
+    ? createSearchMatcher(target.anchorRootPath, basePath, args.include)
     : undefined;
   const caseSensitive = args.caseSensitive !== false;
   const needle = caseSensitive ? pattern : pattern.toLowerCase();
   const limit = readPositiveInt(args.limit, limits.fileSearchMaxMatches, limits.fileSearchMaxMatches);
-  const explicitTarget = hasExplicitSearchTarget(rootPath, basePath, typeof args.include === "string" ? args.include : undefined, args);
+  const explicitTarget = hasExplicitSearchTarget(target.anchorRootPath, basePath, typeof args.include === "string" ? args.include : undefined, args);
   const matches: Array<{ path: string; line: number; text: string }> = [];
   const skipped: SkippedWorkspaceFile[] = [];
 
-  for (const filePath of walkFiles(rootPath, basePath, limits.fileSearchMaxFiles, { includeDefaultExcluded: explicitTarget, skipped })) {
-    const relative = relativeWorkspacePath(rootPath, filePath);
+  for (const filePath of walkFiles(target.anchorRootPath, basePath, limits.fileSearchMaxFiles, {
+    includeDefaultExcluded: explicitTarget,
+    skipped,
+    displayPath: (absolutePath) => displayPathFor(target, absolutePath),
+  })) {
+    const relative = relativeWorkspacePath(target.anchorRootPath, filePath);
     if (include && !include(filePath)) {
       continue;
     }
     if (!explicitTarget && isDefaultExcludedFile(relative)) {
-      skipped.push({ path: relative, reason: "default_excluded" });
+      skipped.push({ path: displayPathFor(target, filePath), reason: "default_excluded" });
       continue;
     }
     const stat = fs.statSync(filePath);
     if (stat.size > limits.fileSearchMaxBytes) {
-      skipped.push({ path: relative, reason: "too_large", sizeBytes: stat.size });
+      skipped.push({ path: displayPathFor(target, filePath), reason: "too_large", sizeBytes: stat.size });
       continue;
     }
     if (isProbablyBinaryFile(filePath)) {
-      skipped.push({ path: relative, reason: "binary", sizeBytes: stat.size });
+      skipped.push({ path: displayPathFor(target, filePath), reason: "binary", sizeBytes: stat.size });
       continue;
     }
     const lines = fs.readFileSync(filePath, "utf8").split(/\r?\n/);
@@ -351,17 +385,17 @@ function grepWorkspaceFiles(rootPath: string, args: Record<string, unknown>, lim
       const line = lines[index]!;
       const haystack = caseSensitive ? line : line.toLowerCase();
       if (haystack.includes(needle)) {
-        matches.push({ path: relative, line: index + 1, text: line });
+        matches.push({ path: displayPathFor(target, filePath), line: index + 1, text: line });
         if (matches.length >= limit) {
-          return { path: scopePath, pattern, matches, truncated: true, skipped };
+          return { ...targetScopeOutput(target), path: scopePath, pattern, matches, truncated: true, skipped };
         }
       }
     }
   }
-  return { path: scopePath, pattern, matches, truncated: false, skipped };
+  return { ...targetScopeOutput(target), path: scopePath, pattern, matches, truncated: false, skipped };
 }
 
-async function writeWorkspaceFile(rootPath: string, args: Record<string, unknown>, limits: ResolvedToolLimits) {
+async function writeLocalFile(target: ResolvedFileToolTarget, args: Record<string, unknown>, limits: ResolvedToolLimits) {
   if (typeof args.content !== "string") {
     throw new Error("file.write requires string content.");
   }
@@ -370,14 +404,15 @@ async function writeWorkspaceFile(rootPath: string, args: Record<string, unknown
   if (sizeBytes > limits.fileWriteMaxBytes) {
     throw new Error(`file.write content is too large (${sizeBytes} bytes).`);
   }
-  const absolutePath = resolveWorkspacePath(rootPath, args.path);
+  const absolutePath = target.absolutePath;
   return withWorkspaceFileMutationQueue(absolutePath, () => {
     const existed = fs.existsSync(absolutePath);
     const beforeContent = existed ? fs.readFileSync(absolutePath, "utf8") : "";
     fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
     fs.writeFileSync(absolutePath, content, "utf8");
     const output = {
-      path: relativeWorkspacePath(rootPath, absolutePath),
+      ...targetScopeOutput(target),
+      path: target.displayPath,
       sizeBytes,
     };
     return {
@@ -394,9 +429,9 @@ async function writeWorkspaceFile(rootPath: string, args: Record<string, unknown
   });
 }
 
-async function patchWorkspaceFile(rootPath: string, args: Record<string, unknown>, limits: ResolvedToolLimits) {
+async function patchLocalFile(target: ResolvedFileToolTarget, args: Record<string, unknown>, limits: ResolvedToolLimits) {
   const edits = parsePatchEdits(args);
-  const absolutePath = resolveWorkspacePath(rootPath, args.path);
+  const absolutePath = target.absolutePath;
   return withWorkspaceFileMutationQueue(absolutePath, () => {
     const stat = fs.statSync(absolutePath);
     if (!stat.isFile()) {
@@ -409,13 +444,14 @@ async function patchWorkspaceFile(rootPath: string, args: Record<string, unknown
     const replacements = findPatchReplacements(current, edits);
     const next = applyPatchReplacements(current, replacements);
     fs.writeFileSync(absolutePath, next, "utf8");
-    const relativePath = relativeWorkspacePath(rootPath, absolutePath);
+    const outputPath = target.displayPath;
     const output = {
-      path: relativePath,
+      ...targetScopeOutput(target),
+      path: outputPath,
       replacements: replacements.length,
       sizeBytes: Buffer.byteLength(next),
       firstChangedLine: firstChangedLine(current, next),
-      diff: unifiedDiff(relativePath, current, next),
+      diff: unifiedDiff(outputPath, current, next),
     };
     return {
       output,
@@ -541,6 +577,18 @@ function buildFileChangeMetadata(params: {
   };
 }
 
+function targetScopeOutput(target: ResolvedFileToolTarget): { scope: ResolvedFileToolTarget["scope"]; grantId?: string } {
+  return target.grantId
+    ? { scope: target.scope, grantId: target.grantId }
+    : { scope: target.scope };
+}
+
+function displayPathFor(target: ResolvedFileToolTarget, absolutePath: string): string {
+  return target.workspaceRoot
+    ? relativeWorkspacePath(target.workspaceRoot, absolutePath)
+    : absolutePath;
+}
+
 function firstChangedLine(beforeContent: string, afterContent: string): number | undefined {
   if (beforeContent === afterContent) {
     return undefined;
@@ -645,7 +693,11 @@ function walkFiles(
   rootPath: string,
   startPath: string,
   maxFiles: number,
-  options: { includeDefaultExcluded?: boolean; skipped?: SkippedWorkspaceFile[] } = {},
+  options: {
+    includeDefaultExcluded?: boolean;
+    skipped?: SkippedWorkspaceFile[];
+    displayPath?: (absolutePath: string) => string;
+  } = {},
 ): string[] {
   const files: string[] = [];
   const visit = (currentPath: string) => {
@@ -663,7 +715,7 @@ function walkFiles(
     const name = path.basename(currentPath);
     if (!options.includeDefaultExcluded && SKIPPED_DIRS.has(name) && currentPath !== rootPath) {
       options.skipped?.push({
-        path: relativeWorkspacePath(rootPath, currentPath),
+        path: options.displayPath?.(currentPath) ?? relativeWorkspacePath(rootPath, currentPath),
         reason: "default_excluded",
       });
       return;
@@ -749,6 +801,8 @@ function globToRegExp(pattern: string): RegExp {
 
 interface FileReadOutput {
   path: string;
+  scope?: ResolvedFileToolTarget["scope"];
+  grantId?: string;
   sizeBytes: number;
   content?: string;
   binary?: boolean;
@@ -765,8 +819,9 @@ function fileReadResultPreview(output: unknown): RuntimeToolResultPreview {
   if (!o) {
     return { kind: "file.read", summary: "Read file." };
   }
+  const labeledPath = previewPathLabel(o.scope, o.path);
   if (o.binary) {
-    return { kind: "file.read", summary: `Binary file: ${o.path} (${o.sizeBytes} bytes)`, detail: { path: o.path, sizeBytes: o.sizeBytes, binary: true } };
+    return { kind: "file.read", summary: `Binary file: ${labeledPath} (${o.sizeBytes} bytes)`, detail: { path: o.path, scope: o.scope, grantId: o.grantId, sizeBytes: o.sizeBytes, binary: true } };
   }
   const lines = o.returnedLines ?? splitPreservingLineEndings(o.content ?? "").length;
   const rangeSuffix = o.offset !== undefined
@@ -774,9 +829,11 @@ function fileReadResultPreview(output: unknown): RuntimeToolResultPreview {
     : "";
   return {
     kind: "file.read",
-    summary: `${o.path} — ${lines} lines, ${o.sizeBytes} bytes${rangeSuffix}`,
+    summary: `${labeledPath} — ${lines} lines, ${o.sizeBytes} bytes${rangeSuffix}`,
     detail: {
       path: o.path,
+      scope: o.scope,
+      grantId: o.grantId,
       sizeBytes: o.sizeBytes,
       lines,
       binary: false,
@@ -792,6 +849,8 @@ function fileReadResultPreview(output: unknown): RuntimeToolResultPreview {
 
 interface FileListOutput {
   path: string;
+  scope?: ResolvedFileToolTarget["scope"];
+  grantId?: string;
   entries?: Array<{ name: string; path: string; kind: string; sizeBytes?: number }>;
   missing?: boolean;
 }
@@ -799,18 +858,21 @@ interface FileListOutput {
 function fileListResultPreview(output: unknown): RuntimeToolResultPreview {
   const o = output as FileListOutput | undefined;
   if (o?.missing) {
-    return { kind: "file.list", summary: `Path not found: ${o.path}`, detail: { path: o.path, missing: true } };
+    return { kind: "file.list", summary: `Path not found: ${previewPathLabel(o.scope, o.path)}`, detail: { path: o.path, scope: o.scope, grantId: o.grantId, missing: true } };
   }
   const entries = o?.entries ?? [];
   return {
     kind: "file.list",
-    summary: `${o?.path ?? "?"} — ${entries.length} entries`,
-    detail: { path: o?.path, entryCount: entries.length },
+    summary: `${previewPathLabel(o?.scope, o?.path ?? "?")} — ${entries.length} entries`,
+    detail: { path: o?.path, scope: o?.scope, grantId: o?.grantId, entryCount: entries.length },
     preview: entries.slice(0, 20),
   };
 }
 
 interface FileGlobOutput {
+  path?: string;
+  scope?: ResolvedFileToolTarget["scope"];
+  grantId?: string;
   pattern: string;
   matches?: string[];
   skipped?: unknown[];
@@ -822,13 +884,16 @@ function fileGlobResultPreview(output: unknown): RuntimeToolResultPreview {
   const skipped = (o?.skipped ?? []).length;
   return {
     kind: "file.glob",
-    summary: `${o?.pattern ?? "?"} — ${matches.length} matches${skipped > 0 ? ` (${skipped} skipped)` : ""}`,
-    detail: { pattern: o?.pattern, matchCount: matches.length, skippedCount: skipped },
+    summary: `${previewPathLabel(o?.scope, o?.path ?? o?.pattern ?? "?")} — ${matches.length} matches${skipped > 0 ? ` (${skipped} skipped)` : ""}`,
+    detail: { path: o?.path, scope: o?.scope, grantId: o?.grantId, pattern: o?.pattern, matchCount: matches.length, skippedCount: skipped },
     preview: matches.slice(0, 20),
   };
 }
 
 interface FileGrepOutput {
+  path?: string;
+  scope?: ResolvedFileToolTarget["scope"];
+  grantId?: string;
   pattern: string;
   matches?: Array<{ path: string; line: number; text: string }>;
   truncated?: boolean;
@@ -841,14 +906,14 @@ function fileGrepResultPreview(output: unknown): RuntimeToolResultPreview {
   const skipped = (o?.skipped ?? []).length;
   return {
     kind: "file.grep",
-    summary: `"${o?.pattern ?? "?"}" — ${matches.length} matches${o?.truncated ? " (truncated)" : ""}${skipped > 0 ? ` (${skipped} skipped)` : ""}`,
-    detail: { pattern: o?.pattern, matchCount: matches.length, truncated: o?.truncated, skippedCount: skipped },
+    summary: `"${o?.pattern ?? "?"}" in ${previewPathLabel(o?.scope, o?.path ?? "?")} — ${matches.length} matches${o?.truncated ? " (truncated)" : ""}${skipped > 0 ? ` (${skipped} skipped)` : ""}`,
+    detail: { path: o?.path, scope: o?.scope, grantId: o?.grantId, pattern: o?.pattern, matchCount: matches.length, truncated: o?.truncated, skippedCount: skipped },
     preview: matches.slice(0, 20),
   };
 }
 
 function fileWriteResultPreview(fileChange: RuntimeFileChangeMetadata | undefined, args: Record<string, unknown>): RuntimeToolResultPreview {
-  const path = typeof args.path === "string" ? args.path : "file";
+  const path = fileChange?.path ?? (typeof args.path === "string" ? args.path : "file");
   if (!fileChange) {
     return { kind: "file.write", summary: `Wrote ${path}`, detail: { path } };
   }
@@ -868,7 +933,7 @@ function fileWriteResultPreview(fileChange: RuntimeFileChangeMetadata | undefine
 }
 
 function filePatchResultPreview(fileChange: RuntimeFileChangeMetadata | undefined, args: Record<string, unknown>): RuntimeToolResultPreview {
-  const path = typeof args.path === "string" ? args.path : "file";
+  const path = fileChange?.path ?? (typeof args.path === "string" ? args.path : "file");
   if (!fileChange) {
     return { kind: "file.patch", summary: `Patched ${path}`, detail: { path } };
   }
@@ -886,4 +951,14 @@ function filePatchResultPreview(fileChange: RuntimeFileChangeMetadata | undefine
     },
     preview: { diff: fileChange.metadata.diff },
   };
+}
+
+function previewPathLabel(scope: ResolvedFileToolTarget["scope"] | undefined, filePath: string): string {
+  if (scope === "host_tmp") {
+    return `tmp:${filePath}`;
+  }
+  if (scope === "host_grant") {
+    return `host:${filePath}`;
+  }
+  return filePath;
 }

@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { MVP_TOOLS } from "@cemeworm/shared";
+import { MVP_TOOLS, type HostFilesystemState } from "@cemeworm/shared";
 import { RuntimeToolExecutor } from "./runtime-tool-executor.js";
 import "./runtime-patch-tool.js";
 
@@ -17,8 +17,9 @@ function executor(rootPath: string): RuntimeToolExecutor {
   });
 }
 
-function executorWithoutWorkspace(): RuntimeToolExecutor {
+function executorWithoutWorkspace(hostFilesystem?: HostFilesystemState): RuntimeToolExecutor {
   return new RuntimeToolExecutor({
+    hostFilesystem,
     toolDescriptors: MVP_TOOLS,
   });
 }
@@ -36,6 +37,148 @@ describe("runtime file tools", () => {
     ]);
 
     expect(visible).toEqual(["web.fetch", "web.search"]);
+  });
+
+  it("enables file tools without a project folder when host grants are present", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "ora-runtime-host-grant-"));
+    const visible = executorWithoutWorkspace({
+      grants: [{
+        id: `attached-local-file:${tempDir}`,
+        rootPath: tempDir,
+        label: `Attached local file directory (${tempDir})`,
+        source: "attached_local_file",
+        capabilities: ["read", "list", "search"],
+        expiresWithRun: true,
+      }],
+      allowDynamicGrant: false,
+    }).enabledToolIds([
+      "file.read",
+      "file.write",
+      "web.fetch",
+    ]);
+
+    expect(visible).toEqual(["file.read", "web.fetch"]);
+  });
+
+  it("reads and writes host tmp files through explicit host_tmp scope", async () => {
+    const tmpDir = fs.mkdtempSync("/tmp/ora-host-tmp-");
+    const tmpFile = path.join(tmpDir, "sample.txt");
+
+    const writeResult = await executorWithoutWorkspace({
+      grants: [
+        {
+          id: "system-tmp:/tmp",
+          rootPath: "/tmp",
+          label: "Temporary directory (/tmp)",
+          source: "system_tmp",
+          capabilities: ["read", "list", "search", "write", "patch"],
+          expiresWithRun: true,
+        },
+        {
+          id: "system-tmp:/private/tmp",
+          rootPath: "/private/tmp",
+          label: "Temporary directory (/private/tmp)",
+          source: "system_tmp",
+          capabilities: ["read", "list", "search", "write", "patch"],
+          expiresWithRun: true,
+        },
+      ],
+      allowDynamicGrant: false,
+    }).executeWithMetadata({
+      tool: "file.write",
+      args: {
+        scope: "host_tmp",
+        path: tmpFile,
+        content: "hello host tmp",
+      },
+    });
+
+    expect(writeResult.output).toMatchObject({
+      scope: "host_tmp",
+      path: tmpFile,
+      sizeBytes: 14,
+    });
+
+    const readResult = await executorWithoutWorkspace({
+      grants: [
+        {
+          id: "system-tmp:/tmp",
+          rootPath: "/tmp",
+          label: "Temporary directory (/tmp)",
+          source: "system_tmp",
+          capabilities: ["read", "list", "search", "write", "patch"],
+          expiresWithRun: true,
+        },
+      ],
+      allowDynamicGrant: false,
+    }).executeWithMetadata({
+      tool: "file.read",
+      args: {
+        scope: "host_tmp",
+        path: tmpFile,
+      },
+    });
+
+    expect(readResult.output).toMatchObject({
+      scope: "host_tmp",
+      path: tmpFile,
+      content: "hello host tmp",
+    });
+  });
+
+  it("rejects host_tmp access when the run did not receive tmp grants", async () => {
+    const rootPath = tempWorkspace();
+
+    await expect(executor(rootPath).executeWithMetadata({
+      tool: "file.list",
+      args: {
+        scope: "host_tmp",
+        path: "/tmp",
+      },
+    })).rejects.toThrow("Host file path must stay inside the approved grant root.");
+  });
+
+  it("supports read-only attached local file grants and blocks writes", async () => {
+    const attachmentDir = fs.mkdtempSync(path.join(os.tmpdir(), "ora-attached-local-file-"));
+    const attachmentFile = path.join(attachmentDir, "note.txt");
+    fs.writeFileSync(attachmentFile, "attached note", "utf8");
+    const hostFilesystem: HostFilesystemState = {
+      grants: [{
+        id: `attached-local-file:${attachmentDir}`,
+        rootPath: attachmentDir,
+        label: `Attached local file directory (${attachmentDir})`,
+        source: "attached_local_file",
+        capabilities: ["read", "list", "search"],
+        expiresWithRun: true,
+      }],
+      allowDynamicGrant: false,
+    };
+
+    const readResult = await executorWithoutWorkspace(hostFilesystem).executeWithMetadata({
+      tool: "file.read",
+      args: {
+        scope: "host_grant",
+        grantId: `attached-local-file:${attachmentDir}`,
+        path: attachmentFile,
+      },
+    });
+
+    expect(readResult.output).toMatchObject({
+      scope: "host_grant",
+      grantId: `attached-local-file:${attachmentDir}`,
+      path: attachmentFile,
+      content: "attached note",
+    });
+
+    await expect(executorWithoutWorkspace(hostFilesystem).executeWithMetadata({
+      tool: "file.write",
+      args: {
+        scope: "host_grant",
+        grantId: `attached-local-file:${attachmentDir}`,
+        path: attachmentFile,
+        content: "mutated",
+      },
+    })).rejects.toThrow("Host file grant does not allow write access.");
   });
 
   it("resolves workspace package aliases from node_modules for read-only tools", async () => {
