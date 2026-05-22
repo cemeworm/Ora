@@ -610,6 +610,10 @@ function WorkbenchInner() {
           });
 
           if (!event.sessionId) return;
+          // Avoid hydrating a session we don't know about — the runtime
+          // fast-fails on missing ids, but skipping early avoids the RPC.
+          const knownIds = new Set(sessions.map((s) => s.sessionId));
+          if (!knownIds.has(event.sessionId)) return;
           const detail = await runtimeClient.getSession(event.sessionId);
           if (cancelled) return;
           dispatch({

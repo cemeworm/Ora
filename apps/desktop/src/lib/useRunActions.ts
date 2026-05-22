@@ -320,6 +320,10 @@ function sessionSummaryHasRuntimeState(session: OraSessionSummary | undefined): 
   );
 }
 
+export function isSessionNotFoundError(error: unknown): boolean {
+  return error instanceof Error && /session\s+not\s+found/i.test(error.message);
+}
+
 export function isDisposableEmptySession(state: WorkbenchState, sessionId: string | undefined): boolean {
   if (!sessionId || getPendingRunState(state.runLifecycle)?.sessionId === sessionId) {
     return false;
@@ -419,6 +423,7 @@ export function useRunActions() {
   stateRef.current = state;
   const sessionRequestRef = useRef(0);
   const sessionPrefetchesRef = useRef(new Set<string>());
+  const inFlightGetSessionRef = useRef(new Map<string, Promise<OraSessionDetail>>());
 
   // Stable viewModel parts — cached across streaming frames but invalidated when composer mode changes.
   const stableViewModelRef = useRef<ReturnType<typeof buildStableViewModel> | undefined>(undefined);
@@ -510,6 +515,20 @@ export function useRunActions() {
     return projects;
   }
 
+  async function dedupedGetSession(
+    sessionId: string,
+    options: { includeLatestSnapshot?: boolean } = {},
+  ): Promise<OraSessionDetail> {
+    const key = `${sessionId}:${options.includeLatestSnapshot ? "full" : "slim"}`;
+    const inFlight = inFlightGetSessionRef.current.get(key);
+    if (inFlight) return inFlight;
+    const promise = runtimeClient.getSession(sessionId, options).finally(() => {
+      inFlightGetSessionRef.current.delete(key);
+    });
+    inFlightGetSessionRef.current.set(key, promise);
+    return promise;
+  }
+
   async function hydrateSession(
     sessionId: string,
     snapshot?: OraStateSnapshot,
@@ -525,7 +544,7 @@ export function useRunActions() {
     const [projects, sessions, detail] = await Promise.all([
       refreshCollections ? runtimeClient.listProjects() : Promise.resolve(state.projects),
       refreshCollections ? runtimeClient.listSessions() : Promise.resolve(state.sessions),
-      runtimeClient.getSession(sessionId, { includeLatestSnapshot: options.includeLatestSnapshot ?? false }),
+      dedupedGetSession(sessionId, { includeLatestSnapshot: options.includeLatestSnapshot ?? false }),
     ]);
     if (options.shouldApply && !options.shouldApply()) {
       return { projects, sessions, detail };
@@ -584,7 +603,7 @@ export function useRunActions() {
     }
     sessionPrefetchesRef.current.add(sessionId);
     try {
-      const detail = await runtimeClient.getSession(sessionId);
+      const detail = await dedupedGetSession(sessionId);
       dispatch({ type: "CACHE_SESSION_DETAIL", detail });
     } catch {
       // Prefetch is opportunistic; clicking the session still performs the authoritative load.
@@ -937,6 +956,7 @@ export function useRunActions() {
     const submittedProjectFileAttachments = state.sessionProjectFileAttachments[sessionId] ?? [];
     const submittedLocalFileAttachments = state.sessionLocalFileAttachments[sessionId] ?? [];
     const submittedImageAttachments = state.sessionImageAttachments[sessionId] ?? [];
+    const submittedSkillIds = state.selectedSkillIds;
     const selectedSnapshot = getSelectedInteractiveSnapshot(state);
     const resumeRunId = getInteractiveRunId(state);
     const clarificationPatch = selectedSnapshot?.runId === resumeRunId
@@ -1000,6 +1020,7 @@ export function useRunActions() {
           status: { mode: "error", ok: false, label: "Resume failed", detail: error instanceof Error ? error.message : "Unable to resume run." },
         });
         dispatch({ type: "SET_LOADING", loading: false });
+        dispatch({ type: "SET_PROMPT", text: submittedPrompt });
         return;
       }
     }
@@ -1077,6 +1098,41 @@ export function useRunActions() {
         status: { mode: "error", ok: false, label: "Run failed", detail: error instanceof Error ? error.message : "Unable to start run." },
       });
       dispatch({ type: "SET_LOADING", loading: false });
+
+      let recoverySessionId: string | undefined;
+      if (isSessionNotFoundError(error)) {
+        try {
+          const sessions = await runtimeClient.listSessions();
+          recoverySessionId = sessions[0]?.sessionId;
+          if (!recoverySessionId) {
+            const created = await runtimeClient.createSession();
+            recoverySessionId = created.sessionId;
+          }
+        } catch {
+          // Double failure: neither listSessions nor createSession worked.
+        }
+      }
+
+      if (recoverySessionId && recoverySessionId !== sessionId) {
+        try { await selectSession(recoverySessionId); } catch { /* best-effort */ }
+      }
+
+      dispatch({ type: "SET_PROMPT", text: submittedPrompt });
+
+      if (submittedSkillIds.length > 0) {
+        dispatch({ type: "SET_SELECTED_SKILL_IDS", skillIds: submittedSkillIds });
+      }
+
+      const targetSessionId = recoverySessionId ?? sessionId;
+      for (const file of submittedProjectFileAttachments) {
+        dispatch({ type: "ADD_PROJECT_FILE_ATTACHMENT", sessionId: targetSessionId, file });
+      }
+      for (const file of submittedLocalFileAttachments) {
+        dispatch({ type: "ADD_LOCAL_FILE_ATTACHMENT", sessionId: targetSessionId, file });
+      }
+      for (const image of submittedImageAttachments) {
+        dispatch({ type: "ADD_IMAGE_ATTACHMENT", sessionId: targetSessionId, image });
+      }
     }
   }
 
