@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { CODE_DEVELOPMENT_MODE_ID, DEEP_RESEARCH_MODE_ID } from "./primitives.js";
 
 /**
  * Per-template output schemas for ExecutionBag entries.
@@ -220,6 +221,107 @@ export const handoffOutputSchema = z.object({
   residualRisks: z.array(z.string()).optional(),
 });
 
+export const codeDevelopmentTriageOutputSchema = triageOutputSchema.extend({
+  text: z.string().min(1),
+  goal: z.string().min(1),
+  successCriteria: z.array(z.string().min(1)).min(1),
+  backlog: z.array(z.object({
+    id: z.string().min(1),
+    owner: z.string().min(1),
+    description: z.string().min(1),
+  })).min(1),
+  scopeBoundaries: z.array(z.string().min(1)).min(1),
+  taskJournalPath: z.string().min(1),
+  targetFiles: z.array(z.string().min(1)).min(1),
+  verificationPlan: z.array(z.object({
+    id: z.string().min(1),
+    commandOrMethod: z.string().min(1),
+    expectation: z.string().min(1),
+  })).min(1),
+  doneCriteria: z.array(z.string().min(1)).min(1),
+});
+
+export const codeDevelopmentBuildOutputSchema = buildOutputSchema.extend({
+  text: z.string().min(1),
+  changedFiles: z.array(z.string().min(1)).min(1),
+  verificationEvidence: z.array(z.object({
+    verificationId: z.string().min(1),
+    result: z.enum(["pass", "fail", "not_run"]),
+    summary: z.string().min(1),
+  })).min(1),
+});
+
+export const codeDevelopmentReviewOutputSchema = z.object({
+  text: z.string().min(1),
+  verdict: z.enum(["pass", "needs_fix", "blocked"]),
+  acceptedArtifactIds: z.array(z.string().min(1)).optional(),
+  findings: z.array(z.object({
+    artifactId: z.string().min(1).optional(),
+    severity: z.enum(["blocking", "concern", "suggestion"]),
+    issue: z.string().min(1),
+  })).optional(),
+  blockingIssues: z.array(z.object({
+    artifactId: z.string().min(1).optional(),
+    file: z.string().min(1).optional(),
+    issue: z.string().min(1),
+    requiredFix: z.string().min(1),
+  })).optional(),
+  acceptedFiles: z.array(z.string().min(1)).optional(),
+  verificationGaps: z.array(z.string().min(1)).optional(),
+  rejectedFiles: z.array(z.string().min(1)).optional(),
+}).superRefine((value, ctx) => {
+  if (value.verdict === "needs_fix" && (!value.blockingIssues || value.blockingIssues.length === 0)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["blockingIssues"],
+      message: "blockingIssues is required when verdict=needs_fix.",
+    });
+  }
+});
+
+export const codeDevelopmentDebugOutputSchema = z.object({
+  text: z.string().min(1),
+  status: z.enum(["clear", "needs_fix", "blocked"]),
+  rootCauses: z.array(z.string().min(1)),
+  requiredRework: z.array(z.object({
+    nodeId: z.enum(["build", "review"]),
+    reason: z.string().min(1),
+  })).optional(),
+  diagnosticEvidence: z.array(z.object({
+    commandOrMethod: z.string().min(1),
+    summary: z.string().min(1),
+  })).optional(),
+  remainingRisks: z.array(z.string().min(1)).optional(),
+}).superRefine((value, ctx) => {
+  if (value.status === "needs_fix" && (!value.requiredRework || value.requiredRework.length === 0)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["requiredRework"],
+      message: "requiredRework is required when status=needs_fix.",
+    });
+  }
+});
+
+export const codeDevelopmentHandoffOutputSchema = handoffOutputSchema.extend({
+  text: z.string().min(1),
+  deliveredFiles: z.array(z.string().min(1)).min(1),
+  acceptedFiles: z.array(z.string().min(1)).min(1),
+  taskJournalPath: z.string().min(1),
+  todoScanResult: z.object({
+    status: z.enum(["clean", "followup_only", "blocked"]),
+    summary: z.string().min(1),
+  }),
+  doneGate: z.object({
+    status: z.enum(["pass", "blocked"]),
+    blockers: z.array(z.string().min(1)),
+  }),
+  verificationSummary: z.array(z.object({
+    verificationId: z.string().min(1),
+    result: z.string().min(1),
+    summary: z.string().min(1),
+  })).min(1),
+});
+
 // ── generator_verifier ───────────────────────────────────────────────
 
 export const draftOutputSchema = z.object({
@@ -342,5 +444,29 @@ export const DEEP_RESEARCH_OUTPUT_SCHEMAS = {
   compile: deepResearchCompileOutputSchema,
   verify: deepResearchVerifyOutputSchema,
 } as const;
+
+export const CODE_DEVELOPMENT_OUTPUT_SCHEMAS = {
+  triage: codeDevelopmentTriageOutputSchema,
+  build: codeDevelopmentBuildOutputSchema,
+  review: codeDevelopmentReviewOutputSchema,
+  debug: codeDevelopmentDebugOutputSchema,
+  handoff: codeDevelopmentHandoffOutputSchema,
+} as const;
+
+export const STRICT_MODE_STAGE_OUTPUT_SCHEMAS = {
+  [CODE_DEVELOPMENT_MODE_ID]: CODE_DEVELOPMENT_OUTPUT_SCHEMAS,
+  [DEEP_RESEARCH_MODE_ID]: DEEP_RESEARCH_OUTPUT_SCHEMAS,
+} as const;
+
+export function strictModeStageOutputSchema(
+  modeId: string,
+  outputKey: string,
+): z.ZodTypeAny | undefined {
+  const modeSchemas = STRICT_MODE_STAGE_OUTPUT_SCHEMAS[modeId as keyof typeof STRICT_MODE_STAGE_OUTPUT_SCHEMAS];
+  if (!modeSchemas) {
+    return undefined;
+  }
+  return modeSchemas[outputKey as keyof typeof modeSchemas];
+}
 
 export type DegradedBagEntry = { text: string; _degraded: true };

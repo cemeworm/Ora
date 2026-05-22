@@ -272,6 +272,45 @@ export type ToolVisibilityDecisionSource =
   | "resolver_default"
   | "legacy_fallback";
 
+export const FileAccessScopeSchema = z.enum([
+  "workspace",
+  "host_tmp",
+  "host_grant",
+]);
+export type FileAccessScope = z.infer<typeof FileAccessScopeSchema>;
+
+export const HostFilesystemCapabilitySchema = z.enum([
+  "read",
+  "list",
+  "search",
+  "write",
+  "patch",
+]);
+export type HostFilesystemCapability = z.infer<typeof HostFilesystemCapabilitySchema>;
+
+export const HostFilesystemGrantSourceSchema = z.enum([
+  "system_tmp",
+  "attached_local_file",
+  "user_approved",
+]);
+export type HostFilesystemGrantSource = z.infer<typeof HostFilesystemGrantSourceSchema>;
+
+export const HostFilesystemGrantSchema = z.object({
+  id: z.string().min(1),
+  rootPath: z.string().min(1),
+  label: z.string().min(1),
+  source: HostFilesystemGrantSourceSchema,
+  capabilities: z.array(HostFilesystemCapabilitySchema).default([]),
+  expiresWithRun: z.boolean().default(true),
+});
+export type HostFilesystemGrant = z.infer<typeof HostFilesystemGrantSchema>;
+
+export const HostFilesystemStateSchema = z.object({
+  grants: z.array(HostFilesystemGrantSchema).default([]),
+  allowDynamicGrant: z.boolean().default(false),
+});
+export type HostFilesystemState = z.infer<typeof HostFilesystemStateSchema>;
+
 // ---------------------------------------------------------------------------
 // Tool Descriptor Schemas
 // ---------------------------------------------------------------------------
@@ -1345,7 +1384,18 @@ export type AgentCatalogResult = z.infer<typeof AgentCatalogResultSchema>;
 
 const workspacePathParameter = {
   type: "string",
-  description: "Path inside the selected project folder. Parent-directory escapes are rejected; absolute paths are allowed only when they still resolve inside the selected project.",
+  description: "Path to access. Defaults to the selected project folder when scope is omitted or set to workspace. Host scopes require an absolute path and may be limited to /tmp or an approved host grant.",
+};
+
+const fileAccessScopeParameter = {
+  type: "string",
+  enum: FileAccessScopeSchema.options,
+  description: "Optional file access scope. Defaults to workspace. Use host_tmp for /tmp or /private/tmp, or host_grant with grantId for an approved host directory.",
+};
+
+const fileGrantIdParameter = {
+  type: "string",
+  description: "Required when scope is host_grant. Identifies the approved host directory grant to use.",
 };
 
 const positiveLimitParameter = (description: string) => ({
@@ -1358,6 +1408,8 @@ const fileReadParameters = {
   type: "object",
   properties: {
     path: workspacePathParameter,
+    scope: fileAccessScopeParameter,
+    grantId: fileGrantIdParameter,
     offset: positiveLimitParameter("Optional 1-based line number to start reading from. Defaults to 1 when limit is provided."),
     limit: positiveLimitParameter("Optional maximum number of lines to return from the file."),
   },
@@ -1370,8 +1422,10 @@ const fileListParameters = {
   properties: {
     path: {
       ...workspacePathParameter,
-      description: "Directory path inside the selected project folder. Defaults to the workspace root.",
+      description: "Directory path to inspect. Defaults to the workspace root when scope is workspace.",
     },
+    scope: fileAccessScopeParameter,
+    grantId: fileGrantIdParameter,
     limit: positiveLimitParameter("Maximum number of directory entries to return."),
   },
   additionalProperties: false,
@@ -1386,8 +1440,10 @@ const fileGlobParameters = {
     },
     path: {
       ...workspacePathParameter,
-      description: "Directory path to search from. Defaults to the workspace root.",
+      description: "Directory path to search from. Defaults to the workspace root when scope is workspace.",
     },
+    scope: fileAccessScopeParameter,
+    grantId: fileGrantIdParameter,
     limit: positiveLimitParameter("Maximum number of matching file paths to return."),
   },
   required: ["pattern"],
@@ -1407,8 +1463,10 @@ const fileGrepParameters = {
     },
     path: {
       ...workspacePathParameter,
-      description: "Directory path to search from. Defaults to the workspace root.",
+      description: "Directory path to search from. Defaults to the workspace root when scope is workspace.",
     },
+    scope: fileAccessScopeParameter,
+    grantId: fileGrantIdParameter,
     caseSensitive: {
       type: "boolean",
       description: "Whether matching is case sensitive. Defaults to true.",
@@ -1481,6 +1539,8 @@ const fileWriteParameters = {
   type: "object",
   properties: {
     path: workspacePathParameter,
+    scope: fileAccessScopeParameter,
+    grantId: fileGrantIdParameter,
     content: {
       type: "string",
       description: "Full file content to write. Existing content is overwritten.",
@@ -1510,6 +1570,8 @@ const filePatchParameters = {
   type: "object",
   properties: {
     path: workspacePathParameter,
+    scope: fileAccessScopeParameter,
+    grantId: fileGrantIdParameter,
     edits: {
       type: "array",
       minItems: 1,
@@ -2136,10 +2198,10 @@ const widgetsTodoAddItemParameters = {
 };
 
 const MVP_TOOL_DEFINITIONS: ToolDescriptorInput[] = [
-  { id: "file.read", label: "Read File", description: "Read file contents inside the selected project folder.", category: "file", riskLevel: "safe", parameters: fileReadParameters, requiresApproval: false, implemented: true, allowedForProfiles: [] },
-  { id: "file.list", label: "List Files", description: "List files and directories inside the selected project folder.", category: "file", riskLevel: "safe", parameters: fileListParameters, requiresApproval: false, implemented: true, allowedForProfiles: [] },
-  { id: "file.glob", label: "Glob Files", description: "Find project files by glob pattern.", category: "file", riskLevel: "safe", parameters: fileGlobParameters, requiresApproval: false, implemented: true, allowedForProfiles: [] },
-  { id: "file.grep", label: "Search Files", description: "Search project file contents for a literal pattern.", category: "file", riskLevel: "safe", parameters: fileGrepParameters, requiresApproval: false, implemented: true, allowedForProfiles: [] },
+  { id: "file.read", label: "Read File", description: "Read file contents from the selected project folder, /tmp, or an approved host directory.", category: "file", riskLevel: "safe", parameters: fileReadParameters, requiresApproval: false, implemented: true, allowedForProfiles: [] },
+  { id: "file.list", label: "List Files", description: "List files and directories in the selected project folder, /tmp, or an approved host directory.", category: "file", riskLevel: "safe", parameters: fileListParameters, requiresApproval: false, implemented: true, allowedForProfiles: [] },
+  { id: "file.glob", label: "Glob Files", description: "Find files by glob pattern in the selected project folder, /tmp, or an approved host directory.", category: "file", riskLevel: "safe", parameters: fileGlobParameters, requiresApproval: false, implemented: true, allowedForProfiles: [] },
+  { id: "file.grep", label: "Search Files", description: "Search file contents for a literal pattern in the selected project folder, /tmp, or an approved host directory.", category: "file", riskLevel: "safe", parameters: fileGrepParameters, requiresApproval: false, implemented: true, allowedForProfiles: [] },
   {
     id: "repo.explore",
     label: "Explore Repository",
@@ -2158,8 +2220,8 @@ const MVP_TOOL_DEFINITIONS: ToolDescriptorInput[] = [
     implemented: true,
     allowedForProfiles: [],
   },
-  { id: "file.write", label: "Write File", description: "Write content to a local project file.", category: "file", riskLevel: "requires_approval", parameters: fileWriteParameters, requiresApproval: true, implemented: true, allowedForProfiles: [] },
-  { id: "file.patch", label: "Patch File", description: "Replace exact strings in a local project file.", category: "file", riskLevel: "requires_approval", parameters: filePatchParameters, requiresApproval: true, implemented: true, allowedForProfiles: [] },
+  { id: "file.write", label: "Write File", description: "Write content to a file in the selected project folder, /tmp, or an approved writable host directory.", category: "file", riskLevel: "requires_approval", parameters: fileWriteParameters, requiresApproval: true, implemented: true, allowedForProfiles: [] },
+  { id: "file.patch", label: "Patch File", description: "Replace exact strings in a file in the selected project folder, /tmp, or an approved writable host directory.", category: "file", riskLevel: "requires_approval", parameters: filePatchParameters, requiresApproval: true, implemented: true, allowedForProfiles: [] },
   { id: "file.apply_patch", label: "Apply Patch", description: "Apply a unified diff patch to one or more local project files.", category: "file", riskLevel: "requires_approval", parameters: fileApplyPatchParameters, requiresApproval: true, implemented: true, allowedForProfiles: [] },
   { id: "file.delete", label: "Delete File", description: "Delete a local file.", category: "file", riskLevel: "requires_approval", parameters: {}, requiresApproval: true, implemented: false, allowedForProfiles: [] },
   {
