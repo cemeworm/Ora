@@ -917,10 +917,19 @@ export type PlanDecisionGate = z.infer<typeof PlanDecisionGateSchema>;
 
 export const SessionPlanDecisionResolveParamsSchema = z.object({
   sessionId: z.string().min(1),
+  runId: z.string().min(1).optional(),
   decisionId: z.string().min(1),
   status: z.enum(["accepted", "declined"]),
 });
 export type SessionPlanDecisionResolveParams = z.infer<typeof SessionPlanDecisionResolveParamsSchema>;
+
+export const SessionAcceptPlanDecisionAndResumeParamsSchema = z.object({
+  sessionId: z.string().min(1),
+  runId: z.string().min(1),
+  decisionId: z.string().min(1),
+  reason: z.string().min(1).optional(),
+});
+export type SessionAcceptPlanDecisionAndResumeParams = z.infer<typeof SessionAcceptPlanDecisionAndResumeParamsSchema>;
 
 export const RunAttentionKindSchema = z.enum([
   "idle",

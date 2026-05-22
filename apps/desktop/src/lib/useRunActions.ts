@@ -1196,18 +1196,15 @@ export function useRunActions() {
       });
     });
     try {
-      const detail = await runtimeClient.resolvePlanDecision({ sessionId, decisionId, status });
-      dispatch({
-        type: "HYDRATE_SESSION",
-        projects: state.projects,
-        sessions: state.sessions,
-        detail,
-        feedback:
-          status === "accepted"
-            ? "Plan accepted."
-            : "Plan declined. Add your revision to continue.",
-      });
       if (status === "declined") {
+        const detail = await runtimeClient.resolvePlanDecision({ sessionId, runId: resumeRunId, decisionId, status });
+        dispatch({
+          type: "HYDRATE_SESSION",
+          projects: state.projects,
+          sessions: state.sessions,
+          detail,
+          feedback: "Plan declined. Add your revision to continue.",
+        });
         dispatch({ type: "SET_TASK_INTENT", taskIntent: currentTaskIntent });
         return true;
       }
@@ -1223,29 +1220,35 @@ export function useRunActions() {
         });
       });
       await waitForPendingRunPaint();
-      const handle = await runtimeClient.resumeStreamingRun(
-        resumeRunId,
-        USER_RESUMED_MESSAGE,
-        { planDecisionResolutions: [{ decisionId, status }] },
-      );
+      const handle = await runtimeClient.acceptPlanDecisionAndResume({
+        sessionId,
+        runId: resumeRunId,
+        decisionId,
+        reason: USER_RESUMED_MESSAGE,
+      });
       const snapshot = await runtimeClient.getRunState(handle.runId);
       await refreshCurrentSession(
         snapshot,
-        status === "accepted"
-          ? `Plan accepted and resumed on ${snapshot.runId}.`
-          : `Plan revision resumed on ${snapshot.runId}.`,
+        snapshot.status === "failed"
+          ? snapshot.error ?? `Plan accepted, but implementation could not start on ${snapshot.runId}.`
+          : `Plan accepted and resumed on ${snapshot.runId}.`,
       );
-      if (status === "accepted") {
+      if (snapshot.status !== "failed") {
         dispatch({ type: "SET_TASK_INTENT", taskIntent: "implement" });
       }
       return true;
     } catch (error) {
-      dispatch({
-        type: "ROLLBACK_PLAN_DECISION_RESOLUTION",
-        sessionId,
-        decisionId,
-        feedback: error instanceof Error ? error.message : "Plan decision update failed.",
-      });
+      const feedback = error instanceof Error ? error.message : "Plan decision update failed.";
+      try {
+        await refreshCurrentSession(undefined, feedback);
+      } catch {
+        dispatch({
+          type: "ROLLBACK_PLAN_DECISION_RESOLUTION",
+          sessionId,
+          decisionId,
+          feedback,
+        });
+      }
       return false;
     }
   }

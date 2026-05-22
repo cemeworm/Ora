@@ -71,6 +71,7 @@ import {
   RunTrailParamsSchema,
   RunTrailSchema,
   RunSummary,
+  SessionAcceptPlanDecisionAndResumeParamsSchema,
   SessionBranchGroup,
   SessionBranchGroupAdoptParamsSchema,
   SessionBranchGroupCreateParamsSchema,
@@ -192,6 +193,7 @@ import {
   type ModeStudioStoreDeps
 } from "./mode-studio-store.js";
 import {
+  createFailedRunEvent,
   currentPendingClarifications,
   rebaseRunEvent,
   resumedInputWithClarifications,
@@ -346,6 +348,12 @@ const RunIdParamsSchema = z.object({
 const USER_CANCELLED_MESSAGE = "Stopped processing as instructed.";
 const USER_INTERRUPTED_MESSAGE = "Paused as instructed.";
 const USER_RESUMED_MESSAGE = "Confirmed. Continuing.";
+const ACCEPT_PLAN_RESUME_MAX_ATTEMPTS = 3;
+const ACCEPT_PLAN_RESUME_RETRY_BASE_DELAY_MS = 150;
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 export interface LocalRunStoreOptions {
   dataDir?: string;
@@ -1309,6 +1317,80 @@ export class LocalRunStore {
 
   resolvePlanDecision(params: unknown): SessionDetail {
     return this.planDecisionService.resolve(params);
+  }
+
+  async acceptPlanDecisionAndResume(
+    params: unknown,
+    options: StreamingRunOptions = {},
+  ): Promise<RunHandle> {
+    const parsed = SessionAcceptPlanDecisionAndResumeParamsSchema.parse(params);
+    const snapshot = this.getRunState({ runId: parsed.runId });
+    if (snapshot.sessionId !== parsed.sessionId) {
+      throw new OraRuntimeError(`Run '${parsed.runId}' does not belong to session '${parsed.sessionId}'.`, -32004, {
+        sessionId: parsed.sessionId,
+        runId: parsed.runId,
+      });
+    }
+
+    const existingDecision = snapshot.planDecisions.find((decision) => decision.id === parsed.decisionId);
+    if (!existingDecision) {
+      throw new OraRuntimeError(`Plan decision '${parsed.decisionId}' does not exist on run '${parsed.runId}'.`, -32004, {
+        sessionId: parsed.sessionId,
+        runId: parsed.runId,
+        decisionId: parsed.decisionId,
+      });
+    }
+    if (existingDecision.status === "declined") {
+      throw new OraRuntimeError(`Plan decision '${parsed.decisionId}' was already declined.`, -32004, {
+        sessionId: parsed.sessionId,
+        runId: parsed.runId,
+        decisionId: parsed.decisionId,
+      });
+    }
+
+    if (existingDecision.status !== "accepted") {
+      this.resolvePlanDecision({
+        sessionId: parsed.sessionId,
+        runId: parsed.runId,
+        decisionId: parsed.decisionId,
+        status: "accepted",
+      });
+    }
+
+    const resumeParams = {
+      runId: parsed.runId,
+      reason: parsed.reason ?? USER_RESUMED_MESSAGE,
+      patch: { planDecisionResolutions: [{ decisionId: parsed.decisionId, status: "accepted" as const }] },
+    };
+
+    let attempt = 0;
+    let lastError: unknown;
+    while (attempt < ACCEPT_PLAN_RESUME_MAX_ATTEMPTS) {
+      attempt += 1;
+      try {
+        return await this.resumeStreamingRun(resumeParams, options);
+      } catch (error) {
+        lastError = error;
+        if (!this.isRetryableAcceptPlanResumeError(error) || attempt >= ACCEPT_PLAN_RESUME_MAX_ATTEMPTS) {
+          return this.failAcceptedPlanResumeStart({
+            sessionId: parsed.sessionId,
+            runId: parsed.runId,
+            decisionId: parsed.decisionId,
+            attempt,
+            error,
+          });
+        }
+        await delay(ACCEPT_PLAN_RESUME_RETRY_BASE_DELAY_MS * attempt);
+      }
+    }
+
+    return this.failAcceptedPlanResumeStart({
+      sessionId: parsed.sessionId,
+      runId: parsed.runId,
+      decisionId: parsed.decisionId,
+      attempt,
+      error: lastError,
+    });
   }
 
   listRuns(params: unknown = {}): RunSummary[] {
@@ -3966,6 +4048,67 @@ export class LocalRunStore {
     return isPureRuntimeDeltaEvent(event)
       ? next
       : StateSnapshotSchema.parse(next);
+  }
+
+  private isRetryableAcceptPlanResumeError(error: unknown): boolean {
+    const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+    return [
+      "timed out",
+      "timeout",
+      "temporarily unavailable",
+      "temporary",
+      "busy",
+      "transport",
+      "bridge",
+      "econnreset",
+      "econnrefused",
+      "epipe",
+      "fetch failed",
+      "network",
+    ].some((token) => message.includes(token));
+  }
+
+  private failAcceptedPlanResumeStart(params: {
+    sessionId: string;
+    runId: string;
+    decisionId: string;
+    attempt: number;
+    error: unknown;
+  }): RunHandle {
+    const snapshot = this.getRunState({ runId: params.runId });
+    const errorMessage = params.error instanceof Error ? params.error.message : String(params.error);
+    let next = this.appendEvent(
+      snapshot,
+      "recovery.exhausted",
+      {
+        phase: "accept_plan_resume_start",
+        decisionId: params.decisionId,
+        attemptCount: params.attempt,
+        error: errorMessage,
+      },
+    );
+    const failedEvent = createFailedRunEvent({
+      runId: next.runId,
+      seq: next.events.length,
+      createdAt: this.now(),
+      pattern: next.pattern,
+      error: `Accepted plan could not resume automatically after ${params.attempt} attempt(s): ${errorMessage}`,
+    });
+    next = this.normalizeSnapshotForPersistence(StateSnapshotSchema.parse({
+      ...next,
+      status: "failed",
+      error: `Accepted plan could not resume automatically after ${params.attempt} attempt(s): ${errorMessage}`,
+      events: [...next.events, failedEvent],
+      updatedAt: failedEvent.createdAt,
+    }));
+    this.persistRun(next);
+    const projected = this.appendRuntimeEventBatchToLedger(
+      next,
+      next.events.slice(snapshot.events.length),
+      next.status,
+    );
+    this.queueSelfIterationAfterTerminalRun(projected);
+    return toRunHandle(projected);
   }
 
   private syncSnapshotTodos(snapshot: StateSnapshot, reason: string): StateSnapshot {

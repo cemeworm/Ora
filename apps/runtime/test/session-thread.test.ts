@@ -1278,6 +1278,150 @@ describe("session thread runtime behavior", () => {
     ]);
   });
 
+  it("accepts a plan and resumes the same run atomically", { timeout: 15_000 }, async () => {
+    titleResponses.push("Atomic Accept Session");
+    const dir = freshStoreDir();
+    const store = new LocalRunStore({ dataDir: dir, clock });
+    const session = store.createSession();
+
+    await store.startRun({
+      sessionId: session.sessionId,
+      input: { prompt: COMPLETE_PROPOSED_PLAN },
+      config: {
+        pattern: "orchestrator_subagent",
+        providerId: "openai-gpt",
+        providerConfig: localSmokeProviderConfig("openai-gpt", "gpt-plan-atomic-test"),
+        modelRef: "gpt-plan-atomic-test",
+        metadata: { taskIntent: "plan" },
+      },
+    });
+
+    const planned = SessionDetailSchema.parse(store.getSession({ sessionId: session.sessionId }));
+    const decision = planned.latestSnapshot?.planDecisions[0];
+    expect(decision?.status).toBe("pending");
+    const resumeSpy = vi.spyOn(store, "resumeStreamingRun").mockResolvedValue({
+      runId: planned.latestSnapshot?.runId ?? "missing-run",
+      sessionId: session.sessionId,
+      turnIndex: planned.latestSnapshot?.turnIndex,
+      status: "running",
+      pattern: planned.latestSnapshot?.pattern ?? "orchestrator_subagent",
+      modeId: planned.latestSnapshot?.modeId,
+      startedAt: planned.latestSnapshot?.input.createdAt ?? planned.latestSnapshot?.updatedAt ?? FIXED_TIME,
+    });
+
+    const handle = await store.acceptPlanDecisionAndResume({
+      sessionId: session.sessionId,
+      runId: planned.latestSnapshot?.runId,
+      decisionId: decision?.id,
+    });
+
+    expect(handle.runId).toBe(planned.latestSnapshot?.runId);
+    expect(handle.status).toBe("running");
+    expect(resumeSpy).toHaveBeenCalledTimes(1);
+    expect(resumeSpy).toHaveBeenCalledWith(expect.objectContaining({
+      runId: planned.latestSnapshot?.runId,
+      patch: { planDecisionResolutions: [{ decisionId: decision?.id, status: "accepted" }] },
+    }), {});
+
+    const acceptedState = StateSnapshotSchema.parse(store.getRunState({ runId: handle.runId }));
+    expect(acceptedState.planDecisions[0]).toMatchObject({
+      id: decision?.id,
+      status: "accepted",
+    });
+  });
+
+  it("retries accepted-plan resume startup automatically before succeeding", { timeout: 15_000 }, async () => {
+    titleResponses.push("Atomic Retry Session");
+    const dir = freshStoreDir();
+    const store = new LocalRunStore({ dataDir: dir, clock });
+    const session = store.createSession();
+
+    await store.startRun({
+      sessionId: session.sessionId,
+      input: { prompt: COMPLETE_PROPOSED_PLAN },
+      config: {
+        pattern: "orchestrator_subagent",
+        providerId: "openai-gpt",
+        providerConfig: localSmokeProviderConfig("openai-gpt", "gpt-plan-retry-test"),
+        modelRef: "gpt-plan-retry-test",
+        metadata: { taskIntent: "plan" },
+      },
+    });
+
+    const planned = SessionDetailSchema.parse(store.getSession({ sessionId: session.sessionId }));
+    const decision = planned.latestSnapshot?.planDecisions[0];
+    let attemptCount = 0;
+    vi.spyOn(store, "resumeStreamingRun").mockImplementation(async (params, options) => {
+      void params;
+      void options;
+      attemptCount += 1;
+      if (attemptCount < 3) {
+        throw new Error("Runtime bridge timed out while starting resume.");
+      }
+      return {
+        runId: planned.latestSnapshot?.runId ?? "missing-run",
+        sessionId: session.sessionId,
+        turnIndex: planned.latestSnapshot?.turnIndex,
+        status: "running",
+        pattern: planned.latestSnapshot?.pattern ?? "orchestrator_subagent",
+        modeId: planned.latestSnapshot?.modeId,
+        startedAt: planned.latestSnapshot?.input.createdAt ?? planned.latestSnapshot?.updatedAt ?? FIXED_TIME,
+      };
+    });
+
+    const handle = await store.acceptPlanDecisionAndResume({
+      sessionId: session.sessionId,
+      runId: planned.latestSnapshot?.runId,
+      decisionId: decision?.id,
+    });
+
+    expect(attemptCount).toBe(3);
+    expect(handle.runId).toBe(planned.latestSnapshot?.runId);
+    expect(handle.status).toBe("running");
+    expect(StateSnapshotSchema.parse(store.getRunState({ runId: handle.runId })).planDecisions[0]?.status).toBe("accepted");
+  });
+
+  it("fails the accepted-plan run after retry budget exhaustion instead of reopening plan decision handling", { timeout: 15_000 }, async () => {
+    titleResponses.push("Atomic Retry Exhausted Session");
+    const dir = freshStoreDir();
+    const store = new LocalRunStore({ dataDir: dir, clock });
+    const session = store.createSession();
+
+    await store.startRun({
+      sessionId: session.sessionId,
+      input: { prompt: COMPLETE_PROPOSED_PLAN },
+      config: {
+        pattern: "orchestrator_subagent",
+        providerId: "openai-gpt",
+        providerConfig: localSmokeProviderConfig("openai-gpt", "gpt-plan-retry-exhausted-test"),
+        modelRef: "gpt-plan-retry-exhausted-test",
+        metadata: { taskIntent: "plan" },
+      },
+    });
+
+    const planned = SessionDetailSchema.parse(store.getSession({ sessionId: session.sessionId }));
+    const decision = planned.latestSnapshot?.planDecisions[0];
+    vi.spyOn(store, "resumeStreamingRun").mockRejectedValue(
+      new Error("Runtime bridge timed out while starting resume."),
+    );
+
+    const handle = await store.acceptPlanDecisionAndResume({
+      sessionId: session.sessionId,
+      runId: planned.latestSnapshot?.runId,
+      decisionId: decision?.id,
+    });
+
+    const failedState = StateSnapshotSchema.parse(store.getRunState({ runId: handle.runId }));
+    const failedDetail = SessionDetailSchema.parse(store.getSession({ sessionId: session.sessionId }));
+
+    expect(handle.status).toBe("failed");
+    expect(failedState.status).toBe("failed");
+    expect(failedState.planDecisions[0]?.status).toBe("accepted");
+    expect(failedState.events.some((event) => event.type === "recovery.exhausted")).toBe(true);
+    expect(failedState.events.some((event) => event.type === "run.failed")).toBe(true);
+    expect(failedDetail.session.attention?.kind).toBe("failed");
+  });
+
   it("keeps the generated title stable across later turns", async () => {
     titleResponses.push("Initial Session Title", "Second Session Title");
     const store = new LocalRunStore({ dataDir: freshStoreDir(), clock });

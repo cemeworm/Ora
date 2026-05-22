@@ -264,6 +264,28 @@ describe("PlanDecisionService", () => {
     }), true);
   });
 
+  it("uses the explicit runId when resolving a plan decision instead of session.latestRunId", () => {
+    const snapshot = snapshotWithPlanDecision();
+    const { service, deps } = createHarness({
+      ledgerBacked: false,
+      snapshot,
+      latestRunId: "run-latest-other",
+    });
+
+    service.resolve({
+      sessionId: "session-plan-1",
+      runId: snapshot.runId,
+      decisionId: "decision-1",
+      status: "accepted",
+    });
+
+    expect(deps.getRunOrThrow).toHaveBeenCalledWith(snapshot.runId);
+    expect(deps.cacheRun).toHaveBeenCalledWith(expect.objectContaining({
+      runId: snapshot.runId,
+      planDecisions: [expect.objectContaining({ id: "decision-1", status: "accepted" })],
+    }), true);
+  });
+
   it("throws when the session has no latest run", () => {
     const { service } = createHarness({
       ledgerBacked: true,

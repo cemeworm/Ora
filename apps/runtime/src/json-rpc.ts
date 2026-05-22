@@ -194,6 +194,8 @@ export function createRuntimeMethodHandler(
         return store.dismissSessionBranchGroup(request.params);
       case "sessions.resolvePlanDecision":
         return store.resolvePlanDecision(request.params);
+      case "sessions.acceptPlanDecisionAndResume":
+        return store.acceptPlanDecisionAndResume(request.params, { onStream: options.onRunStream });
       case "sessions.archive":
         return store.archiveSession(request.params);
       case "channels.create":

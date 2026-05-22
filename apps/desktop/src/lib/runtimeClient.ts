@@ -110,6 +110,7 @@ import type {
   SessionBranchGroupDismissParams as OraSessionBranchGroupDismissParams,
   SessionBranchGroupGetParams as OraSessionBranchGroupGetParams,
   SessionBranchGroupListParams as OraSessionBranchGroupListParams,
+  SessionAcceptPlanDecisionAndResumeParams as OraSessionAcceptPlanDecisionAndResumeParams,
   SessionDetail as OraSessionDetail,
   SessionPlanDecisionResolveParams as OraSessionPlanDecisionResolveParams,
   SessionSummary as OraSessionSummary,
@@ -243,6 +244,7 @@ export type {
   OraSessionBranchGroupDismissParams,
   OraSessionBranchGroupGetParams,
   OraSessionBranchGroupListParams,
+  OraSessionAcceptPlanDecisionAndResumeParams,
   OraSessionCreateParams,
   OraSessionPlanDecisionResolveParams,
   OraSessionDetail,
@@ -650,6 +652,9 @@ export function createRuntimeClient() {
     },
     async resolvePlanDecision(params: OraSessionPlanDecisionResolveParams): Promise<OraSessionDetail> {
       return call<OraSessionDetail>("sessions.resolvePlanDecision", params);
+    },
+    async acceptPlanDecisionAndResume(params: OraSessionAcceptPlanDecisionAndResumeParams): Promise<OraRunHandle> {
+      return call<OraRunHandle>("sessions.acceptPlanDecisionAndResume", params);
     },
     async importEvaluationDataset(params: {
       name?: string;
@@ -1655,6 +1660,8 @@ class LocalJsonRpcRuntime {
         return this.dismissSessionBranchGroup(params);
       case "sessions.resolvePlanDecision":
         return this.resolvePlanDecision(params);
+      case "sessions.acceptPlanDecisionAndResume":
+        return this.acceptPlanDecisionAndResume(params);
       case "sessions.archive":
         return this.archiveSession(params);
       case "channels.list":
@@ -4573,6 +4580,32 @@ class LocalJsonRpcRuntime {
     return this.getSessionDetail({ sessionId: params.sessionId });
   }
 
+  private acceptPlanDecisionAndResume(params: unknown): OraRunHandle {
+    if (
+      typeof params !== "object" ||
+      params === null ||
+      !("sessionId" in params) ||
+      typeof params.sessionId !== "string" ||
+      !("runId" in params) ||
+      typeof params.runId !== "string" ||
+      !("decisionId" in params) ||
+      typeof params.decisionId !== "string"
+    ) {
+      throw new Error("Invalid accept-plan resume params.");
+    }
+    this.resolvePlanDecision({
+      sessionId: params.sessionId,
+      runId: params.runId,
+      decisionId: params.decisionId,
+      status: "accepted",
+    });
+    return this.resumeStreamingRun(
+      params.runId,
+      ("reason" in params && typeof params.reason === "string") ? params.reason : USER_RESUMED_MESSAGE,
+      { planDecisionResolutions: [{ decisionId: params.decisionId, status: "accepted" }] },
+    );
+  }
+
   private sessionWithLatestAttention(session: OraSessionSummary): OraSessionSummary {
     const latestRun = session.latestRunId
       ? this.runs.get(session.latestRunId)
@@ -5314,6 +5347,19 @@ class LocalJsonRpcRuntime {
     this.runs.set(runId, updated);
     this.updateSessionFromSnapshot(updated);
     return updated;
+  }
+
+  private resumeStreamingRun(runId: string, reason: string, patch: Record<string, unknown> = {}): OraRunHandle {
+    const snapshot = this.resumeRun({ runId, reason, patch });
+    return {
+      runId: snapshot.runId,
+      sessionId: snapshot.sessionId,
+      turnIndex: snapshot.turnIndex,
+      status: snapshot.status,
+      pattern: snapshot.pattern,
+      modeId: snapshot.modeId,
+      startedAt: snapshot.input.createdAt ?? snapshot.updatedAt,
+    };
   }
 
   private createSnapshot(

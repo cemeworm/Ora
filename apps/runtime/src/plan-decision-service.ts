@@ -35,17 +35,24 @@ export class PlanDecisionService {
   resolve(params: unknown): SessionDetail {
     const parsed = SessionPlanDecisionResolveParamsSchema.parse(params);
     const session = this.deps.getSessionOrThrow(parsed.sessionId);
-    const latestRunId = session.latestRunId;
-    if (!latestRunId) {
+    const targetRunId = parsed.runId ?? session.latestRunId;
+    if (!targetRunId) {
       throw new OraRuntimeError(`Session '${parsed.sessionId}' has no run to resolve.`, -32004, {
         sessionId: parsed.sessionId,
       });
     }
-    const snapshot = this.deps.getRunOrThrow(latestRunId);
+    const snapshot = this.deps.getRunOrThrow(targetRunId);
+    if (snapshot.sessionId !== parsed.sessionId) {
+      throw new OraRuntimeError(`Run '${targetRunId}' does not belong to session '${parsed.sessionId}'.`, -32004, {
+        sessionId: parsed.sessionId,
+        runId: targetRunId,
+      });
+    }
     const existing = snapshot.planDecisions.find((decision) => decision.id === parsed.decisionId);
     if (!existing) {
       throw new OraRuntimeError(`Plan decision '${parsed.decisionId}' does not exist.`, -32004, {
         sessionId: parsed.sessionId,
+        runId: targetRunId,
         decisionId: parsed.decisionId,
       });
     }
@@ -67,7 +74,7 @@ export class PlanDecisionService {
       createRuntimeGateAppendAdapter((entry) => {
         this.deps.appendSessionLedgerEntry(parsed.sessionId, entry);
       }).appendGateLifecycleResult(this.gateService.resolvePlanDecisionGateLifecycle({
-        runId: latestRunId,
+        runId: targetRunId,
         turnIndex: snapshot.turnIndex,
         decisionId: parsed.decisionId,
         status: parsed.status,
@@ -75,14 +82,14 @@ export class PlanDecisionService {
       }));
       if (parsed.status === "accepted" && existing.planContent?.trim()) {
         this.deps.appendSessionLedgerEntry(parsed.sessionId, {
-          id: `${latestRunId}:handoff:${parsed.decisionId}`,
+          id: `${targetRunId}:handoff:${parsed.decisionId}`,
           type: "handoff.accepted_plan",
-          runId: latestRunId,
+          runId: targetRunId,
           turnIndex: snapshot.turnIndex ?? 1,
           createdAt: now,
           payload: {
             decisionId: parsed.decisionId,
-            sourceRunId: latestRunId,
+            sourceRunId: targetRunId,
             planContent: existing.planContent.trim(),
             acceptedAt: now,
           },
