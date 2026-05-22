@@ -1,8 +1,6 @@
 # Ora Channel Connectors：外部渠道入口
 
-本文档解释 Ora 如何通过 Channel/Connector 体系接入外部消息平台，将多渠道消息统一转换为内部 Runtime 的 session/run，并将执行结果递送回去。
-
-> **最近更新 (2026-05-18)**：delivery 重试消费者（指数退避 + 最大重试）、WeChat contextToken 持久化、delivery 状态机补全（sending/failed）、adapter onIngest 溢出感知、WeChat 流式出站。
+Ora 是一个桌面端 AI Agent 工作台，Agent 在本地 Runtime 中运行。但用户不一定在电脑前，更多时候是通过 Slack、微信、飞书这些日常工具发消息过来。Channel/Connector 体系就是解决这件事的：把外部平台的消息统一转换成内部 session/run，Agent 执行完后再把结果送回对应的对话里。
 
 ## 阅读地图
 
@@ -22,7 +20,19 @@
 
 ---
 
-## 1. 架构总览
+## 1. 为什么需要这套体系
+
+不同消息平台的差异是全方位的。连接方式上，Slack 用 WebSocket、Telegram 用长轮询、飞书用 webhook，接入逻辑各不相同。消息格式上，每个平台有自己的 JSON 结构，字段名、嵌套层级完全不同。认证机制也一样，有的用 bot token，有的用 HMAC 签名，有的要 QR 码登录。
+
+如果每接一个新平台都单独写一套逻辑，三个问题会越来越严重：入站消息处理逻辑散落在各处，难以复用；出站投递状态没有统一追踪，丢消息了都不知道；外部对话和内部 session 的映射关系靠临时方案维护，容易错乱。
+
+Channel/Connector 体系用两层抽象解决这个问题。**ChannelAdapter** 负责和具体平台打交道，每个平台实现同一个接口，把平台原生消息规范化为统一格式。**ChannelManager** 负责后续所有通用逻辑，包括去重、命令路由、session 绑定、run 的创建和恢复，以及出站消息的构造和投递追踪。Channel 层只处理消息的收和发，不知道 Runtime 内部的模式图、gate、ledger 这些细节。
+
+---
+
+## 2. 架构怎么设计
+
+### 2.1 四层协作
 
 ```
 External Platform
@@ -63,13 +73,18 @@ External Platform
 └──────────────────────┘
 ```
 
-**核心原则**：Channel 层只负责消息的「收」和「发」。Run 的创建、恢复、结果等待全部委托给 `ChannelManager`，Manager 再委托给 `ChannelRunRuntime` 接口（对接 Runtime 的 session/run 生命周期）。Channel 层不知道模式图、gate、ledger 等内部细节。
+四层各司其职：
 
----
+- **ChannelAdapter**：和外部平台对接。启动连接、接收消息、把平台原生消息规范化为统一格式。出站方向负责把统一消息转换成平台 API 调用发出去。
+- **ChannelManager**：所有入站消息的唯一入口，承载完整的处理链：去重、附件增强、命令路由、binding 解析、session/run 生命周期管理、出站消息构造。
+- **ChannelStore**：封装持久化。channel 配置、binding 映射关系、消息记录、delivery 投递状态都在这一层落盘。
+- **ChannelMessageBus**：进程内的轻量 pub/sub，不持久化。入站消息写入内部队列，出站消息广播给所有订阅者。重启后消失，不是 source of truth。
 
-## 2. 关键类型
+### 2.2 关键类型
 
-### 2.1 ChannelConfig
+在深入流程之前，先看几个贯穿始终的核心类型。
+
+**ChannelConfig**，一个 channel 的完整配置：
 
 ```typescript
 ChannelConfig {
@@ -90,7 +105,7 @@ ChannelConfig {
 
 敏感字段（token、secret、password 等）在通过 API 读出时会被 `ChannelStore.redactConfig` 替换为 `[redacted]`。
 
-### 2.2 ChannelInboundMessage（入站统一消息）
+**ChannelInboundMessage**，入站统一消息。所有外部消息经过各自的 `normalizeXxxMessage` 函数映射为此结构：
 
 ```typescript
 ChannelInboundMessage {
@@ -111,9 +126,7 @@ ChannelInboundMessage {
 }
 ```
 
-所有外部消息经过各自的 `normalizeXxxMessage` 函数统一映射为此结构。
-
-### 2.3 ChannelOutboundMessage（出站统一消息）
+**ChannelOutboundMessage**，出站统一消息：
 
 ```typescript
 ChannelOutboundMessage {
@@ -129,7 +142,7 @@ ChannelOutboundMessage {
 }
 ```
 
-### 2.4 ChannelBinding
+**ChannelBinding**，外部对话到 Ora session 的映射。同 channel 下的同一 `externalChatId + externalThreadId` 共享一个 session，意味着外部频道内的多条消息会进入同一个 Ora 会话历史：
 
 ```typescript
 ChannelBinding {
@@ -144,9 +157,7 @@ ChannelBinding {
 }
 ```
 
-Binding 是外部对话到 Ora session 的多对一映射。同 channel 下的同一 `externalChatId + externalThreadId` 共享一个 session。这意味着外部频道内的多条消息会进入同一个 Ora 会话历史。
-
-### 2.5 ChannelDelivery
+**ChannelDelivery**，出站投递的耐久记录。注意它不是消息本身，而是「这条消息何时以何种状态投递到了外部平台」：
 
 ```typescript
 ChannelDelivery {
@@ -161,13 +172,9 @@ ChannelDelivery {
 }
 ```
 
-Delivery 是出站投递的耐久记录——不是消息本身，而是「这条消息何时以何种状态被投递到了外部平台」。
+### 2.3 ChannelManager：核心处理链
 
----
-
-## 3. ChannelManager：核心处理链
-
-`ChannelManager.ingest()` 是外部消息进入 Ora 的唯一入口。完整处理链如下：
+`ChannelManager.ingest()` 是外部消息进入 Ora 的唯一入口。完整处理链：
 
 ```text
 ingest(params)
@@ -199,26 +206,17 @@ ingest(params)
         └─ 14. 构造 outbound message → createDelivery → publishOutbound
 ```
 
-### 3.1 入队策略
+几个关键决策点：
 
-入队键 = `bindingId`（如果已有 binding）或 `channelId:externalChatId:externalThreadId`（无 binding 时）。同一键的消息串行处理，不同键的消息并行处理。当队列总数超过 `maxBindingQueueSize`（默认 20）且当前键不在队列中时，返回忙响应。
+**入队串行化**，入队键 = `bindingId`（已有 binding 时），或 `channelId:externalChatId:externalThreadId`（无 binding 时）。同一键的消息串行处理，不同键的消息并行处理。队列总数超过 `maxBindingQueueSize`（默认 20）且当前键不在队列中时，返回忙响应。
 
-### 3.2 Run 超时
+**Run 超时**，`startAndWaitForRun` 和 `resumeAndWaitForRun` 通过 `runTimeoutMs`（默认 60s）限制等待时间。超时后抛出错误，Manager 不自动重试。
 
-`startAndWaitForRun` 和 `resumeAndWaitForRun` 通过 `runTimeoutMs`（默认 60s）限制等待时间。超时后抛出错误，Manager 不会自动重试。
+**项目发现**，当 prompt 涉及本地文件相关关键词（obsidian/vault/markdown 等）且 session 未绑定项目时，Manager 先尝试匹配已有 project，若无匹配则扫描文件系统，返回最多 `projectDiscoveryLimit` 个候选，等待用户数字选择后绑定 project 到 session 再启动 run。
 
-### 3.3 项目发现
+### 2.4 ChannelAdapter 接口
 
-当 prompt 包含本地文件相关关键词（obsidian/vault/markdown 等）且 session 尚未绑定项目时，Manager 会：
-
-1. 先尝试匹配已有 project
-2. 若无匹配，扫描文件系统（`discoverProjectCandidates`）
-3. 返回最多 `projectDiscoveryLimit` 个候选，等待用户数字选择
-4. 选择后绑定 project 到 session，启动 run
-
----
-
-## 4. ChannelAdapter 接口
+每个平台适配器实现这个接口：
 
 ```typescript
 interface ChannelAdapter {
@@ -232,13 +230,52 @@ interface ChannelAdapter {
 }
 ```
 
-每个平台适配器实现这个接口。`start`/`stop` 管理连接生命周期，`send` 处理出站投递。
+`start`/`stop` 管理连接生命周期，`send` 处理出站投递。入站方式分两类：
+
+- **被动接收（webhook）**：http_webhook、feishu、dingtalk。HTTP server 收到 POST 后直接调用 `ChannelService.ingest()`。适配器的 `start()` 几乎为空。
+- **主动拉取（poll/WS）**：slack、discord、telegram、wechat、wecom。适配器的 `start()` 启动长轮询或 WebSocket 连接，收到消息后通过 `onIngest` 回调交给 Manager。
+
+### 2.5 ChannelMessageBus
+
+进程内的轻量 pub/sub，不持久化。`publishInbound()` 写入内部队列，`subscribeOutbound()` 注册订阅者，`publishOutbound()` 广播给所有订阅者。`ChannelService.ensureAdapter()` 在创建 adapter 时自动注册一个出站订阅者：收到 outbound message 后调用对应 adapter 的 `send()`，并更新 delivery 状态。
+
+### 2.6 ChannelStore
+
+封装所有持久化操作，底层依赖 `RuntimePersistenceBackend`：
+
+| 方法 | 功能 |
+| --- | --- |
+| `createConfig` / `updateConfig` / `deleteConfig` | Channel 配置 CRUD。update 后自动重启 adapter |
+| `getConfig` / `getConfigOrThrow` | 读取配置（默认 redact 敏感字段） |
+| `findBinding` | 按 channelId + externalChatId + externalThreadId 查 binding |
+| `createBinding` | 新建 binding（如已有同键 binding 则复用 ID 更新） |
+| `recordInbound` / `recordOutbound` | 记录消息（入站去重 key：externalMessageId） |
+| `createDelivery` / `updateDelivery` | 投递追踪（创建、队列、发送、成功、失败、重试） |
+| `listBindings` / `listDeliveries` | 列表查询 |
+
+`recordInbound` 的去重是最前端的防线，在 `ChannelManager.ingest()` 阶段就拦截重复消息，避免重复触发 run。
+
+### 2.7 ChannelService：生命周期管理
+
+`ChannelService` 是外部 API 的 facade，协调 Manager / Store / Bus / Adapters：
+
+- `create`：`store.createConfig()` + 自动启动 adapter（如果 `autoStartAdapters=true`）
+- `update`：停止旧 adapter → `store.updateConfig()` → 启动新 adapter
+- `delete`：停止 adapter → `store.deleteConfig()`
+- `start` / `stop` / `restart`：单个 adapter 生命周期
+- `startAll`：启动所有 enabled 的 adapter（容错：单个失败不阻断其他）
+- `ingest`：委托给 `manager.ingest()`
+- `status`：聚合所有 adapter + bus 状态
 
 ---
 
-## 5. 各平台适配器对比
+## 3. 具体有哪些实现
 
-### 5.1 连接模式
+### 3.1 平台适配器
+
+目前支持 8 种平台。
+
+#### 连接模式
 
 | 平台 | Kind | 入站方式 | 出站方式 | 是否有 onIngest 回调 |
 | --- | --- | --- | --- | --- |
@@ -251,12 +288,7 @@ interface ChannelAdapter {
 | WeChat | `wechat` | Long polling `getupdates` (iLink) | HTTP `sendmessage` (iLink) | 是（poll 收到消息后回调） |
 | WeCom | `wecom` | WebSocket (`aibot_subscribe`) | WebSocket (`aibot_send_msg`) | 是（WS 收到消息后回调） |
 
-入站方式分为两大类：
-
-- **被动接收（webhook）**：http_webhook、feishu、dingtalk。HTTP server 收到 POST 后直接调用 `ChannelService.ingest()`。适配器的 `start()` 几乎为空，不需要主动拉取。
-- **主动拉取（poll/WS）**：slack、discord、telegram、wechat、wecom。适配器的 `start()` 启动长轮询或 WebSocket 连接，收到消息后通过 `onIngest` 回调交给 Manager。
-
-### 5.2 消息规范化
+#### 消息规范化
 
 每个平台的 `normalizeXxxMessage` 函数负责将平台原生消息映射为 `ChannelIngestParams`（缺少 `channelId` 字段，由调用方补充）：
 
@@ -270,7 +302,7 @@ interface ChannelAdapter {
 | Feishu | `normalizeFeishuWebhookPayload` | 原始 webhook body | 挑战/消息二态；嵌套 JSON content 解析 |
 | DingTalk | `normalizeDingtalkWebhookPayload` | 原始 webhook body | 加密/明文双模式；`encrypt` 字段尝试 JSON.parse |
 
-### 5.3 认证配置
+#### 认证配置
 
 | 平台 | 关键 config 字段 | 认证方式 |
 | --- | --- | --- |
@@ -283,20 +315,16 @@ interface ChannelAdapter {
 | WeCom | `botId`, `botSecret` | WebSocket 连接后发送 `aibot_subscribe` |
 | DingTalk | `clientId`, `clientSecret` | OAPI gettoken → accessToken |
 
-### 5.4 特殊能力
+#### 特殊能力
 
-| 平台 | 特殊功能 |
-| --- | --- |
-| **WeChat** | QR 码绑定流程（`requestQrCode` / `pollQrCodeStatus`）；`contextTokenMap` 维护外部 chat 的上下文令牌；bot session 过期自动标记 unbound |
-| **Slack** | Socket Mode（无需公网 URL）；envelope 确认机制；WebSocket ping 心跳 |
-| **Discord** | Gateway session resume（断线重连时优先 RESUME 而非重新 IDENTIFY）；heartbeat 心跳 + jitter |
-| **Feishu** | URL 验证挑战（challenge）自动应答；嵌套 JSON content 解析（飞书消息正文可能是 JSON 字符串） |
+- **WeChat**：QR 码绑定流程（`requestQrCode` / `pollQrCodeStatus`）；`contextTokenMap` 维护外部 chat 的上下文令牌，已持久化到 config，重启不丢失；bot session 过期自动标记 unbound
+- **Slack**：Socket Mode，无需公网 URL；envelope 确认机制；WebSocket ping 心跳
+- **Discord**：Gateway session resume，断线重连时优先 RESUME 而非重新 IDENTIFY；heartbeat 心跳 + jitter
+- **Feishu**：URL 验证挑战（challenge）自动应答；嵌套 JSON content 解析
 
----
+### 3.2 HTTP Server 入口
 
-## 6. HTTP Server 入口
-
-`http-server.ts` 在 runtime 进程中启动一个轻量 HTTP server，提供三个端点：
+`http-server.ts` 在 runtime 进程中启动轻量 HTTP server，提供三个端点：
 
 ```text
 GET  /channels/status              → 全部 channel 状态
@@ -304,138 +332,76 @@ GET  /channels/:channelId/health   → 单个 channel 健康检查
 POST /channels/:channelId/webhook  → webhook 消息入口
 ```
 
-webhook 路径的认证分派逻辑：
-- `http_webhook` → `validateHttpWebhookAuth`
-- `feishu` → `validateFeishuWebhookAuth` + challenge 应答
-- `dingtalk` → `normalizeDingtalkWebhookPayload`
-- 其他 kind → 直接透传，由 Manager 处理
+webhook 路径的认证分派逻辑：`http_webhook` 走 `validateHttpWebhookAuth`，feishu 走 `validateFeishuWebhookAuth` + challenge 应答，dingtalk 走 `normalizeDingtalkWebhookPayload`，其他 kind 直接透传由 Manager 处理。只有 webhook 模式的平台经过 HTTP server，poll/WS 模式的平台由各自的 adapter 内部处理。
 
-注意：只有 webhook 模式的平台经过 HTTP server；poll/WS 模式的平台由各自的 adapter 内部处理。
+### 3.3 命令系统
 
----
-
-## 7. ChannelMessageBus
-
-`ChannelMessageBus` 是进程内的轻量 pub/sub，不持久化：
-
-- **Inbound**：`publishInbound()` 写入内部队列（当前仅用于记录统计，无消费者）
-- **Outbound**：`subscribeOutbound()` 注册订阅者；`publishOutbound()` 广播给所有订阅者
-
-`ChannelService.ensureAdapter()` 在创建 adapter 时自动注册一个出站订阅者：收到 outbound message 后调用对应 adapter 的 `send()` 方法，并更新 delivery 状态（sent / retry_scheduled）。
-
----
-
-## 8. ChannelStore
-
-`ChannelStore` 封装所有持久化操作，底层依赖 `RuntimePersistenceBackend`：
-
-| 方法 | 功能 |
-| --- | --- |
-| `createConfig` / `updateConfig` / `deleteConfig` | Channel 配置 CRUD。update 后自动重启 adapter |
-| `getConfig` / `getConfigOrThrow` | 读取配置（默认 redact 敏感字段） |
-| `findBinding` | 按 channelId + externalChatId + externalThreadId 查 binding |
-| `createBinding` | 新建 binding（如已有同键 binding 则复用 ID 更新） |
-| `recordInbound` / `recordOutbound` | 记录消息（入站去重 key：externalMessageId） |
-| `createDelivery` / `updateDelivery` | 投递追踪（创建→队列→发送→成功/失败/重试） |
-| `listBindings` / `listDeliveries` | 列表查询 |
-
-`ChannelStore.recordInbound` 的去重是最前端的防线——在 `ChannelManager.ingest()` 阶段就拦截重复消息，避免重复触发 run。
-
----
-
-## 9. ChannelService：生命周期管理
-
-`ChannelService` 是外部 API 的 facade，协调 Manager / Store / Bus / Adapters：
-
-- `create` → `store.createConfig()` + 自动启动 adapter（如果 `autoStartAdapters=true`）
-- `update` → 停止旧 adapter → `store.updateConfig()` → 启动新 adapter
-- `delete` → 停止 adapter → `store.deleteConfig()`
-- `start` / `stop` / `restart` → 单个 adapter 生命周期
-- `startAll` → 启动所有 enabled 的 adapter（容错：单个失败不阻断其他）
-- `ingest` → 委托给 `manager.ingest()`
-- `status` → 聚合所有 adapter + bus 状态
-
----
-
-## 10. 命令系统
-
-渠道支持四个内置命令（通过 `/` 前缀触发）：
+渠道支持四个内置命令，通过 `/` 前缀触发：
 
 | 命令 | 行为 |
 | --- | --- |
 | `/help` | 返回可用命令列表 |
 | `/status` | 返回当前 binding/session/project/queue 状态 |
-| `/new` | 为当前外部 chat 创建新 session（下次消息进入新 session） |
+| `/new` | 为当前外部 chat 创建新 session，下次消息进入新 session |
 | `/project [keyword]` | 触发项目发现流程，返回候选项目列表供用户选择 |
 
-命令由 `ChannelManager.processCommand` 处理，大部分命令直接生成 outbound 回复，不启动 run。
+命令由 `ChannelManager.processCommand` 处理，大部分直接生成 outbound 回复，不启动 run。
 
----
+### 3.4 附件处理
 
-## 11. 附件处理
-
-`enrichChannelAttachments` 对消息附带的 URL 附件进行下载增强：
+`enrichChannelAttachments` 对消息附带的 URL 进行下载增强：
 
 1. 仅处理 `https?://` 开头的 URL
 2. HTTP GET 下载，限制大小（默认 256KB）
 3. 计算 SHA256
-4. 文本类 MIME → 提取 textPreview（前 16KB）
-5. 二进制 → 提取 dataBase64
-6. 超限 → 标记 `too_large`
-7. 失败 → 标记 `failed` + error 信息
+4. 文本类 MIME，提取 textPreview（前 16KB）
+5. 二进制，提取 dataBase64
+6. 超限，标记 `too_large`
+7. 失败，标记 `failed` + error 信息
 
 增强后的附件注入到 `ChannelInboundMessage.attachments`，作为 run input context 的一部分传递给 Runtime。
 
----
+### 3.5 状态模型与 Source of Truth
 
-## 12. 状态模型与 Source of Truth
+- **ChannelConfig**：Channel 的 source of truth
+- **ChannelBinding**：外部对话到 Ora session 映射的 source of truth
+- **ChannelDelivery**：出站投递状态的 source of truth（不是 message 本身）
+- **ChannelInboundMessage**：已接收入站消息的耐久记录
+- **ChannelMessageBus**：不是 source of truth，它是瞬态的进程内事件通道，重启后消失
 
-- **ChannelConfig** 是 Channel 的 source of truth（存储在 `RuntimePersistenceBackend`）
-- **ChannelBinding** 是外部对话到 Ora session 映射的 source of truth
-- **ChannelDelivery** 是出站投递状态的 source of truth（不是 message 本身）
-- **ChannelInboundMessage** 是已接收入站消息的耐久记录
-- **ChannelMessageBus** 不是 source of truth——它是瞬态的进程内事件通道，重启后消失
+### 3.6 容易误解的点
 
----
+**Channel 不直接调用 LLM**。Channel 层的全部职责是消息收/发和 session/run 生命周期触发。实际的 agent loop 由 Runtime kernel 执行，Channel 不知道模式图、gate、ledger 的存在。
 
-## 13. 容易误解的点
+**Binding 不是用户账号**。一个外部 chat 只有一个 binding，但多个外部 user 可能在同一个 chat 里。`externalUserId` 仅用于 metadata 记录，不参与权限判断。
 
-1. **Channel 不直接调用 LLM**。Channel 层的全部职责是消息收/发和 session/run 生命周期触发。实际的 agent loop 由 Runtime kernel 执行。Channel 不知道模式图、gate、ledger 的存在。
+**HTTP server 是 webhook 入口，不是 API 网关**。`/channels/:id/webhook` 只服务外部平台的回调。Ora 自身的管理 API（创建/启停 channel 等）走另一个 JSON-RPC 通道。
 
-2. **Binding 不是用户账号**。一个外部 chat 只有一个 binding，但多个外部 user 可能在同一个 chat 里。`externalUserId` 仅用于 metadata 记录，不参与权限判断。
+**Adapter 状态不等于 Channel 状态**。`ChannelService.status()` 返回 adapter 的瞬时状态（running/stopped），但 ChannelConfig 的 `enabled` 是耐久状态。adapter 可能因 token 无效而停止，但 `enabled` 仍然为 true。
 
-3. **HTTP server 是 webhook 入口，不是 API 网关**。`/channels/:id/webhook` 只服务外部平台的回调。Ora 自身的管理 API（创建/启停 channel 等）走另一个 JSON-RPC 通道。
+**DingTalk 没有 onIngest**。`DingtalkChannelAdapter` 不主动拉取消息，仅通过 HTTP webhook 被动接收。它的 `send()` 依赖 `getAccessToken()` 自动刷新 token。
 
-4. **Adapter 状态 ≠ Channel 状态**。`ChannelService.status()` 返回 adapter 的瞬时状态（running/stopped），但 ChannelConfig 的 `enabled` 是耐久状态。adapter 可能因 token 无效而停止，但 `enabled` 仍然为 true。
+### 3.7 当前边界与可演进方向
 
-5. **WeChat 的 contextToken 已持久化**。`contextTokenMap` 在构造函数中从 `config.config.contextTokens` 恢复，poll 循环中批次结束后通过 `onConfigUpdate` 持久化。重启后 contextToken 不丢失。
+**已实现：**
 
-6. **DingTalk 目前没有 onIngest**。`DingtalkChannelAdapter` 不主动拉取消息，仅通过 HTTP webhook 被动接收。它的 `send()` 依赖 `getAccessToken()` 自动刷新 token。
-
----
-
-## 14. 当前实现的保守边界与可演进方向
-
-### 已实现
 - 8 种平台适配器（http_webhook/feishu/wechat/wecom/telegram/dingtalk/slack/discord）
 - 入站消息规范化 + 去重
 - 附件下载增强
 - 命令系统（/help /status /new /project）
 - 项目发现（本地文件系统扫描）
 - Run continuation（approval/clarification 回复）
-- 出站投递 + 状态追踪（含 sending/sent/retry_scheduled/failed 完整状态机）
-- 投递重试消费者（指数退避 + 最大 5 次重试）
+- 出站投递完整状态机（queued → sending → sent/retry_scheduled → failed）
+- 投递重试：指数退避，最多 5 次，公式 `min(1000 * 2^attempt, 60000)`，耗尽后标记 failed。`applyDeliveryResult` 统一首次发送和重试的状态转换
 - 敏感字段 redact
-- WeChat QR 码绑定流程
-- WeChat contextToken 持久化（重启不丢失）
+- WeChat QR 码绑定 + contextToken 持久化（重启不丢失）
 - WeChat 流式出站（delta incremental messages）
-- Adapter onIngest 溢出感知（accepted 字段检查）
 
-### 未实现 / 可演进
-- **流式出站**：WeChat 渠道已支持 delta streaming（`isFinal: false` 增量消息 + `message_state: 1`）。`ChannelManager.startAndWaitForRun()` 通过 `onDelta` 回调提取 delta text，以 300ms 节流间隔 + 10 字符最小累积推送增量。其他平台 adapter 可通过 `supportsStreamingUpdates` capability 接入。最终消息仍以 `isFinal: true` 发送。
-- **文件出站**：`ChannelCapabilities.supportsFileOutbound` 和能力声明已定义，但各 adapter 的 `send()` 都只发送 text。
-- **消息编辑/删除**：`supportsMessageUpdate` 能力已声明，无实现。
-- **Channel 级 mode/pattern 绑定**：当前所有 channel run 都使用 `channelRunConfig()` 生成的默认配置（`modeSelection: "auto"`, `permissionMode: "default"`）。
-- **DingTalk 主动拉取**：当前仅被动 webhook，未接入钉钉的 WebSocket 推送。
-- **重试策略**：已实现完整重试消费者。`ChannelService` 启动后台 `setInterval` 扫描 `retry_scheduled` 的 delivery，最多 5 次重试，指数退避公式 `min(1000 × 2^attempt, 60000)`，耗尽后标记 `failed`。首次发送前先写 `sending` 状态，成功写 `sent`，失败进入重试链路。`applyDeliveryResult` 统一首次发送和重试的状态转换逻辑。
-- **附件超限处理**：超限附件仅标记 status，不通知用户或提供裁剪策略。
+**可演进方向：**
+
+- **流式出站**：WeChat 已支持 delta streaming（`isFinal: false` 增量消息，300ms 节流 + 10 字符最小累积推送）。其他 adapter 可通过 `supportsStreamingUpdates` capability 接入
+- **文件出站**：`supportsFileOutbound` 能力声明已定义，各 adapter 的 `send()` 均只发送 text
+- **消息编辑/删除**：`supportsMessageUpdate` 已声明，无实现
+- **Channel 级 mode/pattern 绑定**：当前所有 channel run 使用 `channelRunConfig()` 默认配置（`modeSelection: "auto"`, `permissionMode: "default"`）
+- **DingTalk 主动拉取**：当前仅被动 webhook，未接入钉钉 WebSocket 推送
+- **附件超限处理**：超限附件仅标记 status，不通知用户或提供裁剪策略

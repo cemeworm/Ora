@@ -1,52 +1,223 @@
 # Ora Evaluation System：评测与 A/B 对比
 
-本文描述 Ora 的 Evaluation 系统 —— 包括评测数据集管理、Evaluation Compare（A/B 与多配置对比）、结果导向 Net Lift、failure taxonomy，以及评估结果的结构化报告。读完本文，应能理解如何比较两个或多个 evaluation config（如 `record_only` / `advisory` / `enforcing`），以及 verdict 如何从 outcome、过程信号与成本共同推导。
+Ora 的 Evaluation 系统做三件事：跑评测、比结果、把结论喂回 feedback loop。它在 Self-Iteration 闭环里承担评测门控（Evaluation Gate），也是 Mode Studio 变更的验证手段。
 
-> **最近更新 (2026-05-21)**：新增 Stage 3 dual reporting 基础结构。scorecard/report 现在可以在 `eval_v2_reporting` 开关下同时展示 `legacy_oracle_result` 与 `value_aligned_result` 两种视角，并按 `reportingMembership`、`reportingView`、`contextProbeClass`、`freshnessClass` 等切片解释旧/新口径冲突。其中 `reportingMembership` 已提升为默认解释入口，用于先拆开显式 split 子集与 shared-default 大盘。
+读完本文，你会理解怎么用 `compareEvaluationRuns` 和 `compareEvaluationConfigs` 比较两组或多组 evaluation config（比如 `record_only` / `advisory` / `enforcing`），以及 verdict 如何从结果信号、过程信号和成本共同推导。
 
 ## 阅读地图
 
 | 关注点 | 对应章节 |
 | --- | --- |
-| 评估系统在 Ora 中的位置 | [1. 定位：评估系统在 Ora 中的角色](#1-定位评估系统在-ora-中的角色) |
-| 数据集与 specs 目录结构 | [2. 评估资源组织](#2-评估资源组织) |
-| CaseComparison 与 MetricAggregate | [3. 对比核心类型](#3-对比核心类型) |
-| 两个 run 的逐 case 对比 | [4. compareEvaluationRuns：对比引擎](#4-compareevaluationruns对比引擎) |
-| Net Lift 与 outcome metrics | [5. Net Lift：结果优先的净提升](#5-net-lift结果优先的净提升) |
-| Verdict 与 multi-config 对比 | [6. Verdict：A/B 与 Three-way 判定](#6-verdictab-与-three-way-判定) |
-| 报告格式化 | [7. 报告输出](#7-报告输出) |
-| failure taxonomy 与常见边界 | [8. Failure Taxonomy 与常见边界](#8-failure-taxonomy-与常见边界) |
+| 评估系统在 Ora 中的位置 | [1. 为什么需要评估系统](#1-为什么需要评估系统) |
+| 对比引擎与核心类型 | [2. 对比引擎与核心类型](#2-对比引擎与核心类型) |
+| Net Lift 与 outcome metrics | [3. Net Lift：结果优先的综合净收益](#3-net-lift结果优先的综合净收益) |
+| Verdict 与 multi-config 对比 | [4. Verdict：A/B 与多配置判定](#4-verdictab-与多配置判定) |
+| Failure taxonomy | [5. Failure Taxonomy：失败分类体系](#5-failure-taxonomy失败分类体系) |
+| 数据集与 specs 目录结构 | [6. 输入：数据集与评估规范](#6-输入数据集与评估规范) |
+| 报告格式化 | [7. 输出：报告](#7-输出报告) |
+| 源码文件索引 | [核心源码文件](#核心源码文件) |
 
-核心源码文件：
+## 1. 为什么需要评估系统
 
-| 文件 | 职责 |
-| --- | --- |
-| `apps/runtime/src/evaluation-compare.ts` | A/B / multi-config 对比核心：`compareEvaluationRuns()`、`compareEvaluationConfigs()`、Net Lift、verdict |
-| `apps/runtime/src/evaluation-store.ts` | Evaluation run 存储、causal observation、outcome metrics、failure tags |
-| `apps/runtime/src/feedback-loop-store.ts` | 从 failure tags 聚合 semantic/intervention insight |
-| `evaluation/specs/` | 评估规范定义（JSON spec 文件） |
-| `evaluation/datasets/` | 评估数据集（19 个 JSON 数据集文件） |
-| `evaluation/scripts/` | 评估执行脚本 |
-
-## 1. 定位：评估系统在 Ora 中的角色
-
-评估系统是 Ora 质量保障和因果策略验证的核心基础设施。它有两层职责：
+评估系统是 Ora 的质量保障基础设施，承担两层职责：
 
 1. **回归守卫**：确保模式、prompt、工具策略的变更不会导致质量退化
 2. **因果 A/B 对比**：量化 causal mainline agent（带因果决策模块）相对于 legacy baseline 的净提升
 
-评估不是一次性活动 —— 它是 Self-Iteration 闭环的评测门控（Evaluation Gate），也是 Mode Studio 变更的验证手段。
+这两层职责共同支撑 Self-Iteration 闭环——每次迭代的变更在合入前经过评测门控验证，Mode Studio 的策略调整同理。评估结论不会用完即弃，它们流入 `LocalFeedbackLoopStore`，作为 failure taxonomy 和 intervention insight 的证据来源。
 
-## 2. 评估资源组织
+## 2. 对比引擎与核心类型
 
-### 2.1 目录结构
+### 2.1 CaseComparison（单 case 对比）
+
+```typescript
+CaseComparison {
+  caseId: string;
+  scoreA: number;           // Baseline 总分
+  scoreB: number;           // Target 总分
+  delta: number;            // scoreB - scoreA
+  direction: "improved" | "degraded" | "unchanged";  // delta > 0.01 / < -0.01 / 其他
+  metricDeltas: MetricDeltaEntry[];  // 逐 metric 差异
+  failureTagsA: string[];   // Baseline 失败标签
+  failureTagsB: string[];   // Target 失败标签
+}
+```
+
+### 2.2 MetricAggregate（跨 case 聚合）
+
+```typescript
+MetricAggregate {
+  metricId: string;
+  meanA: number;       // Baseline 均值
+  meanB: number;       // Target 均值
+  meanDelta: number;   // 平均差异
+  medianDelta: number; // 中位差异
+  winRate: number;     // B > A 的 case 占比
+  lossRate: number;    // B < A 的 case 占比
+  tieRate: number;     // delta ≈ 0 的 case 占比
+}
+```
+
+### 2.3 compareEvaluationRuns：对比流程
+
+```
+runA (Legacy/Baseline) + runB (Causal Mainline)
+  → 按 configId 筛选 caseResults
+  → 按 caseId 匹配两个 run 的 cases
+  → 逐对 compareCaseResult()
+  → buildMetricAggregates() 聚合
+  → computeNetLift() 净提升
+  → computeVerdict() 判定
+  → EvaluationComparisonReport
+```
+
+对比只处理两个 run 中 `caseId` 相同的 case，只在 A 或只在 B 的 case 会被跳过。
+
+每个 `EvaluationRun` 可以有多个 config（如 `config-0` = baseline, `config-1` = causal）。对比时通过 `configAId` / `configBId` 精确筛选，未指定时使用各 run 的第一个 config。
+
+### 2.4 compareEvaluationConfigs：多配置对比
+
+`compareEvaluationConfigs` 在同一 evaluation run 内比较多组 config（比如 `record_only` / `advisory` / `enforcing`），内部为每对 config 调用 `compareEvaluationRuns`，按 net lift 排名。
+
+```typescript
+MultiConfigComparison {
+  configs: ["record_only", "advisory", "enforcing"];
+  caseComparisons: CaseComparison[];
+  metricAggregates: MetricAggregate[];
+  netLiftByConfig: Record<string, number>;
+  verdictByConfig: Record<string, ComparisonVerdict>;
+}
+```
+
+对应输出格式：
+
+- `compareEvaluationRuns()`：双 run / 双 config 对比
+- `compareEvaluationConfigs()`：同一 evaluation run 内多 config 对比
+- `formatComparisonReport()`：A/B 报告
+- `formatMultiConfigReport()`：three-way / multi-config 报告
+
+### 2.5 对比的边界
+
+Evaluation Compare 对比的是已完成的评测 run，它本身不执行模型或工具——评测执行由外部 scheduler 或 CLI 触发。Case 按 `caseId` 精确匹配，两个 run 必须使用同一 dataset 才能得出有意义的对比。
+
+## 3. Net Lift：结果优先的综合净收益
+
+### 3.1 三层信号
+
+Net Lift 综合三层信号，结果优先：
+
+| 类别 | 指标 | 含义 |
+| --- | --- | --- |
+| 结果 | `task_success_rate` | 任务是否按 success criteria 真正完成 |
+| 结果 | `llm_judge_score` | 最终答案质量评分；带 provenance（见 3.3） |
+| 结果 | `counterfactual_lift` | 干预是否带来可观察的结果提升 |
+| 过程 | `effective_intervention` | 干预是否起到了正确作用 |
+| 过程 | `intent_resolution` | 是否理解并完成了用户真实意图 |
+| 过程 | `clarification_precision` | 澄清是否精准而非噪音 |
+| 风险 | `over_action` | 是否出现不必要的动作或过度干预 |
+| 成本 | token / latency / tool cost | 提升是否以不可接受的成本换来 |
+
+```typescript
+NetLift {
+  outcomeLift: number;   // 结果质量提升
+  decisionLift: number;  // 决策质量提升
+  costPenalty: number;   // 成本惩罚
+  netLift: number;       // outcomeLift + decisionLift - costPenalty
+}
+```
+
+### 3.2 计算逻辑
+
+`computeNetLift()` 按三步推导：
+
+1. **先看 outcome**：`task_success_rate`、`llm_judge_score`、`counterfactual_lift` 的权重最高
+2. **再看 intervention quality**：`effective_intervention`、`intent_resolution`、`clarification_precision` 用来解释"为什么好/不好"
+3. **最后扣掉风险和成本**：过度操作、明显的 token / latency / tool cost 增长按 penalty 处理
+
+Net Lift 不是固定公式，结果信号权重最高，但具体实现会随评估目标调整。它属于工程决策辅助工具，不是统计显著性检验。
+
+### 3.3 llm_judge_score 的 provenance
+
+`llm_judge_score` 显式记录来源，不同 provenance 的解释权重不同：
+
+- `explicit_llm_judge`：spec 声明了 `kind: "llm_judge"` evaluator 并成功返回评分
+- `auto_llm_judge`：spec 没有手写 evaluator，但请求了 `llm_judge_score`，runner 根据 judge config 自动合成了 judge evaluator
+- `heuristic_proxy`：未配置可用 judge，或 judge 调用失败，metric 回退到 heuristic proxy
+
+前两种 provenance 可以当作真正的 judge outcome 信号，`heuristic_proxy` 则是代理信号，报告中会区分对待。
+
+### 3.4 Resolver-aware 工具质量指标
+
+评估还会追踪一组工具面的健康指标，回答"这次 run 是否按期望的工具工作流在做事"：
+
+| 指标 | 含义 | 关注点 |
+| --- | --- | --- |
+| `visible_surface_shrinkage` | root resolver 是否显著收窄默认 visible surface | 是否仍把过宽工具面暴露给 root agent |
+| `explore_first_score` | 是否先进入高层 Explore 入口 | 是否优先用 `repo.explore` 等高层入口 |
+| `atomic_tool_hops` | 原子 read/list/grep/glob hop 是否过多 | 是否靠大量低层文件 hop 拼仓库理解 |
+| `first_locate_success` | 第一次 locate 是否拿到可用证据 | `repo.explore` 的定位质量 |
+| `shell_explore_restraint` | shell 是否被当作默认探索入口 | 是否绕过 resolver 设计，把 shell 当侦察工具 |
+
+这些指标的解释边界：它们是 resolver-aware / family-aware 的工作流质量信号，不是任务成功率的替代品；当 `repo.explore` 本轮不可见时，部分指标按"允许原子 fallback"处理，不直接记为失败。
+
+## 4. Verdict：A/B 与多配置判定
+
+### 4.1 A/B verdict
+
+双配置比较给出四种结论：
+
+```typescript
+type ComparisonVerdict =
+  | "causal_wins"
+  | "legacy_wins"
+  | "mixed"
+  | "inconclusive";
+```
+
+Verdict 综合三个维度：outcome 是否更好、成本是否可接受、数据是否足够完整。`missing_causal_data` 这类 failure 会把 verdict 推向 `inconclusive`——对比基础不完整，无法给出可靠结论。
+
+`mixed` 表示在某些维度有改善、某些有退化，需要人工审查具体哪些 case 退化了。
+
+### 4.2 Three-way 判定
+
+同一 spec 下同时跑 `record_only` / `advisory` / `enforcing` 三档 gate 配置时，系统关注：哪个 config 的 outcome 最稳、哪个带来的 over-action / cost penalty 最小、哪个 config 的 failure tags 最集中暴露 semantic gap。
+
+Three-way 产出的不是"永远唯一正确的模式"，而是：
+- config 之间的 pairwise compare
+- 每个 config 的 net lift
+- 每个 config 的 failure profile
+- 最终推荐或 `mixed` 结论
+
+Three-way 经常用来回答"哪档 gate 更适合当前 workload"，而不是宣布一种模式永久胜出。
+
+## 5. Failure Taxonomy：失败分类体系
+
+Failure tags 沿两条边界组织：
+
+- **semantic-state gap**：没理解任务
+  - `latent_goal_missing`
+  - `latent_goal_mismatch`
+  - `under_clarification`
+- **intervention / outcome gap**：理解了但动作或结果不对
+  - `wrong_intervention`
+  - `over_clarification`
+  - `over_action`
+  - `low_counterfactual_lift`
+  - `poor_outcome_quality`
+
+这样分类的目的是把"没理解任务"和"理解了但做错了"分开，让 feedback loop 沿这条边界聚合 insight，区分需要改进语义建模的场景和需要调整干预策略的场景。
+
+## 6. 输入：数据集与评估规范
+
+### 6.1 目录结构
 
 ```
 evaluation/
 ├── specs/
 │   ├── causal-ab-comparison.spec.json   # A/B 对比评估规范
 │   ├── causal-smoke-three-way.json      # record_only / advisory / enforcing 冒烟比较
-│   └── causal-full-three-way.json       # 三配置完整比较
+│   ├── causal-full-three-way.json       # 三配置完整比较
+│   └── ...                              # 共 11 个 spec 文件
 ├── datasets/
 │   ├── causal-intervention-decision-dataset.json  # 因果干预决策
 │   ├── output-quality-dataset.json                # 输出质量
@@ -66,11 +237,12 @@ evaluation/
 │   ├── e2e-task-dataset.json                      # 端到端任务
 │   ├── gaia-dataset.json                          # GAIA 基准
 │   ├── swe-bench-dataset.json                     # SWE-Bench 基准
-│   └── tau-bench-dataset.json                     # Tau-Bench 基准
+│   ├── tau-bench-dataset.json                     # Tau-Bench 基准
+│   └── ...                                        # 共 24 个数据集文件
 └── scripts/                                        # 执行脚本
 ```
 
-### 2.2 数据集覆盖维度
+### 6.2 数据集覆盖维度
 
 | 维度 | 数据集 | 关注点 |
 | --- | --- | --- |
@@ -83,225 +255,24 @@ evaluation/
 | 鲁棒性 | multi-turn, terminal-bench | 多轮、终态处理 |
 | 外部基准 | swe-bench, tau-bench | 第三方标准评测 |
 
-## 3. 对比核心类型
+评估数据集独立于 runtime 代码，`evaluation/datasets/` 中的 JSON 文件不参与 runtime 构建，修改数据集不需要重新编译。
 
-### 3.1 CaseComparison（单 case 对比）
+## 7. 输出：报告
 
-```typescript
-CaseComparison {
-  caseId: string;
-  scoreA: number;           // Baseline 总分
-  scoreB: number;           // Target 总分
-  delta: number;            // scoreB - scoreA
-  direction: "improved" | "degraded" | "unchanged";  // delta > 0.01 / < -0.01 / 其他
-  metricDeltas: MetricDeltaEntry[];  // 逐 metric 差异
-  failureTagsA: string[];   // Baseline 失败标签
-  failureTagsB: string[];   // Target 失败标签
-}
-```
+### 7.1 Markdown 报告
 
-### 3.2 MetricAggregate（跨 case 聚合）
-
-```typescript
-MetricAggregate {
-  metricId: string;
-  meanA: number;       // Baseline 均值
-  meanB: number;       // Target 均值
-  meanDelta: number;   // 平均差异
-  medianDelta: number; // 中位差异
-  winRate: number;     // B > A 的 case 占比
-  lossRate: number;    // B < A 的 case 占比
-  tieRate: number;     // delta ≈ 0 的 case 占比
-}
-```
-
-### 3.3 NetLift（净提升）
-
-```typescript
-NetLift {
-  outcomeLift: number;   // 结果质量提升
-  decisionLift: number;  // 决策质量提升
-  costPenalty: number;   // 成本惩罚
-  netLift: number;       // outcomeLift + decisionLift - costPenalty
-}
-```
-
-### 3.4 ComparisonVerdict（最终判定）
-
-```typescript
-type ComparisonVerdict = "causal_wins" | "legacy_wins" | "mixed" | "inconclusive";
-```
-
-### 3.5 MultiConfigComparison（多配置比较）
-
-当前 evaluation compare 不再只支持 A/B。对于同一 spec，它还可以直接比较多组 config：
-
-```typescript
-MultiConfigComparison {
-  configs: ["record_only", "advisory", "enforcing"];
-  caseComparisons: CaseComparison[];
-  metricAggregates: MetricAggregate[];
-  netLiftByConfig: Record<string, number>;
-  verdictByConfig: Record<string, ComparisonVerdict>;
-}
-```
-
-## 4. compareEvaluationRuns：对比引擎
-
-### 4.1 对比流程
-
-```
-runA (Legacy/Baseline) + runB (Causal Mainline)
-  → 按 configId 筛选 caseResults
-  → 按 caseId 匹配两个 run 的 cases
-  → 逐对 compareCaseResult()
-  → buildMetricAggregates() 聚合
-  → computeNetLift() 净提升
-  → computeVerdict() 判定
-  → EvaluationComparisonReport
-```
-
-### 4.2 Config 筛选
-
-每个 `EvaluationRun` 可以有多个 config（如 `config-0` = baseline, `config-1` = causal）。对比时：
-- 可指定 `configAId` / `configBId` 精确筛选
-- 未指定时使用第一个 config（`firstConfigId`）
-
-### 4.3 Case 匹配
-
-仅对比两个 run 中 `caseId` 相同的 case。只在 A 或只在 B 的 case 被跳过。
-
-### 4.4 Three-way comparison
-
-当前 causal 评估的主用法已经不是只有 “legacy vs causal” 两组，而是同一 spec 下比较：
-
-- `record_only`
-- `advisory`
-- `enforcing`
-
-对应入口：
-
-- `compareEvaluationRuns()`：双 run / 双 config 对比
-- `compareEvaluationConfigs()`：同一 evaluation run 内多 config 对比
-- `formatComparisonReport()`：A/B 报告
-- `formatMultiConfigReport()`：three-way / multi-config 报告
-
-## 5. Net Lift：结果优先的净提升
-
-当前 Net Lift 已经从“主要看过程启发式”改成 **结果优先**。
-
-### 5.1 当前主指标
-
-causal 评估现在同时看结果、过程和成本三层信号：
-
-| 类别 | 指标 | 含义 |
-| --- | --- | --- |
-| 结果 | `task_success_rate` | 任务是否按 success criteria 真正完成 |
-| 结果 | `llm_judge_score` | 最终答案质量评分；必须带 provenance（`explicit_llm_judge` / `auto_llm_judge` / `heuristic_proxy`） |
-| 结果 | `counterfactual_lift` | 干预是否带来可观察的结果提升 |
-| 过程 | `effective_intervention` | 干预是否起到了正确作用 |
-| 过程 | `intent_resolution` | 是否理解并完成了用户真实意图 |
-| 过程 | `clarification_precision` | 澄清是否精准而非噪音 |
-| 风险 | `over_action` | 是否出现不必要的动作或过度干预 |
-| 成本 | token / latency / tool cost | 提升是否以不可接受的成本换来 |
-
-### 5.2 Net Lift 的当前口径
-
-`computeNetLift()` 的主导思想是：
-
-1. **先看 outcome**
-   `task_success_rate`、`llm_judge_score`、`counterfactual_lift` 现在比单纯过程信号更重要。
-2. **再看 intervention quality**
-   `effective_intervention`、`intent_resolution`、`clarification_precision` 用来解释“为什么好/不好”。
-3. **最后扣掉风险和成本**
-   过度操作、明显的 token / latency / tool cost 增长会被当成 penalty。
-
-因此 Net Lift 现在更像“结果优先的综合净收益”，而不是一条固定权重永不变化的线性打分公式。
-
-### 5.3 `llm_judge_score` provenance
-
-`llm_judge_score` 不再默认等同于“真实 LLM 裁判分”。当前口径要求它显式记录来源：
-
-- `explicit_llm_judge`
-  - spec 显式声明了 `kind: "llm_judge"` evaluator，并成功返回评分。
-- `auto_llm_judge`
-  - spec 没有手写 evaluator，但请求了 `llm_judge_score`，runner 根据 judge config 自动合成了 judge evaluator 并成功评分。
-- `heuristic_proxy`
-  - 当前没有可用 judge，或 judge 调用失败，metric 回退到 heuristic proxy；报告必须把它视为代理信号，而不是把它表述成真实 judge。
-
-因此在阅读 compare/report 时，`llm_judge_score` 要同时看数值和 provenance；只有前两者才能当作真正的 judge outcome 信号。
-
-### 5.4 Resolver-aware / family-aware 工具质量指标
-
-从 visibility resolver phase-1 起，evaluation 还会额外跟踪一组“工具面是否健康”的指标。它们不是替代 outcome 指标，而是回答“这次 run 是否按期望的工具工作流在做事”：
-
-| 指标 | 含义 | 当前关注点 |
-| --- | --- | --- |
-| `visible_surface_shrinkage` | root resolver 是否显著收窄默认 visible surface | 是否仍把过宽工具面暴露给 root agent |
-| `explore_first_score` | 是否先进入高层 Explore 入口 | 是否优先使用 `repo.explore` 等高层入口，而不是直接落到底层执行 |
-| `atomic_tool_hops` | 原子 read/list/grep/glob hop 是否过多 | 是否还在靠很多低层文件 hop 拼仓库理解 |
-| `first_locate_success` | 第一次 locate 是否拿到可用证据 | `repo.explore` 的定位质量是否足够好 |
-| `shell_explore_restraint` | shell 是否被当作默认探索入口 | 是否仍绕过 resolver 设计，直接把 shell 当侦察工具 |
-
-这些指标的解释边界是：
-
-- 它们是 **resolver-aware / family-aware workflow quality signals**，不是直接的任务成功率替代品
-- 它们会结合 run observation 中的 resolver 可见面、tool family 使用、`repo.explore` telemetry 一起解释
-- 当 `repo.explore` 本轮并不可见时，部分指标会按“允许原子 fallback”而不是直接记为失败
-
-## 6. Verdict：A/B 与 Three-way 判定
-
-### 6.1 A/B verdict
-
-双配置比较仍会给出：
-
-```typescript
-type ComparisonVerdict =
-  | "causal_wins"
-  | "legacy_wins"
-  | "mixed"
-  | "inconclusive";
-```
-
-当前 verdict 不是死板地看单一公式，而是综合三件事：
-
-1. outcome 是否更好
-2. 风险/成本是否可接受
-3. 数据是否足够公平和完整
-
-`missing_causal_data` 这类 failure 仍然会把 verdict 往 `inconclusive` 推，因为那代表对比基础不完整。
-
-### 6.2 Three-way 判定
-
-当同一 spec 下同时跑 `record_only` / `advisory` / `enforcing` 时，系统更关注：
-
-- 哪个 config 的 outcome 最稳
-- 哪个 config 带来的 over-action / cost penalty 最小
-- 哪个 config 的 failure tags 最集中暴露 semantic gap，哪个更像 intervention gap
-
-three-way 不会强行产出一个“永远唯一正确”的模式，而是输出：
-
-- config 之间的 pairwise compare
-- 每个 config 的 net lift
-- 每个 config 的 failure profile
-- 最终推荐或 `mixed` 结论
-
-## 7. 报告输出
-
-### 7.1 输出格式
-
-`formatComparisonReport(report, "markdown")` 生成 Markdown 报告，包含：
+`formatComparisonReport(report, "markdown")` 生成结构化 Markdown 报告，包含：
 
 1. **Overview**：总体得分、通过率、平均耗时、平均成本对比
-2. **Metric Deltas**：所有指标的名称、均值差异、中位差异、win/loss rate
+2. **Metric Deltas**：各指标均值差异、中位差异、win/loss rate
 3. **Net Lift**：outcome / intervention / cost 的综合结果
 4. **Verdict**：总体结论 + fairness / missing-data 提示
-5. **Case-Level Summary**：improved/degraded/unchanged 计数 + Top 退化 case
-6. **Resolver-aware Recommended Actions**：当 visible surface、explore-first workflow、`repo.explore` locate 质量或 shell restraint 表现差时，报告会给出结构化改进建议
+5. **Case-Level Summary**：improved/degraded/unchanged 计数 + 退化最明显的 case
+6. **Resolver-aware Recommended Actions**：当 visible surface、explore-first workflow、`repo.explore` locate 质量或 shell restraint 表现差时，报告给出结构化改进建议
 
 ### 7.2 Multi-config 报告
 
-`formatMultiConfigReport()` 在 A/B 之外还会补出：
+`formatMultiConfigReport()` 在 A/B 之外补充：
 
 - config 排名
 - pairwise outcome / cost 对照
@@ -311,45 +282,15 @@ three-way 不会强行产出一个“永远唯一正确”的模式，而是输�
 
 ### 7.3 JSON 输出
 
-`formatComparisonReport(report, "json")` 输出完整的 JSON 序列化结果，包含所有原始数据和计算中间值。
+`formatComparisonReport(report, "json")` 输出完整 JSON 序列化结果，包含原始数据和计算中间值，适合本地排查、切片复核和程序化分析。`evaluation/reports/` 默认只归档面向人工阅读的 markdown 报告，不需要同步保存 `.json` 副本。
 
-这类 JSON 更适合本地排查、切片复核和程序化分析；repo 内 `evaluation/reports/` 默认只归档面向人工阅读的 markdown 报告，不要求同步保存 `.json` 副本。
+## 核心源码文件
 
-## 8. Failure Taxonomy 与常见边界
-
-### 8.1 当前 failure taxonomy
-
-causal 相关 failure tags 现在已经不只是一堆平铺的错误名，而是开始分成两大类：
-
-- **semantic-state gap**
-  - `latent_goal_missing`
-  - `latent_goal_mismatch`
-  - `under_clarification`
-- **intervention / outcome gap**
-  - `wrong_intervention`
-  - `over_clarification`
-  - `over_action`
-  - `low_counterfactual_lift`
-  - `poor_outcome_quality`
-
-这样做的目的，是把“没理解任务”与“理解了但动作做错/结果不够好”分开。后续 feedback loop 也正是沿这条边界聚合 insight。
-
-### 8.2 常见误解与边界
-
-1. **Evaluation Compare 不执行评测**。`compareEvaluationRuns` 对比已完成的评测 run 的结果，它本身不运行模型或工具。评测执行由外部 scheduler 或 CLI 触发。
-
-2. **Case 按 caseId 精确匹配**。两个 run 必须使用相同的 dataset 才能对比。如果 run B 有 run A 不存在的 case，这些 case 会被忽略。
-
-3. **Net Lift 不再只是旧版固定线性权重**。当前更强调 outcome 优先，具体实现会随评估目标演进。这不是统计显著性检验，而是一个工程决策辅助工具。
-
-4. **Verdict 不是绝对的"好坏"判断**。`mixed` 意味着在某些维度有改善、某些有退化，需要人工审查具体哪些 case 退化来判断是否可接受。
-
-5. **Three-way 不是强行选一个冠军**。它经常用于回答“哪档 gate 更适合当前 workload”，而不是宣布一种模式永久胜出。
-
-6. **failure taxonomy 不是纯展示标签**。这些 tags 会继续流入 feedback loop，用来区分 semantic-state gap 和 intervention gap。
-
-7. **评估数据集独立于 runtime 代码**。`evaluation/datasets/` 中的 JSON 文件是评估的输入数据，不参与 runtime 构建。修改数据集不需要重新编译。
-
----
-
-> **核心判断**：Evaluation 系统现在不只是“做一份 causal vs legacy 的比分表”，而是 Ora 用来比较多档 gate 配置、追踪结果质量、定位 semantic/intervention failure，并把这些结论继续回流给 feedback loop 的量化基础设施。
+| 文件 | 职责 |
+| --- | --- |
+| `apps/runtime/src/evaluation-compare.ts` | A/B / multi-config 对比核心：`compareEvaluationRuns()`、`compareEvaluationConfigs()`、Net Lift、verdict |
+| `apps/runtime/src/evaluation-store.ts` | Evaluation run 存储、causal observation、outcome metrics、failure tags |
+| `apps/runtime/src/feedback-loop-store.ts` | 从 failure tags 聚合 semantic/intervention insight |
+| `evaluation/specs/` | 评估规范定义（JSON spec 文件） |
+| `evaluation/datasets/` | 评估数据集（JSON 数据集文件） |
+| `evaluation/scripts/` | 评估执行脚本 |

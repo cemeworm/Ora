@@ -1,894 +1,73 @@
-# Ora Gate、Continuation、Resume 机制
+# Ora 的 Gate、Continuation 与 Resume
 
-本文描述 Ora 的中断-恢复机制：gate 如何打开与解决、continuation frame 如何记录暂停点、resume 如何分类与派发。读完本文，应能理解三种 gate 的本质区别、resume 的三条策略路径、GateProjection 如何统一 UI 状态消费，以及为什么 approved tool continuation 不由 dispatcher 直接执行。
+Ora 运行时面临一个核心矛盾：Agent 做事需要外部决策，但模型不能无限等。Agent 在执行过程中会遇到需要用户审批的工具调用、需要澄清的模糊指令、需要确认的执行计划 — 这些场景都要求 Agent 停下来，把控制权交还给用户，等用户给出回应后再从断点继续。
 
-> **最近更新 (2026-05-19)**：plan decision same-run resume、accepted/declined 双路径交互语义、UI synthetic user turn 投影、accepted-plan handoff 兼容路径、GateProjection 与 session-level interaction 对齐。
+Ora 用三个概念解决这个矛盾：
 
-## 阅读地图
+- **Gate**：为什么停。一个持久化到 ledger 的事实，记录运行因为什么原因被阻塞。
+- **Continuation Frame**：停在哪里。一个结构化的暂停点快照，记录恢复到断点所需的全部上下文。
+- **Resume**：怎么继续。一套策略派发机制，根据 frame 的 ownership 和 pending 状态决定走哪条恢复路径。
 
-| 关注点 | 对应章节 |
-| --- | --- |
-| 四种中断类型及其区别 | [1. 中断类型：Clarification / Approval / Plan Decision / Cancellation](#1-中断类型clarification--approval--plan-decision--cancellation) |
-| Gate 如何进入 ledger 并耐久化 | [2. Gate 生命周期：从快照到 ledger](#2-gate-生命周期从快照到-ledger) |
-| Continuation frame 的结构与语义 | [3. Continuation Frame：暂停点的结构化记录](#3-continuation-frame暂停点的结构化记录) |
-| Resume patch 的解析与 strategy 分类 | [4. Resume 入口：RunResumeService](#4-resume-入口runresumeservice) |
-| 三条 resume 策略的执行路径 | [5. Resume 三条策略](#5-resume-三条策略) |
-| Continuation dispatcher 的派发逻辑 | [6. Continuation 派发：RunContinuationDispatcher](#6-continuation-派发runcontinuationdispatcher) |
-| Kernel 如何执行 resume | [7. Kernel 执行边界：RunKernelExecutionService](#7-kernel-执行边界runkernelexecutionservice) |
-| Resume 如何收敛到最终状态 | [8. Resume 收敛：RunResumeFinalizationService](#8-resume-收敛runresumefinalizationservice) |
-| Plan decision 为什么不是普通 interrupt | [9. Plan Decision 的特殊性](#9-plan-decision-的特殊性) |
-| Gate 决议如何影响 session attention | [10. Gate 与 Session Attention](#10-gate-与-session-attention) |
-| 容易误解的点 | [11. 常见误解与边界](#11-常见误解与边界) |
-| 当前实现边界与可演进方向 | [12. 实现边界与演进方向](#12-实现边界与演进方向) |
+这三个概念通过 ledger 投影串联，最终由 desktop UI 以 attention 和 interaction 的形式消费。下面从为什么需要这套机制开始，逐步深入到它如何运作、以及具体的实现细节。
 
-核心源码文件：
+## 为什么需要 Gate 和 Resume
 
-| 文件 | 职责 |
-| --- | --- |
-| `apps/runtime/src/run-resume-service.ts` | Resume 入口：解析 patch、分类 strategy、编排三条 resume 路径 |
-| `apps/runtime/src/run-continuation-dispatcher.ts` | Continuation 派发：基于 frame ownership 判断 suspended-node / whole-mode / diagnostic |
-| `apps/runtime/src/run-kernel-execution-service.ts` | Kernel 执行边界：start/resume 进入 kernel、suspended-node resume snapshot 准备 |
-| `apps/runtime/src/run-resume-finalization-service.ts` | Resume 最终化：terminal/interrupted/streaming failure 的 snapshot、ledger、persistence 收敛 |
-| `apps/runtime/src/runtime-gate-service.ts` | Gate 生命周期管理：open/resolve entry 的生成逻辑 |
-| `apps/runtime/src/runtime-gate-ledger-service.ts` | Gate entry 写入 ledger 的适配层 |
-| `apps/runtime/src/run-orchestration.ts` | Resume patch 解析、approved actions 匹配、hasKernelResumeWork 判断 |
-| `apps/runtime/src/harness/runtime-interrupts.ts` | Interrupt 错误类型、Symbol.for() 双重识别、resume approval 匹配器 |
-| `apps/runtime/src/approved-file-write-resume.ts` | Approved tool continuation 的完整执行流程（含工具失败上下文保留） |
-| `apps/runtime/src/harness/runtime-kernel.ts` | Kernel 主循环，含 `resumeSuspendedFrameIfNeeded` 中断处理 |
-| `apps/runtime/src/run-kernel-lifecycle.ts` | Kernel 生命周期：traced kernel run / resume 入口 |
-| `packages/shared/src/runtime.ts` | `RunContinuationFrame`、`GateProjection`、`deriveSnapshotGateProjection()`、`SessionSummary.interactionGate` 等 shared contract |
-| `packages/shared/src/runtime-ledger.ts` | Ledger 类型、投影衍生、attention 推导、gate 重开支持 |
+### 四种中断场景
 
-## 1. 中断类型：Clarification / Approval / Plan Decision / Cancellation
+Ora 有四种需要停下来等外部输入的场景，它们有本质区别：
 
-Ora 有四种需要外部输入的中断类型，它们有本质区别：
+| 场景 | 触发条件 | Run 的状态 | 恢复方式 |
+| --- | --- | --- | --- |
+| **澄清问题** | 工具或 middleware 在执行中需要用户补充信息 | `interrupted`，抛出 `ClarificationInterruptError` | 用户提交答案后，同一 kernel loop 恢复 |
+| **审批工具** | 工具调用经过 risk/approval 判定后需要用户批准 | `interrupted`，抛出 `ApprovalInterruptError` | 用户批准 action ids 后，先 replay 工具再恢复模型 |
+| **计划决策** | Plan mode 产出完整的 `<proposed_plan>` | `succeeded`，但留下 pending `PlanDecisionGate` | 用户 accept 后可回到原 run 继续执行，也可以交给新 run 消费 |
+| **手动取消** | 用户主动中断运行 | `cancelled` 或 `interrupted` | 无 gate 参与，直接标记 run 状态 |
 
-```mermaid
-flowchart TD
-    A["Runtime needs external input"] --> B{"kind"}
-    B --> C["Clarification"]
-    B --> D["Approval"]
-    B --> E["Plan Decision"]
-    B --> F["Cancellation / Manual Interrupt"]
+前两种是"Run 中途被打断"的典型 interrupt：kernel loop 正在执行时抛出错误，run 进入 `interrupted`，创建 continuation frame 和 gate。取消则是直接的状态标记。
 
-    C --> C1["需要用户回答澄清问题"]
-    C1 --> C2["ClarificationInterruptError"]
-    C2 --> C3["gate.opened (clarification)"]
-    C3 --> C4["run.interrupted + continuation frame"]
-    C4 --> C5["resume with clarifications patch"]
-    C5 --> C6["gate.resolved + 继续同一 kernel loop"]
+Plan decision 最特殊 — 它不是中断，run 可以先成功结束，但 gate 仍然未解决。这意味着一个已经 `succeeded` 的 run 可以因为用户的 accept 操作再次进入 kernel 执行。
 
-    D --> D1["工具调用需要用户审批"]
-    D1 --> D2["ApprovalInterruptError"]
-    D2 --> D3["gate.opened (approval)"]
-    D3 --> D4["run.interrupted + continuation frame"]
-    D4 --> D5["resume with approvedActionIds"]
-    D5 --> D6["gate.resolved + 继续同一 kernel loop"]
+### 关于中断错误的跨 Realm 健壮性
 
-    E --> E1["plan run 产出 <proposed_plan>"]
-    E1 --> E2["run.done 但 PlanDecisionGate pending"]
-    E2 --> E3["session-level gate，可继续影响原 run 交互态"]
-    E3 --> E4["用户 accept/decline"]
-    E4 --> E5["accept → same-run kernel resume（当前主路径）"]
-    E4 --> E6["兼容路径：handoff.accepted_plan → implement run 消费"]
-    E4 --> E7["decline → resolve gate；desktop 默认恢复 composer，等待真实下一条 user turn"]
+`ClarificationInterruptError` 和 `ApprovalInterruptError` 同时使用 `Symbol.for()` 全局标记和 `instanceof` 进行类型识别。原因是 `instanceof` 在跨模块/跨 realm 场景下可能失效（不同 package 的依赖实例各自有一份类定义）。
 
-    F --> F1["用户手动取消/中断"]
-    F1 --> F2["run.interrupted 或 run.cancelled"]
-    F2 --> F3["无 gate 参与，直接标记 run 状态"]
-```
-
-关键区别：
-
-| 维度 | Clarification | Approval | Plan Decision | Cancellation |
-| --- | --- | --- | --- | --- |
-| **中断 run？** | 是，抛 `ClarificationInterruptError` | 是，抛 `ApprovalInterruptError` | 否，run 可以是 `succeeded` | 是，直接标记状态 |
-| **需要 resume？** | 是，同一 kernel loop 恢复 | 是，同一 kernel loop 恢复 | 现在 accept 可 same-run resume；compat 下仍支持跨 run handoff | 取决于取消后是否恢复 |
-| **Gate 类型** | `gate.opened` (clarification) | `gate.opened` (approval) | `gate.opened` (plan_decision) | 无 gate |
-| **触发时机** | 工具/middleware 调用 `ensureClarification` | 工具 action 进入审批 gate | plan mode 产出完整 `<proposed_plan>` | 用户或系统主动发起 |
-| **Resume 方式** | `flows.resume` + clarifications patch | `flows.resume` + approvedActionIds | `flows.resume` + `planDecisionResolutions`；compat 下也可走 accepted-plan handoff | 可选 `flows.resume` |
-| **Kernel 参与？** | 是，kernel resume | 是，kernel resume 或 approved tool continuation | accept 时可进入 kernel resume；decline 取决于调用侧是否继续同 run 修订 | 取决于恢复策略 |
-
-### 1.1 中断错误的跨 Realm 健壮性：Symbol.for()
-
-`ClarificationInterruptError` 和 `ApprovalInterruptError` 同时使用 `Symbol.for()` 全局标记和 `instanceof` 进行类型识别。这是因为 `instanceof` 在跨模块/跨 realm（如不同 package 的依赖实例）场景下可能失效。
+全仓库统一使用三个 helper 函数判断，不再直接依赖 `instanceof`：
 
 ```typescript
-// runtime-interrupts.ts
-const APPROVAL_INTERRUPT_SYMBOL = Symbol.for("ora.ApprovalInterrupt");
-const CLARIFICATION_INTERRUPT_SYMBOL = Symbol.for("ora.ClarificationInterrupt");
-
-export class ClarificationInterruptError extends Error {
-  public readonly [CLARIFICATION_INTERRUPT_SYMBOL] = true;
-  public readonly clarifications: PendingClarification[];
-  // ...
-}
-
-export class ApprovalInterruptError extends Error {
-  public readonly [APPROVAL_INTERRUPT_SYMBOL] = true;
-  constructor(public readonly actionId: string) {
-    super("Waiting for your approval before continuing.");
-  }
-}
+export function isApprovalInterruptError(error: unknown): error is ApprovalInterruptError { ... }
+export function isClarificationInterruptError(error: unknown): error is ClarificationInterruptError { ... }
+export function isAnyInterruptError(error: unknown): error is ApprovalInterruptError | ClarificationInterruptError { ... }
 ```
 
-全仓库统一使用三个 helper 函数进行判断，不再直接使用 `instanceof`：
+每个 helper 内部做双重检查：先试 `instanceof`，失败则回落 `Symbol.for()` 标记。这样保证了同一 realm 内的性能和跨 realm 场景的兼容性。
 
-```typescript
-export function isApprovalInterruptError(error: unknown): error is ApprovalInterruptError {
-  return error instanceof ApprovalInterruptError ||
-    (typeof error === "object" && error !== null &&
-      (error as Record<symbol, unknown>)[APPROVAL_INTERRUPT_SYMBOL] === true);
-}
-
-export function isClarificationInterruptError(error: unknown): error is ClarificationInterruptError {
-  return error instanceof ClarificationInterruptError ||
-    (typeof error === "object" && error !== null &&
-      (error as Record<symbol, unknown>)[CLARIFICATION_INTERRUPT_SYMBOL] === true);
-}
-
-export function isAnyInterruptError(error: unknown): error is ApprovalInterruptError | ClarificationInterruptError {
-  return isApprovalInterruptError(error) || isClarificationInterruptError(error);
-}
-```
-
-双重检查策略（`instanceof` + Symbol 标记）保证了最大兼容性：同一 realm 内 `instanceof` 命中，跨 realm 场景回落 Symbol 标记。
-
-### 1.2 Clarification 的触发路径
+### 澄清问题的触发路径
 
 工具或 middleware 在需要用户补充信息时，通过 `ensureClarification(s)` 抛出 `ClarificationInterruptError`。这个错误被 node loop 捕获后，node 进入 `interrupted` 状态，kernel 将 run 标记为 `interrupted` 并创建 continuation frame。
 
-### 1.3 Approval 的触发路径
+### 审批的触发路径
 
-工具调用在经过 risk/approval policy 判定后，如果需要审批，action 状态变为 `approval_required`。当 node loop 检测到有 approval_required 的 action 且未被批准时，抛出 `ApprovalInterruptError`。
+工具调用在经过 risk/approval policy 判定后，如果需要审批，action 状态变为 `approval_required`。当 node loop 检测到有 `approval_required` 的 action 且未被批准时，抛出 `ApprovalInterruptError`。
 
-### 1.4 Plan Decision 为什么不是普通 run interrupt
+### 常见误解
 
-Plan decision 与其他两类 gate 有三个本质差异：
+在深入机制之前，先澄清几个容易误解的点：
 
-1. **run 可先成功结束，但 gate 仍未解决**：plan run 产出 `<proposed_plan>` 后通常先以 `succeeded` 收束，同时留下 pending `PlanDecisionGate`。
-2. **accept 现在可以回到原 run**：当前主路径里，accepted plan 会通过 `planDecisionResolutions` 进入 same-run kernel resume，把原 plan run 切到 implement 语义继续执行。
-3. **兼容的跨 run handoff 仍保留**：`handoff.accepted_plan` 和 `consumedByRunId` 仍是有效契约，用于旧数据、兼容消费和某些 implement run 入口。
-4. **它仍是 session-level gate**：交互态上的 `needs_plan_decision` 仍由 shared gate truth 驱动，不要求 UI 自己猜测“这是新 turn 还是 inline 子环节”。
+**"Resume 就是重新跑一遍 mode"** — 不是。Owner-backed resume 恢复到暂停的具体 node，不是从 mode 入口重新执行。只有 legacy 无 owner frame 或 frame 缺失时才退回 whole-mode。
 
-## 2. Gate 生命周期：从快照到 ledger
+**"Approved tool continuation 由 dispatcher 处理"** — 不是。Dispatcher 只处理 model continuation（决定恢复到哪个 agent/node）。Approved tool continuation 是 action execution 路径，由 `executeApprovedToolContinuationStrategy` 处理。两条路径平行，不是从属关系。
 
-Gate 的完整生命周期由两个服务协作完成：`RuntimeGateService` 生成 gate entry，`RuntimeGateLedgerService` 将它们写入 ledger。
+**"Plan decision 一定不涉及 resume"** — 曾经是，但现在 accepted plan 可以通过 `planDecisionResolutions` 回到原 run 做 same-run resume。跨 run handoff 契约仍然保留，用于兼容旧数据和显式的新 run 入口。
 
-```mermaid
-sequenceDiagram
-    participant Kernel
-    participant GateService as RuntimeGateService
-    participant GateLedger as RuntimeGateLedgerService
-    participant RunLedger as RunLedgerService
-    participant Ledger
+**"Gate 只是 UI 概念，在内存中管理"** — 不是。Gate 是 durable fact。`gate.opened` 和 `gate.resolved` 都是 ledger entry，掉电不丢。Desktop UI 消费的是 ledger-backed gate projection。
 
-    Note over Kernel: run 因 clarification/approval 中断
-    Kernel->>GateService: openSnapshotGateLifecycle(snapshot)
-    GateService->>GateService: 从 snapshot 提取 pending clarifications/approvals/planDecisions
-    GateService->>GateService: 为每种 gate 生成 gate.opened entry
-    GateService-->>Kernel: gateLifecycle entries
+**"Resume 后 gate 自动 resolve"** — 不是。Gate 的 resolve 需要显式的决议动作：澄清需要用户提供答案，审批需要用户明确批准 action ids，计划决策需要用户选择 accept 或 decline。Resume 只是将这些决议应用到 run 状态。
 
-    Kernel->>GateLedger: appendSnapshotOpenLifecycle
-    GateLedger->>GateLedger: 校验 lifecycle kind === "snapshot_open"
-    GateLedger->>RunLedger: appendRunLedgerEntry(gate.opened)
-    RunLedger->>Ledger: 写入 gate.opened entry
+**"Non-kernel resume 是不常见的特例"** — 常见。当 run 没有 modeSpec 时（比如某些 mutation 或旧格式 run），resume 就走 non-kernel 路径。它不做模型推理，直接在 snapshot 上做 mutation。
 
-    Note over Kernel: ... 中断，等待用户回复 ...
+## 机制如何运作
 
-    Kernel->>GateService: resolveResumeGateLifecycle(resolutions, resolvedAt)
-    GateService->>GateService: 生成 gate.resolved entries
-    GateService-->>Kernel: gateLifecycle entries
-
-    Kernel->>GateLedger: appendResumeResolveLifecycle
-    GateLedger->>GateLedger: 校验 lifecycle kind === "resume_resolve"
-    GateLedger->>RunLedger: appendRunLedgerEntry(gate.resolved)
-    RunLedger->>Ledger: 写入 gate.resolved entry
-```
-
-### 2.1 三类 Gate 的 entry 生成
-
-**Clarification Gate**：gateId = `clarification.id`（如 `clar-1`），每个 pending clarification 生成独立的 `gate.opened` entry。
-
-```json
-{
-  "type": "gate.opened",
-  "id": "run-1:gate:clar-1",
-  "payload": {
-    "gateId": "clar-1",
-    "kind": "clarification",
-    "pendingClarificationIds": ["clar-1"],
-    "clarification": { "id": "clar-1", "question": "...", "key": "target_path", ... }
-  }
-}
-```
-
-**Approval Gate**：gateId = `${runId}:approval`（如 `run-1:approval`），所有待审批的 action 共享一个 approval gate entry。
-
-```json
-{
-  "type": "gate.opened",
-  "id": "run-1:gate:approval",
-  "payload": {
-    "gateId": "run-1:approval",
-    "kind": "approval",
-    "pendingActionIds": ["action-1", "action-2"],
-    "pendingToolCallIds": ["tc-1", "tc-2"]
-  }
-}
-```
-
-**Plan Decision Gate**：gateId = `decision.id`，只对 `status === "pending"` 的 decision 生成 entry。
-
-```json
-{
-  "type": "gate.opened",
-  "id": "run-1:gate:decision-1",
-  "payload": {
-    "gateId": "decision-1",
-    "kind": "plan_decision",
-    "planDecision": { "id": "decision-1", "status": "pending", "planContent": "## Plan\n..." }
-  }
-}
-```
-
-### 2.2 Gate 去重与重开：existingEntryIds 与 entry ID 时间戳
-
-`RuntimeGateService.openedEntries` 接受 `existingEntryIds` 参数。**该参数由内部自动维护**——`openSnapshotGateLifecycle` 和 `resolveResumeGateLifecycle` 等调用点在生成 entry 前会从 ledger 提取已有 entry id 集合。如果某个 gate 的 entry id 已存在（例如 replay 或多次 flush），则跳过生成。
-
-这一机制保证了 gate entry 的幂等性，且不依赖调用方手动传入。
-
-**Gate 重开**：与原始设计不同，Ora 现在支持同一 gate 的重新打开。当第二次审批触发时，系统生成新的 `gate.opened` entry，entry ID 包含时间戳以区别于首次打开。Ledger 投影层使用 `state.gates.set(gateId, gate)`（Map.set 语义）——如果 `gateId` 已存在，新 entry 覆盖旧 entry，gate 状态从 `resolved` 回到 `open`。这使得多次审批场景（同一 run 内多次触发审批）的 gate 状态保持正确。
-
-### 2.3 Gate 在 ledger 投影中的生命周期
-
-在 `deriveSessionProjection` 的 `applyEntryToProjection` 中：
-
-- **`gate.opened`**：创建新的 `RuntimeGateProjection`（status = `open`）。但如果 gateId 已存在且 `status === "resolved"`，则忽略 — 防止 replay 时重新打开已解决的 gate。
-- **`gate.resolved`**：更新 gate 的 status 为 `resolved`，设置 `resolvedAt`。同时更新关联的 `planDecision.status`。
-
-这是 gate 幂等性的投影层保证：即使 ledger 中同时存在 `gate.opened` 和 `gate.resolved`，replay 时也只会得到一个 resolved gate，不会出现重复打开。
-
-## 3. Continuation Frame：暂停点的结构化记录
-
-当 run 因 clarification 或 approval 中断时，kernel 创建一个 `RunContinuationFrame`，记录足够的信息以便 resume 时精确恢复到暂停点。
-
-### 3.1 Frame 结构
-
-```typescript
-// packages/shared/src/runtime.ts
-RunContinuationFrameSchema = {
-  id: string;                        // frame 唯一标识
-  runId: string;
-  status: "paused" | "awaiting_model" | "resolved";
-  reason: "clarification_required" | "approval_required" | "manual_interrupt" | "tool_interrupted";
-
-  // Owner metadata（恢复目标定位）
-  agentId?: string;                  // 发起中断的 agent
-  nodeId?: string;                   // 发起中断的 node
-  planItemId?: string;               // 关联的 plan step
-
-  // 暂停点快照
-  modelIteration?: number;           // 模型调用次数
-  conversationCursor: number;        // 对话游标位置
-
-  // 待处理项
-  pendingActionIds: string[];        // 等待审批的 action ids
-  pendingToolCallIds: string[];      // 等待审批的 tool call ids
-  pendingClarificationIds: string[]; // 等待回答的 clarification ids
-
-  // Resume 追踪
-  approvedActionIds: string[];       // 已被批准的 action ids
-  resolvedClarificationIds: string[]; // 已解决的 clarification ids
-  resumedFromFrameId?: string;       // 从哪个 frame 恢复
-
-  // Node checkpoint（跨 node 的执行状态）
-  nodeCheckpoint?: {
-    modeId?: string;
-    agentId?: string;
-    nodeId?: string;
-    planItemId?: string;
-    eventSeq?: number;
-    conversationCursor?: number;
-    bag: Record<string, unknown>;    // 模式驱动的自定义状态
-  };
-
-  createdAt: number;
-  updatedAt: number;
-}
-```
-
-### 3.2 Frame 的 owner 概念
-
-Frame 的 `agentId` 和 `nodeId` 合称 owner metadata。Owner 决定了 resume 时应该恢复到哪个 agent/node：
-
-- **有 owner（owner-backed）**：frame 记录了明确的 `agentId`，resume 时可以精确恢复到暂停的 node。
-- **无 owner（ownerless）**：frame 缺失 `agentId`。如果 reason 是 `approval_required` 或 `clarification_required`（legacy frame），退回 whole-mode resume。如果 reason 是 `manual_interrupt` 或 `tool_interrupted`（危险 frame），进入 diagnostic failure。
-
-### 3.3 Frame 的状态变迁与链语义
-
-**单层状态变迁**：
-
-```
-paused → (resume 准备) → awaiting_model → (kernel 执行完成) → resolved
-```
-
-`continuationFrameAwaitingModel` 函数在 resume 进入 kernel 前将 frame 状态从 `paused` 切换为 `awaiting_model`，标记该 frame 已进入恢复流程。
-
-**多层嵌套 resume 的 Frame 链**：
-
-当 run 经历多次中断-恢复（如 resume → 再次 interrupt → 再次 resume）时，会形成 frame 链。`resumedFromFrameId` 的语义如下：
-
-- Frame A（首次中断）：`resumedFromFrameId = null`
-- Frame B（从 A 恢复后再中断）：`resumedFromFrameId = A.id` — 指向直接前驱
-- Frame C（从 B 恢复后再中断）：`resumedFromFrameId = B.id` — 始终指向最近恢复的来源 frame
-
-即 `resumedFromFrameId` 记录的是 **直接父 frame**，不是根 frame。完整祖先链需要通过回溯 `resumedFromFrameId` 逐级重建。
-
-**Frame 链的清理策略**：
-- 当前实现为单 frame 模型（`activeFrameId`），不支持嵌套 frame。每次 resume 后，前一个 frame resolve，新中断创建新 frame。
-- 长时间运行的 run 可能产生上百个 frame。建议在 ledger 投影中维护 frame 历史的最大长度（如保留最近 50 个），超出部分仅保留摘要。
-- Frame 链的完整性依赖 ledger 持久化：如果中间 frame 的 entry 被清理，`resumedFromFrameId` 指向的 frame 可能不在 frame 列表中。UI 层应优雅处理这种"断链"场景，显示为 `(orphaned)`。
-
-## 4. Resume 入口：RunResumeService
-
-`RunResumeService` 是 resume 的统一入口。它不执行 resume 本身，而是完成前置准备和 strategy 分类。
-
-### 4.1 prepare 流程
-
-```mermaid
-flowchart TD
-    A["flows.resume / runs.resume"] --> B["RunResumeService.prepare(params)"]
-    B --> C["RunResumeParamsSchema.parse(params)"]
-    C --> D["getRunOrThrow → 获取最新 snapshot"]
-    D --> E["parseResumePatch → 解析 clarificationPatch + approvedActionIds"]
-    E --> F["hasKernelResumeWork → 判断 snapshot 是否有 modeSpec 且有待处理 clarification/approval"]
-    F --> G["RuntimeGateService.resumeResolutions → 匹配待解决的 gate"]
-    G --> H["classifyRunResumeStrategy → 分类为三条策略之一"]
-    H --> I["返回 RunResumePreparation"]
-```
-
-### 4.2 parseResumePatch 的解析逻辑
-
-```typescript
-// run-orchestration.ts
-function parseResumePatch(patch: unknown): ParsedResumePatch {
-  // 1. 提取 clarificationPatch: patch.clarifications
-  // 2. 提取 approvedActionIds: patch.approvedActionIds (去空字符串)
-  return { patchRecord, clarificationPatch, approvedActionIds };
-}
-```
-
-Resume patch 的两种信息：
-- **clarificationPatch**：`{ clarifications: { "clar-1": "answer", ... } }` — 用户对澄清问题的回答
-- **approvedActionIds**：`{ approvedActionIds: ["action-1", "action-2"] }` — 用户批准的工具 action ids
-
-### 4.3 classifyRunResumeStrategy 的分类逻辑
-
-```typescript
-// run-resume-service.ts
-function classifyRunResumeStrategy(params): RunResumeStrategy {
-  // 1. approved tool continuation: snapshot 中有匹配的 pending approval actions
-  const continuationActions = approvedToolContinuationActions(snapshot, approvedActionIds);
-  if (continuationActions.length > 0) {
-    return {
-      kind: "approved_tool_continuation",
-      continueKernelAfterTool: hasKernelWork, // 执行完工具后是否还需要模型
-    };
-  }
-  // 2. kernel resume: snapshot 有 modeSpec 且 pending clarification/approval
-  if (hasKernelWork) {
-    return { kind: "kernel" };
-  }
-  // 3. non-kernel resume: 没有 kernel 工作，直接做 mutation
-  return { kind: "non_kernel" };
-}
-```
-
-优先级：`approved_tool_continuation` > `kernel` > `non_kernel`。
-
-### 4.4 hasKernelResumeWork 的判断
-
-```typescript
-function hasKernelResumeWork(snapshot: StateSnapshot): boolean {
-  return snapshot.modeSpec !== undefined
-    && (
-      currentPendingClarifications(snapshot).length > 0 ||
-      currentPendingApprovalActionIds(snapshot).length > 0
-    );
-}
-```
-
-核心条件：snapshot 有 `modeSpec`（说明是 kernel-backed run），并且有 pending 的 clarification 或 approval。没有 modeSpec 的 run（如 non-kernel mutation run）不会进入 kernel resume 路径。
-
-## 5. Resume 三条策略
-
-```mermaid
-flowchart TD
-    A["RunResumeService.prepare"] --> B{"classifyRunResumeStrategy"}
-
-    B -->|"approved_tool_continuation"| C["executeApprovedToolContinuationStrategy"]
-    C --> C1["completeApprovedToolContinuation"]
-    C1 --> C2["replay 已批准的 tool action"]
-    C2 --> C3{"continueKernelAfterTool?"}
-    C3 -->|yes| C4["RunKernelExecutionService.continueAfterApprovedTool"]
-    C3 -->|no| C5["resume finalization"]
-    C4 --> C5
-
-    B -->|"kernel"| D["RunContinuationDispatcher.classifyContinuationDispatch"]
-    D --> D1{"frame owner?"}
-    D1 -->|"owner-backed"| D2["resume_suspended_node"]
-    D1 -->|"legacy (no owner, safe)"| D3["resume_whole_mode"]
-    D1 -->|"missing owner (dangerous)"| D4["diagnostic_failure"]
-    D2 --> D5["RunKernelExecutionService.executePreparedResume"]
-    D3 --> D5
-    D4 --> D6["resume finalization (failed)"]
-    D5 --> D6
-
-    B -->|"non_kernel"| E["executeNonKernelResumeStrategy"]
-    E --> E1["beginNonKernelResume"]
-    E1 --> E2["resolveNonKernelResumeClarifications"]
-    E2 --> E3["applyNonKernelResumeApprovals"]
-    E3 --> E4{"needs input?"}
-    E4 -->|yes| E5["interruptedNonKernelResumeSnapshot"]
-    E4 -->|no| E6["completeNonKernelResumeMutation"]
-    E6 --> E7["resume finalization"]
-```
-
-### 5.1 Approved Tool Continuation
-
-这是最特殊的一条路径。当用户批准了工具调用后，resume 不是直接让模型继续工作，而是先 **replay 已批准的工具 action/tool**。
-
-**为什么不由 dispatcher 直接执行？**
-
-因为 approved tool continuation 的核心工作是 **执行工具**（如 `file.write`），不是恢复模型推理。这条路径：
-1. Replay 已批准的 action/tool（如真的写入文件）
-2. 检查 `continueKernelAfterTool`：如果 snapshot 中还有 pending 的 clarification 或其他 approval，需要继续让模型工作
-3. 如果需要模型继续，通过 `RunKernelExecutionService.continueAfterApprovedTool` 回到 owner node
-
-这意味着 approved tool continuation 是 **action execution** 路径，dispatcher 是 **model continuation** 路径，两者职责不同。
-
-#### 5.1.1 复合 patch 处理
-
-当用户在一次 resume 中同时提交 `approvedActionIds` 和 `clarifications`（即复合 patch）时，`classifyRunResumeStrategy` 的策略优先级使系统优先走 `approved_tool_continuation` 路径。此时需要注意：
-
-1. **clarification patch 的传递**：如果 `continueKernelAfterTool = true`（工具 replay 后还有 pending clarification），模型恢复时会携带 clarification patch。`RunKernelExecutionService.continueAfterApprovedTool` 内部会通过 `resumedInputWithClarifications` 将澄清答案合并进 conversation。
-2. **`continueKernelAfterTool = false` 时的风险**：如果工具 replay 后 `hasKernelResumeWork` 判断为 false（例如 clarification 在 replay 过程中被意外清理），剩余的澄清答案会被静默丢弃。建议在 `executeApprovedToolContinuationStrategy` 中增加校验：工具 replay 结束后重新检查 snapshot 中是否有 pending clarification，若有则强制转入 kernel resume。
-3. **因果追踪**：当前 ledger 中的 `gate.resolved` entry 不区分是单独 resolve 还是复合 resolve 的一部分。建议在复合场景下，`gate.resolved` 的 metadata 中记录 `resolvedInComposite: true` 及关联的其他 gate id，便于审计。
-
-#### 5.1.2 工具失败上下文保留
-
-当 approved tool continuation 中的某个工具执行失败时，系统**不再立即发出 `run.failed`**。相反：
-
-1. **保留上下文**：工具失败结果被追加到 `toolResults` 数组，模型可以在后续对话中看到失败信息并修正策略
-2. **Guard follow-up 注入**：guard 的 `followUpContent` 中注入工具结果摘要（成功/失败统计、路径、大小），确保模型在恢复时了解工具执行状态
-3. **全部失败场景**：仅当所有 approved tools 都失败时，才在 follow-up 中明确通知模型"所有工具均失败"并附带详细错误信息
-
-这避免了"工具失败 → 重新审批 → 工具再次失败"的死循环——模型看到失败上下文后可以调整策略（如修正文件路径、调整参数）。对应的核心实现在 `approved-file-write-resume.ts` 的 `finalTextForApprovedToolContinuation()` 函数中。
-
-#### 5.1.3 Guard 指纹稳定化
-
-Guard 的 completion fingerprint 原先包含动态 ID（如 `clar-1`、`tc-xxx`），导致同一 guard 在不同 resume 周期产生不同的指纹，出现误判。修复方案：从 fingerprint 的 detail 字段中 strip 括号内的动态 ID，仅保留稳定的语义描述。
-
-### 5.2 Kernel Resume
-
-有 `modeSpec` 且有 kernel 工作需要恢复。由 `RunContinuationDispatcher` 决定具体恢复方式（详见第 6 章）。
-
-### 5.3 Non-Kernel Resume
-
-没有 modeSpec 或没有 kernel 工作（例如某些 mutation run）。直接在 snapshot 上做 mutation：
-- 解决 clarifications
-- 应用 approvals
-- 如果所有工作完成，标记 run 完成
-- 如果还需要输入，返回 interrupted 状态
-
-## 6. Continuation 派发：RunContinuationDispatcher
-
-`RunContinuationDispatcher.classifyContinuationDispatch` 是 kernel resume 路径的派发决策函数。它只处理一个核心问题：**根据 continuation frame 的 ownership 决定如何恢复**。
-
-### 6.1 派发决策逻辑
-
-```typescript
-// run-continuation-dispatcher.ts
-const OWNER_BACKED_REASONS = new Set([
-  "approval_required",
-  "clarification_required",
-  "manual_interrupt",
-  "tool_interrupted",
-]);
-
-function classifyContinuationDispatch(snapshot): ContinuationDispatchDecision {
-  const frame = snapshot.continuation.frames.find(f => f.id === activeFrameId);
-
-  // 1. 没有 active frame → 退回 whole-mode
-  if (!frame) {
-    return { kind: "resume_whole_mode", reason: "no_active_frame" };
-  }
-
-  // 2. frame 状态不是 paused/awaiting_model → 退回 whole-mode
-  if (frame.status !== "paused" && frame.status !== "awaiting_model") {
-    return { kind: "resume_whole_mode", reason: "frame_not_paused" };
-  }
-
-  // 3. frame reason 不在 owner-backed 集合中 → 退回 whole-mode
-  if (!OWNER_BACKED_REASONS.has(frame.reason)) {
-    return { kind: "resume_whole_mode", reason: "unsupported_frame_reason" };
-  }
-
-  // 4. 提取 owner metadata（agentId + nodeId）
-  const agentId = frame.agentId ?? frame.nodeCheckpoint?.agentId;
-  const nodeId = frame.nodeId ?? frame.nodeCheckpoint?.nodeId
-    ?? frame.planItemId ?? frame.nodeCheckpoint?.planItemId;
-
-  // 5. 没有 agentId →
-  //    - legacy approval/clarification → whole-mode fallback
-  //    - manual_interrupt/tool_interrupted → diagnostic failure
-  if (!agentId) {
-    if (frame.reason === "approval_required" || frame.reason === "clarification_required") {
-      return { kind: "resume_whole_mode", reason: "unsupported_frame_reason" };
-    }
-    return { kind: "diagnostic_failure", reason: "missing_owner_metadata" };
-  }
-
-  // 6. 有 owner → suspended-node resume
-  return { kind: "resume_suspended_node", agentId, nodeId: nodeId ?? agentId };
-}
-```
-
-### 6.2 三种派发结果
-
-| 结果 | 条件 | 行为 |
-| --- | --- | --- |
-| `resume_suspended_node` | frame 有 owner metadata（agentId） | 恢复到暂停的 agent/node，带上 clarification patch 和 approved actions |
-| `resume_whole_mode` | 无 active frame / frame 状态不对 / reason 不识别 / legacy 无 owner | 退回到 mode 入口重新执行（whole-mode restart） |
-| `diagnostic_failure` | 有 frame 但缺失必需 owner（manual_interrupt / tool_interrupted） | 以可见的 diagnostic 错误结束，不尝试不安全恢复 |
-
-### 6.3 Owner metadata 的提取策略
-
-提取 agentId/nodeId 有 fallback 链：
-
-```
-frame.agentId ?? frame.nodeCheckpoint?.agentId
-frame.nodeId ?? frame.nodeCheckpoint?.nodeId ?? frame.planItemId ?? frame.nodeCheckpoint?.planItemId
-```
-
-这允许 frame 在缺少直接字段时从 `nodeCheckpoint` 中恢复 owner 信息。`nodeCheckpoint` 是 mode driver 在 node 执行时记录的 bag 状态，包含 agent/node/planItem 的标识。
-
-### 6.4 为什么要区分 diagnostic failure 和 whole-mode fallback？
-
-关键判断是 **恢复的安全性**：
-
-- Legacy approval/clarification frame（无 agentId）→ 退回 whole-mode 是安全的，因为 mode 重新执行不会造成损害（工具还没执行）。
-- Manual/tool interrupted frame（无 agentId）→ 退回 whole-mode **不安全**，因为工具可能已经部分执行。此时以 diagnostic failure 结束，要求用户介入。
-
-## 7. Kernel 执行边界：RunKernelExecutionService
-
-`RunKernelExecutionService` 是 run start 和 resume 进入 kernel 的服务边界。它负责准备 kernel 执行所需的所有上下文（mode、conversation、skills 等），并通过 `executeTracedKernelRun` / `executeTracedKernelResume` 进入真正的 kernel loop。
-
-### 7.1 executePreparedRun
-
-新 run 的入口：
-1. 组装 `kernelDeps`（skill/mode/selfIteration/automation registries、agent overlays）
-2. 调用 `executeTracedKernelRun` 进入 kernel loop
-
-### 7.2 executePreparedResume
-
-Resume 的 kernel 入口：
-1. 校验 snapshot 有 `modeSpec` 和 `sessionId`
-2. 调用 `resumedInputWithClarifications` 将 clarification 答案合并进 input
-3. 通过 `suspendedFrameResumeSnapshot` 准备 resume snapshot（切换 frame 状态为 `awaiting_model`）
-4. 构建 resume conversation messages
-5. 调用 `executeTracedKernelResume` 进入 kernel loop
-
-### 7.3 continueAfterApprovedTool
-
-Approved tool continuation 后需要模型继续工作时的路径：
-1. 以 continuation snapshot 为基础，构建包含原始 conversation + continuation 中新消息的 conversation
-2. 调用 `executePreparedResume` 恢复 owner node
-3. 合并 resume 产生的事件到原始 snapshot
-
-### 7.4 Kernel 中断处理：resumeSuspendedFrameIfNeeded
-
-`runtime-kernel.ts` 中的 `resumeSuspendedFrameIfNeeded()` 是 kernel 入口的第一道门。将之前遗漏的防壁进行修复：
-
-1. 调用 `resumeSuspendedRuntimeFrame()` 恢复 suspended frame
-2. 如果恢复过程中抛出 `ApprovalInterruptError` 或 `ClarificationInterruptError`：
-   - **不传播错误**（不抛到上层导致 run 进入 `failed`）
-   - 发出 `run.interrupted` 事件（含 `reason`、`actionId`/`clarificationId`）
-   - 返回 `status: "interrupted"` 的 snapshot
-3. 如果恢复过程中抛出其他错误：按通用错误处理流程
-
-这确保了 resume 路径中的中断错误被正确处理为 interrupted 状态而非 failed 状态。原先 `handleModeError` 虽然正确处理中断，但 `resumeSuspendedFrameIfNeeded` 在 KernelRunner 实例化之前执行，走不到该路径——修复后两条路径都能正确处理中断。
-
-### 7.5 suspendedFrameResumeSnapshot
-
-```typescript
-function suspendedFrameResumeSnapshot(snapshot: StateSnapshot): StateSnapshot | undefined {
-  const decision = classifyContinuationDispatch(snapshot);
-  if (decision.kind === "diagnostic_failure") {
-    throw new OraRuntimeError(decision.message); // 直接失败
-  }
-  if (decision.kind !== "resume_suspended_node" || decision.frame.status !== "paused") {
-    return undefined; // whole-mode fallback，不需要特殊 snapshot
-  }
-  // suspended-node resume：将 frame 状态切换为 awaiting_model
-  return continuationFrameAwaitingModel(snapshot, decision.frame.id, snapshot.updatedAt);
-}
-```
-
-## 8. Resume 收敛：RunResumeFinalizationService
-
-无论走哪条 resume 路径，最终都需要通过 `RunResumeFinalizationService` 将结果收敛到持久状态。所有写入 `run.done` / `run.failed` 的路径均经由 `assertRunCanBecomeTerminal()` 守卫：检查无 open gate、无 pending approval/clarification、无 unresolved action/tool call、无 active continuation frame；违反时降级为 `run.failed` 并附带 `TerminalStateIntegrityError`。Ledger projection 层同步检测矛盾组合（如 `succeeded + open_approval_gate`）并降级 attention 为 `failed`。
-
-```mermaid
-flowchart TD
-    A["Resume 执行完成"] --> B{"最终状态"}
-    B -->|"terminal (succeeded/failed)"| C["persistTerminal"]
-    B -->|"interrupted (又需要输入)"| D["persistInterrupted"]
-    B -->|"streaming terminal"| E["persistStreamingTerminal"]
-    B -->|"streaming failure"| F["persistStreamingFailure"]
-
-    C --> G["projectResumeSnapshot"]
-    D --> G
-    E --> G
-    F --> H["appendRunSnapshotUpdateToLedger + normalize"]
-
-    G --> G1["withResumeResolutionEvents"]
-    G1 --> G2["normalizeSnapshotForPersistence"]
-    G2 --> G3["appendRunSnapshotUpdateToLedger"]
-
-    G3 --> I["persistRunWithGeneratedTitle / persistRun"]
-    I --> J["更新 live snapshot / 发布最终事件"]
-```
-
-`projectResumeSnapshot` 的四步 pipeline：
-1. **withResumeResolutionEvents**：将 gate 决议反向投影为事件（如 `clarification.resolved`、`approval.resolved`），让 UI 能消费 resume 结果
-2. **materializeResumeContinuationClosure**：先把 resume 已经解决的 clarification / approval continuation 在 snapshot 上收口，关闭对应 frame、清理已完成的 pending ids，并在完成后清掉 `continuation.activeFrameId`
-3. **normalizeSnapshotForPersistence**：标准化 snapshot 以写入持久存储
-4. **appendRunSnapshotUpdateToLedger**：将 snapshot 作为 ledger entry 追加
-
-这里的顺序很关键：**先 materialize resolution 与 continuation closure，再做 terminal assertion。** 如果先跑 `assertRunCanBecomeTerminal()`，就会把“事实上已解决、但尚未从 continuation projection 收口”的 clarification / approval 误判成终态非法残留。
-
-所有 terminal writer（kernel finalization、resume finalization、non-kernel resume completion）在写入 `run.done` 前必须通过共享的 `assertRunCanBecomeTerminal()` 断言门。该门验证：状态为 terminal 时不得有 open gate、pending action/tool-call/clarification 残留，也不得保留 active continuation frame。违反时抛出 `TerminalStateIntegrityError` 并降级为 `run.failed`。
-
-此外，`ApprovalInterruptError` 在 runtime tool call service 的 catch 路径中已被特殊处理，审批中断不再落入通用 tool failure handling。`buildTrailDebugSummary()` / `collectTrailFindings()` 对 stale approval-interrupt snapshot 渲染为 waiting-for-approval，而非 run/tool failure。
-
-## 9. Plan Decision 的特殊性
-
-Plan decision 仍然是最特殊的 gate，但它现在不是“完全不同、永不 resume”的一条旁路，而是一个 **hybrid gate**：runtime 允许 accepted plan 回到原 run，compat 层仍保留 accepted-plan handoff。
-
-### 9.1 Plan run 的正常流程
-
-```mermaid
-sequenceDiagram
-    participant User
-    participant PlanRun
-    participant Ledger
-    participant ImplRun
-
-    User->>PlanRun: 启动 plan mode run
-    PlanRun->>PlanRun: executeModeSpec → 各 node 执行
-    PlanRun->>PlanRun: 产出 <proposed_plan>
-    PlanRun->>PlanRun: run.done (status: succeeded)
-    PlanRun->>Ledger: gate.opened (plan_decision, planContent)
-
-    Note over Ledger: Session attention → needs_plan_decision
-
-    User->>Ledger: 用户 accept / decline
-    Ledger->>Ledger: gate.resolved (plan_decision)
-
-    alt accepted，走当前主路径
-        User->>PlanRun: flows.resume(planDecisionResolutions)
-        PlanRun->>PlanRun: inject accepted-plan context
-        PlanRun->>PlanRun: taskIntent 切到 implement
-        PlanRun->>PlanRun: 继续同一 run 执行
-    else accepted，走兼容 handoff
-        User->>Ledger: handoff.accepted_plan
-        User->>ImplRun: 启动 implement mode run
-        ImplRun->>Ledger: 检查未消费的 acceptedPlanHandoff
-        ImplRun->>ImplRun: 将 plan 注入 conversation context
-        ImplRun->>Ledger: 标记 handoff.consumedByRunId
-    else declined
-        Note over User,PlanRun: desktop 当前默认只关闭 gate 并恢复 composer<br/>等待真实下一条 user message
-    end
-```
-
-### 9.2 为什么它现在是 hybrid
-
-Plan run 在产出 `<proposed_plan>` 后通常已经 `succeeded`，但这不再等价于“绝不 resume”。当前实现把 plan decision 分成两层：
-
-1. **gate 层**：pending `PlanDecisionGate` 继续以 session interaction truth 存在。
-2. **runtime 层**：若用户 accept，`RunResumeService` 会把 `planDecisionResolutions` 识别为 kernel work，并把原 run 切到 implement 语义继续执行。
-3. **compat 层**：accepted-plan handoff 仍保留，供旧链路和明确的新 implement run 消费。
-
-因此它和 clarification/approval 仍不同，但差异变成了“起点常常是已成功结束的 run”，而不是“永远跨 run、永远不 resume”。
-
-### 9.3 accepted-plan handoff 的兼容交接
-
-accepted-plan handoff 现在更像兼容层和显式跨 run 契约，而不是唯一主路径：
-
-1. Snapshot 归一化时仍会生成 pending `PlanDecisionGate`
-2. 用户 accept 后，runtime 可以直接 same-run resume；如果调用方选择跨 run 实现，仍可写入 `handoff.accepted_plan`
-3. 下一个 `taskIntent: "implement"` 的 run 启动时，继续检查 `acceptedPlanHandoffs` 中未被消费的记录
-4. 将 plan content 注入 implement run 的 conversation context
-5. 标记 `consumedByRunId` 防止重复消费
-6. 这条路径的价值主要在兼容旧数据、显式“计划交给新 run 执行”的入口，以及计划修订链路的持久审计
-
-## 10. Gate 与 Session Attention
-
-Session attention 是 UI/会话层看到的阻塞状态。它从 ledger-backed projection 推导，不依赖 UI 本地状态。
-
-### 10.1 Attention 推导优先级
-
-在 `deriveLedgerRunAttention`（`packages/shared/src/runtime-ledger.ts`）中：
-
-```typescript
-function deriveLedgerRunAttention(run):
-  // 0. terminal state invariant（最高优先级，在 gate 检查前执行）
-  //    若 status 为 succeeded/failed/cancelled 但仍有 open gate
-  //    → 降级为 failed，附加诊断: terminal_run_with_open_gates:<status>
-  // 1. 有 open 的 clarification gate → needs_clarification (blocking)
-  // 2. 有 open 的 approval gate → needs_approval (blocking)
-  // 3. 有 open 的 plan_decision gate → needs_plan_decision (blocking)
-  // 4. status = queued/running → running
-  // 5. status = interrupted
-  //    - 有 resolved gate 但没有后续 manual interrupt → failed (不完整 resume)
-  //    - 有 manual interrupt → paused
-  // 6. status = failed → failed
-  // 7. status = cancelled → cancelled
-  // 8. otherwise → idle
-```
-
-Terminal state invariant 位于 gate 检查之前，防止 auto_review 权限模式切换等场景产生的半解决状态（ledger 记录了 `run.done/succeeded` 但 projection 仍有 open gate）被渲染为成功。此 invariant 在 runtime 层（`assertRunCanBecomeTerminal`）和 projection 层（`deriveLedgerRunAttention`）两处同时实施。
-
-### 10.2 优先级是严格序
-
-这个优先级列表是严格有序的。当 snapshot 中同时存在多个状态线索时（如同时有 pending clarification 和 running 状态），attention 总是返回最高优先级的阻塞状态。Terminal state invariant 在 gate 检查之前执行，是最高优先级的安全网。这保证了 attention 推导的一致性，不依赖各字段的检查顺序。
-
-### 10.3 Gate 决议如何改变 attention
-
-- Clarification gate resolved → attention 从 `needs_clarification` 变为 `running`（如果 run 恢复）或 `idle`
-- Approval gate resolved → attention 从 `needs_approval` 变为 `running`（如果工具执行后继续）或 `idle`
-- Plan decision gate resolved（accepted）→ attention 从 `needs_plan_decision` 变为 `running`（若原 run same-run resume）或 `idle`（若只完成 gate 解决、等待后续 implement run）
-- Plan decision gate resolved（declined）→ attention 变为 `idle`；desktop 当前默认不自动续跑，而是恢复 composer 等用户输入下一条真实消息
-
-### 10.4 GateProjection：统一的 UI 状态消费
-
-`GateProjection` 是 shared 层（`packages/shared/src/runtime.ts`）提供的统一 gate 投影类型。`deriveSnapshotGateProjection(snapshot, options?)` 函数是 **所有 UI 表面消费 gate 状态的唯一真相源** — sidebar、Trails、composer、diagnostics 全部接入此函数。
-
-```typescript
-export const GateProjectionSchema = z.object({
-  kind: GateProjectionKindSchema,          // "clarification" | "approval" | "plan_decision"
-  source: GateProjectionSourceSchema,      // 数据的来源路径（用于审计）
-  durable: z.boolean(),                    // 是否来自 durable ledger entry
-  staleRisk: z.boolean(),                  // 是否存在 stale 风险（如从 raw pending 推导而非 attention）
-  gateIds: z.array(z.string().min(1)),     // 关联的 gate ID 列表
-  pendingActionIds: z.array(z.string()),   // pending approval action IDs
-  pendingToolCallIds: z.array(z.string()), // pending approval tool call IDs
-  pendingClarificationIds: z.array(z.string()), // pending clarification IDs
-  planDecisionId: z.string().optional(),   // plan decision ID（仅 plan_decision gate）
-});
-```
-
-**Source 字段的五种来源**：`attention`（权威，从 `deriveLedgerRunAttention` 推导）、`plan_decisions`（plan decision gate）、`pending_clarifications`（raw pending clarifications，staleRisk=true）、`pending_approvals`（raw pending approvals，staleRisk=true）、`continuation`（active continuation frame，staleRisk=true）。
-
-**优先级序**：`attention`（最高）→ `continuation` → `pending_clarifications`/`pending_approvals`（raw fallback，标记 staleRisk）。当 attention 漂移（如 `idle` 但 plan decision 未决）时，raw fallback 路径保证 gate 状态仍然可见。
-
-### 10.5 SessionSummary gate：未选中会话的状态保真
-
-当会话在 sidebar 中处于未选中状态时，desktop 仅消费 `SessionSummary` 而非完整的 live snapshot。为保证 gate 状态正确显示，`SessionSummary` 新增 `interactionGate` 字段：
-
-```typescript
-export const SessionSummarySchema = z.object({
-  // ... 基础字段 ...
-  interactionGate: GateProjectionSchema.optional(),  // compact gate projection
-});
-```
-
-**写入时机**：
-- **Runtime** 端：`run-store.ts` 在持久化摘要时调用 `deriveSnapshotGateProjection(snapshot)` 写入 `interactionGate`
-- **Desktop** 端：`state.tsx` 中 desktop 本地摘要覆盖同样写入 gate projection
-
-**消费方式**：Sidebar 行状态和 ViewModel 的摘要状态路径 **优先使用 `interactionGate`**，fallback 到 live snapshot 的 `deriveSnapshotGateProjection()`。这确保了未选中会话即使 attention 漂移到 `idle`，仍能正确显示 `decision_needed`。
-
-### 10.6 Desktop UI 的消费方式
-
-Desktop 所有 UI 表面统一消费 `deriveSnapshotGateProjection(snapshot)` 产生的 `GateProjection`：
-- **SessionAttention / interactionGate**：决定 sidebar 中的状态图标和状态文字
-- **RunInteraction**：决定 chat view 中的交互 UI（clarification 表单、approval 按钮、plan decision 卡片）
-- **诊断信号**：diagnostics 模块直接调用 `deriveSnapshotGateProjection()` 获取 gate 状态
-- **Plan decision 面板**：composer 中的 plan decision 面板通过 shared gate truth 控制可见性
-
-所有路径从同一个 shared 函数推导，desktop 不做任何本地状态推断。
-
-## 11. 常见误解与边界
-
-### 11.1 "Resume 就是重新跑一遍 mode"
-
-**不是。** Owner-backed resume 恢复到暂停的 **具体 node**，不是从 mode 入口重新执行。只有 legacy 无 owner frame 或 frame 缺失时才退回 whole-mode。这个设计避免了 mode 中已完成的 node 被重复执行。
-
-### 11.2 "Approved tool continuation 由 dispatcher 处理"
-
-**不是。** Dispatcher 只处理 model continuation（决定恢复到哪个 agent/node）。Approved tool continuation 是 **action execution** 路径，由 `executeApprovedToolContinuationStrategy` 处理。这两条路径是平行的，不是从属关系。
-
-### 11.3 "Plan decision 一定不是 resume"
-
-**也不是。** 它仍然不是 clarification/approval 那种“run 中途被打断”的 interrupt，但 accepted plan 现在可以通过 `planDecisionResolutions` 回到原 run 做 same-run resume。跨 run accepted-plan handoff 依旧存在，只是不再是唯一语义。
-
-### 11.4 "Gate 在内存中管理，只是 UI 概念"
-
-**不是。** Gate 是 durable fact。`gate.opened` 和 `gate.resolved` 都是 ledger entry，掉电不丢。Desktop UI 消费的是 ledger-backed gate projection，不是内存中的临时状态。
-
-### 11.5 "Resume 应该信 continuation frame 中的所有细节"
-
-**信 frame 的 owner metadata 做派发决策，信 gate ledger 做最终状态判断。** Continuation frame 告诉 dispatcher 恢复到哪个 agent/node，但 gate 的决议状态（resolved/accepted/declined）以 ledger 上的 `gate.resolved` entry 为准，不以 frame 中的 `approvedActionIds` 或 `resolvedClarificationIds` 为准。
-
-### 11.6 "Non-kernel resume 是特例，不常见"
-
-**常见。** 当 run 没有 modeSpec 时（如某些 mutation 或旧格式 run），resume 就走 non-kernel 路径。它不做模型推理，直接在 snapshot 上做 mutation，是一种 fallback 但也是正常路径。
-
-### 11.7 "Resume 后 gate 自动 resolve"
-
-**不是。** Gate 的 resolve 需要 explicit 的决议动作。Clarification 需要用户提供答案，approval 需要用户明确批准 action ids，plan decision 需要用户选择 accept 或 decline。Resume 只是将这些决议应用到 run 状态。
-
-## 12. 实现边界与演进方向
-
-### 12.1 当前实现边界
-
-| 方面 | 当前状态 | 保守边界 |
-| --- | --- | --- |
-| Continuation frame | 单 frame 模型（`activeFrameId`） | 不支持嵌套 frame。如果 resume 后又 interrupt，之前的 frame 会 resolve 并创建新 frame |
-| Gate 去重与重开 | `existingEntryIds` 按 entry id 去重；支持同一 gateId 的重新打开（entry ID 含时间戳区分） | 重开依赖 entry ID 时间戳唯一性；多 run 间 gate 重开尚未支持 |
-| Owner 提取 | fallback 链从 frame 直接字段到 nodeCheckpoint | nodeCheckpoint 的内容由 mode driver 决定，缺少标准化 schema |
-| Approved tool continuation | 通过 `ApprovedToolContinuationHandler` registry 查找可 replay 工具 | file.write/file.patch 有 artifact handler；shell/skills/mcp/package 有通用 replay handler；新工具类型仍需注册 handler 才能走 approved continuation |
-| Whole-mode fallback | 安全的降级策略 | 会重新执行已完成的 node，依赖 node 实现的幂等性 |
-| Diagnostic failure | 可见的错误状态 | 用户无法自我修复，需要手动介入 |
-| Plan handoff | 兼容的跨 run accepted-plan 契约，`consumedByRunId` 标记 | same-run accepted plan 已是主路径；revised plan 的版本链仍待继续整理 |
-| Attention 推导 | 严格优先级序 | 不支持同时存在多种 blocking attention（如同时需要 clarification 和 approval） |
-| 中断错误识别 | `Symbol.for()` + `instanceof` 双重检查，3 个 helper 函数 | 跨 realm 健壮性依赖 Symbol.for() 的全局性 |
-| GateProjection 共享层 | `GateProjection` 类型 + `deriveSnapshotGateProjection()` 为所有 UI 表面的单一真相源 | staleRisk 标记依赖 attention 与 raw pending 的一致性 |
-| SessionSummary gate | `SessionSummary.interactionGate` 携带 compact gate projection | 摘要 snapshots 不实时更新，需要 desktop 端覆盖写入 |
-| Kernel 中断处理 | `resumeSuspendedFrameIfNeeded` 捕获中断错误并发出 `run.interrupted` | 仅在 kernel-backed resume 路径生效 |
-
-### 12.2 可演进方向
-
-1. **嵌套/链式 Gate**：当 resume 后再次触发 gate 时，当前模型只创建新 frame。未来可以支持 gate 的链式追踪，保留 gate 历史。
-2. **Owner metadata schema 标准化**：`nodeCheckpoint.bag` 当前是 `Record<string, unknown>`。标准化关键字段（agentId、nodeId、planItemId）的写入规范，让 dispatcher 的提取更可靠。
-3. **Approved tool continuation handler 扩展**：当前已抽象出 `ApprovedToolContinuationHandler` registry。后续重点是为更多工具族补专用 artifact/result preview/continue 策略，而不是回退到文件专用逻辑。
-4. **Plan handoff 修订**：支持 revise plan → 重新 handoff，保留 handoff 的版本链。
-5. **Multi-gate attention**：当前 attention 严格互斥。支持同时展示多种 blocking 状态（如同时需要回答 clarification 和审批 tool）。
-6. **Frame 持久化审计**：frame 的创建、状态变更、resolve 可以进入专门的 audit log，用于调试复杂的 resume 流程。
-7. **跨 run Gate 重开**：同一 run 内 gate 重开已支持。多 run 间的 gate 重开（如跨 session 的 handoff 修订）仍待实现。
-
-### 12.3 diagnostic_failure 恢复流程
-
-当 `RunContinuationDispatcher` 返回 `diagnostic_failure` 时（frame 缺失 `agentId` 且 reason 为 `manual_interrupt` 或 `tool_interrupted`），系统进入不可自动恢复的错误状态。
-
-**用户可见行为**：
-- Run 状态标记为 `failed`，attention 显示为 `failed`
-- Desktop UI 应展示以下信息：
-  - 错误原因："检测到不完整的中断恢复——工具可能已部分执行，无法安全回退。"
-  - Run 的完整对话历史（只读，允许用户复制/导出上下文）
-  - **一键重建**按钮：使用原始 run 的 input 和 mode 创建一个全新的 run（保留会话上下文但不继承 snapshot）
-  - **导出 snapshot**按钮：将当前 snapshot（含 conversation、topology、events）导出为 JSON 文件供离线排查
-
-**恢复选项**：
-
-| 选项 | 操作 | 是否保留上下文 |
-| --- | --- | --- |
-| 一键重建 | 使用相同 input + mode 创建新 run | 保留原始用户意图和 mode 配置，丢弃中间产物 |
-| 导出 snapshot | 将 snapshot 导出为 JSON | 完全保留，但需要手动处理 |
-| 手动检查 | 查看 failed run 的完整历史 | 保留，只读 |
-
-**代码层面的改进建议**：
-1. **自动 checkpoint**：在 `suspendedFrameResumeSnapshot` 检测到 `diagnostic_failure` 前，自动保存一份 recovery checkpoint snapshot 到 ledger，确保上下文不丢失。
-2. **细粒度区分**：对 `tool_interrupted` 且无 `agentId` 的情况，检查工具 action 的状态。如果 action 的 `status` 为 `pending`（工具实际未执行），可以安全回退到 `resume_whole_mode`；仅当 action 状态为 `running` 或 `completed` 时才进入 diagnostic failure。
-3. **用户主动中断**：如果中断来自用户主动操作（`manual_interrupt`），可以允许用户在 resume 时选择"强制 whole-mode 回退"（提供明确的风险提示），而非直接进入 diagnostic failure。
-4. **UI 恢复入口**：Desktop 应在 RunInteraction 中为 `diagnostic_failure` 状态提供专门的恢复卡片，包含上述操作按钮，而非仅显示通用错误信息。
-
----
-
-## 附录 A：主流程图
+### 整体流程
 
 ```mermaid
 flowchart TD
@@ -938,7 +117,207 @@ flowchart TD
     end
 ```
 
-## 附录 B：核心类型速查
+### Gate 生命周期
+
+Gate 从打开到解决，完整过程由两个服务协作完成：`RuntimeGateService` 生成 gate entry，`RuntimeGateLedgerService` 将 entry 写入 ledger。
+
+当 run 因 clarification 或 approval 中断时，系统调用 `openSnapshotGateLifecycle`：从 snapshot 中提取 pending 的 clarifications/approvals/planDecisions，为每种 gate 生成 `gate.opened` entry，然后通过 `appendSnapshotOpenLifecycle` 写入 ledger。
+
+当用户提交 resume 请求后，系统调用 `resolveResumeGateLifecycle`：根据决议内容生成 `gate.resolved` entry，通过 `appendResumeResolveLifecycle` 写入 ledger。
+
+#### 三类 Gate 的 entry 形态
+
+**Clarification Gate**：gateId 使用 `clarification.id`（如 `clar-1`），每个 pending clarification 生成独立的 `gate.opened` entry，payload 中包含澄清问题的完整信息。
+
+**Approval Gate**：gateId 使用 `${runId}:approval`（如 `run-1:approval`），所有待审批的 action 共享一个 approval gate entry，payload 中列出 `pendingActionIds` 和 `pendingToolCallIds`。
+
+**Plan Decision Gate**：gateId 使用 `decision.id`（如 `decision-1`），只对 `status === "pending"` 的 decision 生成 entry，payload 中包含完整的计划内容。
+
+#### 去重、重开与幂等
+
+Gate entry 的生成不是无状态的。`RuntimeGateService.openedEntries` 接受 `existingEntryIds` 参数（由调用点从 ledger 自动提取），如果某个 gate 的 entry id 已存在（比如 replay 或多次 flush），则跳过生成。这保证了 gate entry 的幂等性。
+
+Ora 支持同一 gate 的重新打开：当第二次审批触发时，系统生成新的 `gate.opened` entry，entry ID 包含时间戳以区别于首次打开。Ledger 投影层使用 `Map.set` 语义 — 如果 `gateId` 已存在，新 entry 覆盖旧 entry，gate 状态从 `resolved` 回到 `open`。
+
+在 ledger 投影中，幂等性由投影层再次保证：
+- `gate.opened`：创建新的 gate projection（status = `open`）。但如果 gateId 已存在且 `status === "resolved"`，则忽略 — 防止 replay 时重新打开已解决的 gate。
+- `gate.resolved`：更新 gate 的 status 为 `resolved`，设置 `resolvedAt`，同时更新关联的 `planDecision.status`。
+
+### Continuation Frame：暂停点的结构化记录
+
+当 run 因 clarification 或 approval 中断时，kernel 创建一个 `RunContinuationFrame`，记录恢复到暂停点所需的全部信息。
+
+Frame 的核心字段分几组：
+- **Owner metadata**（`agentId`、`nodeId`、`planItemId`）：决定 resume 时应该恢复到哪个 agent/node
+- **暂停点快照**（`modelIteration`、`conversationCursor`）：记录模型执行到了哪里
+- **待处理项**（`pendingActionIds`、`pendingToolCallIds`、`pendingClarificationIds`）：记录哪些事项在等待外部输入
+- **Resume 追踪**（`approvedActionIds`、`resolvedClarificationIds`、`resumedFromFrameId`）：记录恢复进展
+- **Node checkpoint**（`nodeCheckpoint`）：mode driver 在 node 执行时记录的自定义状态，包含 agent/node/planItem 标识和模式驱动的 `bag`
+
+#### Frame 的 owner 概念
+
+Owner 决定了 resume 的恢复粒度：
+- **有 owner（owner-backed）**：frame 记录了明确的 `agentId`，resume 时可以精确恢复到暂停的 node
+- **无 owner（ownerless）**：frame 缺失 `agentId`。如果 reason 是 `approval_required` 或 `clarification_required`（legacy frame），退回 whole-mode resume。如果 reason 是 `manual_interrupt` 或 `tool_interrupted`（危险 frame），进入 diagnostic failure
+
+#### Frame 的状态变迁与链语义
+
+Frame 的状态变迁路径：`paused` → `awaiting_model`（resume 进入 kernel 前）→ `resolved`（kernel 执行完成）。
+
+当 run 经历多次中断-恢复时，会形成 frame 链。`resumedFromFrameId` 指向直接父 frame（不是根 frame），完整祖先链需要通过回溯逐级重建。当前实现为单 frame 模型（`activeFrameId`），每次 resume 后前一个 frame resolve，新中断创建新 frame。
+
+### Resume 的派发逻辑
+
+`RunResumeService` 是 resume 的统一入口。它不做执行，只做前置准备和 strategy 分类。
+
+#### 准备阶段
+
+`prepare` 流程依次完成：解析 patch（提取 `clarificationPatch` 和 `approvedActionIds`）、获取最新 snapshot、判断 `hasKernelResumeWork`（snapshot 有 modeSpec 且有待处理的 clarification 或 approval）、匹配待解决的 gate、分类 strategy。
+
+#### 三条策略的决策
+
+`classifyRunResumeStrategy` 按优先级判定：
+
+1. **approved_tool_continuation**：snapshot 中有匹配的 pending approval actions。这条路径先 replay 已批准的工具（如真的写入文件），再根据是否还有 kernel 工作需要决定是否回到模型。
+2. **kernel**：snapshot 有 modeSpec 且有 pending clarification 或 approval。由 `RunContinuationDispatcher` 进一步决定恢复方式。
+3. **non_kernel**：没有 modeSpec 或没有 kernel 工作。直接在 snapshot 上做 mutation。
+
+优先级是 `approved_tool_continuation` > `kernel` > `non_kernel`。当用户在一次 resume 中同时提交了 `approvedActionIds` 和 `clarifications`（复合 patch），系统优先走 approved tool continuation 路径。工具 replay 后如果还有 pending clarification，模型恢复时会将澄清答案合并进 conversation。
+
+#### Approved Tool Continuation 为什么独立于 Dispatcher
+
+这条路径的核心工作是执行工具，不是恢复模型推理。Dispatcher 是 model continuation 路径（决定恢复到哪个 agent/node），approved tool continuation 是 action execution 路径（replay 工具 → 可选 kernel continue）。两者职责不同，平行运行。
+
+工具执行失败时，系统保留上下文而非立即发出 `run.failed`：失败结果被追加到 `toolResults` 数组，模型可以在后续对话中看到失败信息并修正策略。仅当所有 approved tools 都失败时，才在 follow-up 中明确通知模型。这避免了"工具失败 → 重新审批 → 工具再次失败"的死循环。
+
+#### Continuation Dispatcher 的派发决策
+
+`RunContinuationDispatcher.classifyContinuationDispatch` 是 kernel resume 路径的派发决策函数。它根据 frame 的 ownership 决定三种结果：
+
+| 结果 | 条件 | 行为 |
+| --- | --- | --- |
+| `resume_suspended_node` | frame 有 owner metadata（agentId） | 恢复到暂停的 agent/node，带上 clarification patch 和 approved actions |
+| `resume_whole_mode` | 无 active frame / frame 状态不对 / reason 不识别 / legacy 无 owner | 退回到 mode 入口重新执行 |
+| `diagnostic_failure` | 有 frame 但缺失必需 owner（manual_interrupt / tool_interrupted） | 以可见的 diagnostic 错误结束，不尝试不安全恢复 |
+
+区分 diagnostic failure 和 whole-mode fallback 的关键是恢复的安全性：legacy approval/clarification frame（无 agentId）退回 whole-mode 是安全的，因为工具还没执行；manual/tool interrupted frame（无 agentId）退回 whole-mode 不安全，因为工具可能已经部分执行。
+
+提取 owner metadata 有 fallback 链：
+
+```
+frame.agentId ?? frame.nodeCheckpoint?.agentId
+frame.nodeId ?? frame.nodeCheckpoint?.nodeId ?? frame.planItemId ?? frame.nodeCheckpoint?.planItemId
+```
+
+这使得 frame 在缺少直接字段时可以从 `nodeCheckpoint` 中恢复 owner 信息。
+
+### Kernel 执行边界
+
+`RunKernelExecutionService` 是进入 kernel 的服务边界。它负责准备 kernel 执行所需的所有上下文（mode、conversation、skills 等），并通过 `executeTracedKernelRun` / `executeTracedKernelResume` 进入 kernel loop。
+
+新 run 的入口（`executePreparedRun`）组装 kernelDeps 后调用 `executeTracedKernelRun`。
+
+Resume 的入口（`executePreparedResume`）校验 snapshot 有 modeSpec 和 sessionId，将 clarification 答案合并进 conversation，通过 `suspendedFrameResumeSnapshot` 准备 resume snapshot，然后调用 `executeTracedKernelResume`。
+
+`runtime-kernel.ts` 中的 `resumeSuspendedFrameIfNeeded()` 是 kernel 入口的第一道门。它恢复 suspended frame，如果恢复过程中抛出 `ApprovalInterruptError` 或 `ClarificationInterruptError`，不传播到上层导致 run 进入 `failed`，而是发出 `run.interrupted` 事件并返回 `status: "interrupted"` 的 snapshot。
+
+### 最终收敛：ResumeFinalizationService
+
+无论走哪条 resume 路径，最终都需要通过 `RunResumeFinalizationService` 将结果收敛到持久状态。所有写入 `run.done` / `run.failed` 的路径均经由 `assertRunCanBecomeTerminal()` 守卫：检查无 open gate、无 pending approval/clarification、无 unresolved action/tool call、无 active continuation frame。
+
+`projectResumeSnapshot` 的四步 pipeline 按固定顺序执行：
+
+1. **withResumeResolutionEvents**：将 gate 决议反向投影为事件（如 `clarification.resolved`、`approval.resolved`），让 UI 能消费 resume 结果
+2. **materializeResumeContinuationClosure**：把 resume 已解决的 clarification/approval continuation 在 snapshot 上收口，关闭对应 frame、清理已完成的 pending ids，完成后清除 `continuation.activeFrameId`
+3. **normalizeSnapshotForPersistence**：标准化 snapshot 以写入持久存储
+4. **appendRunSnapshotUpdateToLedger**：将 snapshot 作为 ledger entry 追加
+
+顺序很关键：先 materialize resolution 与 continuation closure，再做 terminal assertion。顺序反了会导致"事实上已解决、但尚未从 continuation projection 收口"的 clarification/approval 被误判成终态非法残留。
+
+### Gate 如何驱动 UI
+
+Gate 状态最终体现为 UI 层的阻塞状态（session attention），由 ledger-backed projection 推导，不依赖 UI 本地状态。
+
+#### Attention 推导的严格优先级
+
+在 `deriveLedgerRunAttention` 中，attention 按严格优先级序推导：
+
+1. **Terminal state invariant**（最高优先级）：若 status 为 succeeded/failed/cancelled 但仍有 open gate → 降级为 failed
+2. 有 open 的 clarification gate → `needs_clarification`
+3. 有 open 的 approval gate → `needs_approval`
+4. 有 open 的 plan_decision gate → `needs_plan_decision`
+5. status = queued/running → `running`
+6. status = interrupted → `paused` 或 `failed`
+7. status = failed/cancelled → 对应状态
+8. 其他 → `idle`
+
+Terminal state invariant 在 gate 检查之前执行，防止 auto_review 权限模式切换等场景产生的半解决状态被渲染为成功。此 invariant 在 runtime 层（`assertRunCanBecomeTerminal`）和 projection 层（`deriveLedgerRunAttention`）两处同时实施。
+
+#### GateProjection：统一的 UI 消费接口
+
+`GateProjection` 是 shared 层提供的统一 gate 投影类型。`deriveSnapshotGateProjection(snapshot, options?)` 是 **所有 UI 表面消费 gate 状态的唯一真相源** — sidebar、Trails、composer、diagnostics 全部接入此函数。
+
+Source 字段有五种来源，按优先级排列：`attention`（权威，从 `deriveLedgerRunAttention` 推导）→ `continuation`（active continuation frame）→ `pending_clarifications`/`pending_approvals`（raw fallback，标记 staleRisk）。当 attention 漂移（如 `idle` 但 plan decision 未决）时，raw fallback 路径保证 gate 状态仍然可见。
+
+#### 未选中会话的状态保真
+
+当会话在 sidebar 中处于未选中状态时，desktop 仅消费 `SessionSummary` 而非完整的 live snapshot。为保证 gate 状态正确显示，`SessionSummary` 携带 `interactionGate` 字段（compact gate projection），由 runtime 端在持久化摘要时写入，desktop 端在本地摘要覆盖时同样写入。Sidebar 行状态优先使用 `interactionGate`，fallback 到 live snapshot 的 `deriveSnapshotGateProjection()`。
+
+## Plan Decision 的特殊性
+
+Plan decision 是四种 gate 中最特殊的一个：它处理的场景不是"Run 中途被打断"，而是"Run 成功产出计划后需要用户确认"。当前实现把它分成两层：
+
+1. **Gate 层**：pending `PlanDecisionGate` 以 session interaction truth 存在。
+2. **Runtime 层**：若用户 accept，`RunResumeService` 会把 `planDecisionResolutions` 识别为 kernel work，把原 run 切到 implement 语义继续执行。
+3. **Compat 层**：accepted-plan handoff 仍保留，供旧链路和明确的新 implement run 消费。
+
+### 完整流程
+
+Plan mode run 产出 `<proposed_plan>` 后，run 以 `succeeded` 收束，同时 ledger 中写入 `gate.opened (plan_decision)`，session attention 变为 `needs_plan_decision`。
+
+用户选择 accept 后，runtime 可以直接 same-run resume：通过 `flows.resume(planDecisionResolutions)` 注入 accepted-plan context，将 taskIntent 切到 implement，继续同一 run 执行。兼容路径下，调用方也可以写入 `handoff.accepted_plan`，由下一个 `taskIntent: "implement"` 的 run 启动时消费（检查 `acceptedPlanHandoffs` 中未被消费的记录，注入 plan content 到 conversation context，标记 `consumedByRunId`）。
+
+用户选择 decline 后，gate resolve，desktop 默认恢复 composer，等待用户输入下一条真实消息。
+
+### 为什么是 hybrid
+
+Plan run 在产出计划后通常已经 `succeeded`，但这不等价于"绝不 resume"。和 clarification/approval 的差异在于"起点常常是已成功结束的 run"，而不是"永远跨 run、永远不 resume"。这个 hybrid 设计让 accepted plan 可以选择最自然的执行路径（原 run 继续），同时兼容旧的跨 run handoff 链路。
+
+## 实现边界与演进方向
+
+### 当前约束
+
+| 方面 | 当前状态 |
+| --- | --- |
+| Continuation frame | 单 frame 模型，不支持嵌套 frame |
+| Gate 去重与重开 | 按 entry id 去重；支持同一 gateId 的重新打开（entry ID 含时间戳区分） |
+| Owner 提取 | fallback 链从 frame 直接字段到 nodeCheckpoint，nodeCheckpoint 内容由 mode driver 决定 |
+| Approved tool continuation | 通过 registry 查找可 replay 工具；file.write/file.patch 有 artifact handler，shell/skills/mcp/package 有通用 handler |
+| Whole-mode fallback | 安全的降级策略，但会重新执行已完成的 node，依赖 node 实现的幂等性 |
+| Diagnostic failure | 可见的错误状态，用户无法自我修复 |
+| Plan handoff | same-run accepted plan 是主路径；cross-run handoff 用于兼容旧数据和显式新 run 入口 |
+| Attention 推导 | 严格优先级序，不支持同时存在多种 blocking attention |
+| 中断错误识别 | `Symbol.for()` + `instanceof` 双重检查，3 个 helper 函数统一入口 |
+| GateProjection | `deriveSnapshotGateProjection()` 为所有 UI 表面的单一真相源 |
+| SessionSummary gate | `interactionGate` 携带 compact gate projection，desktop 端覆盖写入 |
+
+### 可演进方向
+
+- **嵌套/链式 Gate**：当 resume 后再次触发 gate 时，当前只创建新 frame。未来可以支持 gate 的链式追踪，保留 gate 历史。
+- **Owner metadata 标准化**：`nodeCheckpoint.bag` 当前是 `Record<string, unknown>`。标准化关键字段的写入规范，让 dispatcher 的提取更可靠。
+- **Approved tool continuation handler 扩展**：为更多工具族补专用 handler，而非回退到文件专用逻辑。
+- **Plan handoff 修订**：支持 revise plan → 重新 handoff，保留 handoff 的版本链。
+- **Multi-gate attention**：支持同时展示多种 blocking 状态（如同时需要回答澄清和审批工具）。
+- **Frame 持久化审计**：frame 的创建、状态变更、resolve 可以进入专门的 audit log。
+- **跨 run Gate 重开**：同一 run 内 gate 重开已支持，多 run 间的 gate 重开仍待实现。
+
+### diagnostic_failure 恢复流程
+
+当 frame 缺失 agentId 且 reason 为 `manual_interrupt` 或 `tool_interrupted` 时，系统进入不可自动恢复的错误状态。Run 状态标记为 `failed`，Desktop UI 应展示错误原因、完整对话历史（只读）、一键重建按钮（使用原始 run 的 input 和 mode 创建新 run）、以及导出 snapshot 按钮（导出 JSON 供离线排查）。
+
+改进方向包括：在检测到 `diagnostic_failure` 前自动保存 recovery checkpoint snapshot；对 `tool_interrupted` 且无 agentId 的情况，检查 action 状态 — 如果 action 为 `pending`（工具实际未执行），可以安全回退到 `resume_whole_mode`；允许用户在 resume 时选择"强制 whole-mode 回退"。
+
+## 附录 A：核心类型速查
 
 | 类型 | 定义位置 | 说明 |
 | --- | --- | --- |
@@ -955,6 +334,20 @@ flowchart TD
 | `ClarificationInterruptError` | `runtime-interrupts.ts` | clarification 中断错误 |
 | `ApprovalInterruptError` | `runtime-interrupts.ts` | approval 中断错误 |
 
----
+## 附录 B：核心源码文件
 
-> **核心判断**：Gate 和 Resume 是 Ora 中断-恢复机制的两面。Gate 是「为什么停」的耐久事实，Continuation Frame 是「停在哪里」的结构记录，Resume 是「怎么继续」的策略派发。三者通过 ledger 投影串联，最终由 desktop UI 以 attention 和 interaction 的形式消费。
+| 文件 | 职责 |
+| --- | --- |
+| `apps/runtime/src/run-resume-service.ts` | Resume 入口：解析 patch、分类 strategy、编排三条 resume 路径 |
+| `apps/runtime/src/run-continuation-dispatcher.ts` | Continuation 派发：基于 frame ownership 判断 suspended-node / whole-mode / diagnostic |
+| `apps/runtime/src/run-kernel-execution-service.ts` | Kernel 执行边界：start/resume 进入 kernel、suspended-node resume snapshot 准备 |
+| `apps/runtime/src/run-resume-finalization-service.ts` | Resume 最终化：terminal/interrupted/streaming failure 的 snapshot、ledger、persistence 收敛 |
+| `apps/runtime/src/runtime-gate-service.ts` | Gate 生命周期管理：open/resolve entry 的生成逻辑 |
+| `apps/runtime/src/runtime-gate-ledger-service.ts` | Gate entry 写入 ledger 的适配层 |
+| `apps/runtime/src/run-orchestration.ts` | Resume patch 解析、approved actions 匹配、hasKernelResumeWork 判断 |
+| `apps/runtime/src/harness/runtime-interrupts.ts` | Interrupt 错误类型、Symbol.for() 双重识别、resume approval 匹配器 |
+| `apps/runtime/src/approved-file-write-resume.ts` | Approved tool continuation 的完整执行流程 |
+| `apps/runtime/src/harness/runtime-kernel.ts` | Kernel 主循环，含 `resumeSuspendedFrameIfNeeded` 中断处理 |
+| `apps/runtime/src/run-kernel-lifecycle.ts` | Kernel 生命周期：traced kernel run / resume 入口 |
+| `packages/shared/src/runtime.ts` | `RunContinuationFrame`、`GateProjection`、`deriveSnapshotGateProjection()`、`SessionSummary.interactionGate` 等 shared contract |
+| `packages/shared/src/runtime-ledger.ts` | Ledger 类型、投影衍生、attention 推导、gate 重开支持 |
