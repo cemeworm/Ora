@@ -107,22 +107,176 @@ export function resumedInputWithClarifications(
   });
 }
 
-export function runningSnapshotForApprovedActions(
+function hasAcceptedPlanDecisionResolution(
+  resolutions: Array<{ decisionId: string; status: "accepted" | "declined" }>,
+): boolean {
+  return resolutions.some((resolution) => resolution.status === "accepted");
+}
+
+function unresolvedNonAgentAction(action: ActionRecord): boolean {
+  return !action.type.startsWith("agent.")
+    && (action.status === "proposed"
+      || action.status === "approval_required"
+      || action.status === "approved"
+      || action.status === "running");
+}
+
+function unresolvedToolCall(call: StateSnapshot["toolCalls"][number]): boolean {
+  return call.status === "proposed"
+    || call.status === "approval_required"
+    || call.status === "approved"
+    || call.status === "running";
+}
+
+function acceptedPlanResumeSupersedeReason(decisionIds: readonly string[]): string {
+  const suffix = decisionIds.length > 0
+    ? ` (${decisionIds.join(", ")})`
+    : "";
+  return `Superseded by accepted plan resume${suffix}; continue implementing the accepted plan instead.`;
+}
+
+export function materializeResumeStartSnapshot(
   snapshot: StateSnapshot,
-  approvedActionIds: string[],
-  updatedAt: number,
+  params: {
+    approvedActionIds: string[];
+    planDecisionResolutions?: Array<{
+      decisionId: string;
+      status: "accepted" | "declined";
+    }>;
+    updatedAt: number;
+  },
 ): StateSnapshot {
+  const approvedActionIds = params.approvedActionIds;
   const approvedIdSet = new Set(approvedActionIds);
+  const resolvedPlanDecisions = new Map(
+    (params.planDecisionResolutions ?? []).map((resolution) => [resolution.decisionId, resolution]),
+  );
+  const clearsPlanDecisionGate = resolvedPlanDecisions.size > 0;
+  const acceptedPlanDecisionIds = (params.planDecisionResolutions ?? [])
+    .filter((resolution) => resolution.status === "accepted")
+    .map((resolution) => resolution.decisionId);
+  const shouldSupersedeOrphanedPlanProposalWork = hasAcceptedPlanDecisionResolution(
+    params.planDecisionResolutions ?? [],
+  );
+  const activeFrame = snapshot.continuation.frames.find((frame) => frame.id === snapshot.continuation.activeFrameId);
+  const protectedActionIds = new Set([
+    ...snapshot.pendingApprovals,
+    ...(activeFrame?.pendingActionIds ?? []),
+  ]);
+  const protectedToolCallIds = new Set(activeFrame?.pendingToolCallIds ?? []);
+  const supersedeReason = acceptedPlanResumeSupersedeReason(acceptedPlanDecisionIds);
+  const supersededActionIds = new Set<string>();
+  const nextActions = snapshot.actions.map((action) => {
+    if (
+      shouldSupersedeOrphanedPlanProposalWork &&
+      unresolvedNonAgentAction(action) &&
+      !protectedActionIds.has(action.id)
+    ) {
+      supersededActionIds.add(action.id);
+      return {
+        ...action,
+        status: "skipped" as const,
+        error: supersedeReason,
+      };
+    }
+    return action.status === "approval_required" && approvedIdSet.has(action.id)
+      ? { ...action, status: "approved" as const }
+      : action;
+  });
+  const nextToolCalls = snapshot.toolCalls.map((call) => {
+    if (
+      shouldSupersedeOrphanedPlanProposalWork &&
+      unresolvedToolCall(call) &&
+      !protectedToolCallIds.has(call.id) &&
+      (!call.actionId || supersededActionIds.has(call.actionId) || !protectedActionIds.has(call.actionId))
+    ) {
+      return {
+        ...call,
+        status: "interrupted" as const,
+        updatedAt: params.updatedAt,
+        result: {
+          status: "interrupted" as const,
+          error: supersedeReason,
+          content: supersedeReason,
+          createdAt: params.updatedAt,
+          updatedAt: params.updatedAt,
+        },
+        error: supersedeReason,
+        repairReason: "accepted_plan_resume_superseded",
+      };
+    }
+    return call;
+  });
+  const interruptedSupersededToolCalls = nextToolCalls.filter((call) =>
+    call.status === "interrupted"
+    && call.repairReason === "accepted_plan_resume_superseded",
+  );
+  const nextContinuation = {
+    ...snapshot.continuation,
+    frames: snapshot.continuation.frames.map((frame) => ({
+      ...frame,
+      pendingActionIds: frame.pendingActionIds.filter((actionId) => !supersededActionIds.has(actionId)),
+      pendingToolCallIds: frame.pendingToolCallIds.filter((toolCallId) =>
+        !interruptedSupersededToolCalls.some((call) => call.id === toolCallId),
+      ),
+      updatedAt: frame.id === activeFrame?.id ? params.updatedAt : frame.updatedAt,
+    })),
+  };
+  const interruptedToolConversation = interruptedSupersededToolCalls
+    .filter((call) =>
+      !snapshot.conversation.some((message) =>
+        message.role === "tool"
+        && message.toolCallId === call.id
+        && message.status === "interrupted",
+      ),
+    )
+    .map((call) => ({
+      role: "tool" as const,
+      toolCallId: call.id,
+      providerCallId: call.providerCallId,
+      toolId: call.toolId,
+      content: supersedeReason,
+      status: "interrupted" as const,
+      createdAt: params.updatedAt,
+    }));
+  const interruptedToolResults = interruptedSupersededToolCalls
+    .filter((call) =>
+      !snapshot.toolResults.some((result) => result.resultToolCallId === call.id && result.status === "interrupted")
+    )
+    .map((call) => ({
+      key: `${call.toolId}:${JSON.stringify(call.args)}`,
+      toolId: call.toolId,
+      argsDigest: JSON.stringify(call.args),
+      resultToolCallId: call.id,
+      status: "interrupted" as const,
+      error: supersedeReason,
+      createdAt: params.updatedAt,
+      updatedAt: params.updatedAt,
+    }));
   return StateSnapshotSchema.parse({
     ...snapshot,
     status: "running",
-    actions: snapshot.actions.map((action) =>
-      action.status === "approval_required" && approvedIdSet.has(action.id)
-        ? { ...action, status: "approved" }
-        : action
+    attention: clearsPlanDecisionGate ? undefined : snapshot.attention,
+    actions: nextActions,
+    toolCalls: nextToolCalls,
+    continuation: nextContinuation,
+    pendingApprovals: snapshot.pendingApprovals.filter((actionId) =>
+      !approvedIdSet.has(actionId) && !supersededActionIds.has(actionId)
     ),
-    pendingApprovals: snapshot.pendingApprovals.filter((actionId) => !approvedIdSet.has(actionId)),
-    updatedAt,
+    planDecisions: snapshot.planDecisions.map((decision) => {
+      const resolution = resolvedPlanDecisions.get(decision.id);
+      if (!resolution) {
+        return decision;
+      }
+      return {
+        ...decision,
+        status: resolution.status,
+        resolvedAt: params.updatedAt,
+      };
+    }),
+    conversation: [...snapshot.conversation, ...interruptedToolConversation],
+    toolResults: [...snapshot.toolResults, ...interruptedToolResults],
+    updatedAt: params.updatedAt,
   });
 }
 
