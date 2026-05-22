@@ -1664,11 +1664,11 @@ function activeEnabledModeEdges(mode: Pick<ModeSpec, "nodes" | "edges">): ModeEd
 
 export function orderedEnabledModeNodes(mode: Pick<ModeSpec, "nodes" | "edges">): ModeNodeSpec[] {
   const enabledNodes = mode.nodes.filter((node) => node.enabled);
-  const nodeIds = new Set(enabledNodes.map((node) => node.id));
+  const nodeById = new Map(enabledNodes.map((node) => [node.id, node]));
   const indegree = new Map(enabledNodes.map((node) => [node.id, 0]));
   const adjacency = new Map(enabledNodes.map((node) => [node.id, [] as string[]]));
 
-  for (const edge of activeEnabledModeEdges(mode).filter((candidate) => nodeIds.has(candidate.source) && nodeIds.has(candidate.target))) {
+  for (const edge of activeEnabledModeEdges(mode)) {
     adjacency.get(edge.source)?.push(edge.target);
     indegree.set(edge.target, (indegree.get(edge.target) ?? 0) + 1);
   }
@@ -1686,10 +1686,17 @@ export function orderedEnabledModeNodes(mode: Pick<ModeSpec, "nodes" | "edges">)
       const next = (indegree.get(target) ?? 0) - 1;
       indegree.set(target, next);
       if (next === 0) {
-        const candidate = enabledNodes.find((item) => item.id === target);
+        const candidate = nodeById.get(target);
         if (candidate) {
-          queue.push(candidate);
-          queue.sort((left, right) => (orderIndex.get(left.id) ?? 0) - (orderIndex.get(right.id) ?? 0));
+          const candOrder = orderIndex.get(candidate.id) ?? 0;
+          let lo = 0;
+          let hi = queue.length;
+          while (lo < hi) {
+            const mid = (lo + hi) >>> 1;
+            if ((orderIndex.get(queue[mid].id) ?? 0) < candOrder) lo = mid + 1;
+            else hi = mid;
+          }
+          queue.splice(lo, 0, candidate);
         }
       }
     }
@@ -1704,38 +1711,33 @@ export function orderedEnabledModeNodes(mode: Pick<ModeSpec, "nodes" | "edges">)
  */
 export function orderedEnabledModeLayers(mode: Pick<ModeSpec, "nodes" | "edges">): ModeNodeSpec[][] {
   const enabledNodes = mode.nodes.filter((node) => node.enabled);
-  const nodeIds = new Set(enabledNodes.map((node) => node.id));
   const indegree = new Map(enabledNodes.map((node) => [node.id, 0]));
   const adjacency = new Map(enabledNodes.map((node) => [node.id, [] as string[]]));
 
-  for (const edge of activeEnabledModeEdges(mode).filter((candidate) => nodeIds.has(candidate.source) && nodeIds.has(candidate.target))) {
+  for (const edge of activeEnabledModeEdges(mode)) {
     adjacency.get(edge.source)?.push(edge.target);
     indegree.set(edge.target, (indegree.get(edge.target) ?? 0) + 1);
   }
 
   const layers: ModeNodeSpec[][] = [];
+  const visited = new Set<string>();
   let currentLayer = enabledNodes.filter((node) => (indegree.get(node.id) ?? 0) === 0);
 
   while (currentLayer.length > 0) {
+    for (const node of currentLayer) visited.add(node.id);
     layers.push(currentLayer);
-    const nextIndegree = new Map(indegree);
     for (const node of currentLayer) {
       for (const target of adjacency.get(node.id) ?? []) {
-        const next = (nextIndegree.get(target) ?? 0) - 1;
-        nextIndegree.set(target, next);
+        indegree.set(target, (indegree.get(target) ?? 0) - 1);
       }
     }
-    indegree.clear();
-    for (const [key, value] of nextIndegree) {
-      indegree.set(key, value);
-    }
-    currentLayer = enabledNodes.filter((node) => (indegree.get(node.id) ?? 0) === 0 && !layers.flat().some((n) => n.id === node.id));
+    currentLayer = enabledNodes.filter((node) => (indegree.get(node.id) ?? 0) === 0 && !visited.has(node.id));
   }
 
   // Degrade to ordered list if not all nodes reachable (cycle detected)
-  if (layers.flat().length !== enabledNodes.length) {
+  if (visited.size !== enabledNodes.length) {
     const unreachableIds = enabledNodes
-      .filter((n) => !layers.flat().some((o) => o.id === n.id))
+      .filter((n) => !visited.has(n.id))
       .map((n) => n.id);
     const modeLabel = "label" in mode && typeof mode.label === "string" ? mode.label : "unknown";
     console.warn(

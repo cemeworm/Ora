@@ -171,8 +171,10 @@ export function projectAssistantTextFromSnapshot(
     }
   }
 
+  const childAgentIds = new Set((snapshot.childSessions ?? []).map((c) => c.agentId));
+
   return projectAssistantTextFromEvents(
-    snapshot.events.filter((event) => !isHiddenChildAssistantEvent(snapshot, event)),
+    snapshot.events.filter((event) => !isHiddenChildAssistantEvent(childAgentIds, event)),
     options,
   );
 }
@@ -197,9 +199,7 @@ function extractOutputReasoningContent(output: unknown): string | undefined {
 }
 
 function isHiddenChildAssistantEvent(
-  snapshot: {
-    childSessions?: ReadonlyArray<{ agentId: string }>;
-  },
+  childAgentIds: Set<string>,
   event: {
     type: string;
     agentId?: string | null;
@@ -212,7 +212,7 @@ function isHiddenChildAssistantEvent(
   if (!agentId || agentId === ORA_ROOT_AGENT_ID) {
     return false;
   }
-  return (snapshot.childSessions ?? []).some((child) => child.agentId === agentId);
+  return childAgentIds.has(agentId);
 }
 
 function projectAssistantReasoningContentFromEvents(

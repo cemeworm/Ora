@@ -18,7 +18,7 @@ export function deriveRuntimeTimelineProjection(
   }
   return {
     runId: snapshot.runId,
-    events: eventsForRun(snapshot),
+    events,
     baseTime: events[0]?.createdAt ?? snapshot.events[0]?.createdAt ?? snapshot.updatedAt,
     agentLabels,
   };
