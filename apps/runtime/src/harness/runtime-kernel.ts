@@ -777,7 +777,7 @@ class KernelRuntimeContext {
         status: parsed.status,
         deliveryStatus: parsed.deliveryStatus,
         currentPhase: current?.lifecyclePhase,
-        hasMeaningfulOutput: Boolean(parsed.lastMeaningfulOutputAt || parsed.lastMessage?.trim() || parsed.summary?.trim()),
+        hasMeaningfulOutput: Boolean(parsed.lastMeaningfulOutputAt || parsed.lastMessage?.trim()),
       }),
       coordinationBarrier: current?.coordinationBarrier ?? "independent",
       deliveryStatus: parsed.deliveryStatus,

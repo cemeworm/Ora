@@ -243,6 +243,7 @@ function isToolEnvironmentUnavailable(lowered: string): boolean {
   return matchesAny(lowered, [
     "no project folder",
     "eacces",
+    "enoent",
     "eperm",
     "permission denied",
     "workspace file and shell tools are unavailable",
