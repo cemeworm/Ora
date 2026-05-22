@@ -673,6 +673,102 @@ describe("Ora runtime smoke path", () => {
     }
   });
 
+  it("prefers a complete proposed plan over same-response native tool calls in plan mode", async () => {
+    const handle = createRuntimeMethodHandler(createTempStore());
+    const previousFetch = globalThis.fetch;
+    const previousKey = process.env.PLAN_MODE_MIXED_PROVIDER_KEY;
+    process.env.PLAN_MODE_MIXED_PROVIDER_KEY = "test";
+    let providerCalls = 0;
+
+    globalThis.fetch = (async (_input, _init) => {
+      providerCalls += 1;
+      return new Response(JSON.stringify({
+        choices: [{
+          finish_reason: "tool_calls",
+          message: {
+            content: [
+              "<proposed_plan>",
+              "# Runtime investigation plan",
+              "## 实施步骤",
+              "1. Inspect the runtime completion guard.",
+              "2. Verify the same-run resume path.",
+              "## 验证方式",
+              "- Review the run snapshot.",
+              "</proposed_plan>",
+            ].join("\n"),
+            tool_calls: [{
+              id: "call-file-grep",
+              type: "function",
+              function: {
+                name: "file__grep",
+                arguments: "{\"pattern\":\"materializeResumeStartSnapshot\",\"path\":\"apps/runtime/src/run-orchestration.ts\"}",
+              },
+            }],
+          },
+        }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    try {
+      const run = await handle({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "runs.start",
+        params: {
+          input: { prompt: "请先输出任务计划，不要实施。" },
+          config: {
+            modeId: CODE_DEVELOPMENT_MODE_ID,
+            providerId: "plan-mode-mixed-provider",
+            modelRef: "plan-mode-mixed-model",
+            providerConfig: {
+              id: "plan-mode-mixed-provider",
+              label: "Plan Mode Mixed Provider",
+              type: "openai_compatible",
+              modelId: "plan-mode-mixed-model",
+              baseUrl: "https://plan-mode-mixed-provider.test/v1",
+              apiKeyEnv: "PLAN_MODE_MIXED_PROVIDER_KEY",
+              capabilities: ["chat", "tool_use"],
+              headers: {},
+            },
+            metadata: { taskIntent: "plan" },
+            toolIds: ["file.grep"],
+          },
+        },
+      }) as { runId: string; status: string };
+
+      const state = StateSnapshotSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "runs.state",
+        params: { runId: run.runId },
+      }));
+
+      expect(run.status).toBe("succeeded");
+      expect(state.status).toBe("succeeded");
+      expect(providerCalls).toBeGreaterThanOrEqual(1);
+      expect(state.toolCalls).toEqual([]);
+      expect(state.actions.filter((action) => !action.type.startsWith("agent."))).toEqual([]);
+      expect(state.events.some((event) =>
+        event.type === "tool.called"
+        && typeof event.payload === "object"
+        && event.payload !== null
+        && (event.payload as Record<string, unknown>).toolId === "file.grep"
+      )).toBe(false);
+      expect(state.output).toMatchObject({
+        text: expect.stringContaining("<proposed_plan>"),
+        stoppedAfterProposedPlan: true,
+      });
+      expectNoNodeLoopTransitionDiagnostics(state);
+    } finally {
+      globalThis.fetch = previousFetch;
+      if (previousKey === undefined) {
+        delete process.env.PLAN_MODE_MIXED_PROVIDER_KEY;
+      } else {
+        process.env.PLAN_MODE_MIXED_PROVIDER_KEY = previousKey;
+      }
+    }
+  });
+
   it("injects an accepted proposed plan into the next implementation run after compaction", async () => {
     const handle = createRuntimeMethodHandler(createTempStore());
     const previousFetch = globalThis.fetch;
@@ -6668,7 +6764,8 @@ describe("Ora runtime smoke path", () => {
     const previousKey = process.env.NATIVE_TOOL_FALLBACK_KEY;
     process.env.NATIVE_TOOL_FALLBACK_KEY = "test";
     let providerCalls = 0;
-    const providerRequestBodies: Array<{
+    let runtimeModelCalls = 0;
+    const runtimeProviderBodies: Array<{
       messages?: Array<{
         role: string;
         reasoning_content?: string;
@@ -6686,6 +6783,7 @@ describe("Ora runtime smoke path", () => {
 
       providerCalls += 1;
       const body = JSON.parse(String(init?.body ?? "{}")) as {
+        tools?: unknown[];
         messages?: Array<{
           role: string;
           reasoning_content?: string;
@@ -6694,9 +6792,43 @@ describe("Ora runtime smoke path", () => {
           content?: string | null;
         }>;
       };
-      providerRequestBodies.push(body);
+      const combinedText = JSON.stringify(body.messages ?? []);
+      const isRuntimeModelCall = Array.isArray(body.tools) && body.tools.length > 0;
+      if (!isRuntimeModelCall) {
+        if (combinedText.includes("delegation intent classifier")) {
+          return new Response(JSON.stringify({
+            choices: [{ message: { content: JSON.stringify({
+              preference: "none",
+              requestedByUser: false,
+              confidence: 0.9,
+              reason: "No delegation preference was requested.",
+            }) } }],
+          }), { status: 200, headers: { "content-type": "application/json" } });
+        }
+        if (combinedText.includes("causal task-state extractor")) {
+          return new Response(JSON.stringify({
+            choices: [{ message: { content: JSON.stringify({
+              latentGoalHypotheses: ["Fetch the source and continue after degraded web.fetch"],
+              selectedLatentGoal: "Fetch the source and continue after degraded web.fetch",
+              constraints: ["Continue even if fetch degrades"],
+              candidateInterventions: ["use_tool"],
+              counterfactualRiskIfSkipped: "The runtime would not exercise degraded fetch recovery.",
+              expectedOutcomeLift: "Prove provider-native web.fetch degradation is recoverable.",
+              stopCondition: "Stop after recovering from the degraded fetch and answering.",
+              confidence: 0.9,
+              needsFreshnessEvidence: false,
+            }) } }],
+          }), { status: 200, headers: { "content-type": "application/json" } });
+        }
+        return new Response(JSON.stringify({
+          choices: [{ message: { content: "Ancillary provider call." } }],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
 
-      if (providerCalls === 1) {
+      runtimeModelCalls += 1;
+      runtimeProviderBodies.push(body);
+
+      if (runtimeModelCalls === 1) {
         return new Response(JSON.stringify({
           choices: [{
             finish_reason: "tool_calls",
@@ -6754,11 +6886,11 @@ describe("Ora runtime smoke path", () => {
         params: { runId: run.runId },
       }));
 
-      const recoveryRequest = providerRequestBodies.find((body) =>
+      const recoveryRequest = runtimeProviderBodies.find((body) =>
         body.messages?.some((message) => message.role === "tool" && message.tool_call_id === "call-degraded")
       );
       expect(run.status).toBe("succeeded");
-      expect(providerCalls).toBeGreaterThanOrEqual(2);
+      expect(runtimeModelCalls).toBeGreaterThanOrEqual(2);
       expect(recoveryRequest?.messages).toEqual(expect.arrayContaining([
         expect.objectContaining({
           role: "assistant",
@@ -6789,6 +6921,185 @@ describe("Ora runtime smoke path", () => {
         delete process.env.NATIVE_TOOL_FALLBACK_KEY;
       } else {
         process.env.NATIVE_TOOL_FALLBACK_KEY = previousKey;
+      }
+    }
+  });
+
+  it("recovers from provider-native file.read directory degradation", async () => {
+    const handle = createRuntimeMethodHandler(createTempStore());
+    const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ora-native-tool-read-dir-"));
+    fs.mkdirSync(path.join(workspaceRoot, "tasks"));
+    const previousFetch = globalThis.fetch;
+    const previousKey = process.env.NATIVE_TOOL_READ_DIR_KEY;
+    process.env.NATIVE_TOOL_READ_DIR_KEY = "test";
+    let providerCalls = 0;
+    let runtimeModelCalls = 0;
+    const runtimeProviderBodies: Array<{
+      messages?: Array<{
+        role: string;
+        reasoning_content?: string;
+        tool_call_id?: string;
+        tool_calls?: unknown[];
+        content?: string | null;
+      }>;
+    }> = [];
+
+    globalThis.fetch = (async (_input, init) => {
+      providerCalls += 1;
+      const body = JSON.parse(String(init?.body ?? "{}")) as {
+        tools?: unknown[];
+        messages?: Array<{
+          role: string;
+          reasoning_content?: string;
+          tool_call_id?: string;
+          tool_calls?: unknown[];
+          content?: string | null;
+        }>;
+      };
+      const combinedText = JSON.stringify(body.messages ?? []);
+      const isRuntimeModelCall = Array.isArray(body.tools) && body.tools.length > 0;
+      if (!isRuntimeModelCall) {
+        if (combinedText.includes("delegation intent classifier")) {
+          return new Response(JSON.stringify({
+            choices: [{ message: { content: JSON.stringify({
+              preference: "none",
+              requestedByUser: false,
+              confidence: 0.9,
+              reason: "No delegation preference was requested.",
+            }) } }],
+          }), { status: 200, headers: { "content-type": "application/json" } });
+        }
+        if (combinedText.includes("causal task-state extractor")) {
+          return new Response(JSON.stringify({
+            choices: [{ message: { content: JSON.stringify({
+              latentGoalHypotheses: ["Inspect the tasks path and continue after degraded file.read"],
+              selectedLatentGoal: "Inspect the tasks path and continue after degraded file.read",
+              constraints: ["Continue even if reading the path degrades"],
+              candidateInterventions: ["use_tool"],
+              counterfactualRiskIfSkipped: "The runtime would not exercise degraded tool recovery.",
+              expectedOutcomeLift: "Prove provider-native file.read degradation is recoverable.",
+              stopCondition: "Stop after recovering from the degraded read and answering.",
+              confidence: 0.9,
+              needsFreshnessEvidence: false,
+            }) } }],
+          }), { status: 200, headers: { "content-type": "application/json" } });
+        }
+        return new Response(JSON.stringify({
+          choices: [{ message: { content: "Ancillary provider call." } }],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+
+      runtimeModelCalls += 1;
+      runtimeProviderBodies.push(body);
+
+      if (runtimeModelCalls === 1) {
+        return new Response(JSON.stringify({
+          choices: [{
+            finish_reason: "tool_calls",
+            message: {
+              content: null,
+              reasoning_content: "Need to inspect the tasks path before answering.",
+              tool_calls: [{
+                id: "call-read-tasks-dir",
+                type: "function",
+                function: {
+                  name: "file__read",
+                  arguments: "{\"path\":\"tasks\"}",
+                },
+              }],
+            },
+          }],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: "Recovered after file.read degraded on the tasks directory." } }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    try {
+      const run = await handle({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "runs.start",
+        params: {
+          input: {
+            prompt: "Inspect the tasks path and continue if reading it degrades.",
+            context: {
+              projectWorkspace: { label: "Native Tool Directory Workspace", rootPath: workspaceRoot },
+            },
+          },
+          config: {
+            modeId: "single_agent",
+            providerId: "native-tool-read-dir",
+            modelRef: "native-tool-read-dir-model",
+            providerConfig: {
+              id: "native-tool-read-dir",
+              label: "Native Tool Directory Read",
+              type: "openai_compatible",
+              modelId: "native-tool-read-dir-model",
+              baseUrl: "https://native-tool-read-dir.test/v1",
+              apiKeyEnv: "NATIVE_TOOL_READ_DIR_KEY",
+              capabilities: ["chat", "tool_use"],
+              headers: {},
+            },
+            toolIds: ["file.read"],
+          },
+        },
+      }) as { runId: string; status: string };
+
+      const state = StateSnapshotSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "runs.state",
+        params: { runId: run.runId },
+      }));
+
+      const recoveryRequest = runtimeProviderBodies.find((body) =>
+        body.messages?.some((message) => message.role === "tool" && message.tool_call_id === "call-read-tasks-dir")
+      );
+      expect(run.status).toBe("succeeded");
+      expect(runtimeModelCalls).toBeGreaterThanOrEqual(2);
+      expect(recoveryRequest?.messages).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          role: "assistant",
+          reasoning_content: "Need to inspect the tasks path before answering.",
+          tool_calls: expect.arrayContaining([
+            expect.objectContaining({ id: "call-read-tasks-dir" }),
+          ]),
+        }),
+        expect.objectContaining({
+          role: "tool",
+          tool_call_id: "call-read-tasks-dir",
+          content: expect.stringContaining("Workspace tool degraded for file.read"),
+        }),
+        expect.objectContaining({
+          role: "tool",
+          tool_call_id: "call-read-tasks-dir",
+          content: expect.stringContaining("file.read target must be a file."),
+        }),
+      ]));
+      expect(state.toolCalls).toEqual([
+        expect.objectContaining({
+          providerCallId: "call-read-tasks-dir",
+          toolId: "file.read",
+          source: "provider_native",
+          status: "failed",
+          error: "file.read target must be a file.",
+        }),
+      ]);
+      expect(state.events.map((event) => event.type)).toEqual(expect.arrayContaining([
+        "recovery.detected",
+        "recovery.applied",
+      ]));
+      expect(state.output?.text).toContain("Recovered after file.read degraded on the tasks directory.");
+    } finally {
+      globalThis.fetch = previousFetch;
+      fs.rmSync(workspaceRoot, { recursive: true, force: true });
+      if (previousKey === undefined) {
+        delete process.env.NATIVE_TOOL_READ_DIR_KEY;
+      } else {
+        process.env.NATIVE_TOOL_READ_DIR_KEY = previousKey;
       }
     }
   });

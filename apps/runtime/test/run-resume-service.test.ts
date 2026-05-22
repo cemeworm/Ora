@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  deriveRunAttention,
+  deriveSnapshotGateProjection,
   getModePreset,
   modeSpecToPatternDefinition,
   OraEventEnvelopeSchema,
@@ -14,6 +16,7 @@ import {
   classifyRunResumeStrategy,
   executeNonKernelResumeStrategy,
 } from "../src/run-resume-service.js";
+import { materializeResumeStartSnapshot } from "../src/run-orchestration.js";
 import {
   assertRunCanBecomeTerminal,
   TerminalStateIntegrityError,
@@ -155,6 +158,40 @@ function withPlanDecision(snapshot = baseSnapshot()): StateSnapshot {
   });
 }
 
+function withPlanDecisionAndOrphanedToolProposal(snapshot = withPlanDecision()): StateSnapshot {
+  return StateSnapshotSchema.parse({
+    ...snapshot,
+    actions: [{
+      id: "action-grep",
+      runId: snapshot.runId,
+      agentId: "solo_agent",
+      type: "file.grep",
+      riskLevel: "low",
+      status: "proposed",
+      input: { pattern: "plan gate", path: "src/runtime.ts" },
+      artifactIds: [],
+    }],
+    toolCalls: [{
+      id: "tool-grep",
+      runId: snapshot.runId,
+      actionId: "action-grep",
+      agentId: "solo_agent",
+      nodeId: "solo_agent",
+      toolId: "file.grep",
+      args: { pattern: "plan gate", path: "src/runtime.ts" },
+      source: "provider_native",
+      status: "proposed",
+      requestedAt: 1_120,
+      updatedAt: 1_120,
+    }],
+    conversation: [{
+      role: "assistant",
+      content: "<proposed_plan>\n1. Inspect runtime plan gate.\n</proposed_plan>",
+      createdAt: 1_120,
+    }],
+  });
+}
+
 function mutationDeps() {
   return {
     appendEvent: (
@@ -281,6 +318,67 @@ describe("RunResumeService", () => {
       kind: "kernel",
       approvedActionIds: [],
     });
+  });
+
+  it("materializes accepted plan decisions into the first resume-running snapshot", () => {
+    const resumed = materializeResumeStartSnapshot(withPlanDecision(), {
+      approvedActionIds: [],
+      planDecisionResolutions: [{ decisionId: "decision-plan", status: "accepted" }],
+      updatedAt: 2_000,
+    });
+
+    expect(resumed.status).toBe("running");
+    expect(resumed.planDecisions).toEqual([
+      expect.objectContaining({
+        id: "decision-plan",
+        status: "accepted",
+        resolvedAt: 2_000,
+      }),
+    ]);
+    expect(deriveSnapshotGateProjection(resumed)).toBeUndefined();
+    expect(deriveRunAttention(resumed).kind).toBe("running");
+  });
+
+  it("supersedes orphaned proposed tool work when an accepted plan resumes the same run", () => {
+    const resumed = materializeResumeStartSnapshot(withPlanDecisionAndOrphanedToolProposal(), {
+      approvedActionIds: [],
+      planDecisionResolutions: [{ decisionId: "decision-plan", status: "accepted" }],
+      updatedAt: 2_000,
+    });
+
+    expect(resumed.actions).toEqual([
+      expect.objectContaining({
+        id: "action-grep",
+        status: "skipped",
+        error: expect.stringContaining("Superseded by accepted plan resume"),
+      }),
+    ]);
+    expect(resumed.toolCalls).toEqual([
+      expect.objectContaining({
+        id: "tool-grep",
+        status: "interrupted",
+        repairReason: "accepted_plan_resume_superseded",
+        result: expect.objectContaining({
+          status: "interrupted",
+          content: expect.stringContaining("accepted plan resume"),
+        }),
+      }),
+    ]);
+    expect(resumed.conversation).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        role: "tool",
+        toolCallId: "tool-grep",
+        status: "interrupted",
+        content: expect.stringContaining("accepted plan resume"),
+      }),
+    ]));
+    expect(resumed.toolResults).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        resultToolCallId: "tool-grep",
+        status: "interrupted",
+        error: expect.stringContaining("accepted plan resume"),
+      }),
+    ]));
   });
 
   it("executes non-kernel resume mutation without taking ledger or persistence authority", () => {

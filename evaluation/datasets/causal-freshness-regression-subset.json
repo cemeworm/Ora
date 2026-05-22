@@ -1,0 +1,447 @@
+[
+  {
+    "id": "causal-agent-004",
+    "input": {
+      "prompt": "帮我写一个函数处理用户登录",
+      "context": {
+        "projectId": "ora",
+        "files": [
+          "auth.ts"
+        ]
+      }
+    },
+    "expected": {
+      "structured": {
+        "surfaceRequest": "编写登录处理函数",
+        "latentGoal": "实现安全的用户认证功能",
+        "keyUncertainty": "认证方式未明确，缺少现有auth.ts的上下文",
+        "expectedIntervention": "read_context",
+        "counterfactualRiskIfSkipped": "不读现有代码可能与现有架构冲突",
+        "successCriteria": "Ora 先读取auth.ts了解现有认证逻辑再编写代码"
+      }
+    },
+    "metadata": {
+      "scenario": "coding",
+      "uncertaintyType": "context",
+      "baselinePolicy": "direct_answer",
+      "reportingViews": [
+        "legacy_oracle_result"
+      ],
+      "contextProbeClass": "implicit_context_file"
+    }
+  },
+  {
+    "id": "causal-agent-005",
+    "input": {
+      "prompt": "React 19 有哪些新特性",
+      "context": {}
+    },
+    "expected": {
+      "structured": {
+        "surfaceRequest": "了解React 19的新特性",
+        "latentGoal": "获取最新、准确的React 19信息以决定是否升级",
+        "keyUncertainty": "需要最新且准确的版本信息，训练数据可能已过时",
+        "expectedIntervention": "search_web",
+        "counterfactualRiskIfSkipped": "直接回答可能提供过时或不完整的信息",
+        "successCriteria": "Ora 搜索最新资料而非仅凭训练数据回答"
+      }
+    },
+    "metadata": {
+      "scenario": "search",
+      "uncertaintyType": "fact",
+      "baselinePolicy": "direct_answer",
+      "reportingViews": [
+        "value_aligned_result"
+      ],
+      "freshnessClass": "freshness_sensitive_query"
+    }
+  },
+  {
+    "id": "causal-agent-009",
+    "input": {
+      "prompt": "分析这份销售数据并给出下季度策略建议",
+      "context": {
+        "files": [
+          "sales-q1.csv"
+        ]
+      }
+    },
+    "expected": {
+      "structured": {
+        "surfaceRequest": "分析销售数据并提供策略建议",
+        "latentGoal": "获取数据驱动的业务决策支持",
+        "keyUncertainty": "需要先读取数据文件了解数据结构和内容",
+        "expectedIntervention": "read_context",
+        "counterfactualRiskIfSkipped": "不读数据就分析会导致分析结果毫无根据",
+        "successCriteria": "Ora 先读取CSV文件了解数据结构再进行分析"
+      }
+    },
+    "metadata": {
+      "scenario": "analysis",
+      "uncertaintyType": "context",
+      "baselinePolicy": "direct_answer",
+      "reportingViews": [
+        "legacy_oracle_result"
+      ],
+      "contextProbeClass": "implicit_context_file"
+    }
+  },
+  {
+    "id": "causal-agent-011",
+    "input": {
+      "prompt": "帮我基于 CLAUDE.md 理解这个项目的架构",
+      "context": {
+        "projectId": "ora",
+        "files": [
+          "CLAUDE.md"
+        ]
+      }
+    },
+    "expected": {
+      "structured": {
+        "surfaceRequest": "理解项目架构",
+        "latentGoal": "建立对项目的整体认知以便后续开发",
+        "keyUncertainty": "需要读取用户明确指向的 CLAUDE.md 来了解项目结构",
+        "expectedIntervention": "read_context",
+        "counterfactualRiskIfSkipped": "没有上下文的解释可能不准确",
+        "successCriteria": "Ora 先读取 CLAUDE.md，再基于文档解释项目架构"
+      }
+    },
+    "metadata": {
+      "scenario": "coding",
+      "uncertaintyType": "context",
+      "baselinePolicy": "direct_answer",
+      "reportingViews": [
+        "value_aligned_result"
+      ],
+      "contextProbeClass": "explicit_artifact_handle"
+    }
+  },
+  {
+    "id": "causal-agent-014",
+    "input": {
+      "prompt": "把这个函数改成异步的",
+      "context": {
+        "projectId": "ora",
+        "files": [
+          "service.ts"
+        ]
+      }
+    },
+    "expected": {
+      "structured": {
+        "surfaceRequest": "将某个函数改为异步",
+        "latentGoal": "避免阻塞操作或适配异步API",
+        "keyUncertainty": "需要先读取service.ts了解函数当前实现",
+        "expectedIntervention": "read_context",
+        "counterfactualRiskIfSkipped": "不改上下文就改代码可能引入不一致",
+        "successCriteria": "Ora 先读取文件理解函数结构再修改"
+      }
+    },
+    "metadata": {
+      "scenario": "coding",
+      "uncertaintyType": "context",
+      "baselinePolicy": "direct_answer",
+      "reportingViews": [
+        "legacy_oracle_result"
+      ],
+      "contextProbeClass": "implicit_context_file"
+    }
+  },
+  {
+    "id": "causal-agent-020",
+    "input": {
+      "prompt": "这个SQL查询为什么这么慢",
+      "context": {
+        "projectId": "merchant-app",
+        "files": [
+          "queries.sql"
+        ]
+      }
+    },
+    "expected": {
+      "structured": {
+        "surfaceRequest": "诊断慢SQL查询",
+        "latentGoal": "优化数据库查询性能",
+        "keyUncertainty": "需要读取queries.sql了解具体查询，还需要表结构和数据量信息",
+        "expectedIntervention": "read_context",
+        "counterfactualRiskIfSkipped": "不读查询和表结构就直接建议优化方案可能无效",
+        "successCriteria": "Ora 先读取SQL文件再给出优化建议"
+      }
+    },
+    "metadata": {
+      "scenario": "merchant_diagnosis",
+      "uncertaintyType": "context",
+      "baselinePolicy": "direct_answer",
+      "reportingViews": [
+        "legacy_oracle_result"
+      ],
+      "contextProbeClass": "implicit_context_file"
+    }
+  },
+  {
+    "id": "causal-agent-024",
+    "input": {
+      "prompt": "这段代码是什么意思",
+      "context": {
+        "projectId": "ora",
+        "files": [
+          "crypto.ts"
+        ]
+      }
+    },
+    "expected": {
+      "structured": {
+        "surfaceRequest": "理解某段代码的含义",
+        "latentGoal": "理解代码逻辑以便后续修改或学习",
+        "keyUncertainty": "需要读取crypto.ts中的具体代码",
+        "expectedIntervention": "read_context",
+        "counterfactualRiskIfSkipped": "不读代码就无法给出准确解释",
+        "successCriteria": "Ora 先读取文件再解释代码逻辑"
+      }
+    },
+    "metadata": {
+      "scenario": "coding",
+      "uncertaintyType": "context",
+      "baselinePolicy": "direct_answer",
+      "reportingViews": [
+        "legacy_oracle_result"
+      ],
+      "contextProbeClass": "implicit_context_file"
+    }
+  },
+  {
+    "id": "causal-agent-049",
+    "input": {
+      "prompt": "Python 3.13有什么新特性",
+      "context": {}
+    },
+    "expected": {
+      "structured": {
+        "surfaceRequest": "Python 3.13有什么新特性",
+        "latentGoal": "了解最新版本特性",
+        "keyUncertainty": "需要搜索最新信息",
+        "expectedIntervention": "search_web",
+        "counterfactualRiskIfSkipped": "训练数据可能过时",
+        "successCriteria": "Ora chooses search_web for this scenario"
+      }
+    },
+    "metadata": {
+      "scenario": "search",
+      "uncertaintyType": "fact",
+      "baselinePolicy": "direct_answer",
+      "reportingViews": [
+        "value_aligned_result"
+      ],
+      "freshnessClass": "freshness_sensitive_query"
+    }
+  },
+  {
+    "id": "causal-agent-050",
+    "input": {
+      "prompt": "Vue 3.4的响应式系统怎么变了",
+      "context": {}
+    },
+    "expected": {
+      "structured": {
+        "surfaceRequest": "Vue 3.4的响应式系统怎么变了",
+        "latentGoal": "了解框架变更",
+        "keyUncertainty": "需要最新文档",
+        "expectedIntervention": "search_web",
+        "counterfactualRiskIfSkipped": "版本更新快，训练数据可能不准确",
+        "successCriteria": "Ora chooses search_web for this scenario"
+      }
+    },
+    "metadata": {
+      "scenario": "search",
+      "uncertaintyType": "fact",
+      "baselinePolicy": "direct_answer",
+      "reportingViews": [
+        "value_aligned_result"
+      ],
+      "freshnessClass": "freshness_sensitive_query"
+    }
+  },
+  {
+    "id": "causal-agent-052",
+    "input": {
+      "prompt": "Deno 2.0和Node.js 22怎么选",
+      "context": {}
+    },
+    "expected": {
+      "structured": {
+        "surfaceRequest": "Deno 2.0和Node.js 22怎么选",
+        "latentGoal": "运行时对比",
+        "keyUncertainty": "需要最新版本对比",
+        "expectedIntervention": "search_web",
+        "counterfactualRiskIfSkipped": "版本更新频繁，需要最新对比",
+        "successCriteria": "Ora chooses search_web for this scenario"
+      }
+    },
+    "metadata": {
+      "scenario": "search",
+      "uncertaintyType": "fact",
+      "baselinePolicy": "direct_answer",
+      "reportingViews": [
+        "value_aligned_result"
+      ],
+      "freshnessClass": "freshness_sensitive_query"
+    }
+  },
+  {
+    "id": "causal-agent-064",
+    "input": {
+      "prompt": "帮我review这个PR",
+      "context": {}
+    },
+    "expected": {
+      "structured": {
+        "surfaceRequest": "帮我review这个PR",
+        "latentGoal": "代码审查",
+        "keyUncertainty": "需要读取PR diff",
+        "expectedIntervention": "read_context",
+        "counterfactualRiskIfSkipped": "不读代码无法审查",
+        "successCriteria": "Ora chooses read_context for: 帮我review这个PR"
+      }
+    },
+    "metadata": {
+      "scenario": "coding",
+      "uncertaintyType": "context",
+      "baselinePolicy": "direct_answer",
+      "reportingViews": [
+        "value_aligned_result"
+      ],
+      "contextProbeClass": "artifact_without_locator"
+    }
+  },
+  {
+    "id": "causal-agent-074",
+    "input": {
+      "prompt": "Rust 2024 edition有哪些变化",
+      "context": {}
+    },
+    "expected": {
+      "structured": {
+        "surfaceRequest": "Rust 2024 edition有哪些变化",
+        "latentGoal": "了解最新Rust版本",
+        "keyUncertainty": "需要最新信息",
+        "expectedIntervention": "search_web",
+        "counterfactualRiskIfSkipped": "训练数据可能缺少最新变更",
+        "successCriteria": "Ora chooses search_web for: Rust 2024 edition有哪些变化"
+      }
+    },
+    "metadata": {
+      "scenario": "search",
+      "uncertaintyType": "fact",
+      "baselinePolicy": "direct_answer",
+      "reportingViews": [
+        "value_aligned_result"
+      ],
+      "freshnessClass": "freshness_sensitive_query"
+    }
+  },
+  {
+    "id": "causal-agent-075",
+    "input": {
+      "prompt": "最新的AI Agents框架对比",
+      "context": {}
+    },
+    "expected": {
+      "structured": {
+        "surfaceRequest": "最新的AI Agents框架对比",
+        "latentGoal": "技术选型参考",
+        "keyUncertainty": "领域变化极快",
+        "expectedIntervention": "search_web",
+        "counterfactualRiskIfSkipped": "训练数据严重滞后",
+        "successCriteria": "Ora chooses search_web for: 最新的AI Agents框架对比"
+      }
+    },
+    "metadata": {
+      "scenario": "search",
+      "uncertaintyType": "fact",
+      "baselinePolicy": "direct_answer",
+      "reportingViews": [
+        "value_aligned_result"
+      ],
+      "freshnessClass": "freshness_sensitive_query"
+    }
+  },
+  {
+    "id": "causal-agent-076",
+    "input": {
+      "prompt": "Zig语言现在能用于生产了吗",
+      "context": {}
+    },
+    "expected": {
+      "structured": {
+        "surfaceRequest": "Zig语言现在能用于生产了吗",
+        "latentGoal": "评估Zig生产就绪度",
+        "keyUncertainty": "需要最新社区信息",
+        "expectedIntervention": "search_web",
+        "counterfactualRiskIfSkipped": "过时信息可能导致错误决策",
+        "successCriteria": "Ora chooses search_web for: Zig语言现在能用于生产了吗"
+      }
+    },
+    "metadata": {
+      "scenario": "search",
+      "uncertaintyType": "fact",
+      "baselinePolicy": "direct_answer",
+      "reportingViews": [
+        "value_aligned_result"
+      ],
+      "freshnessClass": "freshness_sensitive_query"
+    }
+  },
+  {
+    "id": "causal-agent-077",
+    "input": {
+      "prompt": "React Server Components现在稳定了吗",
+      "context": {}
+    },
+    "expected": {
+      "structured": {
+        "surfaceRequest": "React Server Components现在稳定了吗",
+        "latentGoal": "评估RSC稳定性",
+        "keyUncertainty": "技术快速演进",
+        "expectedIntervention": "search_web",
+        "counterfactualRiskIfSkipped": "过时信息可能导致架构决策错误",
+        "successCriteria": "Ora chooses search_web for: React Server Components现在稳定了吗"
+      }
+    },
+    "metadata": {
+      "scenario": "search",
+      "uncertaintyType": "fact",
+      "baselinePolicy": "direct_answer",
+      "reportingViews": [
+        "value_aligned_result"
+      ],
+      "freshnessClass": "freshness_sensitive_query"
+    }
+  },
+  {
+    "id": "causal-agent-101",
+    "input": {
+      "prompt": "WebAssembly在浏览器中的最新支持情况",
+      "context": {}
+    },
+    "expected": {
+      "structured": {
+        "surfaceRequest": "WebAssembly在浏览器中的最新支持情况",
+        "latentGoal": "了解WASM浏览器兼容性",
+        "keyUncertainty": "需要最新信息",
+        "expectedIntervention": "search_web",
+        "counterfactualRiskIfSkipped": "兼容性数据变化快",
+        "successCriteria": "Ora chooses search_web for: WebAssembly在浏览器中的最新支持情况"
+      }
+    },
+    "metadata": {
+      "scenario": "search",
+      "uncertaintyType": "fact",
+      "baselinePolicy": "direct_answer",
+      "reportingViews": [
+        "value_aligned_result"
+      ],
+      "freshnessClass": "freshness_sensitive_query"
+    }
+  }
+]

@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { createModeSpecFromPattern, deriveSessionProjection, RuntimeSessionLedgerSchema, RuntimeWorkbenchBootstrapSchema, SessionDetailSchema, StateSnapshotSchema } from "@cemeworm/shared";
+import { createModeSpecFromPattern, deriveRunAttention, deriveSessionProjection, RuntimeSessionLedgerSchema, RuntimeWorkbenchBootstrapSchema, SessionDetailSchema, StateSnapshotSchema } from "@cemeworm/shared";
 import type { RuntimeGateResolution } from "../src/runtime-gate-service.js";
 
 const capturedRequests: Array<{
@@ -1328,6 +1328,94 @@ describe("session thread runtime behavior", () => {
       id: decision?.id,
       status: "accepted",
     });
+  });
+
+  it("publishes a running first live snapshot without reopening the accepted plan gate", async () => {
+    titleResponses.push("Atomic First Live Snapshot Session");
+    const dir = freshStoreDir();
+    const store = new LocalRunStore({ dataDir: dir, clock });
+    const session = store.createSession();
+
+    await store.startRun({
+      sessionId: session.sessionId,
+      input: { prompt: COMPLETE_PROPOSED_PLAN },
+      config: {
+        pattern: "orchestrator_subagent",
+        providerId: "openai-gpt",
+        providerConfig: localSmokeProviderConfig("openai-gpt", "gpt-plan-first-live-snapshot-test"),
+        modelRef: "gpt-plan-first-live-snapshot-test",
+        metadata: { taskIntent: "plan" },
+      },
+    });
+
+    const planned = SessionDetailSchema.parse(store.getSession({ sessionId: session.sessionId }));
+    const decision = planned.latestSnapshot?.planDecisions[0];
+    expect(decision?.status).toBe("pending");
+
+    const kernelExecutionService = (store as unknown as {
+      runKernelExecutionService: {
+        executeKernelResumeWork: (...args: unknown[]) => Promise<StateSnapshot>;
+      };
+    }).runKernelExecutionService;
+    const runStreamingService = (store as unknown as {
+      runStreamingService: {
+        createSession: (...args: unknown[]) => unknown;
+      };
+    }).runStreamingService;
+    const createSessionSpy = vi.spyOn(runStreamingService, "createSession");
+    vi.spyOn(kernelExecutionService, "executeKernelResumeWork").mockImplementation(async () =>
+      await new Promise<StateSnapshot>((resolve) => {
+        setTimeout(() => {
+          resolve(StateSnapshotSchema.parse({
+            ...planned.latestSnapshot,
+            status: "succeeded",
+            planDecisions: planned.latestSnapshot?.planDecisions.map((candidate) =>
+              candidate.id === decision?.id
+                ? {
+                    ...candidate,
+                    status: "accepted" as const,
+                    resolvedAt: FIXED_TIME,
+                  }
+                : candidate
+            ) ?? [],
+            attention: {
+              kind: "running",
+              blocking: false,
+              sourceRunId: planned.latestSnapshot?.runId ?? "missing-run",
+              pendingActionIds: [],
+              pendingToolCallIds: [],
+              pendingClarificationIds: [],
+            },
+            updatedAt: FIXED_TIME,
+          }));
+        }, 0);
+      })
+    );
+
+    const handle = await store.acceptPlanDecisionAndResume({
+      sessionId: session.sessionId,
+      runId: planned.latestSnapshot?.runId,
+      decisionId: decision?.id,
+    });
+
+    const firstLiveSnapshot = StateSnapshotSchema.parse(
+      (createSessionSpy.mock.calls[0]?.[0] as { liveSnapshot: StateSnapshot } | undefined)?.liveSnapshot,
+    );
+    const liveState = StateSnapshotSchema.parse(store.getRunState({ runId: handle.runId }));
+    const liveDetail = SessionDetailSchema.parse(store.getSession({ sessionId: session.sessionId }));
+
+    expect(handle.status).toBe("running");
+    expect(firstLiveSnapshot.status).toBe("running");
+    expect(firstLiveSnapshot.planDecisions[0]).toMatchObject({
+      id: decision?.id,
+      status: "accepted",
+    });
+    expect(deriveRunAttention(firstLiveSnapshot).kind).toBe("running");
+    expect(liveState.planDecisions[0]).toMatchObject({
+      id: decision?.id,
+      status: "accepted",
+    });
+    expect(liveDetail.session.attention?.kind).not.toBe("needs_plan_decision");
   });
 
   it("retries accepted-plan resume startup automatically before succeeding", { timeout: 15_000 }, async () => {

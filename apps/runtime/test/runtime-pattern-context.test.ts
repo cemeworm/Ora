@@ -27,6 +27,18 @@ function baseContext(overrides: {
     releaseWorker: () => undefined,
     agentLabel: (agentId) => agentId,
     callAgent: async () => "",
+    callAgentStructured: async () => ({
+      ok: false,
+      rawText: "",
+      diagnostics: {
+        modeId: "test-mode",
+        outputKey: "test-output",
+        usedProviderJsonMode: false,
+        repairAttempted: false,
+        repairSucceeded: false,
+        initialText: "",
+      },
+    }),
     remember: () => undefined,
     captureMemory: () => undefined,
     publishArtifact: () => undefined,

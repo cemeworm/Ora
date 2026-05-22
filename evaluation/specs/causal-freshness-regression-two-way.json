@@ -1,0 +1,66 @@
+{
+  "profileId": "orchestration",
+  "repetitions": 1,
+  "concurrency": 1,
+  "timeoutMs": 300000,
+  "objective": {
+    "kind": "outcome",
+    "target": "run.output",
+    "metrics": [
+      "task_success_rate",
+      "llm_judge_score",
+      "intent_resolution",
+      "clarification_precision",
+      "effective_intervention",
+      "over_action",
+      "counterfactual_lift",
+      "token_efficiency",
+      "tool_efficiency",
+      "agentic_cost_score",
+      "visible_surface_shrinkage",
+      "explore_first_score",
+      "atomic_tool_hops",
+      "first_locate_success",
+      "shell_explore_restraint"
+    ],
+    "metadata": { "retrofitCausalDecisions": true }
+  },
+  "configs": [
+    {
+      "id": "freshness-record-only",
+      "label": "Record Only",
+      "runConfig": {
+        "pattern": "solo_agent",
+        "providerId": "deepseek",
+        "modelRef": "deepseek-v4-flash",
+        "causalInterventionLevel": "record_only",
+        "metadata": {
+          "evaluationBatch": "causal-freshness-regression",
+          "causalRouterVersion": "v2"
+        }
+      }
+    },
+    {
+      "id": "freshness-enforcing",
+      "label": "Enforcing (LLM-based extraction)",
+      "runConfig": {
+        "pattern": "solo_agent",
+        "providerId": "deepseek",
+        "modelRef": "deepseek-v4-flash",
+        "causalInterventionLevel": "enforcing",
+        "metadata": {
+          "evaluationBatch": "causal-freshness-regression",
+          "causalRouterVersion": "v2",
+          "causalFreshnessBlockPolicy": true
+        }
+      }
+    }
+  ],
+  "metadata": {
+    "retrofitCausalDecisions": true,
+    "description": "Targeted regression subset (16 cases): freshness_sensitive_query + Explicit Reporting View, record_only vs enforcing",
+    "evaluationFamily": "causal",
+    "judgeRubricTemplate": "causal_outcome_v1",
+    "judgePassThreshold": 0.7
+  }
+}
