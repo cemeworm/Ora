@@ -114,7 +114,7 @@ function recommendAction(input: PolicyRouterInput): RecommendResult {
 function shouldPreferReadContext(input: PolicyRouterInput): boolean {
   const text = normalizeSignalText(input.surfaceRequest);
   if (!text) return false;
-  if (promptNeedsFreshnessEvidence(text)) return false;
+  if (needsFreshnessEvidence(input)) return false;
   if (promptNeedsUserClarificationOnly(text)) return false;
   if (input.proposedToolId && isReadContextTool(input.proposedToolId)) return true;
   return promptHasArtifactHandleSignal(text);
@@ -124,7 +124,7 @@ function shouldPreferSearchWeb(input: PolicyRouterInput): boolean {
   const text = normalizeSignalText(input.surfaceRequest);
   if (!text) return false;
   if (promptNeedsUserClarificationOnly(text)) return false;
-  return promptNeedsFreshnessEvidence(text) && !isSearchTool(input.proposedToolId ?? "");
+  return needsFreshnessEvidence(input) && !isSearchTool(input.proposedToolId ?? "");
 }
 
 function normalizeSignalText(value: string): string {
@@ -158,7 +158,17 @@ export function promptHasArtifactHandleSignal(text: string): boolean {
   return signals.some((signal) => text.includes(signal));
 }
 
-export function promptNeedsFreshnessEvidence(text: string): boolean {
+function needsFreshnessEvidence(input: PolicyRouterInput): boolean {
+  if (input.taskState?.needsFreshnessEvidence === true) return true;
+  if (input.taskState?.needsFreshnessEvidence === false) return false;
+  return promptNeedsFreshnessKeywordFallback(input.surfaceRequest);
+}
+
+/**
+ * Keyword-based freshness fallback — only used when the LLM extraction did not
+ * produce an explicit needsFreshnessEvidence signal (i.e. undefined).
+ */
+export function promptNeedsFreshnessKeywordFallback(text: string): boolean {
   if (text.includes("天气")) return false;
   if (promptHasArtifactHandleSignal(text)) return false;
   if (promptLooksLikeImplementationOrReviewTask(text)) return false;

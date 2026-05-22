@@ -22,6 +22,7 @@ const ExtractedCausalSemanticStateSchema = z.object({
   expectedOutcomeLift: z.string().default(""),
   stopCondition: z.string().default(""),
   confidence: z.number().min(0).max(1).optional(),
+  needsFreshnessEvidence: z.boolean().optional(),
 });
 
 type ExtractedCausalSemanticState = z.infer<typeof ExtractedCausalSemanticStateSchema>;
@@ -66,6 +67,10 @@ export function mergeCausalTaskState(
     expectedOutcomeLift: pickString(right.expectedOutcomeLift, left.expectedOutcomeLift),
     confidence: pickNumber(right.confidence, left.confidence),
     stopCondition: pickString(right.stopCondition, left.stopCondition),
+    needsFreshnessEvidence:
+      typeof right.needsFreshnessEvidence === "boolean"
+        ? right.needsFreshnessEvidence
+        : left.needsFreshnessEvidence,
   };
 }
 
@@ -136,6 +141,7 @@ async function extractSemanticStateWithLlm(
         "- expectedOutcomeLift: what better outcome the chosen intervention is trying to produce",
         "- stopCondition: when the agent should stop instead of taking more actions",
         "- confidence: number from 0 to 1",
+        "- needsFreshnessEvidence: true if the request involves information that changes over time (version numbers, release dates, current status, pricing, compatibility, breaking changes, recent events). false for timeless knowledge (concepts, algorithms, syntax, design patterns) or tasks that work with existing local data.",
         "",
         "Keep values compact, factual, and grounded in the provided context.",
         "If context is insufficient, return empty strings or empty arrays instead of inventing detail.",
@@ -289,6 +295,9 @@ function normalizeExtractedState(parsed: ExtractedCausalSemanticState): Partial<
     expectedOutcomeLift: parsed.expectedOutcomeLift.trim(),
     stopCondition: parsed.stopCondition.trim(),
     confidence: typeof parsed.confidence === "number" ? parsed.confidence : undefined,
+    needsFreshnessEvidence: typeof parsed.needsFreshnessEvidence === "boolean"
+      ? parsed.needsFreshnessEvidence
+      : undefined,
   };
 }
 

@@ -142,6 +142,78 @@ describe("causal task-state extractor", () => {
     expect(state.latentGoalHypotheses).toContain("基于现有上下文完成审查并给出结论");
   });
 
+  it("passes needsFreshnessEvidence=true from LLM extraction through merge", async () => {
+      const state = await extractCausalTaskState({
+        prompt: "python最新版本有哪些新特性",
+        config: mockConfig(),
+        phase: "run_start",
+        allowLlmExtraction: true,
+      }, {
+        invokeProvider: async () => ({
+          providerId: "test",
+          modelRef: "test",
+          text: JSON.stringify({
+            latentGoalHypotheses: ["获取Python最新版本信息"],
+            selectedLatentGoal: "获取Python最新版本的新特性信息",
+            constraints: [],
+            candidateInterventions: ["search_web"],
+            counterfactualRiskIfSkipped: "可能给出过时的版本信息",
+            expectedOutcomeLift: "提供最新准确的版本信息",
+            stopCondition: "确认版本信息后停止",
+            confidence: 0.85,
+            needsFreshnessEvidence: true,
+          }),
+        } as never),
+      });
+
+      expect(state.needsFreshnessEvidence).toBe(true);
+    });
+
+    it("passes needsFreshnessEvidence=false from LLM extraction through merge", async () => {
+      const state = await extractCausalTaskState({
+        prompt: "解释什么是闭包",
+        config: mockConfig(),
+        phase: "run_start",
+        allowLlmExtraction: true,
+      }, {
+        invokeProvider: async () => ({
+          providerId: "test",
+          modelRef: "test",
+          text: JSON.stringify({
+            latentGoalHypotheses: ["学习JavaScript闭包概念"],
+            selectedLatentGoal: "理解闭包的工作原理",
+            constraints: [],
+            candidateInterventions: ["answer_directly"],
+            counterfactualRiskIfSkipped: "",
+            expectedOutcomeLift: "",
+            stopCondition: "",
+            confidence: 0.9,
+            needsFreshnessEvidence: false,
+          }),
+        } as never),
+      });
+
+      expect(state.needsFreshnessEvidence).toBe(false);
+    });
+
+    it("keeps left needsFreshnessEvidence when LLM does not extract the field", () => {
+      const merged = mergeCausalTaskState(
+        { needsFreshnessEvidence: true, selectedLatentGoal: "获取最新信息" },
+        { selectedLatentGoal: "获取最新信息" },
+      );
+
+      expect(merged.needsFreshnessEvidence).toBe(true);
+    });
+
+    it("right needsFreshnessEvidence=false overrides left true", () => {
+      const merged = mergeCausalTaskState(
+        { needsFreshnessEvidence: true },
+        { needsFreshnessEvidence: false },
+      );
+
+      expect(merged.needsFreshnessEvidence).toBe(false);
+    });
+
   it("tracks the latest native task state and first primary tool request", () => {
     const events = [
       causalEvent(),

@@ -45,6 +45,7 @@ export const CausalTaskStateSchema = z.object({
   expectedOutcomeLift: z.string().default(""),
   confidence: z.number().min(0).max(1).default(0),
   stopCondition: z.string().default(""),
+  needsFreshnessEvidence: z.boolean().optional(),
 });
 export type CausalTaskState = z.infer<typeof CausalTaskStateSchema>;
 

@@ -314,6 +314,72 @@ describe("causal policy router", () => {
       expect(result.action).toBe("read_context");
     });
 
+    it("prioritizes LLM needsFreshnessEvidence=true over keyword absence in router v2", () => {
+      const result = routeIntervention({
+        surfaceRequest: "python有哪些好用的库",
+        taskState: {
+          surfaceRequest: "python有哪些好用的库",
+          needsFreshnessEvidence: true,
+        },
+        proposedToolId: undefined,
+        proposedToolRisk: "low",
+        toolCallCount: 0,
+        clarificationCount: 0,
+        hasPendingApprovals: false,
+        hasPendingPlanDecisions: false,
+        hasUnresolvedPlanItems: false,
+        modelResponseText: "",
+        routerVersion: "v2",
+      });
+
+      // LLM says freshness-sensitive even though "python" is not in keyword topicSignals
+      expect(result.action).toBe("search_web");
+    });
+
+    it("lets LLM needsFreshnessEvidence=false override keyword match in router v2", () => {
+      const result = routeIntervention({
+        surfaceRequest: "React 19 有哪些新特性",
+        taskState: {
+          surfaceRequest: "React 19 有哪些新特性",
+          needsFreshnessEvidence: false,
+        },
+        proposedToolId: undefined,
+        proposedToolRisk: "low",
+        toolCallCount: 0,
+        clarificationCount: 0,
+        hasPendingApprovals: false,
+        hasPendingPlanDecisions: false,
+        hasUnresolvedPlanItems: false,
+        modelResponseText: "",
+        routerVersion: "v2",
+      });
+
+      // LLM explicitly says NOT freshness-sensitive; keyword match is overridden
+      expect(result.action).not.toBe("search_web");
+    });
+
+    it("falls back to keywords when needsFreshnessEvidence is undefined in router v2", () => {
+      const result = routeIntervention({
+        surfaceRequest: "React 19 有哪些新特性",
+        taskState: {
+          surfaceRequest: "React 19 有哪些新特性",
+          // needsFreshnessEvidence intentionally omitted (undefined)
+        },
+        proposedToolId: undefined,
+        proposedToolRisk: "low",
+        toolCallCount: 0,
+        clarificationCount: 0,
+        hasPendingApprovals: false,
+        hasPendingPlanDecisions: false,
+        hasUnresolvedPlanItems: false,
+        modelResponseText: "",
+        routerVersion: "v2",
+      });
+
+      // No LLM signal → keyword fallback should still work
+      expect(result.action).toBe("search_web");
+    });
+
     it("recommends read_context when task needs file reading before tool execution", () => {
       const result = routeIntervention({
         surfaceRequest: "帮我重构auth模块",

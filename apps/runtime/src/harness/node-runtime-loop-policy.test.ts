@@ -92,6 +92,48 @@ describe("node runtime loop policy helpers", () => {
     })).toBe(false);
   });
 
+  it("respects needsFreshnessEvidence=false even when keywords match", () => {
+    expect(shouldBlockFinalForFreshnessPolicy({
+      enabled: true,
+      prompt: "React 19 有哪些新特性",
+      toolCalls: [],
+      currentTaskState: { needsFreshnessEvidence: false },
+      toolCallCount: 0,
+      clarificationCount: 0,
+      hasUnresolvedPlanItems: false,
+      responseText: "React 19 有很多新特性。",
+      routerVersion: "v2",
+    })).toBe(false);
+  });
+
+  it("respects needsFreshnessEvidence=true even without keyword match", () => {
+    expect(shouldBlockFinalForFreshnessPolicy({
+      enabled: true,
+      prompt: "python有哪些好用的库",
+      toolCalls: [],
+      currentTaskState: { needsFreshnessEvidence: true },
+      toolCallCount: 0,
+      clarificationCount: 0,
+      hasUnresolvedPlanItems: false,
+      responseText: "Python 有很多好用的库。",
+      routerVersion: "v2",
+    })).toBe(true);
+  });
+
+  it("falls back to keywords when needsFreshnessEvidence is undefined", () => {
+    expect(shouldBlockFinalForFreshnessPolicy({
+      enabled: true,
+      prompt: "React 19 有哪些新特性",
+      toolCalls: [],
+      currentTaskState: { surfaceRequest: "React 19 有哪些新特性" },
+      toolCallCount: 0,
+      clarificationCount: 0,
+      hasUnresolvedPlanItems: false,
+      responseText: "React 19 有很多新特性。",
+      routerVersion: "v2",
+    })).toBe(true);
+  });
+
   it("blocks non-read tools when context probe policy requires reading the referenced artifact first", () => {
     expect(shouldBlockToolForContextProbePolicy({
       enabled: true,

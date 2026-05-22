@@ -58,7 +58,7 @@ import {
 } from "@cemeworm/shared";
 import {
   promptHasArtifactHandleSignal,
-  promptNeedsFreshnessEvidence,
+  promptNeedsFreshnessKeywordFallback,
 } from "./causal-policy-router.js";
 import {
   extractCausalTaskState as defaultExtractCausalTaskState,
@@ -110,7 +110,9 @@ export function shouldBlockFinalForFreshnessPolicy(params: {
   routerVersion: "v1" | "v2";
 }): boolean {
   if (!params.enabled || params.routerVersion !== "v2") return false;
-  if (!promptNeedsFreshnessEvidence(params.prompt.toLowerCase())) return false;
+  if (params.currentTaskState?.needsFreshnessEvidence === false) return false;
+  if (params.currentTaskState?.needsFreshnessEvidence !== true &&
+      !promptNeedsFreshnessKeywordFallback(params.prompt.toLowerCase())) return false;
   if (hasSucceededSearchEvidence(params.toolCalls)) return false;
   const policyResult = routeIntervention({
     surfaceRequest: params.prompt,
@@ -142,6 +144,18 @@ export function shouldBlockToolForContextProbePolicy(params: {
   if (isReadContextTool(params.proposedToolId)) return false;
   if (hasReadContextEvidence(params.toolCalls)) return false;
   return true;
+}
+
+function hasCausalFollowUpThisTurn(
+  messages: readonly { role: string; content: string }[],
+  toolName: string,
+): boolean {
+  return messages.some(
+    (m) =>
+      m.role === "user" &&
+      m.content.includes("[Causal Policy]") &&
+      m.content.includes(toolName),
+  );
 }
 
 function hasSucceededSearchEvidence(toolCalls: readonly OraToolCallEnvelope[]): boolean {
@@ -1594,6 +1608,62 @@ export async function runNodeRuntimeLoop(
       continue;
     }
 
+    // Enforcing mode: for search_web, inject guidance and let the model
+    // continue with tools instead of forcing a final answer. This must
+    // happen before emitToolRequested() to keep the state machine valid.
+    const interventionLevel = deps.config.causalInterventionLevel ?? "record_only";
+    if (
+      interventionLevel === "enforcing" &&
+      policyResult.action === "search_web"
+    ) {
+      const blockResult = applyCausalPolicyGate(policyResult, interventionLevel);
+      if (blockResult.blocked) {
+        if (hasCausalFollowUpThisTurn(messages, toolCall.tool)) {
+          // Already issued a causal freshness follow-up this turn;
+          // fall through to emitToolRequested + existing force-final path.
+        } else {
+          emit("causal.decision.rejected", {
+            toolId: toolCall.tool,
+            recommendedAction: policyResult.action,
+            reason: blockResult.reason,
+            level: interventionLevel,
+          }, {
+            agentId: params.agentId,
+            nodeId: params.nodeId,
+          });
+          nodeLoopController.emitTransitionResult("boundary_failure", "running_model", {
+            agentId: params.agentId,
+            title: params.title,
+            toolId: toolCall.tool,
+            reason: blockResult.reason,
+            iteration,
+          });
+          const actionLabel = interventionActionToLabel(policyResult.action);
+          const guidanceMessage = [
+            `[Causal Policy] Your attempt to use ${toolCall.tool} was blocked.`,
+            `Reason: ${blockResult.reason}`,
+            `Recommended action: ${actionLabel}.`,
+            `Please ${actionLabel.toLowerCase()} before answering.`,
+          ].join(" ");
+          messages = [
+            ...messages,
+            { role: "assistant", content: response.text },
+            { role: "user", content: guidanceMessage },
+          ];
+          response = await invokeFollowUpModel({
+            messages,
+            system: params.system,
+            providerCache: params.providerCache,
+            cacheDiagnosticsContext: params.cacheDiagnosticsContext,
+            maxTokens: config.budget?.maxTokens,
+            tools: nativeTools,
+            toolChoice: nativeTools.length > 0 ? "auto" : undefined,
+          }, response, "causal_policy_search_blocked");
+          continue;
+        }
+      }
+    }
+
     const toolRequestedParams = {
       agentId: params.agentId,
       title: params.title,
@@ -1604,7 +1674,6 @@ export async function runNodeRuntimeLoop(
 
     // Causal policy gate: in advisory/enforcing mode, the causal decision
     // may override or block the proposed tool call.
-    const interventionLevel = deps.config.causalInterventionLevel ?? "record_only";
     if (interventionLevel !== "record_only") {
       const blockResult = applyCausalPolicyGate(policyResult, interventionLevel);
       if (blockResult.blocked) {
