@@ -29,6 +29,7 @@ class FileContinuationHandler implements ApprovedToolContinuationHandler {
       : {};
     const executor = new RuntimeToolExecutor({
       workspace: context.workspace,
+      hostFilesystem: context.hostFilesystem,
       fetchImpl: context.fetchImpl,
       skillRegistry: context.skillRegistry,
       searchProvider: context.searchProvider,

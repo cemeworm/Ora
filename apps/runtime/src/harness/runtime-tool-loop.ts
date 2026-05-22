@@ -67,6 +67,7 @@ export function cacheKeyForRuntimeTool(
   options: { readOnlyFileTools?: boolean } = { readOnlyFileTools: true },
 ): string | undefined {
   const readOnlyFileTools = options.readOnlyFileTools !== false;
+  const fileScopeKey = fileScopeCacheKey(call.args);
   if (readOnlyFileTools && call.tool === "file.read") {
     const filePath = stringArg(call.args.path);
     if (!filePath) {
@@ -75,14 +76,14 @@ export function cacheKeyForRuntimeTool(
     if (call.args.offset !== undefined || call.args.limit !== undefined) {
       const offset = positiveIntLike(call.args.offset) ?? 1;
       const limit = positiveIntLike(call.args.limit);
-      return `${call.tool}:path=${filePath}:offset=${offset}:limit=${limit ?? "rest"}`;
+      return `${call.tool}:${fileScopeKey}:path=${filePath}:offset=${offset}:limit=${limit ?? "rest"}`;
     }
-    return `${call.tool}:${filePath}`;
+    return `${call.tool}:${fileScopeKey}:path=${filePath}`;
   }
   if (readOnlyFileTools && call.tool === "file.list") {
     const filePath = stringArg(call.args.path) || ".";
     const limit = positiveIntLike(call.args.limit);
-    return `${call.tool}:path=${filePath}:limit=${limit ?? "default"}`;
+    return `${call.tool}:${fileScopeKey}:path=${filePath}:limit=${limit ?? "default"}`;
   }
   if (readOnlyFileTools && call.tool === "file.glob") {
     const pattern = stringArg(call.args.pattern);
@@ -91,7 +92,7 @@ export function cacheKeyForRuntimeTool(
     }
     const filePath = stringArg(call.args.path) || ".";
     const limit = positiveIntLike(call.args.limit);
-    return `${call.tool}:path=${filePath}:pattern=${pattern}:limit=${limit ?? "default"}`;
+    return `${call.tool}:${fileScopeKey}:path=${filePath}:pattern=${pattern}:limit=${limit ?? "default"}`;
   }
   if (readOnlyFileTools && call.tool === "file.grep") {
     const pattern = stringArg(call.args.pattern);
@@ -102,7 +103,7 @@ export function cacheKeyForRuntimeTool(
     const filePath = stringArg(call.args.path) || ".";
     const caseSensitive = call.args.caseSensitive === false ? "false" : "true";
     const limit = positiveIntLike(call.args.limit);
-    return `${call.tool}:path=${filePath}:pattern=${pattern}:include=${include}:caseSensitive=${caseSensitive}:limit=${limit ?? "default"}`;
+    return `${call.tool}:${fileScopeKey}:path=${filePath}:pattern=${pattern}:include=${include}:caseSensitive=${caseSensitive}:limit=${limit ?? "default"}`;
   }
   if (call.tool === "web.fetch") {
     const url = stringArg(call.args.url);
@@ -167,8 +168,15 @@ function contentHash(str: string): string {
   return (hash >>> 0).toString(36);
 }
 
+function fileScopeCacheKey(args: Record<string, unknown>): string {
+  const scope = stringArg(args.scope) || "workspace";
+  const grantId = stringArg(args.grantId) || "none";
+  return `scope=${scope}:grantId=${grantId}`;
+}
+
 function writeToolContentKey(call: RuntimeToolCall): string | undefined {
   const filePath = stringArg(call.args.path);
+  const fileScopeKey = fileScopeCacheKey(call.args);
 
   if (call.tool === "file.patch") {
     const edits = call.args.edits;
@@ -179,12 +187,12 @@ function writeToolContentKey(call: RuntimeToolCall): string | undefined {
           return typeof edit?.oldText === "string" ? edit.oldText : "";
         })
         .join("\0");
-      return `file.patch:path=${filePath || "?"}:h=${contentHash(payload)}`;
+      return `file.patch:${fileScopeKey}:path=${filePath || "?"}:h=${contentHash(payload)}`;
     }
     // legacy search + replace
     const search = stringArg(call.args.search);
     if (search) {
-      return `file.patch:path=${filePath || "?"}:h=${contentHash(search)}`;
+      return `file.patch:${fileScopeKey}:path=${filePath || "?"}:h=${contentHash(search)}`;
     }
     return undefined;
   }
@@ -192,7 +200,7 @@ function writeToolContentKey(call: RuntimeToolCall): string | undefined {
   if (call.tool === "file.write") {
     const content = stringArg(call.args.content);
     if (content) {
-      return `file.write:path=${filePath || "?"}:h=${contentHash(content)}`;
+      return `file.write:${fileScopeKey}:path=${filePath || "?"}:h=${contentHash(content)}`;
     }
     return undefined;
   }

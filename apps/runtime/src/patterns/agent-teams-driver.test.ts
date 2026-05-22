@@ -33,6 +33,18 @@ function createContext(callLog: string[]): PatternExecutionContext {
       }
       return `${agentId}:${title}`;
     },
+    callAgentStructured: async () => ({
+      ok: false,
+      rawText: "",
+      diagnostics: {
+        modeId: "agent_teams",
+        outputKey: "unused",
+        usedProviderJsonMode: false,
+        repairAttempted: false,
+        repairSucceeded: false,
+        initialText: "",
+      },
+    }),
     remember: () => {},
     captureMemory: () => {},
     publishArtifact: () => {},
@@ -75,6 +87,18 @@ function createReworkContext(callLog: string[]): PatternExecutionContext {
       }
       return `${agentId}:${title}`;
     },
+    callAgentStructured: async () => ({
+      ok: false,
+      rawText: "",
+      diagnostics: {
+        modeId: "agent_teams",
+        outputKey: "unused",
+        usedProviderJsonMode: false,
+        repairAttempted: false,
+        repairSucceeded: false,
+        initialText: "",
+      },
+    }),
     remember: () => {},
     captureMemory: () => {},
     publishArtifact: () => {},

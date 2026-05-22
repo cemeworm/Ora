@@ -1,7 +1,7 @@
 import { ActionApprovalRequestCopySchema } from "@cemeworm/shared";
 import { AgentSpawnContractSchema } from "@cemeworm/shared";
 import { resolveToolPermission } from "@cemeworm/shared";
-import type { ActionApprovalRequestCopy, ActionRiskLevel, AgentResultContract, AgentSpawnContract, AgentToolBundleId, ModeToolLimits, PermissionProfile, RuntimeToolResultPreview, SearchProviderConfig, SkillDescriptor, SkillDetail, SkillListParams, TaskIntent, ToolDescriptor, ToolPermission } from "@cemeworm/shared";
+import type { ActionApprovalRequestCopy, ActionRiskLevel, AgentResultContract, AgentSpawnContract, AgentToolBundleId, HostFilesystemState, ModeToolLimits, PermissionProfile, RuntimeToolResultPreview, SearchProviderConfig, SkillDescriptor, SkillDetail, SkillListParams, TaskIntent, ToolDescriptor, ToolPermission } from "@cemeworm/shared";
 import type { PackageManager } from "../package-manager.js";
 import type { ModelToolDefinition } from "../providers/index.js";
 import type { RuntimeToolDefinition } from "./capability-registries.js";
@@ -19,7 +19,7 @@ import { selfIterationToolRuntimeFields } from "./runtime-self-iteration-tools.j
 import { shellCommandRequiresHighRisk, shellToolRuntimeFields } from "./runtime-shell-tool.js";
 import { skillToolRuntimeFields } from "./runtime-skill-tools.js";
 import { genericApprovalRequest } from "./runtime-tool-approval.js";
-import { isRecord, workspaceRootPath } from "./runtime-tool-utils.js";
+import { hasHostFilesystemAccess, hasHostFilesystemCapability, isRecord, workspaceRootPath } from "./runtime-tool-utils.js";
 import { webDocumentToolRuntimeFields } from "./runtime-web-document-tools.js";
 import { computerToolRuntimeFields } from "./runtime-computer-tools.js";
 import { widgetToolRuntimeFields } from "./runtime-widget-tools.js";
@@ -93,12 +93,6 @@ export const IMPLEMENTED_RUNTIME_TOOL_IDS = [
 
 const WORKSPACE_ROOT_REQUIRED_TOOL_IDS = new Set<RuntimeToolId>([
   "repo.explore",
-  "file.read",
-  "file.list",
-  "file.glob",
-  "file.grep",
-  "file.write",
-  "file.patch",
   "file.apply_patch",
   "shell.execute",
   "package.list",
@@ -143,6 +137,7 @@ export interface RuntimeToolExecutionContext {
   currentAgentId?: string;
   currentNodeId?: string;
   workspace: unknown;
+  hostFilesystem?: HostFilesystemState;
   fetchImpl: typeof fetch;
   skillRegistry?: SkillRegistryTools;
   modeRegistry?: ModeRegistryTools;
@@ -236,6 +231,7 @@ export type RuntimePostToolPolicyHook = (
 
 export interface RuntimeToolExecutorOptions {
   workspace?: unknown;
+  hostFilesystem?: HostFilesystemState;
   toolDescriptors?: readonly ToolDescriptor[];
   skillRegistry?: SkillRegistryTools;
   modeRegistry?: ModeRegistryTools;
@@ -480,6 +476,7 @@ export class RuntimeToolExecutor {
   private readonly turnContext?: Record<string, unknown>;
   private readonly workspaceOperations: WorkspaceOperations;
   private readonly computerBackendManager?: ComputerBackendManager;
+  private readonly hostFilesystem?: HostFilesystemState;
   private spawnAgentCallback?: RuntimeToolExecutionContext["spawnAgent"];
   private waitForAgentsCallback?: RuntimeToolExecutionContext["waitForAgents"];
   private enqueueMessageCallback?: RuntimeToolExecutionContext["enqueueMessage"];
@@ -495,6 +492,7 @@ export class RuntimeToolExecutor {
     this.mcpConfigPaths = options.mcpConfigPaths;
     this.packageManager = options.packageManager;
     this.workspace = options.workspace;
+    this.hostFilesystem = options.hostFilesystem;
     this.limits = resolveToolLimits(options.toolLimits);
     this.taskIntent = options.taskIntent;
     this.permissionProfile = options.permissionProfile;
@@ -540,12 +538,17 @@ export class RuntimeToolExecutor {
   enabledToolIds(toolIds: readonly string[] = []): RuntimeToolId[] {
     const rootPath = workspaceRootPath(this.workspace);
     return toolIds.filter((toolId): toolId is RuntimeToolId => {
+      if (!isRuntimeToolImplemented(toolId)) {
+        return false;
+      }
+      const runtimeToolId = toolId;
       const definition = this.definitions.get(toolId);
+      const requiresWorkspaceRoot = WORKSPACE_ROOT_REQUIRED_TOOL_IDS.has(runtimeToolId);
+      const fileAccessAvailable = Boolean(rootPath) || hostCapabilityForTool(runtimeToolId, this.hostFilesystem);
       return (
         typeof definition?.execute === "function" &&
-        isRuntimeToolImplemented(toolId) &&
-        this.toolAvailableForTaskIntent(toolId) &&
-        (Boolean(rootPath) || !WORKSPACE_ROOT_REQUIRED_TOOL_IDS.has(toolId))
+        this.toolAvailableForTaskIntent(runtimeToolId) &&
+        (requiresWorkspaceRoot ? Boolean(rootPath) : !toolId.startsWith("file.") || Boolean(fileAccessAvailable))
       );
     });
   }
@@ -568,6 +571,7 @@ export class RuntimeToolExecutor {
 
   systemPrompt(toolIds: readonly string[] = []): string | undefined {
     const rootPath = workspaceRootPath(this.workspace);
+    const hasHostAccess = hasHostFilesystemAccess(this.hostFilesystem);
     const enabled = this.enabledToolIds(toolIds);
     if (enabled.length === 0) {
       return undefined;
@@ -603,7 +607,13 @@ export class RuntimeToolExecutor {
       "Correct format:\n```json\n{\"tool\":\"tool.id\",\"args\":{...}}\n```",
       "Incorrect: wrapping the JSON in explanations, greetings, or markdown outside the code block.",
       "Use the function calling / tool use protocol provided by the platform. Do not describe tool calls in prose — actually invoke them.",
-      rootPath ? "Workspace file and shell tools are rooted inside the selected project folder." : "Workspace file and shell tools are unavailable unless a project folder is selected.",
+      rootPath && hasHostAccess
+        ? "Workspace file tools are rooted inside the selected project folder. Host file access is also available for explicitly scoped /tmp or approved host directories granted to this run."
+        : rootPath
+          ? "Workspace file tools are rooted inside the selected project folder. Host file access is unavailable unless this run received explicit /tmp or approved host directory grants."
+          : hasHostAccess
+          ? "Workspace file tools require a selected project folder. Host file access is available only for explicitly scoped /tmp or approved host directories."
+          : "Workspace file tools require a selected project folder. Host file access is unavailable unless the run received /tmp or approved host directory grants.",
       "If the user asks what tools you can use, answer from this available-tools list and the selected workspace context; do not claim you have no local tools when tools are listed here.",
       enabledDefinitions.some((definition) => definition.requiresApprovalCopy)
         ? "For tools that can change local files, run commands, install skills, toggle skills, or call external MCP tools, include args.approvalRequest with user-facing copy in the current conversation language. Explain what you will do, what will change, why it is needed, and the risk in plain language. Do not expose internal tool ids, policy ids, action ids, or agent ids in that copy."
@@ -754,6 +764,7 @@ export class RuntimeToolExecutor {
       currentAgentId: options.currentAgentId,
       currentNodeId: options.currentNodeId,
       workspace: this.workspace,
+      hostFilesystem: this.hostFilesystem,
       fetchImpl: this.fetchImpl,
       skillRegistry: this.skillRegistry,
       modeRegistry: this.modeRegistry,
@@ -775,6 +786,24 @@ export class RuntimeToolExecutor {
       enqueueMessage: this.enqueueMessageCallback,
       computerBackendManager: this.computerBackendManager,
     };
+  }
+}
+
+function hostCapabilityForTool(toolId: string, hostFilesystem: HostFilesystemState | undefined): boolean {
+  switch (toolId) {
+    case "file.read":
+      return hasHostFilesystemCapability(hostFilesystem, "read");
+    case "file.list":
+      return hasHostFilesystemCapability(hostFilesystem, "list");
+    case "file.glob":
+    case "file.grep":
+      return hasHostFilesystemCapability(hostFilesystem, "search");
+    case "file.write":
+      return hasHostFilesystemCapability(hostFilesystem, "write");
+    case "file.patch":
+      return hasHostFilesystemCapability(hostFilesystem, "patch");
+    default:
+      return false;
   }
 }
 

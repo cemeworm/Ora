@@ -4,12 +4,12 @@
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "strict": true,
-    "declaration": true,
-    "declarationMap": true,
-    "outDir": "dist",
-    "rootDir": "src",
     "skipLibCheck": true,
-    "types": ["node"]
+    "types": ["node"],
+    "paths": {
+      "@cemeworm/shared": ["../../packages/shared/src/index.ts"]
+    },
+    "noEmit": true
   },
   "include": ["src/**/*.ts"]
 }

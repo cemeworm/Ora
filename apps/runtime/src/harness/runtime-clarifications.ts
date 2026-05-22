@@ -4,6 +4,7 @@ import {
   CausalDecisionRecordSchema,
   type CausalTaskState,
   type OraEventEnvelope,
+  type PlanListStep,
   type PendingClarification,
   type PendingClarificationOption,
   PendingClarificationSchema,
@@ -19,6 +20,7 @@ export const INTENT_CLARIFICATION_NODE_ID = ORA_ROOT_AGENT_ID;
 export const INTENT_CLARIFICATION_NODE_LABEL = ORA_ROOT_AGENT_LABEL;
 
 const INTENT_CLARIFICATION_MAX_TOKENS = 220;
+const PLAN_STEP_BLOCKER_MAX_TOKENS = 220;
 
 export interface IntentClarificationResult {
   question: string;
@@ -69,6 +71,75 @@ export async function requestIntentClarificationQuestion(
   } catch {
     return undefined;
   }
+}
+
+export async function requestPlanStepBlockerClarification(params: {
+  prompt: string;
+  responseText: string;
+  activeStep?: Pick<PlanListStep, "id" | "step" | "status">;
+  planList: readonly Pick<PlanListStep, "id" | "step" | "status">[];
+  config: RunConfig;
+}): Promise<IntentClarificationResult | undefined> {
+  const responseText = params.responseText.trim();
+  if (!params.activeStep || responseText.length === 0) {
+    return undefined;
+  }
+  try {
+    const response = await invokeRunProvider(params.config, {
+      system: [
+        "You are Ora's execution-blocker clarification classifier.",
+        "Decide whether the assistant's latest reply shows that the CURRENT active plan step is blocked on user-provided information.",
+        "",
+        "Recommend clarification only when ALL conditions hold:",
+        "1. The assistant cannot continue the current active plan step without user input or a user decision.",
+        "2. The missing input materially affects execution of the current step, not just style or optional polish.",
+        "3. Pausing for the user is better than continuing execution or marking later plan steps complete.",
+        "",
+        "Do not ask for clarification when the assistant can continue with existing context, can make a safe default assumption, or is only giving a progress update.",
+        "Do not ask for clarification when the reply is merely reporting a blocker without actually requesting the user to provide something.",
+        "If clarification is required, rewrite it as one concise user-facing question in the user's language.",
+        "Return only JSON with this shape: {\"needsClarification\": boolean, \"missingVariables\": string[], \"question\": string, \"counterfactualRiskIfSkipped\": string}.",
+      ].join("\n"),
+      messages: [{
+        role: "user",
+        content: JSON.stringify({
+          prompt: params.prompt,
+          activeStep: params.activeStep,
+          planList: params.planList,
+          assistantReply: responseText,
+          outputContract: {
+            needsClarification: "boolean",
+            missingVariables: "string[]; the concrete missing inputs or decisions",
+            question: "string; empty when needsClarification is false",
+            counterfactualRiskIfSkipped: "string; what would likely go wrong if the run keeps going without the user input",
+          },
+        }),
+      }],
+      maxTokens: PLAN_STEP_BLOCKER_MAX_TOKENS,
+      toolChoice: "none",
+      temperature: 0,
+    });
+    return parseIntentClarificationResult(response.text);
+  } catch {
+    return undefined;
+  }
+}
+
+export function planStepBlockerFingerprint(params: {
+  activeStep: Pick<PlanListStep, "id" | "step" | "status">;
+  clarification: IntentClarificationResult;
+}): string {
+  const stepSeed = stableBlockerSlug(params.activeStep.id ?? params.activeStep.step, "step");
+  const rawMissingVariables = [...new Set(
+    params.clarification.missingVariables
+      .map((item) => item.trim())
+      .filter((item) => item.length > 0),
+  )].sort();
+  const blockerSource = rawMissingVariables.length > 0
+    ? rawMissingVariables.join("|")
+    : params.clarification.question.trim();
+  const blockerSeed = stableBlockerSlug(blockerSource, "blocker");
+  return `${stepSeed}_${blockerSeed}`.slice(0, 120);
 }
 
 type RuntimeClarificationEmit = (
@@ -358,4 +429,30 @@ function parseIntentClarificationResult(text: string): IntentClarificationResult
   } catch {
     return undefined;
   }
+}
+
+function normalizeBlockerToken(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 80);
+}
+
+function stableBlockerSlug(value: string, fallbackPrefix: string): string {
+  const normalized = normalizeBlockerToken(value);
+  if (normalized.length > 0) {
+    return normalized;
+  }
+  return `${fallbackPrefix}_${hashBlockerValue(value)}`;
+}
+
+function hashBlockerValue(value: string): string {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
 }

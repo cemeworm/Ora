@@ -66,6 +66,10 @@ import {
   latestCausalTaskState,
   type ExtractCausalTaskStateParams,
 } from "./causal-task-state-extractor.js";
+import {
+  planStepBlockerFingerprint,
+  requestPlanStepBlockerClarification,
+} from "./runtime-clarifications.js";
 import { registerRuntimeToolAttempt } from "./runtime-tool-attempt.js";
 import { codeDevelopmentToolBoundaryError } from "./runtime-tool-boundary.js";
 import { RuntimeToolCallService } from "./runtime-tool-call-service.js";
@@ -257,6 +261,7 @@ export interface RunNodeRuntimeLoopParams {
   system: string;
   providerCache?: ModelRequest["providerCache"];
   cacheDiagnosticsContext?: ModelRequest["cacheDiagnosticsContext"];
+  responseFormat?: ModelRequest["responseFormat"];
   toolIds: string[];
   /** Optional per-node timeout in milliseconds. Interpreted as an idle timeout:
    *  the node is allowed to run longer than this as long as it continues to
@@ -347,6 +352,8 @@ export interface RunNodeRuntimeLoopDeps {
     nodeLabel: string;
     question: string;
     options?: PendingClarificationOption[];
+    missingVariables?: string[];
+    counterfactualRiskIfSkipped?: string;
   }) => Promise<unknown>;
   ensureClarifications: (requests: Array<{
     id: string;
@@ -430,6 +437,66 @@ export function stripInternalAssistantText(text: string): string {
     .replace(DSML_TAG_RE, "")
     .replace(INLINE_TOOL_JSON_RE, "")
     .trim();
+}
+
+function containsCompleteProposedPlanText(text: string): boolean {
+  return /<proposed_plan>\s*[\s\S]+?\s*<\/proposed_plan>/.test(text);
+}
+
+function shouldPreferCompleteProposedPlanResponse(
+  config: RunConfig,
+  response: Pick<ModelResponse, "text">,
+): boolean {
+  if (config.metadata.taskIntent !== "plan") {
+    return false;
+  }
+  const text = response.text.trim();
+  if (!text || isInternalProviderAssistantText(text)) {
+    return false;
+  }
+  return containsCompleteProposedPlanText(text);
+}
+
+export async function maybeInterruptBlockedPlanStep(params: {
+  guardResultReason: string;
+  prompt: string;
+  currentResponseText: string;
+  planList: readonly PlanListStep[];
+  config: RunConfig;
+  agentId: string;
+  nodeId: string;
+  title: string;
+  ensureClarification: RunNodeRuntimeLoopDeps["ensureClarification"];
+  requestPlanStepBlocker?: typeof requestPlanStepBlockerClarification;
+}): Promise<void> {
+  if (params.guardResultReason !== "plan_list_incomplete") {
+    return;
+  }
+  const activeStep = params.planList.find((item) => item.status === "in_progress");
+  const classifyBlocker = params.requestPlanStepBlocker ?? requestPlanStepBlockerClarification;
+  const blockerClarification = await classifyBlocker({
+    prompt: params.prompt,
+    responseText: params.currentResponseText,
+    activeStep,
+    planList: params.planList,
+    config: params.config,
+  });
+  if (!blockerClarification || !activeStep) {
+    return;
+  }
+  const clarificationSlug = planStepBlockerFingerprint({
+    activeStep,
+    clarification: blockerClarification,
+  }) || "plan_step_blocker";
+  await params.ensureClarification({
+    id: `clarification:${params.agentId}:plan-step:${clarificationSlug}`,
+    key: `plan_step_blocker_${clarificationSlug}`,
+    nodeId: params.nodeId,
+    nodeLabel: params.title,
+    question: blockerClarification.question,
+    missingVariables: blockerClarification.missingVariables,
+    counterfactualRiskIfSkipped: blockerClarification.counterfactualRiskIfSkipped,
+  });
 }
 
 function cacheDiagnosticDelta(
@@ -1171,6 +1238,7 @@ export async function runNodeRuntimeLoop(
             system: params.system,
             providerCache: params.providerCache,
             cacheDiagnosticsContext: params.cacheDiagnosticsContext,
+            responseFormat: params.responseFormat,
             maxTokens: config.budget?.maxTokens,
             tools: nativeTools,
             toolChoice: completion.toolsAllowed(completionScope) && nativeTools.length > 0 ? "auto" : "none",
@@ -1211,6 +1279,7 @@ export async function runNodeRuntimeLoop(
             system: params.system,
             providerCache: params.providerCache,
             cacheDiagnosticsContext: params.cacheDiagnosticsContext,
+            responseFormat: params.responseFormat,
             maxTokens: config.budget?.maxTokens,
             tools: nativeTools,
             toolChoice: "none",
@@ -1270,6 +1339,18 @@ export async function runNodeRuntimeLoop(
       return { kind: "complete", response: currentResponse };
     }
 
+    await maybeInterruptBlockedPlanStep({
+      guardResultReason: guardResult.reason,
+      prompt: input.prompt,
+      currentResponseText: currentResponse.text,
+      planList: deps.planList(),
+      config,
+      agentId: params.agentId,
+      nodeId: params.nodeId,
+      title: params.title,
+      ensureClarification: deps.ensureClarification,
+    });
+
     // Build a normalized guard fingerprint to detect no-progress loops.
     // Strip parenthesized IDs (e.g. "(action-xxx)"), normalize whitespace,
     // and remove leading numbered prefixes (e.g. "plan 1." → "plan") so
@@ -1324,6 +1405,7 @@ export async function runNodeRuntimeLoop(
             ),
         providerCache: params.providerCache,
         cacheDiagnosticsContext: params.cacheDiagnosticsContext,
+        responseFormat: params.responseFormat,
         maxTokens: config.budget?.maxTokens,
         tools: nativeTools,
         toolChoice: completion.toolsAllowed(completionScope) && nativeTools.length > 0 ? "auto" : "none",
@@ -1361,6 +1443,7 @@ export async function runNodeRuntimeLoop(
         ),
     providerCache: params.providerCache,
     cacheDiagnosticsContext: params.cacheDiagnosticsContext,
+    responseFormat: params.responseFormat,
     maxTokens: config.budget?.maxTokens,
     tools: nativeTools,
     toolChoice:
@@ -1424,6 +1507,15 @@ export async function runNodeRuntimeLoop(
   let ignoredUnavailableToolCallFollowUps = 0;
   let hasExecutedTool = false;
   for (let iteration = 0; iteration < toolLoopLimit; iteration += 1) {
+    if (shouldPreferCompleteProposedPlanResponse(config, response)) {
+      const completionResult = await continueOrCompleteNaturally(response, iteration, hasExecutedTool);
+      if (completionResult.kind === "continue") {
+        response = completionResult.response;
+        continue;
+      }
+      return completionResult.response;
+    }
+
     if (!completion.toolsAllowed(completionScope)) {
       const forcedFinalResponse = coerceNoToolResponse(
         response,
@@ -1477,6 +1569,7 @@ export async function runNodeRuntimeLoop(
           system: params.system,
           providerCache: params.providerCache,
           cacheDiagnosticsContext: params.cacheDiagnosticsContext,
+          responseFormat: params.responseFormat,
           maxTokens: config.budget?.maxTokens,
           tools: nativeTools,
           toolChoice: nativeTools.length > 0 ? "auto" : undefined,
@@ -1601,6 +1694,7 @@ export async function runNodeRuntimeLoop(
         system: params.system,
         providerCache: params.providerCache,
         cacheDiagnosticsContext: params.cacheDiagnosticsContext,
+        responseFormat: params.responseFormat,
         maxTokens: config.budget?.maxTokens,
         tools: nativeTools,
         toolChoice: nativeTools.length > 0 ? "auto" : undefined,
@@ -1655,6 +1749,7 @@ export async function runNodeRuntimeLoop(
             system: params.system,
             providerCache: params.providerCache,
             cacheDiagnosticsContext: params.cacheDiagnosticsContext,
+            responseFormat: params.responseFormat,
             maxTokens: config.budget?.maxTokens,
             tools: nativeTools,
             toolChoice: nativeTools.length > 0 ? "auto" : undefined,

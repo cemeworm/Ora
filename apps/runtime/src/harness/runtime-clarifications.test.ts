@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { ensureRuntimeClarification, requestIntentClarificationQuestion } from "./runtime-clarifications.js";
+import {
+  ensureRuntimeClarification,
+  planStepBlockerFingerprint,
+  requestIntentClarificationQuestion,
+  requestPlanStepBlockerClarification,
+} from "./runtime-clarifications.js";
 
 describe("runtime clarifications language handling", () => {
   it("keeps intent clarification questions in English for English prompts", async () => {
@@ -82,5 +87,107 @@ describe("runtime clarifications language handling", () => {
     expect(pendingClarifications).toHaveLength(1);
     expect(pendingClarifications[0]?.question).toBe("你希望我在哪个环境执行这一步？");
     expect(emitted).toContain("clarification.required");
+  });
+
+  it("classifies blocked plan-step replies into structured clarification questions", async () => {
+    const previousFetch = globalThis.fetch;
+    process.env.TEST_INTENT_CLARIFICATION_KEY = "test";
+
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      choices: [{
+        message: {
+          content: JSON.stringify({
+            needsClarification: true,
+            question: "请提供 `DEEPSEEK_API_KEY`，我才能继续当前评测步骤。",
+            missingVariables: ["DEEPSEEK_API_KEY"],
+            counterfactualRiskIfSkipped: "继续推进会把未真正执行的评测步骤误记为完成。",
+          }),
+        },
+      }],
+    }), { status: 200, headers: { "content-type": "application/json" } })) as typeof fetch;
+
+    try {
+      const result = await requestPlanStepBlockerClarification({
+        prompt: "运行 targeted regression subset。",
+        responseText: "当前评测因缺少 `DEEPSEEK_API_KEY` 被阻塞，无法执行。",
+        activeStep: {
+          id: "step-prepare",
+          step: "Prepare regression environment",
+          status: "in_progress",
+        },
+        planList: [
+          { id: "step-prepare", step: "Prepare regression environment", status: "in_progress" },
+          { id: "step-run", step: "Run targeted regression", status: "pending" },
+        ],
+        config: {
+          pattern: "orchestrator_subagent",
+          modeId: "single_agent",
+          modeSelection: "manual",
+          profileIds: ["solo_agent"],
+          skillIds: [],
+          toolIds: [],
+          modelRef: "intent-clarification-model",
+          providerId: "intent-clarification-test",
+          providerConfig: {
+            id: "intent-clarification-test",
+            label: "Intent Clarification Test",
+            type: "openai_compatible",
+            modelId: "intent-clarification-model",
+            enabled: true,
+            baseUrl: "https://intent-clarification.test/v1",
+            apiKeyEnv: "TEST_INTENT_CLARIFICATION_KEY",
+            capabilities: ["chat"],
+            dropParams: [],
+            headers: {},
+          },
+          approvalMode: "auto",
+          permissionMode: "default",
+          patternOptions: {},
+          metadata: {},
+          causalInterventionLevel: "record_only",
+          deterministicSeed: "test",
+        },
+      });
+
+      expect(result).toEqual({
+        question: "请提供 `DEEPSEEK_API_KEY`，我才能继续当前评测步骤。",
+        missingVariables: ["DEEPSEEK_API_KEY"],
+        counterfactualRiskIfSkipped: "继续推进会把未真正执行的评测步骤误记为完成。",
+      });
+    } finally {
+      globalThis.fetch = previousFetch;
+      delete process.env.TEST_INTENT_CLARIFICATION_KEY;
+    }
+  });
+
+  it("builds distinct blocker fingerprints for localized missing variables", () => {
+    const first = planStepBlockerFingerprint({
+      activeStep: {
+        id: "step-deploy",
+        step: "Deploy build",
+        status: "in_progress",
+      },
+      clarification: {
+        question: "请提供测试账号。",
+        missingVariables: ["测试账号"],
+        counterfactualRiskIfSkipped: "无法继续执行部署验证。",
+      },
+    });
+    const second = planStepBlockerFingerprint({
+      activeStep: {
+        id: "step-deploy",
+        step: "Deploy build",
+        status: "in_progress",
+      },
+      clarification: {
+        question: "请提供测试密码。",
+        missingVariables: ["测试密码"],
+        counterfactualRiskIfSkipped: "无法继续执行部署验证。",
+      },
+    });
+
+    expect(first).toMatch(/^step_deploy_blocker_[0-9a-f]{8}$/);
+    expect(second).toMatch(/^step_deploy_blocker_[0-9a-f]{8}$/);
+    expect(first).not.toBe(second);
   });
 });

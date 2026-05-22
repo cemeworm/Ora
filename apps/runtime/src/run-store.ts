@@ -195,9 +195,9 @@ import {
 import {
   createFailedRunEvent,
   currentPendingClarifications,
+  materializeResumeStartSnapshot,
   rebaseRunEvent,
-  resumedInputWithClarifications,
-  runningSnapshotForApprovedActions
+  resumedInputWithClarifications
 } from "./run-orchestration.js";
 import { RunKernelExecutionService } from "./run-kernel-execution-service.js";
 import { RunLedgerBranchService } from "./run-ledger-branch-service.js";
@@ -2051,7 +2051,11 @@ export class LocalRunStore {
       });
     }
 
-    let liveSnapshot = runningSnapshotForApprovedActions(snapshot, approvedActionIds, this.now());
+    let liveSnapshot = materializeResumeStartSnapshot(snapshot, {
+      approvedActionIds,
+      planDecisionResolutions,
+      updatedAt: this.now(),
+    });
     this.persistRun(liveSnapshot);
     const abortController = this.runStreamingService.createAbortController(snapshot.runId);
     const streamingSession = this.runStreamingService.createSession({
@@ -3296,7 +3300,10 @@ export class LocalRunStore {
       return snapshot;
     }
     return this.appendRunSnapshotUpdateToLedger(this.normalizeSnapshotForPersistence(
-      runningSnapshotForApprovedActions(snapshot, approvedActionIds, this.now()),
+      materializeResumeStartSnapshot(snapshot, {
+        approvedActionIds,
+        updatedAt: this.now(),
+      }),
     ));
   }
 

@@ -33,6 +33,18 @@ function createContext(prompts: string[]): PatternExecutionContext {
       }
       return "Initial candidate output.";
     },
+    callAgentStructured: async () => ({
+      ok: false,
+      rawText: "",
+      diagnostics: {
+        modeId: "generator_verifier",
+        outputKey: "unused",
+        usedProviderJsonMode: false,
+        repairAttempted: false,
+        repairSucceeded: false,
+        initialText: "",
+      },
+    }),
     remember: () => {},
     captureMemory: () => {},
     publishArtifact: () => {},

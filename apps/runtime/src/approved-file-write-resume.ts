@@ -88,6 +88,7 @@ export async function completeApprovedToolContinuation(
 
   const executor = new RuntimeToolExecutor({
     workspace: snapshot.input.context?.projectWorkspace,
+    hostFilesystem: snapshot.hostFilesystem ?? snapshot.config.hostFilesystem,
     toolDescriptors: new RuntimeToolRegistry().list(),
     skillRegistry: deps.skillRegistry,
     searchProviderConfig: snapshot.config.searchProvider,
