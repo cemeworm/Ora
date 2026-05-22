@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import {
   type CompositionEvent,
+  type FormEvent,
   Fragment,
   useEffect,
   useLayoutEffect,
@@ -182,10 +183,25 @@ export function getContextRingState({
 
 type ComposerEditableMetrics = Pick<
   HTMLElement,
-  "scrollHeight" | "scrollLeft" | "scrollTop" | "style"
+  "clientHeight" | "scrollHeight" | "scrollLeft" | "scrollTop" | "style"
 >;
 
+type ComposerEditableScrollTarget = Pick<
+  HTMLElement,
+  "clientHeight" | "scrollHeight" | "scrollTop"
+> & {
+  getBoundingClientRect: () => Pick<DOMRect, "bottom">;
+};
+
 const COMPOSER_ZWSP = "\u200b";
+const COMPOSER_BOTTOM_SAFE_AREA_PX = 72;
+const COMPOSER_TEXT_INPUT_TYPES = new Set([
+  "insertCompositionText",
+  "insertFromPaste",
+  "insertLineBreak",
+  "insertParagraph",
+  "insertText",
+]);
 
 type ComposerTextSegment = {
   id: string;
@@ -560,7 +576,77 @@ function resizeComposerTextarea(target: ComposerEditableMetrics) {
 export function scrollComposerTextareaToBottom(
   target: ComposerEditableMetrics,
 ) {
-  target.scrollTop = target.scrollHeight;
+  target.scrollTop = Math.max(0, target.scrollHeight - target.clientHeight);
+}
+
+function getComposerCaretRect(target: HTMLElement) {
+  const selection = window.getSelection();
+  if (!selection || selection.rangeCount === 0) {
+    return null;
+  }
+  const range = selection.getRangeAt(0);
+  if (!target.contains(range.startContainer) || !target.contains(range.endContainer)) {
+    return null;
+  }
+
+  const measurement = range.cloneRange();
+  measurement.collapse(false);
+  const rects =
+    typeof measurement.getClientRects === "function"
+      ? measurement.getClientRects()
+      : [];
+  if (rects.length > 0) {
+    return rects[rects.length - 1] ?? null;
+  }
+
+  const rangeRect =
+    typeof measurement.getBoundingClientRect === "function"
+      ? measurement.getBoundingClientRect()
+      : null;
+  if (rangeRect && (rangeRect.height > 0 || rangeRect.width > 0)) {
+    return rangeRect;
+  }
+
+  if (measurement.startContainer instanceof Element) {
+    return measurement.startContainer.getBoundingClientRect();
+  }
+  return measurement.startContainer.parentElement?.getBoundingClientRect() ?? null;
+}
+
+export function scrollComposerCaretIntoSafeView(
+  target: ComposerEditableScrollTarget,
+  options: {
+    caretRect?: Pick<DOMRect, "bottom"> | null;
+    safeBottomSpace?: number;
+  } = {},
+) {
+  const safeBottomSpace =
+    options.safeBottomSpace ?? COMPOSER_BOTTOM_SAFE_AREA_PX;
+  const caretRect =
+    options.caretRect ??
+    (target instanceof HTMLElement ? getComposerCaretRect(target) : null);
+  if (!caretRect) {
+    return false;
+  }
+
+  const editorRect = target.getBoundingClientRect();
+  const visibleBottom = editorRect.bottom - safeBottomSpace;
+  const overflow = caretRect.bottom - visibleBottom;
+  if (overflow <= 0) {
+    return false;
+  }
+
+  const maxScrollTop = Math.max(0, target.scrollHeight - target.clientHeight);
+  const nextScrollTop = Math.min(
+    maxScrollTop,
+    Math.max(0, target.scrollTop + Math.ceil(overflow)),
+  );
+  if (nextScrollTop === target.scrollTop) {
+    return false;
+  }
+
+  target.scrollTop = nextScrollTop;
+  return true;
 }
 
 export function getCurrentLineInfo(text: string, cursor: number) {
@@ -895,6 +981,7 @@ export function ChatInput({
   const previousHideComposerRef = useRef(false);
   const sessionIdRef = useRef(sessionId);
   const isComposingRef = useRef(false);
+  const [hasPendingUserInput, setHasPendingUserInput] = useState(false);
   const [openPicker, setOpenPicker] = useState<
     | "pattern"
     | "provider"
@@ -945,6 +1032,11 @@ export function ChatInput({
     composerPrompt: plainTextPrompt,
     runInteractionState,
   });
+  const showComposerPlaceholder =
+    plainTextPrompt.length === 0 &&
+    !runInteractionState.isProcessing &&
+    !isComposingRef.current &&
+    !hasPendingUserInput;
   const filteredSkillOptions = useMemo(() => {
     return skillOptions
       .filter((skill) => skill.enabled)
@@ -999,6 +1091,7 @@ export function ChatInput({
     if (sessionIdRef.current !== sessionId) {
       sessionIdRef.current = sessionId;
       pendingSelectionRef.current = null;
+      setHasPendingUserInput(false);
       setSelectionBookmark(null);
       setPreviewImage(null);
       setSegments(
@@ -1053,6 +1146,7 @@ export function ChatInput({
     } else if (!plainTextPrompt) {
       target.scrollTop = 0;
     }
+    scrollComposerCaretIntoSafeView(target);
   }, [plainTextPrompt, segments, sessionId]);
 
   useEffect(() => {
@@ -1141,6 +1235,9 @@ export function ChatInput({
     pendingSelectionRef.current = options.selection ?? null;
     setSelectionBookmark(options.selection ?? null);
     setSegments(normalized);
+    if (nextPrompt.length > 0 || !isComposingRef.current) {
+      setHasPendingUserInput(false);
+    }
 
     if (nextPrompt !== previousPrompt) {
       onPromptChange(nextPrompt);
@@ -1197,6 +1294,7 @@ export function ChatInput({
 
   function handleCompositionStart() {
     isComposingRef.current = true;
+    setHasPendingUserInput(true);
   }
 
   function handleCompositionEnd(_e: CompositionEvent<HTMLDivElement>) {
@@ -1205,6 +1303,33 @@ export function ChatInput({
       refreshSelectionState();
       parseAndCommitEditorState();
     });
+  }
+
+  function handleBeforeInput(e: FormEvent<HTMLDivElement>) {
+    const nativeEvent = e.nativeEvent as InputEvent;
+    if (COMPOSER_TEXT_INPUT_TYPES.has(nativeEvent.inputType ?? "")) {
+      setHasPendingUserInput(true);
+    }
+  }
+
+  function handleBlur() {
+    if (!plainTextPrompt) {
+      setHasPendingUserInput(false);
+    }
+  }
+
+  function markPendingInputFromKeyDown(e: KeyboardEvent<HTMLDivElement>) {
+    if (
+      e.metaKey ||
+      e.ctrlKey ||
+      e.altKey ||
+      e.key.length !== 1 ||
+      e.nativeEvent.isComposing ||
+      isComposingRef.current
+    ) {
+      return;
+    }
+    setHasPendingUserInput(true);
   }
 
   function removeBoundaryChip(direction: "backward" | "forward") {
@@ -1403,6 +1528,7 @@ export function ChatInput({
   }
 
   function handleKeyDown(e: KeyboardEvent<HTMLDivElement>) {
+    markPendingInputFromKeyDown(e);
     if (isComposingRef.current || e.nativeEvent.isComposing) {
       return;
     }
@@ -1790,14 +1916,18 @@ export function ChatInput({
                 aria-multiline="true"
                 data-testid="chat-input-editor"
                 className={cn(
-                  "max-h-[220px] w-full overflow-y-auto bg-transparent px-4 pb-14 text-sm leading-5 outline-none",
+                  "max-h-[220px] w-full overflow-y-auto bg-transparent px-4 text-sm leading-5 outline-none",
                   "whitespace-pre-wrap break-words",
                   interactivity.canEditText
                     ? "cursor-text"
                     : "cursor-not-allowed opacity-60",
                   hasFileChips ? "min-h-[124px] pt-14" : "min-h-[96px] pt-4",
                 )}
-                style={{ height: "auto" }}
+                style={{
+                  height: "auto",
+                  paddingBottom: `${COMPOSER_BOTTOM_SAFE_AREA_PX}px`,
+                }}
+                onBeforeInput={handleBeforeInput}
                 onInput={parseAndCommitEditorState}
                 onCompositionStart={handleCompositionStart}
                 onCompositionEnd={handleCompositionEnd}
@@ -1805,6 +1935,7 @@ export function ChatInput({
                 onKeyUp={refreshSelectionState}
                 onMouseUp={refreshSelectionState}
                 onFocus={refreshSelectionState}
+                onBlur={handleBlur}
                 onPaste={(e) => {
                   const items = e.clipboardData?.items;
                   if (items) {
@@ -1845,6 +1976,7 @@ export function ChatInput({
                     return;
                   }
                   e.preventDefault();
+                  setHasPendingUserInput(true);
                   shouldScrollPastedTextRef.current = true;
                   insertTextAtSelection(text);
                 }}
@@ -1852,8 +1984,7 @@ export function ChatInput({
                 {segments.map((segment, index) => {
                   if (segment.kind === "text") {
                     const placeholderText =
-                      plainTextPrompt.length === 0 &&
-                      !runInteractionState.isProcessing &&
+                      showComposerPlaceholder &&
                       index === segments.length - 1
                         ? localizedPlaceholder
                         : undefined;

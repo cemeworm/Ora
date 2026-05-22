@@ -1380,11 +1380,24 @@ export function adaptChatMessages(
         ? shouldSuppressStoredAssistantFallback(turn.snapshot)
         : false;
       const snapshotAssistantContent = snapshotAssistantView?.content;
+      const suppressStoredFallbackBecauseTimelineOnly = Boolean(
+        turn.snapshot &&
+        snapshotAssistantContent === "" &&
+        snapshotAssistantView?.turn &&
+        isPureChildSessionMilestoneBody(
+          snapshotAssistantView.turn,
+          normalizeComparableText(
+            childSessionMilestoneBodyCandidate(snapshotAssistantView.turn) ?? "",
+          ),
+        ),
+      );
       const assistantContent =
         (typeof snapshotAssistantContent === "string" && snapshotAssistantContent.trim().length > 0
           ? snapshotAssistantContent
           : undefined) ??
-        (suppressStoredAssistant ? undefined : turn.assistant?.content) ??
+        ((suppressStoredAssistant || suppressStoredFallbackBecauseTimelineOnly)
+          ? undefined
+          : turn.assistant?.content) ??
         snapshotAssistantContent ??
         placeholderAssistantCopy(turn.snapshot);
       const presentedAssistantTurn = turn.snapshot
@@ -1886,17 +1899,119 @@ export function derivePresentedAssistantTurnFromSnapshot(
         ? parsedAssistantPlan.planContent
         : parsedAssistantPlan?.displayText) ??
     placeholderAssistantCopy(snapshot);
+  const filteredContent = shouldSuppressSnapshotAssistantBody({
+    snapshot,
+    content,
+    turn: assistantTurn,
+  })
+    ? ""
+    : content;
 
   return {
-    content,
+    content: filteredContent,
     turn: {
       ...assistantTurn,
       presentation: deriveAssistantTurnPresentation({
-        content,
+        content: filteredContent,
         turn: assistantTurn,
       }),
     },
   };
+}
+
+function shouldSuppressSnapshotAssistantBody({
+  snapshot,
+  content,
+  turn,
+}: {
+  snapshot: OraStateSnapshot;
+  content: string;
+  turn: AssistantTurnAttachment;
+}): boolean {
+  const normalizedContent = normalizeComparableText(content);
+  if (!normalizedContent) {
+    return false;
+  }
+  if (turn.hasProposedPlan || turn.planContent || turn.clarificationExchanges?.length || turn.approvalCount > 0) {
+    return false;
+  }
+  if (outputTextFromSnapshot(snapshot)) {
+    return false;
+  }
+  if (turn.timelineItems?.some((item) => item.kind === "final_text")) {
+    return false;
+  }
+  return isPureChildSessionMilestoneBody(turn, normalizedContent);
+}
+
+function normalizeComparableText(text: string): string {
+  return text.trim().replace(/\s+/g, " ");
+}
+
+function isPureChildSessionMilestoneBody(
+  turn: AssistantTurnAttachment,
+  normalizedContent: string,
+): boolean {
+  if (!normalizedContent) {
+    return false;
+  }
+  const timelineItems = turn.timelineItems ?? [];
+  if (timelineItems.length === 0) {
+    return false;
+  }
+  const matchingItems = timelineItems.filter((item) =>
+    "content" in item &&
+    item.kind === "assistant_text" &&
+    normalizeComparableText(item.content) === normalizedContent,
+  );
+  if (matchingItems.length === 0) {
+    return false;
+  }
+  const processSteps = turn.processSteps ?? [];
+  if (processSteps.length === 0) {
+    return false;
+  }
+  const childMilestoneSteps = processSteps.filter((step) =>
+    [
+      "子代理结果回流",
+      "子代理失败",
+      "子代理已取消",
+      "子代理卡住",
+      "委派子代理",
+    ].includes(step.label),
+  );
+  if (childMilestoneSteps.length === 0) {
+    return false;
+  }
+  return childMilestoneSteps.some((step) =>
+    normalizeComparableText(step.detail) === normalizedContent ||
+    normalizeComparableText(step.label) === normalizedContent,
+  );
+}
+
+function childSessionMilestoneBodyCandidate(
+  turn: AssistantTurnAttachment,
+): string | undefined {
+  const processSteps = turn.processSteps ?? [];
+  for (let index = processSteps.length - 1; index >= 0; index -= 1) {
+    const step = processSteps[index];
+    if (!step) {
+      continue;
+    }
+    if (
+      [
+        "子代理结果回流",
+        "子代理失败",
+        "子代理已取消",
+        "子代理卡住",
+        "委派子代理",
+      ].includes(step.label) &&
+      step.detail.trim()
+    ) {
+      return step.detail.trim();
+    }
+  }
+  return undefined;
 }
 
 export function adaptRenderableChatMessages(params: {
@@ -4408,6 +4523,9 @@ function toolCallDetail(payload: Record<string, unknown>): string | undefined {
         : `${subject} 处理子任务`;
     }
     case "file.read":
+      if (payload.status === "failed" || typeof payload.error === "string") {
+        return targetPath ? `无法读取 ${targetPath}` : "文件读取失败";
+      }
       return targetPath
         ? `已读取 ${targetPath}${sizeSuffix(output.sizeBytes ?? output.bytes)}`
         : undefined;

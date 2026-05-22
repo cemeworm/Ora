@@ -793,7 +793,7 @@ function ArtifactCard({
         <Artifact
           className={cn(
             "transition",
-            onOpenArtifact && "hover:bg-accent/25 active:scale-[0.995]",
+            onOpenArtifact && "hover:bg-muted/75 active:scale-[0.995]",
             isCompact && "[&_div[data-slot='artifact-header']]:gap-2",
           )}
         >
@@ -801,7 +801,7 @@ function ArtifactCard({
             <div className={cn("flex min-w-0 items-center", isCompact ? "gap-2.5" : "gap-3")}>
               <div
                 className={cn(
-                  "flex shrink-0 items-center justify-center rounded-xl border border-border bg-muted/35 text-muted-foreground",
+                  "flex shrink-0 items-center justify-center rounded-md border border-border bg-muted/55 text-muted-foreground",
                   isCompact ? "h-8 w-8" : "h-9 w-9",
                 )}
               >
@@ -823,8 +823,8 @@ function ArtifactCard({
             <ArtifactActions>
               <span
                 className={cn(
-                  "inline-flex items-center rounded-full border border-border text-xs text-muted-foreground",
-                  isCompact ? "px-2.5 py-1" : "px-3 py-1.5",
+                  "inline-flex items-center rounded-md border border-border bg-card/80 text-xs text-muted-foreground",
+                  isCompact ? "px-2 py-0.5" : "px-2.5 py-1",
                 )}
               >
                 Preview

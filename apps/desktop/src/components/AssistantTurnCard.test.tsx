@@ -881,8 +881,47 @@ describe("assistant turn display helpers", () => {
     expect(diffIndex).toBeGreaterThan(artifactIndex);
     expect(html).toContain("+1");
     expect(html).toContain("-1");
+    expect(html).toContain("Preview");
+    expect(html).toContain("file - text/plain");
+    expect(html).toContain("data-slot=\"artifact\"");
+    expect(html).toContain("rounded-md border border-border bg-card/70 shadow-xs");
+    expect(html).toContain("data-slot=\"artifact-header\"");
+    expect(html).toContain("bg-muted/35 px-3 py-2.5");
     expect(html).not.toContain("const oldValue = true;");
     expect(html).not.toContain("const newValue = true;");
+  });
+
+  it("keeps artifact card structure intact in compact density", () => {
+    const turn: AssistantTurnAttachment = {
+      runId: "run-compact",
+      turnIndex: 1,
+      status: "done",
+      pattern: "agent_teams",
+      sources: [],
+      processSteps: [],
+      agentMessages: [],
+      artifacts: [
+        artifact("artifact-compact", "tasks/plan.md", {
+          kind: "file",
+          mimeType: "text/markdown",
+          previewable: true,
+        }),
+      ],
+      todos: [],
+      planList: [],
+      approvalCount: 0,
+      clarificationCount: 0,
+      hasProposedPlan: false,
+    };
+
+    const html = renderToStaticMarkup(
+      <AssistantTurnCard content="正文" turn={turn} density="compact" />,
+    );
+
+    expect(html).toContain("tasks/plan.md");
+    expect(html).toContain("file - text/markdown");
+    expect(html).toContain("Preview");
+    expect(html).toContain("[&amp;_div[data-slot=&#x27;artifact-header&#x27;]]:gap-2");
   });
 
   it("renders plan summaries and artifact cards without internal plan update or artifact export progress copy", () => {

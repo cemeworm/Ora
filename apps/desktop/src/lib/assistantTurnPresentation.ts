@@ -26,12 +26,9 @@ export function deriveAssistantTurnPresentation(params: {
     isPlaceholder,
   ).filter(dedupeTimelineItemText());
   const hasPlan = Boolean(turn.hasProposedPlan && turn.planContent);
-  const timelineContainsBody = visibleTimelineItems.some((item) => {
-    if (item.kind === "assistant_text" || item.kind === "final_text") {
-      return true;
-    }
-    return item.kind === "agent_message" && isComparableDuplicate(bodyContent, item.content);
-  });
+  const timelineContainsBody = visibleTimelineItems.some((item) =>
+    timelineItemRepresentsBody(item, bodyContent),
+  );
 
   return {
     primarySurface: hasPlan
@@ -47,6 +44,18 @@ export function deriveAssistantTurnPresentation(params: {
     ),
     visibleTimelineItems,
   };
+}
+
+function timelineItemRepresentsBody(item: TurnTimelineItem, bodyContent: string): boolean {
+  if (!bodyContent.trim()) {
+    return false;
+  }
+  if ((item.kind === "assistant_text" || item.kind === "final_text" || item.kind === "agent_message") &&
+    isComparableDuplicate(bodyContent, item.content)
+  ) {
+    return true;
+  }
+  return false;
 }
 
 function isComparableDuplicate(left: string, right: string): boolean {

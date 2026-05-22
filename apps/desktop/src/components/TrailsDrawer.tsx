@@ -76,7 +76,7 @@ export function TrailsDrawer({
       )}
       aria-hidden={!open}
     >
-      <header className="flex h-12 shrink-0 items-center justify-between bg-card/74 px-4 backdrop-blur-sm">
+      <header className="flex h-12 shrink-0 items-center justify-between bg-card px-4">
         <div className="flex min-w-0 items-center gap-2">
           <Crosshair size={16} className="text-muted-foreground" />
           <div className="min-w-0">

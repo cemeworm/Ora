@@ -5254,6 +5254,8 @@ describe("desktop session view model", () => {
       ?.flatMap((item) => "content" in item ? [item.content] : "summary" in item ? [item.summary] : [])
       .join("\n") ?? "";
 
+    expect(assistant?.content).toBe("");
+    expect(assistant?.turn?.presentation?.showStandaloneBody).toBe(false);
     expect(timelineText).toContain("已委派 Research subagent，正在处理子任务。");
     expect(timelineText.match(/已委派 Research subagent，正在处理子任务。/g)).toHaveLength(1);
     expect(timelineText).toContain("Research subagent 已完成，结果已回流，父 Agent 正在整合。");
@@ -5265,6 +5267,140 @@ describe("desktop session view model", () => {
       "读取文件",
       "子代理结果回流",
     ]);
+  });
+
+  it("keeps child session milestones in timeline while preserving a real final answer body", () => {
+    const createdAt = 1_714_000_150_000;
+    const runId = "run-child-session-milestone-with-final-answer";
+    const snapshot = {
+      runId,
+      sessionId: "session-child-session-milestone-with-final-answer",
+      turnIndex: 1,
+      status: "succeeded",
+      pattern: "orchestrator_subagent",
+      modeId: DEERFLOW_HARNESS_MODE_ID,
+      input: { prompt: "coordinate subagents", createdAt, context: {} },
+      config: {
+        modeId: DEERFLOW_HARNESS_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["ora", "ora-sub-1"],
+        providerId: "deepseek",
+        modelRef: "deepseek-chat",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-child-session-final-answer-test",
+        skillIds: [],
+        toolIds: ["agent.spawn", "file.read"],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [
+        { id: ORA_ROOT_AGENT_ID, label: ORA_ROOT_AGENT_LABEL, role: "root", model: "deepseek-chat", tools: [], budget: "", memoryScopes: [] },
+        { id: "ora-sub-1", label: "Research subagent", role: "research", model: "deepseek-chat", tools: [], budget: "", memoryScopes: [] },
+      ],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [
+        {
+          id: `${runId}:evt-0`,
+          runId,
+          seq: 0,
+          type: "tool.called",
+          createdAt: createdAt + 1,
+          pattern: "orchestrator_subagent",
+          agentId: ORA_ROOT_AGENT_ID,
+          nodeId: ORA_ROOT_AGENT_ID,
+          payload: {
+            toolId: "agent.spawn",
+            status: "succeeded",
+            input: {
+              description: "Research subagent",
+              tool_bundle: "research_readonly",
+            },
+            output: {
+              status: "async_launched",
+              child_agent_id: "ora-sub-1",
+              tool_bundle: "research_readonly",
+            },
+          },
+        },
+        {
+          id: `${runId}:evt-1`,
+          runId,
+          seq: 1,
+          type: "child_session.updated",
+          createdAt: createdAt + 5,
+          pattern: "orchestrator_subagent",
+          payload: {
+            childSession: {
+              id: `${runId}:ora-sub-1`,
+              agentId: "ora-sub-1",
+              label: "Research subagent",
+              status: "succeeded",
+              lifecyclePhase: "awaiting_pickup",
+            },
+          },
+        },
+      ],
+      childSessions: [{
+        id: `${runId}:ora-sub-1`,
+        agentId: "ora-sub-1",
+        label: "Research subagent",
+        sessionClass: "temporary_spawn",
+        status: "succeeded",
+        deliveryStatus: "awaiting_pickup",
+        lifecyclePhase: "awaiting_pickup",
+        parentTaskIntent: "chat",
+        childTaskIntent: "chat",
+        startedAt: createdAt + 1,
+        updatedAt: createdAt + 5,
+        summary: "完成资料搜集",
+      }],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 0, completed: 1, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      output: { text: "综合子代理结果后，结论是应该先保持 record_only。" },
+      updatedAt: createdAt + 8,
+    } as unknown as OraStateSnapshot;
+
+    const assistant = adaptChatMessages(
+      [{
+        id: `${runId}:user`,
+        sessionId: "session-child-session-milestone-with-final-answer",
+        runId,
+        turnIndex: 1,
+        role: "user",
+        content: "coordinate subagents",
+        pattern: "orchestrator_subagent",
+        modeId: DEERFLOW_HARNESS_MODE_ID,
+        createdAt,
+      }],
+      { [runId]: snapshot },
+    ).find((message) => message.role === "assistant");
+
+    const timelineText = assistant?.turn?.timelineItems
+      ?.flatMap((item) => "content" in item ? [item.content] : "summary" in item ? [item.summary] : [])
+      .join("\n") ?? "";
+    const finalItems = assistant?.turn?.timelineItems?.filter((item) =>
+      item.kind === "final_text" && "content" in item
+    ) ?? [];
+
+    expect(assistant?.content).toBe("综合子代理结果后，结论是应该先保持 record_only。");
+    expect(timelineText).toContain("Research subagent 已完成，结果已回流，父 Agent 正在整合。");
+    expect(finalItems).toContainEqual(expect.objectContaining({
+      kind: "final_text",
+      content: "综合子代理结果后，结论是应该先保持 record_only。",
+    }));
   });
 
   it("shows blocked agent.spawn attempts as public failure milestones", () => {

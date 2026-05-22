@@ -16,6 +16,7 @@ import {
   getContextRingState,
   getCurrentLineInfo,
   restoreSelectionBookmark,
+  scrollComposerCaretIntoSafeView,
   scrollComposerTextareaToBottom,
 } from "./ChatInput";
 import {
@@ -68,6 +69,7 @@ Object.assign(globalThis, {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   while (cleanupCallbacks.length > 0) {
     cleanupCallbacks.pop()?.();
   }
@@ -250,6 +252,18 @@ function dispatchEditorInputWithType(
   act(() => {
     editor.dispatchEvent(
       new InputEvent("input", { bubbles: true, inputType, data }),
+    );
+  });
+}
+
+function dispatchBeforeInput(
+  editor: HTMLElement,
+  inputType: string,
+  data: string | null = null,
+) {
+  act(() => {
+    editor.dispatchEvent(
+      new InputEvent("beforeinput", { bubbles: true, inputType, data }),
     );
   });
 }
@@ -603,6 +617,7 @@ describe("chat input context ring", () => {
 describe("chat input scrolling", () => {
   it("scrolls pasted overflow content to the bottom", () => {
     const target = {
+      clientHeight: 220,
       scrollHeight: 640,
       scrollTop: 0,
       style: { height: "" },
@@ -610,7 +625,24 @@ describe("chat input scrolling", () => {
 
     scrollComposerTextareaToBottom(target);
 
-    expect(target.scrollTop).toBe(640);
+    expect(target.scrollTop).toBe(420);
+  });
+
+  it("pushes the caret back above the bottom safe area when it falls under the toolbar", () => {
+    const target = {
+      clientHeight: 220,
+      scrollHeight: 640,
+      scrollTop: 120,
+      getBoundingClientRect: () => ({ bottom: 300 }),
+    } as any;
+
+    const adjusted = scrollComposerCaretIntoSafeView(target, {
+      caretRect: { bottom: 286 },
+      safeBottomSpace: 72,
+    });
+
+    expect(adjusted).toBe(true);
+    expect(target.scrollTop).toBe(178);
   });
 });
 
@@ -696,7 +728,7 @@ describe("ChatInput content editable chips", () => {
 
     expect(html).toContain("任务清单 · 3 待办");
     expect(html).toContain("release-helper");
-    expect(html).toContain('contentEditable="true"');
+    expect(html).toContain('contenteditable="true"');
   });
 
   it("translates the empty composer placeholder for Chinese", () => {
@@ -709,6 +741,59 @@ describe("ChatInput content editable chips", () => {
     expect(trailingTextSegment?.getAttribute("data-placeholder")).toBe(
       "给 Ora 发消息",
     );
+  });
+
+  it("hides the placeholder as soon as IME composition starts", () => {
+    const { container } = renderElement(
+      createElement(ChatInput as any, createBaseProps({ language: "zh" })),
+    );
+
+    const editor = getEditor(container);
+    const textSegment = getTextSegments(editor)[0];
+    expect(textSegment?.getAttribute("data-placeholder")).toBe("给 Ora 发消息");
+
+    dispatchComposition(editor, "compositionstart", "ni");
+
+    const refreshedTextSegment = getTextSegments(getEditor(container))[0];
+    expect(refreshedTextSegment?.getAttribute("data-placeholder")).toBeNull();
+  });
+
+  it("restores the placeholder when composition ends with no committed text", async () => {
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation(
+      (callback: FrameRequestCallback) => {
+        callback(0);
+        return 1;
+      },
+    );
+    const { container } = renderElement(
+      createElement(ChatInput as any, createBaseProps({ language: "zh" })),
+    );
+
+    const editor = getEditor(container);
+    dispatchComposition(editor, "compositionstart", "ni");
+    act(() => {
+      getTextSegments(editor)[0]!.textContent = "";
+    });
+    dispatchEditorInput(editor);
+    dispatchComposition(editor, "compositionend", "");
+    await flushMicrotasks();
+
+    const refreshedTextSegment = getTextSegments(getEditor(container)).at(-1);
+    expect(refreshedTextSegment?.getAttribute("data-placeholder")).toBe(
+      "给 Ora 发消息",
+    );
+  });
+
+  it("hides the placeholder on the first keydown before prompt state is committed", () => {
+    const { container } = renderElement(
+      createElement(ChatInput as any, createBaseProps({ language: "zh" })),
+    );
+
+    const editor = getEditor(container);
+    dispatchEditorKey(editor, "d");
+
+    const refreshedTextSegment = getTextSegments(getEditor(container))[0];
+    expect(refreshedTextSegment?.getAttribute("data-placeholder")).toBeNull();
   });
 
   it("deletes the left chip with Backspace when the caret is between two chips", () => {
@@ -1076,6 +1161,68 @@ describe("ChatInput content editable chips", () => {
     await flushMicrotasks();
 
     expect(latestState.prompt).toBe("你");
+  });
+
+  it("keeps the last line above the toolbar safe area after pasted content grows", async () => {
+    const originalGetClientRects = Range.prototype.getClientRects;
+    const originalGetBoundingClientRect = Range.prototype.getBoundingClientRect;
+    Range.prototype.getClientRects = vi.fn(() => [{ bottom: 286 }]) as any;
+    Range.prototype.getBoundingClientRect = vi
+      .fn()
+      .mockReturnValueOnce({ bottom: 286, height: 20, width: 40 })
+      .mockReturnValue({ bottom: 300, height: 220, width: 500 }) as any;
+
+    let latestState: HarnessState = {
+      prompt: "",
+      selectedSkillIds: [],
+      contextIds: [],
+    };
+    const { container } = renderElement(
+      createElement(ChatInputHarness, {
+        onStateChange: (state: HarnessState) => {
+          latestState = state;
+        },
+      }),
+    );
+
+    const editor = getEditor(container);
+    Object.defineProperty(editor, "clientHeight", {
+      configurable: true,
+      value: 220,
+    });
+    Object.defineProperty(editor, "scrollHeight", {
+      configurable: true,
+      value: 640,
+    });
+    editor.scrollTop = 0;
+
+    const textSegment = getTextSegments(editor)[0];
+    setCaret(textSegment, 0);
+    flushSelection(editor);
+
+    act(() => {
+      textSegment.textContent = "第一行\n第二行\n第三行";
+    });
+    dispatchBeforeInput(editor, "insertFromPaste", "第一行\n第二行\n第三行");
+    dispatchEditorInputWithType(editor, "insertFromPaste", "第一行\n第二行\n第三行");
+    await flushMicrotasks();
+
+    const refreshedEditor = getEditor(container);
+    const trailingTextSegment = getTextSegments(refreshedEditor).at(-1)!;
+    setCaret(
+      trailingTextSegment,
+      sanitizeText(trailingTextSegment.textContent).length,
+    );
+    flushSelection(refreshedEditor);
+
+    dispatchEditorKey(refreshedEditor, "Enter", { shiftKey: true });
+    await flushMicrotasks();
+
+    expect(latestState.prompt).toBe("第一行\n第二行\n第三行\n");
+    expect(getEditor(container).scrollTop).toBeGreaterThan(0);
+
+    Range.prototype.getClientRects = originalGetClientRects;
+    Range.prototype.getBoundingClientRect = originalGetBoundingClientRect;
   });
 
   it("does not submit on Enter while IME composition is active", () => {

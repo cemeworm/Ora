@@ -262,7 +262,7 @@ export function TrailsTabs({
 
   return (
     <div className="w-full min-w-0">
-      <div className="sticky top-0 z-10 border-b border-bench-200 bg-card/95 px-3 py-3 backdrop-blur">
+      <div className="sticky top-0 z-10 border-b border-bench-200 bg-card px-3 py-3">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
