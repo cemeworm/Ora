@@ -888,8 +888,12 @@ export class LocalRunStore {
   getSession(params: unknown): SessionDetail {
     const t0 = Date.now();
     const sessionId = (params as Record<string, unknown>)?.sessionId as string;
+    // Fast-fail: don't hydrate a session we've never seen.
+    if (!this.allSessionIds.has(sessionId)) {
+      throw new OraRuntimeError(`Session not found: ${sessionId}`, -32004, { sessionId });
+    }
     this.refreshSessionIfStale(sessionId);
-    this.ensureSessionRunsLoaded(sessionId, { includeEvents: true });
+    this.ensureSessionRunsLoaded(sessionId, { includeEvents: false });
     const t1 = Date.now();
     const result = getSessionOperation(params, this.projectSessionOperationDeps());
     const t2 = Date.now();
@@ -3107,6 +3111,7 @@ export class LocalRunStore {
   }
 
   private persistSessionCreated(session: SessionSummary): SessionSummary {
+    this.allSessionIds.add(session.sessionId);
     const entry = this.appendSessionLedgerEntry(session.sessionId, {
       id: `${session.sessionId}:session-created`,
       type: "session.created",
@@ -3607,6 +3612,7 @@ export class LocalRunStore {
     const projection = deriveSessionProjection(ledger, leafEntryId ?? ledger.leafEntryId);
     this.sessions.set(sessionId, projection.session);
     this.sessionLedgerLeafEntryIds.set(sessionId, projection.leafEntryId);
+    this.allSessionIds.add(sessionId);
     this.evictOldSessionsIfNeeded();
     const projectedRunIds = new Set(projection.runs.map((run) => run.runId));
     for (const [runId, snapshot] of this.runs.entries()) {
@@ -3653,6 +3659,7 @@ export class LocalRunStore {
     const session = this.mergeActiveCachedSessionSummary(projection.session);
     this.sessions.set(sessionId, session);
     this.sessionLedgerLeafEntryIds.set(sessionId, projection.leafEntryId);
+    this.allSessionIds.add(sessionId);
     this.sessionRunProjectionModes.delete(sessionId);
     return session;
   }
