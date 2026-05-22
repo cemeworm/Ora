@@ -1471,3 +1471,59 @@ describe("ChatInput content editable chips", () => {
     }
   });
 });
+
+describe("chat input keyboard shortcuts", () => {
+  it("toggles taskIntent from implement to plan on Shift+Tab", () => {
+    const onTaskIntentChange = vi.fn();
+    const { container } = renderElement(
+      createElement(
+        ChatInput as any,
+        createBaseProps({
+          taskIntent: "implement",
+          onTaskIntentChange,
+        }),
+      ),
+    );
+
+    const editor = getEditor(container);
+    dispatchEditorKey(editor, "Tab", { shiftKey: true });
+
+    expect(onTaskIntentChange).toHaveBeenCalledWith("plan");
+  });
+
+  it("toggles taskIntent from plan to implement on Shift+Tab", () => {
+    const onTaskIntentChange = vi.fn();
+    const { container } = renderElement(
+      createElement(
+        ChatInput as any,
+        createBaseProps({
+          taskIntent: "plan",
+          onTaskIntentChange,
+        }),
+      ),
+    );
+
+    const editor = getEditor(container);
+    dispatchEditorKey(editor, "Tab", { shiftKey: true });
+
+    expect(onTaskIntentChange).toHaveBeenCalledWith("implement");
+  });
+
+  it("switches from chat to plan on Shift+Tab", () => {
+    const onTaskIntentChange = vi.fn();
+    const { container } = renderElement(
+      createElement(
+        ChatInput as any,
+        createBaseProps({
+          taskIntent: "chat",
+          onTaskIntentChange,
+        }),
+      ),
+    );
+
+    const editor = getEditor(container);
+    dispatchEditorKey(editor, "Tab", { shiftKey: true });
+
+    expect(onTaskIntentChange).toHaveBeenCalledWith("plan");
+  });
+});

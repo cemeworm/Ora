@@ -1145,7 +1145,7 @@ describe("desktop workbench state", () => {
     });
   });
 
-  it("compacts cached session details so prefetch does not retain heavyweight snapshots", () => {
+  it("compacts cached session details so prefetch does not retain snapshot authority", () => {
     const snapshot = testSnapshot({
       runId: "run-heavy",
       sessionId: "session-heavy",
@@ -1195,13 +1195,86 @@ describe("desktop workbench state", () => {
     });
 
     const cachedSnapshot = next.sessionDetailsById["session-heavy"]?.latestSnapshot;
-    expect(cachedSnapshot?.runId).toBe("run-heavy");
-    expect(cachedSnapshot?.events).toEqual([]);
-    expect(cachedSnapshot?.actions).toEqual([]);
-    expect(cachedSnapshot?.output).toBeUndefined();
-    expect(next.sessionLiveSnapshotsById["session-heavy"]?.events).toHaveLength(50);
-    expect(next.sessionLiveSnapshotsById["session-heavy"]?.actions).toHaveLength(1);
-    expect(next.sessionLiveSnapshotsById["session-heavy"]?.output).toEqual({ text: "large final output" });
+    expect(cachedSnapshot).toBeUndefined();
+    expect(next.sessionLiveSnapshotsById["session-heavy"]).toBeUndefined();
+  });
+
+  it("selects a prefetched session from transcript and turn metadata without restoring snapshot authority", () => {
+    const session = {
+      ...sessionSummary("session-cached"),
+      latestRunId: "run-cached",
+      status: "succeeded" as const,
+      turnCount: 1,
+      updatedAt: 1_714_000_000_100,
+    };
+
+    const state = workbenchReducer(initialWorkbenchState, {
+      type: "CACHE_SESSION_DETAIL",
+      detail: {
+        session,
+        turns: [{
+          runId: "run-cached",
+          sessionId: session.sessionId,
+          turnIndex: 1,
+          status: "succeeded",
+          pattern: "orchestrator_subagent",
+          modeId: SINGLE_AGENT_MODE_ID,
+          providerId: "local-smoke",
+          modelRef: "local/smoke-model",
+          prompt: "Show cached summary first.",
+          startedAt: 1_714_000_000_000,
+          updatedAt: 1_714_000_000_100,
+          eventCount: 12,
+          checkpointCount: 1,
+          artifactCount: 0,
+        }],
+        transcript: [{
+          id: "run-cached:user",
+          sessionId: session.sessionId,
+          runId: "run-cached",
+          turnIndex: 1,
+          role: "user",
+          content: "Show cached summary first.",
+          pattern: "orchestrator_subagent",
+          modeId: SINGLE_AGENT_MODE_ID,
+          createdAt: 1_714_000_000_000,
+        }, {
+          id: "run-cached:assistant",
+          sessionId: session.sessionId,
+          runId: "run-cached",
+          turnIndex: 1,
+          role: "assistant",
+          content: "Cached transcript body.",
+          pattern: "orchestrator_subagent",
+          modeId: SINGLE_AGENT_MODE_ID,
+          createdAt: 1_714_000_000_100,
+        }],
+        latestSnapshot: {
+          ...testSnapshot({
+            runId: "run-cached",
+            sessionId: session.sessionId,
+            status: "succeeded",
+          }),
+          output: { text: "This should not survive compaction." },
+        },
+      },
+    });
+
+    const next = workbenchReducer({
+      ...state,
+      sessions: [session],
+    }, {
+      type: "SELECT_SESSION",
+      sessionId: session.sessionId,
+    });
+
+    expect(next.selectedSessionId).toBe(session.sessionId);
+    expect(next.sessionDetailsById[session.sessionId]?.latestSnapshot).toBeUndefined();
+    expect(getActiveSnapshot(next.runLifecycle)).toBeUndefined();
+    expect(next.activeSessionDetail?.latestSnapshot).toBeUndefined();
+    expect(next.sessionLiveSnapshotsById[session.sessionId]).toBeUndefined();
+    expect(next.activeSessionDetail?.transcript.at(-1)?.content).toBe("Cached transcript body.");
+    expect(next.selectedTurnRunId).toBe("run-cached");
   });
 
   it("preserves desktop and runtime latency marks when snapshots merge", () => {
@@ -3825,6 +3898,63 @@ describe("desktop workbench state", () => {
       expect(next.isLoading).toBe(false);
       expect(next.busyCommand).toBeUndefined();
       expect(next.commandFeedback).toBe("Plan accepted.");
+    });
+
+    it("keeps the session in running state when hydration returns a running snapshot with an accepted plan decision", () => {
+      const sessionId = "session-plan";
+      const snapshot = testSnapshot({
+        runId: "run-plan",
+        sessionId,
+        status: "running",
+        planDecisions: [{
+          id: "run-plan:plan-decision",
+          runId: "run-plan",
+          sessionId,
+          status: "accepted",
+          createdAt: 1_714_000_000_000,
+          resolvedAt: 1_714_000_000_100,
+        }],
+        attention: {
+          kind: "running",
+          blocking: false,
+          sourceRunId: "run-plan",
+          pendingActionIds: [],
+          pendingToolCallIds: [],
+          pendingClarificationIds: [],
+        },
+      });
+      const state = workbenchReducer(initialWorkbenchState, {
+        type: "BEGIN_PLAN_DECISION_RESOLUTION",
+        sessionId,
+        decisionId: "run-plan:plan-decision",
+        status: "accepted",
+        createdAt: 1_714_000_000_100,
+      });
+      const session = {
+        ...sessionSummary(sessionId),
+        latestRunId: snapshot.runId,
+        status: "running" as const,
+        attention: snapshot.attention,
+      };
+
+      const next = workbenchReducer(state, {
+        type: "HYDRATE_SESSION",
+        projects: [],
+        sessions: [session],
+        detail: {
+          session,
+          turns: [],
+          transcript: [],
+          latestSnapshot: snapshot,
+        },
+        feedback: "Plan accepted and resumed.",
+      });
+
+      expect(next.activeSessionDetail?.session.attention?.kind).toBe("running");
+      expect(getActiveSnapshot(next.runLifecycle)?.attention?.kind).toBe("running");
+      expect(next.pendingPlanDecisionResolution).toBeUndefined();
+      expect(next.isLoading).toBe(false);
+      expect(next.commandFeedback).toBe("Plan accepted and resumed.");
     });
 
     it("rolls back failed accepted plan decisions and removes the synthetic user turn projection", () => {

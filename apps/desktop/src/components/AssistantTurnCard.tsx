@@ -674,6 +674,9 @@ function ProcessStepItem({ step }: { step: TurnProcessStep }) {
   if (step.eventType === "agent.handoff") {
     return <HandoffStepItem step={step} />;
   }
+  if (step.toolId === "shell.execute") {
+    return <ShellExecuteStepItem step={step} />;
+  }
   const detail = step.detail.trim();
 
   return (
@@ -715,6 +718,55 @@ function HandoffStepItem({ step }: { step: TurnProcessStep }) {
             <span>交接</span>
             <span>{step.timestamp}</span>
           </TaskItemMeta>
+        </div>
+        <StepStatusIcon step={step} />
+      </div>
+    </TaskItem>
+  );
+}
+
+function ShellExecuteStepItem({ step }: { step: TurnProcessStep }) {
+  const [copied, setCopied] = useState(false);
+  const detail = step.detail.trim();
+
+  const commandPrefix = "已运行命令：";
+  let command = "";
+  let exitCode: number | undefined;
+
+  if (detail.startsWith(commandPrefix)) {
+    const afterPrefix = detail.slice(commandPrefix.length);
+    const exitMatch = afterPrefix.match(/\s+\(exit\s+(\d+)\)\s*$/);
+    if (exitMatch) {
+      command = afterPrefix.slice(0, afterPrefix.lastIndexOf(exitMatch[0]));
+      exitCode = parseInt(exitMatch[1], 10);
+    } else {
+      command = afterPrefix;
+    }
+  }
+
+  const handleCopy = useCallback(() => {
+    navigator.clipboard.writeText(command).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }).catch(() => {});
+  }, [command]);
+
+  return (
+    <TaskItem className="relative">
+      <div className="absolute -left-[1.05rem] top-3.5 h-2 w-2 rounded-full bg-border" />
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <p className="font-medium text-foreground">{step.label}</p>
+          <div className="relative mt-1 group/code">
+            <pre className="overflow-x-auto rounded-md bg-zinc-950 px-3 py-2 text-xs text-zinc-100 dark:bg-zinc-900">
+              <code>{command}</code>
+            </pre>
+            <button onClick={handleCopy} aria-label="复制命令" className="absolute right-2 top-2 rounded p-1 opacity-0 transition-opacity hover:bg-zinc-700 group-hover/code:opacity-100 text-zinc-400 hover:text-zinc-200">
+              {copied ? <Check size={12} /> : <Copy size={12} />}
+            </button>
+          </div>
+          {exitCode !== undefined && exitCode !== 0 ? <p className="mt-1 text-xs text-muted-foreground">退出码: {exitCode}</p> : null}
+          <TaskItemMeta><span>{step.timestamp}</span></TaskItemMeta>
         </div>
         <StepStatusIcon step={step} />
       </div>

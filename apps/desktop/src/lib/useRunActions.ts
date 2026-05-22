@@ -1,6 +1,6 @@
 import { useMemo, useRef } from "react";
 import { flushSync } from "react-dom";
-import { DEFAULT_WEB_TOOL_IDS, deriveSnapshotGateProjection } from "@cemeworm/shared";
+import { DEFAULT_WEB_TOOL_IDS, deriveSnapshotGateProjection, type HostFilesystemCapability, type HostFilesystemState } from "@cemeworm/shared";
 import { USER_CANCELLED_MESSAGE, USER_INTERRUPTED_MESSAGE, USER_RESUMED_MESSAGE, getSharedRuntimeClient, type OraProjectSummary, type OraProviderConfig, type OraSessionBranchGroupCreateParams, type OraSessionDetail, type OraSessionSummary, type OraStateSnapshot } from "./runtimeClient";
 import { buildRunSearchConfig } from "./searchSettings";
 import { loadDesktopToolModelSettings } from "./toolModelSettings";
@@ -11,12 +11,17 @@ import { timeStart, timeEnd } from "./debugTiming";
 
 const PROJECT_CHAT_SAFE_TOOL_IDS = ["file.read", "file.list", "file.glob", "file.grep"];
 
-const PROJECT_REQUIRED_TOOL_IDS = [
-  ...PROJECT_CHAT_SAFE_TOOL_IDS,
-  "file.write",
-  "file.patch",
+const NO_PROJECT_BLOCKED_TOOL_IDS = [
   "file.delete",
+  "file.apply_patch",
   "shell.execute",
+  "repo.explore",
+  "package.list",
+  "package.buildCandidate",
+  "package.verify",
+  "package.promote",
+  "package.switch",
+  "package.rollback",
 ];
 
 const FILE_MODIFICATION_TOOL_IDS = [
@@ -47,7 +52,7 @@ export function shouldEnableClarificationPreflight(taskIntent: WorkbenchState["t
 export function toolIdsForRun(modeToolIds: readonly string[] | undefined, projectId: string | undefined): string[] {
   const toolIds = [...new Set(modeToolIds ?? [])];
   if (!projectId) {
-    return toolIds.filter((id) => !(PROJECT_REQUIRED_TOOL_IDS as readonly string[]).includes(id));
+    return toolIds.filter((id) => !(NO_PROJECT_BLOCKED_TOOL_IDS as readonly string[]).includes(id));
   }
   return [...new Set([...toolIds, ...PROJECT_CHAT_SAFE_TOOL_IDS])];
 }
@@ -123,6 +128,95 @@ export function buildDesktopRunContext(
         }
       : {}),
   };
+}
+
+const TMP_HOST_GRANTS: Array<{
+  id: string;
+  rootPath: string;
+  label: string;
+  source: "system_tmp";
+  capabilities: HostFilesystemCapability[];
+  expiresWithRun: boolean;
+}> = [
+  {
+    id: "system-tmp:/tmp",
+    rootPath: "/tmp",
+    label: "Temporary directory (/tmp)",
+    source: "system_tmp",
+    capabilities: ["read", "list", "search", "write", "patch"],
+    expiresWithRun: true,
+  },
+  {
+    id: "system-tmp:/private/tmp",
+    rootPath: "/private/tmp",
+    label: "Temporary directory (/private/tmp)",
+    source: "system_tmp",
+    capabilities: ["read", "list", "search", "write", "patch"],
+    expiresWithRun: true,
+  },
+] ;
+
+export function buildInitialHostFilesystemState(
+  localFileAttachments: readonly ComposerLocalFileAttachment[] = [],
+): HostFilesystemState {
+  const grants = new Map<string, HostFilesystemState["grants"][number]>();
+  for (const grant of TMP_HOST_GRANTS) {
+    grants.set(grant.id, { ...grant, capabilities: [...grant.capabilities] });
+  }
+  for (const file of localFileAttachments) {
+    const parentPath = parentDirectoryPath(file.path);
+    if (!parentPath) {
+      continue;
+    }
+    const grantId = `attached-local-file:${parentPath}`;
+    if (grants.has(grantId)) {
+      continue;
+    }
+    grants.set(grantId, {
+      id: grantId,
+      rootPath: parentPath,
+      label: `Attached local file directory (${parentPath})`,
+      source: "attached_local_file",
+      capabilities: ["read", "list", "search"],
+      expiresWithRun: true,
+    });
+  }
+  return {
+    grants: [...grants.values()],
+    allowDynamicGrant: false,
+  };
+}
+
+function parentDirectoryPath(filePath: string): string | undefined {
+  const absolutePath = normalizeAbsoluteLocalPath(filePath);
+  if (!absolutePath) {
+    return undefined;
+  }
+  if (absolutePath === "/") {
+    return "/";
+  }
+  const trimmed = absolutePath.length > 1 ? absolutePath.replace(/\/+$/, "") : absolutePath;
+  const lastSlash = trimmed.lastIndexOf("/");
+  if (lastSlash < 0) {
+    return undefined;
+  }
+  if (lastSlash === 0) {
+    return "/";
+  }
+  const prefix = trimmed.slice(0, lastSlash);
+  return /^[A-Za-z]:$/.test(prefix) ? `${prefix}/` : prefix;
+}
+
+function normalizeAbsoluteLocalPath(filePath: string): string | undefined {
+  const trimmed = filePath.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  const normalized = trimmed.replace(/\\/g, "/");
+  if (normalized.startsWith("/")) {
+    return normalized;
+  }
+  return /^[A-Za-z]:\//.test(normalized) ? normalized : undefined;
 }
 
 export function buildPendingClarificationResumePatch(
@@ -1059,6 +1153,7 @@ export function useRunActions() {
           modelRef: provider?.modelId ?? "",
           ...(selectedRunSkillIds.length > 0 ? { skillIds: selectedRunSkillIds } : {}),
           toolIds: filteredToolIds,
+          hostFilesystem: buildInitialHostFilesystemState(submittedLocalFileAttachments),
           permissionMode: state.permissionMode,
           searchProvider: searchConfig.searchProvider,
           metadata: {

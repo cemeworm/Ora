@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import fs from "node:fs";
 import { CODE_DEVELOPMENT_MODE_ID, DEBATE_MODE_ID, DEERFLOW_HARNESS_MODE_ID, MVP_MODES, MVP_PATTERNS, ORA_ROOT_AGENT_ID, ORA_ROOT_AGENT_LABEL, SINGLE_AGENT_MODE_ID } from "@cemeworm/shared";
 import { mergeStateSnapshot } from "./state";
-import { adaptChatMessages, adaptPendingRunMessages, adaptRenderableChatMessages, buildWorkbenchViewModel, isSessionProcessing } from "./viewModel";
+import { adaptChatMessages, adaptPendingRunMessages, adaptRenderableChatMessages, buildWorkbenchViewModel, derivePresentedAssistantTurnFromSnapshot, isSessionProcessing } from "./viewModel";
 import type { OraSessionDetail, OraSessionSummary, OraStateSnapshot } from "./runtimeClient";
 
 describe("desktop session view model", () => {
@@ -1077,6 +1077,178 @@ describe("desktop session view model", () => {
     expect(assistant?.turn?.timelineItems?.some((item) =>
       item.kind === "final_text" && "content" in item && item.content.includes("## PlanDecisionPanel 决策状态 UI 调整")
     )).toBe(false);
+  });
+
+  it("suppresses historical proposed plan content after an accepted same-run resume starts implementation", () => {
+    const createdAt = 1_714_000_000_000;
+    const proposedPlan = [
+      "<proposed_plan>",
+      "## Runtime status plan",
+      "1. Add shared attention projection.",
+      "2. Persist plan decision gates.",
+      "</proposed_plan>",
+    ].join("\n");
+    const snapshot = {
+      runId: "run-plan-resume",
+      sessionId: "session-plan-resume",
+      turnIndex: 1,
+      status: "running",
+      pattern: "orchestrator_subagent",
+      modeId: SINGLE_AGENT_MODE_ID,
+      input: { prompt: "Plan the runtime work", createdAt, context: {} },
+      config: {
+        modeId: SINGLE_AGENT_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["solo_agent"],
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: { taskIntent: "plan" },
+        deterministicSeed: "view-model-accepted-plan-resume",
+        skillIds: [],
+        toolIds: [],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      planList: [{
+        id: "step-1",
+        step: "Add shared attention projection.",
+        status: "completed",
+      }, {
+        id: "step-2",
+        step: "Persist plan decision gates.",
+        status: "in_progress",
+      }],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 1, completed: 0, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      planDecisions: [{
+        id: "decision-plan",
+        runId: "run-plan-resume",
+        sessionId: "session-plan-resume",
+        status: "accepted",
+        planContent: "## Runtime status plan\n1. Add shared attention projection.\n2. Persist plan decision gates.",
+        createdAt: createdAt + 10,
+        resolvedAt: createdAt + 20,
+      }],
+      output: { text: proposedPlan },
+      updatedAt: createdAt + 30,
+    } as unknown as OraStateSnapshot;
+
+    const presented = derivePresentedAssistantTurnFromSnapshot(snapshot);
+
+    expect(presented.content).toBe("");
+    expect(presented.turn.planContent).toBeUndefined();
+    expect(presented.turn.hasProposedPlan).toBe(true);
+    expect(presented.turn.planList).toEqual([
+      { step: "Add shared attention projection.", status: "completed" },
+      { step: "Persist plan decision gates.", status: "in_progress" },
+    ]);
+  });
+
+  it("keeps a new proposed plan visible when a later pending replan exists in the same run", () => {
+    const createdAt = 1_714_000_000_000;
+    const replannedProposal = [
+      "<proposed_plan>",
+      "## Runtime replan",
+      "1. Re-check the accepted resume boundary.",
+      "2. Add coverage for a second plan gate.",
+      "</proposed_plan>",
+    ].join("\n");
+    const snapshot = {
+      runId: "run-plan-replan",
+      sessionId: "session-plan-replan",
+      turnIndex: 1,
+      status: "succeeded",
+      pattern: "orchestrator_subagent",
+      modeId: SINGLE_AGENT_MODE_ID,
+      input: { prompt: "Replan the runtime work", createdAt, context: {} },
+      config: {
+        modeId: SINGLE_AGENT_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["solo_agent"],
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: { taskIntent: "plan" },
+        deterministicSeed: "view-model-replan-after-accepted",
+        skillIds: [],
+        toolIds: [],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      planList: [{
+        id: "step-1",
+        step: "Re-check the accepted resume boundary.",
+        status: "pending",
+      }],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 0, completed: 1, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      planDecisions: [{
+        id: "decision-accepted",
+        runId: "run-plan-replan",
+        sessionId: "session-plan-replan",
+        status: "accepted",
+        planContent: "## Old accepted plan\n1. Initial implementation.",
+        createdAt: createdAt + 10,
+        resolvedAt: createdAt + 20,
+      }, {
+        id: "decision-replan",
+        runId: "run-plan-replan",
+        sessionId: "session-plan-replan",
+        status: "pending",
+        planContent: "## Runtime replan\n1. Re-check the accepted resume boundary.\n2. Add coverage for a second plan gate.",
+        createdAt: createdAt + 30,
+      }],
+      attention: {
+        kind: "needs_plan_decision",
+        blocking: true,
+        sourceRunId: "run-plan-replan",
+        reason: "plan_decision_required",
+        planDecisionId: "decision-replan",
+        pendingActionIds: [],
+        pendingToolCallIds: [],
+        pendingClarificationIds: [],
+      },
+      output: { text: replannedProposal },
+      updatedAt: createdAt + 40,
+    } as unknown as OraStateSnapshot;
+
+    const presented = derivePresentedAssistantTurnFromSnapshot(snapshot);
+
+    expect(presented.content).toContain("## Runtime replan");
+    expect(presented.content).toContain("Add coverage for a second plan gate.");
+    expect(presented.turn.planContent).toContain("## Runtime replan");
+    expect(presented.turn.proposedPlanStatus).toBe("complete");
   });
 
   it("hides raw recovery boundary diagnostics from user-visible text", () => {
@@ -3946,6 +4118,121 @@ describe("desktop session view model", () => {
       kind: "agent_message",
       content: finalVerdict,
       fromAgentLabel: "Moderator",
+    }));
+  });
+
+  it("recomputes snapshot-backed presentation from transcript fallback body when agent messages are not final-answer authority", () => {
+    const createdAt = 1_714_000_000_000;
+    const finalVerdict = "最终裁决：采用方案A。";
+    const snapshot = {
+      runId: "run-transcript-fallback-body",
+      sessionId: "session-transcript-fallback-body",
+      turnIndex: 1,
+      status: "succeeded",
+      pattern: "orchestrator_subagent",
+      modeId: SINGLE_AGENT_MODE_ID,
+      input: { prompt: "summarize this", createdAt, context: {} },
+      config: {
+        modeId: SINGLE_AGENT_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["moderator", "debate_agent"],
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-transcript-fallback-body-test",
+        skillIds: [],
+        toolIds: [],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [
+        {
+          id: "moderator",
+          label: "Moderator",
+          role: "Synthesize.",
+          modelRef: "local/smoke-model",
+          toolPolicyId: "orchestrator_subagent.default_policy",
+          memoryNamespaces: ["session"],
+          budget: { maxTokens: 1000, maxToolCalls: 0, maxRuntimeMs: 1000 },
+        },
+        {
+          id: "debate_agent",
+          label: "Debate Agent",
+          role: "Argue both sides.",
+          modelRef: "local/smoke-model",
+          toolPolicyId: "orchestrator_subagent.default_policy",
+          memoryNamespaces: ["session"],
+          budget: { maxTokens: 1000, maxToolCalls: 0, maxRuntimeMs: 1000 },
+        },
+      ],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [],
+      agentMessages: [
+        {
+          id: "run-transcript-fallback-body:agent-message:0",
+          runId: "run-transcript-fallback-body",
+          createdAt: createdAt + 1,
+          fromAgentId: "moderator",
+          toAgentIds: ["debate_agent"],
+          threadId: "run-transcript-fallback-body:debate",
+          nodeId: "synthesis",
+          kind: "reply",
+          status: "done",
+          content: finalVerdict,
+          artifactIds: [],
+        },
+      ],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 0, completed: 1, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      updatedAt: createdAt + 2,
+    } as unknown as OraStateSnapshot;
+
+    const assistant = adaptChatMessages(
+      [{
+        id: "run-transcript-fallback-body:user",
+        sessionId: "session-transcript-fallback-body",
+        runId: "run-transcript-fallback-body",
+        turnIndex: 1,
+        role: "user",
+        content: "summarize this",
+        pattern: "orchestrator_subagent",
+        modeId: SINGLE_AGENT_MODE_ID,
+        createdAt,
+      }, {
+        id: "run-transcript-fallback-body:assistant",
+        sessionId: "session-transcript-fallback-body",
+        runId: "run-transcript-fallback-body",
+        turnIndex: 1,
+        role: "assistant",
+        content: finalVerdict,
+        pattern: "orchestrator_subagent",
+        modeId: SINGLE_AGENT_MODE_ID,
+        createdAt: createdAt + 2,
+      }],
+      { "run-transcript-fallback-body": snapshot },
+    ).find((message) => message.role === "assistant");
+
+    expect(assistant?.content).toBe(finalVerdict);
+    expect(assistant?.turn?.presentation).toMatchObject({
+      primarySurface: "timeline",
+      bodyContent: finalVerdict,
+      showStandaloneBody: true,
+    });
+    expect(assistant?.turn?.timelineItems).toContainEqual(expect.objectContaining({
+      kind: "agent_message",
+      content: finalVerdict,
     }));
   });
 
@@ -8858,5 +9145,157 @@ describe("desktop session view model", () => {
 
     // Body content is the answer
     expect(assistant?.content).toBe(finalAnswer);
+  });
+
+  it("extracts attachedImages from snapshot context and attaches them to user messages", () => {
+    const createdAt = 1_714_000_000_000;
+    const runId = "run-images";
+    const sessionId = "session-images";
+    const snapshot = {
+      runId,
+      sessionId,
+      turnIndex: 1,
+      status: "succeeded" as const,
+      pattern: "single_agent" as const,
+      modeId: SINGLE_AGENT_MODE_ID,
+      input: {
+        prompt: "看看这张图",
+        createdAt,
+        context: {
+          attachedImages: [{
+            dataUrl: "data:image/png;base64,iVBORw0KGgo=",
+            mimeType: "image/png",
+            name: "screenshot.png",
+            sizeBytes: 12345,
+          }],
+        },
+      },
+      config: {
+        modeId: SINGLE_AGENT_MODE_ID,
+        pattern: "single_agent",
+        modeSelection: "manual",
+        profileIds: ["ora"],
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-images-test",
+        skillIds: [],
+        toolIds: [],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      planList: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 0, completed: 0, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      updatedAt: createdAt + 1,
+    } as unknown as OraStateSnapshot;
+
+    const messages = adaptChatMessages(
+      [{
+        id: `${runId}:user`,
+        sessionId,
+        runId,
+        turnIndex: 1,
+        role: "user" as const,
+        content: "看看这张图",
+        pattern: "single_agent",
+        modeId: SINGLE_AGENT_MODE_ID,
+        createdAt,
+      }],
+      { [runId]: snapshot },
+    );
+
+    const userMessage = messages.find((m) => m.role === "user");
+    expect(userMessage).toBeDefined();
+    expect(userMessage!.images).toHaveLength(1);
+    expect(userMessage!.images![0]).toMatchObject({
+      dataUrl: "data:image/png;base64,iVBORw0KGgo=",
+      mimeType: "image/png",
+      name: "screenshot.png",
+      sizeBytes: 12345,
+    });
+    expect(userMessage!.content).toBe("看看这张图");
+  });
+
+  it("returns undefined images when snapshot context has no attachedImages", () => {
+    const createdAt = 1_714_000_000_000;
+    const runId = "run-no-images";
+    const sessionId = "session-no-images";
+    const snapshot = {
+      runId,
+      sessionId,
+      turnIndex: 1,
+      status: "succeeded" as const,
+      pattern: "single_agent" as const,
+      modeId: SINGLE_AGENT_MODE_ID,
+      input: { prompt: "Hello", createdAt, context: {} },
+      config: {
+        modeId: SINGLE_AGENT_MODE_ID,
+        pattern: "single_agent",
+        modeSelection: "manual",
+        profileIds: ["ora"],
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-no-images-test",
+        skillIds: [],
+        toolIds: [],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      planList: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 0, completed: 0, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      updatedAt: createdAt + 1,
+    } as unknown as OraStateSnapshot;
+
+    const messages = adaptChatMessages(
+      [{
+        id: `${runId}:user`,
+        sessionId,
+        runId,
+        turnIndex: 1,
+        role: "user" as const,
+        content: "Hello",
+        pattern: "single_agent",
+        modeId: SINGLE_AGENT_MODE_ID,
+        createdAt,
+      }],
+      { [runId]: snapshot },
+    );
+
+    const userMessage = messages.find((m) => m.role === "user");
+    expect(userMessage).toBeDefined();
+    expect(userMessage!.images).toBeUndefined();
   });
 });

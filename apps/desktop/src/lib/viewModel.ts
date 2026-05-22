@@ -13,6 +13,7 @@ import type {
   AssistantTurnAttachment,
   ArtifactRecord,
   ChatMessage,
+  ChatMessageImage,
   CitationSource,
   ChatMessageAttachment,
   ClarificationOption,
@@ -1258,6 +1259,24 @@ function extractAttachmentsFromSnapshot(
   return attachments.length > 0 ? attachments : undefined;
 }
 
+function extractImagesFromSnapshot(
+  context: Record<string, unknown> | undefined,
+): ChatMessageImage[] | undefined {
+  if (!context) return undefined;
+  const images = context.attachedImages;
+  if (!Array.isArray(images) || images.length === 0) return undefined;
+  const result = images
+    .filter((img): img is Record<string, unknown> => img != null && typeof img === "object")
+    .map((img) => ({
+      dataUrl: typeof img.dataUrl === "string" ? img.dataUrl : "",
+      mimeType: typeof img.mimeType === "string" ? img.mimeType : "image/png",
+      name: typeof img.name === "string" ? img.name : "image",
+      sizeBytes: typeof img.sizeBytes === "number" ? img.sizeBytes : 0,
+    }))
+    .filter((img) => img.dataUrl.length > 0);
+  return result.length > 0 ? result : undefined;
+}
+
 export function adaptChatMessages(
   transcript: OraSessionTranscriptMessage[],
   turnSnapshots: Record<string, OraStateSnapshot | undefined> = {},
@@ -1310,9 +1329,11 @@ export function adaptChatMessages(
     .flatMap((turn) => {
       const messages: ChatMessage[] = [];
 
-      const attachments = turn.snapshot
-        ? extractAttachmentsFromSnapshot(turn.snapshot.input.context as Record<string, unknown> | undefined)
+      const snapshotContext = turn.snapshot
+        ? (turn.snapshot.input.context as Record<string, unknown> | undefined)
         : undefined;
+      const attachments = extractAttachmentsFromSnapshot(snapshotContext);
+      const images = extractImagesFromSnapshot(snapshotContext);
 
       if (turn.user) {
         messages.push({
@@ -1326,6 +1347,7 @@ export function adaptChatMessages(
             pattern: turn.user.pattern,
           },
           attachments,
+          images,
         });
       } else if (turn.snapshot?.input.prompt.trim()) {
         messages.push({
@@ -1339,6 +1361,7 @@ export function adaptChatMessages(
             pattern: turn.pattern,
           },
           attachments,
+          images,
         });
       }
 
@@ -1400,9 +1423,7 @@ export function adaptChatMessages(
           : turn.assistant?.content) ??
         snapshotAssistantContent ??
         placeholderAssistantCopy(turn.snapshot);
-      const presentedAssistantTurn = turn.snapshot
-        ? assistantTurn
-        : assistantTurn
+      const presentedAssistantTurn = assistantTurn
         ? {
             ...assistantTurn,
             presentation: deriveAssistantTurnPresentation({
@@ -1870,7 +1891,8 @@ export function derivePresentedAssistantTurnFromSnapshot(
   turn: AssistantTurnAttachment;
 } {
   const liveAssistantText = options?.liveAssistantText;
-  const liveAssistantPlan = liveAssistantText
+  const suppressHistoricalProposalSurface = shouldSuppressAcceptedPlanProposalSurface(snapshot);
+  const liveAssistantPlan = !suppressHistoricalProposalSurface && liveAssistantText
     ? parseProposedPlan(liveAssistantText)
     : undefined;
   const canDisplayLivePlanBody = liveAssistantPlan
@@ -1881,10 +1903,10 @@ export function derivePresentedAssistantTurnFromSnapshot(
     canDisplayLivePlanBody ? liveAssistantPlan : undefined,
   );
   const rawAssistantText = liveAssistantText ?? assistantTextFromSnapshot(snapshot);
-  const snapshotProposedPlan = !canDisplayLivePlanBody
+  const snapshotProposedPlan = !suppressHistoricalProposalSurface && !canDisplayLivePlanBody
     ? proposedPlanFromSnapshot(snapshot)
     : undefined;
-  const parsedAssistantPlan = !snapshotProposedPlan && !canDisplayLivePlanBody && rawAssistantText
+  const parsedAssistantPlan = !suppressHistoricalProposalSurface && !snapshotProposedPlan && !canDisplayLivePlanBody && rawAssistantText
     ? parseProposedPlan(rawAssistantText)
     : undefined;
   const canDisplayPlanBody = parsedAssistantPlan
@@ -2889,10 +2911,24 @@ function hasRejectedFinalToolCall(snapshot: OraStateSnapshot): boolean {
 
 function shouldSuppressStoredAssistantFallback(snapshot: OraStateSnapshot): boolean {
   return (
+    shouldSuppressAcceptedPlanProposalSurface(snapshot) ||
     hasRejectedFinalToolCall(snapshot) ||
     snapshot.status === "interrupted" ||
     snapshotPendingApprovals(snapshot).length > 0
   );
+}
+
+function shouldSuppressAcceptedPlanProposalSurface(snapshot: OraStateSnapshot): boolean {
+  const planDecisions = snapshot.planDecisions ?? [];
+  const hasAcceptedPlanDecision = planDecisions.some((decision) => decision.status === "accepted");
+  if (!hasAcceptedPlanDecision) {
+    return false;
+  }
+  const hasPendingPlanDecision = planDecisions.some((decision) => decision.status === "pending");
+  if (hasPendingPlanDecision) {
+    return false;
+  }
+  return snapshot.attention?.kind !== "needs_plan_decision";
 }
 
 const turnAttachmentCache = new WeakMap<OraStateSnapshot, AssistantTurnAttachment>();
@@ -2991,7 +3027,9 @@ function buildAssistantTurnAttachment(
 
   const timelineProjection = cachedTimelineProjection(snapshot);
   const processSteps = deriveProcessSteps(snapshot, timelineProjection);
-  const proposedPlan = liveProposedPlan ?? proposedPlanFromSnapshot(snapshot);
+  const proposedPlan = shouldSuppressAcceptedPlanProposalSurface(snapshot)
+    ? undefined
+    : liveProposedPlan ?? proposedPlanFromSnapshot(snapshot);
   const status = adaptSnapshotRunStatus(snapshot);
   const timelineItems = deriveTimelineItems(snapshot, processSteps, timelineProjection, proposedPlan);
   const result: AssistantTurnAttachment = {
@@ -3475,6 +3513,7 @@ function processStepFromEvent(
     tone: processStepTone(event),
     agentId: timelineProcessEventAgentId(snapshot, event),
     contextLabel: processContextLabel(event),
+    toolId: isRecord(event.payload) ? rawToolId(event.payload) : undefined,
   };
 }
 
@@ -4493,6 +4532,7 @@ function toolCallDetail(payload: Record<string, unknown>): string | undefined {
       ? payload.result
       : {};
   const targetPath = stringValue(output.path) ?? stringValue(input.path);
+  const labeledTargetPath = targetPath ? scopedFilePathLabel(output, input, targetPath) : undefined;
 
   switch (toolId) {
     case "agent.spawn": {
@@ -4524,25 +4564,26 @@ function toolCallDetail(payload: Record<string, unknown>): string | undefined {
     }
     case "file.read":
       if (payload.status === "failed" || typeof payload.error === "string") {
-        return targetPath ? `无法读取 ${targetPath}` : "文件读取失败";
+        return labeledTargetPath ? `无法读取 ${labeledTargetPath}` : "文件读取失败";
       }
-      return targetPath
-        ? `已读取 ${targetPath}${sizeSuffix(output.sizeBytes ?? output.bytes)}`
+      return labeledTargetPath
+        ? `已读取 ${labeledTargetPath}${sizeSuffix(output.sizeBytes ?? output.bytes)}`
         : undefined;
     case "file.list":
       if (output.missing === true) {
-        return targetPath ? `未找到 ${targetPath}，未列出文件` : "目标目录不存在，未列出文件";
+        return labeledTargetPath ? `未找到 ${labeledTargetPath}，未列出文件` : "目标目录不存在，未列出文件";
       }
-      return targetPath
-        ? `已列出 ${targetPath}${countSuffix(output.entries, "项")}`
+      return labeledTargetPath
+        ? `已列出 ${labeledTargetPath}${countSuffix(output.entries, "项")}`
         : undefined;
     case "file.glob": {
       const pattern = stringValue(output.pattern) ?? stringValue(input.pattern);
       const basePath = stringValue(output.path) ?? stringValue(input.path);
+      const labeledBasePath = basePath ? scopedFilePathLabel(output, input, basePath) : undefined;
       if (!pattern) {
         return undefined;
       }
-      return `已匹配 ${pattern}${basePath ? `（${basePath} 下）` : ""}${countSuffix(output.matches, "项")}`;
+      return `已匹配 ${pattern}${labeledBasePath ? `（${labeledBasePath} 下）` : ""}${countSuffix(output.matches, "项")}`;
     }
     case "file.grep": {
       const pattern = stringValue(output.pattern) ?? stringValue(input.pattern);
@@ -4554,15 +4595,15 @@ function toolCallDetail(payload: Record<string, unknown>): string | undefined {
       return `已搜索 "${pattern}"${scope ? `（${scope}）` : ""}${countSuffix(output.matches, "项")}${truncated}`;
     }
     case "file.write":
-      return targetPath
-        ? `已写入 ${targetPath}${sizeSuffix(output.sizeBytes)}`
+      return labeledTargetPath
+        ? `已写入 ${labeledTargetPath}${sizeSuffix(output.sizeBytes)}`
         : undefined;
     case "file.patch": {
       const replacements =
         typeof output.replacements === "number"
           ? `（${output.replacements} 处替换）`
           : "";
-      return targetPath ? `已修改 ${targetPath}${replacements}` : undefined;
+      return labeledTargetPath ? `已修改 ${labeledTargetPath}${replacements}` : undefined;
     }
     case "shell.execute": {
       const command = stringValue(output.command) ?? stringValue(input.command);
@@ -4991,11 +5032,27 @@ function fileSearchScopeLabel(
   input: Record<string, unknown>,
 ): string | undefined {
   const scopePath = stringValue(output.path) ?? stringValue(input.path);
+  const labeledScopePath = scopePath ? scopedFilePathLabel(output, input, scopePath) : undefined;
   const include = stringValue(input.include);
-  if (scopePath && include) {
-    return `${scopePath}，${include}`;
+  if (labeledScopePath && include) {
+    return `${labeledScopePath}，${include}`;
   }
-  return scopePath ?? include;
+  return labeledScopePath ?? include;
+}
+
+function scopedFilePathLabel(
+  output: Record<string, unknown>,
+  input: Record<string, unknown>,
+  filePath: string,
+): string {
+  const scope = stringValue(output.scope) ?? stringValue(input.scope);
+  if (scope === "host_tmp") {
+    return `临时目录 ${filePath}`;
+  }
+  if (scope === "host_grant") {
+    return `宿主授权目录 ${filePath}`;
+  }
+  return filePath;
 }
 
 function sizeSuffix(value: unknown): string {

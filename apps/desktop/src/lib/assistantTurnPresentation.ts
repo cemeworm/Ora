@@ -27,7 +27,7 @@ export function deriveAssistantTurnPresentation(params: {
   ).filter(dedupeTimelineItemText());
   const hasPlan = Boolean(turn.hasProposedPlan && turn.planContent);
   const timelineContainsBody = visibleTimelineItems.some((item) =>
-    timelineItemRepresentsBody(item, bodyContent),
+    timelineItemRepresentsBody(item, bodyContent, turn),
   );
 
   return {
@@ -46,16 +46,43 @@ export function deriveAssistantTurnPresentation(params: {
   };
 }
 
-function timelineItemRepresentsBody(item: TurnTimelineItem, bodyContent: string): boolean {
+function timelineItemRepresentsBody(
+  item: TurnTimelineItem,
+  bodyContent: string,
+  turn: AssistantTurnAttachment,
+): boolean {
   if (!bodyContent.trim()) {
     return false;
   }
-  if ((item.kind === "assistant_text" || item.kind === "final_text" || item.kind === "agent_message") &&
+  if (
+    (item.kind === "assistant_text" || item.kind === "final_text") &&
     isComparableDuplicate(bodyContent, item.content)
   ) {
     return true;
   }
+  if (
+    item.kind === "agent_message" &&
+    isComparableDuplicate(bodyContent, item.content) &&
+    transcriptAgentMessageOwnsFinalBody(turn, item)
+  ) {
+    return true;
+  }
   return false;
+}
+
+function transcriptAgentMessageOwnsFinalBody(
+  turn: AssistantTurnAttachment,
+  item: Extract<TurnTimelineItem, { kind: "agent_message" }>,
+): boolean {
+  const sourceMessageId = item.id.endsWith(":timeline")
+    ? item.id.slice(0, -":timeline".length)
+    : item.id;
+  const message = turn.agentMessages.find((candidate) => candidate.id === sourceMessageId);
+  const layout = message?.transcript?.layout;
+  if (!layout?.ownsFinalAnswer) {
+    return false;
+  }
+  return layout.supplementalBody === "never";
 }
 
 function isComparableDuplicate(left: string, right: string): boolean {

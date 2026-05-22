@@ -1532,6 +1532,15 @@ export function ChatInput({
     if (isComposingRef.current || e.nativeEvent.isComposing) {
       return;
     }
+    if (e.key === "Tab" && e.shiftKey) {
+      e.preventDefault();
+      const nextIntent: TaskIntent =
+        taskIntent === "chat" ? "plan"
+        : taskIntent === "plan" ? "implement"
+        : "plan";
+      onTaskIntentChange(nextIntent);
+      return;
+    }
     if (
       (e.key === "Backspace" || e.key === "Delete") &&
       !isSelectionCollapsed(selectionBookmark)

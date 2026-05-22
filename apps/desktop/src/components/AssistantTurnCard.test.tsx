@@ -1130,7 +1130,62 @@ describe("assistant turn display helpers", () => {
     expect(html).not.toContain("协作轨迹");
   });
 
-  it("does not duplicate body text when a projected timeline message already contains it", () => {
+  it("does not duplicate body text when a transcript-owned final answer already contains it", () => {
+    const finalVerdict = "最终裁决：采用方案A。";
+    const moderatorMessage = agentMessage("message-1", "reply", finalVerdict, {
+      fromAgentId: "moderator",
+      fromAgentLabel: "Moderator",
+      toAgentIds: ["debate_agent"],
+      toAgentLabels: ["Debate Agent"],
+      transcript: {
+        kind: "stage_transcript",
+        groupId: "debate",
+        stageId: "moderator-synthesis",
+        stageLabel: "主持总结",
+        sequence: 0,
+        speakerLabel: "主持人总结",
+        stance: "moderator",
+        status: "done",
+        layout: {
+          style: "two_sided_duel",
+          ownsFinalAnswer: true,
+          supplementalBody: "never",
+        },
+      },
+    });
+    const turn: AssistantTurnAttachment = {
+      runId: "run-1",
+      turnIndex: 1,
+      status: "done",
+      pattern: "orchestrator_subagent",
+      sources: [],
+      processSteps: [],
+      timelineItems: [{
+        id: "message-1:timeline",
+        kind: "agent_message",
+        messageKind: "reply",
+        fromAgentLabel: "Moderator",
+        toAgentLabels: ["Debate Agent"],
+        content: finalVerdict,
+        timestamp: "+1s",
+      }],
+      agentMessages: [moderatorMessage],
+      artifacts: [],
+      todos: [],
+      planList: [],
+      approvalCount: 0,
+      clarificationCount: 0,
+      hasProposedPlan: false,
+    };
+
+    const html = renderToStaticMarkup(
+      <AssistantTurnCard content={finalVerdict} turn={turn} />,
+    );
+
+    expect(html.split(finalVerdict).length - 1).toBe(1);
+  });
+
+  it("keeps the body visible when a non-transcript agent message overlaps with it", () => {
     const finalVerdict = "最终裁决：采用方案A。";
     const turn: AssistantTurnAttachment = {
       runId: "run-1",
@@ -1161,7 +1216,7 @@ describe("assistant turn display helpers", () => {
       <AssistantTurnCard content={finalVerdict} turn={turn} />,
     );
 
-    expect(html.split(finalVerdict).length - 1).toBe(1);
+    expect(html.split(finalVerdict).length - 1).toBe(2);
   });
 
   it("recomputes presentation from current props instead of trusting stale cached presentation", () => {
@@ -1209,7 +1264,7 @@ describe("assistant turn display helpers", () => {
       <AssistantTurnCard content={finalVerdict} turn={turn} />,
     );
 
-    expect(html.split(finalVerdict).length - 1).toBe(1);
+    expect(html.split(finalVerdict).length - 1).toBe(2);
   });
 
   it("deduplicates repeated timeline text before rendering", () => {

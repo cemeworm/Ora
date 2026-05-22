@@ -3,6 +3,7 @@ import { initialWorkbenchState, type WorkbenchState } from "./state";
 import {
   buildClarificationSubmissionPrompt,
   buildDesktopRunContext,
+  buildInitialHostFilesystemState,
   getInteractiveRunId,
   getPlanDecisionGateAuthority,
   getPlanDecisionResumeRunId,
@@ -22,22 +23,31 @@ describe("desktop run actions", () => {
     expect(shouldEnableClarificationPreflight("chat")).toBe(false);
   });
 
-  it("removes project-required workspace tools when no project is selected", () => {
+  it("keeps host-capable file tools but removes workspace-only tools when no project is selected", () => {
     expect(toolIdsForRun([
+      "repo.explore",
       "file.read",
       "file.list",
       "file.glob",
       "file.grep",
       "file.write",
       "file.patch",
+      "file.apply_patch",
       "file.delete",
       "shell.execute",
+      "package.list",
       "web.fetch",
       "web.search",
       "document.extract",
       "skills.list",
       "user.clarify",
     ], undefined)).toEqual([
+      "file.read",
+      "file.list",
+      "file.glob",
+      "file.grep",
+      "file.write",
+      "file.patch",
       "web.fetch",
       "web.search",
       "document.extract",
@@ -504,6 +514,58 @@ describe("desktop run actions", () => {
         },
       ],
     });
+  });
+
+  it("builds tmp grants even when no local files are attached", () => {
+    expect(buildInitialHostFilesystemState()).toEqual({
+      grants: [
+        {
+          id: "system-tmp:/tmp",
+          rootPath: "/tmp",
+          label: "Temporary directory (/tmp)",
+          source: "system_tmp",
+          capabilities: ["read", "list", "search", "write", "patch"],
+          expiresWithRun: true,
+        },
+        {
+          id: "system-tmp:/private/tmp",
+          rootPath: "/private/tmp",
+          label: "Temporary directory (/private/tmp)",
+          source: "system_tmp",
+          capabilities: ["read", "list", "search", "write", "patch"],
+          expiresWithRun: true,
+        },
+      ],
+      allowDynamicGrant: false,
+    });
+  });
+
+  it("derives read-only grants from attached local file parent directories", () => {
+    const result = buildInitialHostFilesystemState([
+      {
+        path: "/Users/quintenchen/Desktop/notes/todo.md",
+        name: "todo.md",
+        mimeType: "text/markdown",
+        sizeBytes: 18,
+      },
+      {
+        path: "/Users/quintenchen/Desktop/notes/plan.md",
+        name: "plan.md",
+        mimeType: "text/markdown",
+        sizeBytes: 12,
+      },
+    ]);
+
+    expect(result.allowDynamicGrant).toBe(false);
+    expect(result.grants).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "attached-local-file:/Users/quintenchen/Desktop/notes",
+        rootPath: "/Users/quintenchen/Desktop/notes",
+        source: "attached_local_file",
+        capabilities: ["read", "list", "search"],
+        expiresWithRun: true,
+      }),
+    ]));
   });
 
   function sessionSummary(sessionId: string, overrides: Partial<OraSessionSummary> = {}): OraSessionSummary {

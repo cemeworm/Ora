@@ -710,12 +710,9 @@ function compactSessionDetailForCache(detail: OraSessionDetail): OraSessionDetai
   }
   return {
     ...detail,
-    latestSnapshot: {
-      ...detail.latestSnapshot,
-      events: [],
-      actions: [],
-      output: undefined,
-    },
+    // Compact session detail cache is for fast list/prefetch reuse only.
+    // It must never participate in assistant body reconstruction.
+    latestSnapshot: undefined,
   };
 }
 
@@ -3164,10 +3161,6 @@ export function workbenchReducer(
     case "CACHE_SESSION_DETAIL":
       return {
         ...state,
-        sessionLiveSnapshotsById: cacheSessionLiveSnapshot(
-          state.sessionLiveSnapshotsById,
-          action.detail.latestSnapshot,
-        ),
         sessionDetailsById: cacheSessionDetail(
           state.sessionDetailsById,
           compactSessionDetailForCache(action.detail),

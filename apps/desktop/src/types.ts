@@ -188,6 +188,7 @@ export interface TurnProcessStep {
   tone: "neutral" | "accent" | "warning";
   agentId?: string;
   contextLabel?: string;
+  toolId?: string;
 }
 
 export type TurnTimelineItem =
@@ -432,6 +433,13 @@ export interface ChatMessageAttachment {
   sizeBytes: number;
 }
 
+export interface ChatMessageImage {
+  dataUrl: string;
+  mimeType: string;
+  name: string;
+  sizeBytes: number;
+}
+
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant" | "system";
@@ -442,4 +450,5 @@ export interface ChatMessage {
   clarificationOptions?: ClarificationOption[];
   isPlaceholder?: boolean;
   attachments?: ChatMessageAttachment[];
+  images?: ChatMessageImage[];
 }

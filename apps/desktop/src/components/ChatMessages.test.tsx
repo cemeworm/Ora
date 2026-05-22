@@ -14,7 +14,7 @@ import {
   CHAT_SURFACE_VIEWPORT_GUTTER_CLASS,
 } from "./chatSurfaceLayout";
 import { adaptRenderableChatMessages } from "../lib/viewModel";
-import { getPendingRunState, initialWorkbenchState, workbenchReducer, type WorkbenchState } from "../lib/state";
+import { getActiveSnapshot, getPendingRunState, initialWorkbenchState, workbenchReducer, type WorkbenchState } from "../lib/state";
 import type { OraSessionBranchGroup, OraStateSnapshot } from "../lib/runtimeClient";
 import type { DesktopRunInteractionState } from "../lib/runInteractionState";
 
@@ -385,7 +385,7 @@ describe("ChatMessages bottom inset", () => {
     expect(html.match(/rounded-2xl bg-muted px-3\.5 py-2\.5/g)).toHaveLength(1);
   });
 
-  it("renders an accepted same-run plan decision as a synthetic user turn", () => {
+  it("renders an accepted same-run plan decision as a synthetic user turn without replaying the old proposal card", () => {
     const createdAt = 1_714_000_000_000;
     const sessionId = "session-plan-ui";
     const runId = "run-plan-ui";
@@ -494,6 +494,7 @@ describe("ChatMessages bottom inset", () => {
       planDecisionStatus: "accepted",
       updatedAt: createdAt + 30,
     });
+    const resumedSnapshot = getActiveSnapshot(resumed.runLifecycle)!;
 
     const messages = adaptRenderableChatMessages({
       transcript: [{
@@ -517,7 +518,7 @@ describe("ChatMessages bottom inset", () => {
         modeId: SINGLE_AGENT_MODE_ID,
         createdAt: createdAt + 20,
       }],
-      turnSnapshots: { [runId]: snapshot },
+      turnSnapshots: { [runId]: resumedSnapshot },
       pendingRun: getPendingRunState(resumed.runLifecycle),
       acceptedPlanDecisionTurns: Object.values(resumed.acceptedPlanDecisionTurnProjections),
       selectedSessionId: sessionId,
@@ -527,9 +528,49 @@ describe("ChatMessages bottom inset", () => {
       <ChatMessages chatMessages={messages} />,
     );
 
-    expect(html).toContain("任务计划");
-    expect(html).toContain("Runtime status plan");
     expect(html).toContain("请按照上述计划开始执行");
+    expect(html).not.toContain("任务计划");
+    expect(html).not.toContain("Runtime status plan");
     expect(html.match(/rounded-2xl bg-muted px-3\.5 py-2\.5/g)).toHaveLength(2);
+  });
+
+  it("renders user images as separate bubbles before the text bubble", () => {
+    const html = renderToStaticMarkup(
+      <ChatMessages
+        chatMessages={[{
+          id: "msg-1",
+          role: "user",
+          content: "看看这张图",
+          timestamp: "12:00",
+          images: [{
+            dataUrl: "data:image/png;base64,iVBORw0KGgo=",
+            mimeType: "image/png",
+            name: "screenshot.png",
+            sizeBytes: 12345,
+          }],
+        }]}
+      />,
+    );
+
+    expect(html).toContain('<img');
+    expect(html).toContain('data:image/png;base64,iVBORw0KGgo=');
+    expect(html).toContain('screenshot.png');
+    expect(html).toContain('看看这张图');
+  });
+
+  it("renders user message without images normally", () => {
+    const html = renderToStaticMarkup(
+      <ChatMessages
+        chatMessages={[{
+          id: "msg-2",
+          role: "user",
+          content: "Hello",
+          timestamp: "12:01",
+        }]}
+      />,
+    );
+
+    expect(html).not.toContain('<img');
+    expect(html).toContain('Hello');
   });
 });
