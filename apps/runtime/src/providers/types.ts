@@ -61,6 +61,9 @@ export interface ModelRequest {
   cacheDiagnosticsContext?: {
     derivedContextBlocks?: readonly DerivedContextBlock[];
   };
+  responseFormat?: {
+    type: "json_object";
+  };
   signal?: AbortSignal;
 }
 

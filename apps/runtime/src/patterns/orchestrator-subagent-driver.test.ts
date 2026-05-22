@@ -1,12 +1,168 @@
-import { CODE_DEVELOPMENT_MODE_ID, DEEP_RESEARCH_MODE_ID, REVIEW_CRITIQUE_MODE_ID, createModeSpecFromPattern, getModePreset, modeSpecToPatternDefinition, type BusStats, type QueueSummary, type RunConfig, type SharedStateSummary } from "@cemeworm/shared";
+import { CODE_DEVELOPMENT_MODE_ID, DEEP_RESEARCH_MODE_ID, REVIEW_CRITIQUE_MODE_ID, createModeSpecFromPattern, getModePreset, modeSpecToPatternDefinition, strictModeStageOutputSchema, type BusStats, type QueueSummary, type RunConfig, type SharedStateSummary } from "@cemeworm/shared";
 import { describe, expect, it } from "vitest";
 import { executeOrchestratorSubagent } from "./orchestrator-subagent-driver.js";
 import type { PatternExecutionContext } from "./execution-context.js";
+import { extractJsonFromText, parseCodeDevelopmentDebugResolution, parseReviewGateVerdict } from "./mode-driver-helpers.js";
+
+function structuredDiagnostics(modeId: string, outputKey: string, rawText: string) {
+  return {
+    modeId,
+    outputKey,
+    usedProviderJsonMode: false,
+    repairAttempted: false,
+    repairSucceeded: false,
+    initialText: rawText,
+    finalText: rawText,
+  };
+}
+
+function createStructuredCallAgent(
+  modeId: string,
+  callAgent: PatternExecutionContext["callAgent"],
+): PatternExecutionContext["callAgentStructured"] {
+  return async ({ outputKey, schema, ...params }) => {
+    const rawText = await callAgent(params);
+    const parsedJson = extractJsonFromText(rawText);
+    if (parsedJson) {
+      const parsed = schema.safeParse(parsedJson);
+      if (parsed.success) {
+        return {
+          ok: true,
+          rawText,
+          value: parsed.data,
+          diagnostics: structuredDiagnostics(modeId, outputKey, rawText),
+        };
+      }
+    }
+
+    if (outputKey === "review" || outputKey === "verify") {
+      const verdict = parseReviewGateVerdict(rawText);
+      const candidate = {
+        text: rawText,
+        verdict: verdict.verdict,
+        reworkNodeIds: verdict.reworkNodeIds,
+        acceptedArtifactIds: verdict.acceptedArtifactIds,
+        findings: verdict.findings,
+        issues: verdict.issues,
+      };
+      const parsed = schema.safeParse(candidate);
+      if (parsed.success) {
+        return {
+          ok: true,
+          rawText: JSON.stringify(candidate),
+          value: parsed.data,
+          diagnostics: structuredDiagnostics(modeId, outputKey, rawText),
+        };
+      }
+    }
+
+    if (outputKey === "debug") {
+      const resolution = parseCodeDevelopmentDebugResolution(rawText);
+      const candidate = {
+        text: rawText,
+        status: resolution.status,
+        rootCauses: resolution.rootCauses,
+        requiredRework: resolution.requiredReworkNodeIds?.map((nodeId) => ({
+          nodeId,
+          reason: "derived from test fixture",
+        })),
+      };
+      const parsed = schema.safeParse(candidate);
+      if (parsed.success) {
+        return {
+          ok: true,
+          rawText: JSON.stringify(candidate),
+          value: parsed.data,
+          diagnostics: structuredDiagnostics(modeId, outputKey, rawText),
+        };
+      }
+    }
+
+    if (!parsedJson) {
+      const defaultCandidateByOutputKey: Record<string, Record<string, unknown>> = {
+        scope: {
+          text: rawText,
+          goal: "placeholder goal",
+          successCriteria: ["placeholder criterion"],
+          scopeBoundaries: ["placeholder boundary"],
+        },
+        gather: {
+          text: rawText,
+          findings: [{
+            claim: "placeholder claim",
+            source: "placeholder source",
+            sourceTitle: "placeholder title",
+            sourceUrl: "https://example.com/source",
+            excerpt: "placeholder excerpt",
+            retrievedAt: "2026-05-22",
+            sourceType: "report",
+            confidence: "medium",
+          }],
+          confidence: "medium",
+        },
+        analyze: {
+          text: rawText,
+          analysis: [{
+            claim: "placeholder analysis claim",
+            confidence: "medium",
+            rationale: "placeholder rationale",
+            supportingEvidence: ["placeholder evidence"],
+          }],
+          issues: [],
+        },
+        gap_analysis: {
+          text: rawText,
+          gaps: [],
+          coverageScore: 0.5,
+          suggestedReworkNodeIds: ["gather"],
+        },
+        compile: {
+          text: rawText,
+          findings: [{
+            claim: "placeholder compiled claim",
+            sources: ["https://example.com/source"],
+            confidence: "medium",
+            contradictions: [],
+          }],
+        },
+      };
+      const defaultCandidate = defaultCandidateByOutputKey[outputKey];
+      if (defaultCandidate) {
+        const parsed = schema.safeParse(defaultCandidate);
+        if (parsed.success) {
+          return {
+            ok: true,
+            rawText: JSON.stringify(defaultCandidate),
+            value: parsed.data,
+            diagnostics: structuredDiagnostics(modeId, outputKey, rawText),
+          };
+        }
+      }
+    }
+
+    const strictSchema = strictModeStageOutputSchema(modeId, outputKey);
+    return {
+      ok: false,
+      rawText,
+      diagnostics: {
+        ...structuredDiagnostics(modeId, outputKey, rawText),
+        schemaIssues: strictSchema ? ["test fixture did not satisfy strict schema"] : undefined,
+      },
+    };
+  };
+}
 
 function createContext(callLog: string[]): PatternExecutionContext {
   const queueSummary: QueueSummary = { mode: "backlog", pending: 0, inProgress: 0, completed: 0, topics: [] };
   const sharedStateSummary: SharedStateSummary = { enabled: false, storeKind: "none", version: 0, entries: [] };
   const busStats: BusStats = { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} };
+  const callAgent: PatternExecutionContext["callAgent"] = async ({ agentId, title }) => {
+    callLog.push(`${agentId}:${title}`);
+    if (agentId === "fact_checker") {
+      return "Verdict: NEEDS_FIX\n- Missing primary source coverage";
+    }
+    return `${agentId}:${title}`;
+  };
   return {
     projectId: "test-project",
     queueSummary,
@@ -23,13 +179,8 @@ function createContext(callLog: string[]): PatternExecutionContext {
     claimWorker: () => {},
     releaseWorker: () => {},
     agentLabel: (agentId) => agentId,
-    callAgent: async ({ agentId, title }) => {
-      callLog.push(`${agentId}:${title}`);
-      if (agentId === "fact_checker") {
-        return "Verdict: NEEDS_FIX\n- Missing primary source coverage";
-      }
-      return `${agentId}:${title}`;
-    },
+    callAgent,
+    callAgentStructured: createStructuredCallAgent(DEEP_RESEARCH_MODE_ID, callAgent),
     remember: () => {},
     captureMemory: () => {},
     publishArtifact: () => {},
@@ -46,6 +197,16 @@ function createReworkContext(callLog: string[]): PatternExecutionContext {
   const sharedStateSummary: SharedStateSummary = { enabled: false, storeKind: "none", version: 0, entries: [] };
   const busStats: BusStats = { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} };
   let verifyCount = 0;
+  const callAgent: PatternExecutionContext["callAgent"] = async ({ agentId, title }) => {
+    callLog.push(`${agentId}:${title}`);
+    if (agentId === "fact_checker") {
+      verifyCount += 1;
+      return verifyCount === 1
+        ? "Verdict: NEEDS_FIX\n- Need stronger primary sources"
+        : "Verdict: PASS\n- Source coverage now sufficient";
+    }
+    return `${agentId}:${title}`;
+  };
   return {
     projectId: "test-project",
     queueSummary,
@@ -62,16 +223,8 @@ function createReworkContext(callLog: string[]): PatternExecutionContext {
     claimWorker: () => {},
     releaseWorker: () => {},
     agentLabel: (agentId) => agentId,
-    callAgent: async ({ agentId, title }) => {
-      callLog.push(`${agentId}:${title}`);
-      if (agentId === "fact_checker") {
-        verifyCount += 1;
-        return verifyCount === 1
-          ? "Verdict: NEEDS_FIX\n- Need stronger primary sources"
-          : "Verdict: PASS\n- Source coverage now sufficient";
-      }
-      return `${agentId}:${title}`;
-    },
+    callAgent,
+    callAgentStructured: createStructuredCallAgent(DEEP_RESEARCH_MODE_ID, callAgent),
     remember: () => {},
     captureMemory: () => {},
     publishArtifact: () => {},
@@ -378,6 +531,25 @@ function createCodeDevContext(callLog: string[]): PatternExecutionContext {
   const queueSummary: QueueSummary = { mode: "backlog", pending: 0, inProgress: 0, completed: 0, topics: [] };
   const sharedStateSummary: SharedStateSummary = { enabled: false, storeKind: "none", version: 0, entries: [] };
   const busStats: BusStats = { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} };
+  const callAgent: PatternExecutionContext["callAgent"] = async ({ agentId, title }) => {
+    callLog.push(`${agentId}:${title}`);
+    if (agentId === "ora" && title.includes("Plan")) {
+      return codeDevTriageJson();
+    }
+    if (agentId === "builder") {
+      return codeDevBuildJson();
+    }
+    if (agentId === "reviewer") {
+      return codeDevNeedsFixReviewJson("Missing tests for changed files");
+    }
+    if (agentId === "debugger") {
+      return codeDevDebugClearJson();
+    }
+    if (agentId === "ora" && title.includes("Finalize")) {
+      return codeDevHandoffJson();
+    }
+    return `${agentId}:${title}`;
+  };
   return {
     projectId: "test-project",
     queueSummary,
@@ -394,25 +566,8 @@ function createCodeDevContext(callLog: string[]): PatternExecutionContext {
     claimWorker: () => {},
     releaseWorker: () => {},
     agentLabel: (agentId) => agentId,
-    callAgent: async ({ agentId, title }) => {
-      callLog.push(`${agentId}:${title}`);
-      if (agentId === "ora" && title.includes("Plan")) {
-        return codeDevTriageJson();
-      }
-      if (agentId === "builder") {
-        return codeDevBuildJson();
-      }
-      if (agentId === "reviewer") {
-        return codeDevNeedsFixReviewJson("Missing tests for changed files");
-      }
-      if (agentId === "debugger") {
-        return codeDevDebugClearJson();
-      }
-      if (agentId === "ora" && title.includes("Finalize")) {
-        return codeDevHandoffJson();
-      }
-      return `${agentId}:${title}`;
-    },
+    callAgent,
+    callAgentStructured: createStructuredCallAgent(CODE_DEVELOPMENT_MODE_ID, callAgent),
     remember: () => {},
     captureMemory: () => {},
     publishArtifact: () => {},
@@ -429,6 +584,28 @@ function createCodeDevReworkContext(callLog: string[]): PatternExecutionContext 
   const sharedStateSummary: SharedStateSummary = { enabled: false, storeKind: "none", version: 0, entries: [] };
   const busStats: BusStats = { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} };
   let reviewCount = 0;
+  const callAgent: PatternExecutionContext["callAgent"] = async ({ agentId, title }) => {
+    callLog.push(`${agentId}:${title}`);
+    if (agentId === "ora" && title.includes("Plan")) {
+      return codeDevTriageJson();
+    }
+    if (agentId === "builder") {
+      return codeDevBuildJson();
+    }
+    if (agentId === "reviewer") {
+      reviewCount += 1;
+      return reviewCount === 1
+        ? codeDevNeedsFixReviewJson("Missing tests for changed files")
+        : codeDevPassReviewJson();
+    }
+    if (agentId === "debugger") {
+      return codeDevDebugClearJson();
+    }
+    if (agentId === "ora" && title.includes("Finalize")) {
+      return codeDevHandoffJson();
+    }
+    return `${agentId}:${title}`;
+  };
   return {
     projectId: "test-project",
     queueSummary,
@@ -445,28 +622,8 @@ function createCodeDevReworkContext(callLog: string[]): PatternExecutionContext 
     claimWorker: () => {},
     releaseWorker: () => {},
     agentLabel: (agentId) => agentId,
-    callAgent: async ({ agentId, title }) => {
-      callLog.push(`${agentId}:${title}`);
-      if (agentId === "ora" && title.includes("Plan")) {
-        return codeDevTriageJson();
-      }
-      if (agentId === "builder") {
-        return codeDevBuildJson();
-      }
-      if (agentId === "reviewer") {
-        reviewCount += 1;
-        return reviewCount === 1
-          ? codeDevNeedsFixReviewJson("Missing tests for changed files")
-          : codeDevPassReviewJson();
-      }
-      if (agentId === "debugger") {
-        return codeDevDebugClearJson();
-      }
-      if (agentId === "ora" && title.includes("Finalize")) {
-        return codeDevHandoffJson();
-      }
-      return `${agentId}:${title}`;
-    },
+    callAgent,
+    callAgentStructured: createStructuredCallAgent(CODE_DEVELOPMENT_MODE_ID, callAgent),
     remember: () => {},
     captureMemory: () => {},
     publishArtifact: () => {},
@@ -482,6 +639,25 @@ function createCodeDevPassContext(callLog: string[]): PatternExecutionContext {
   const queueSummary: QueueSummary = { mode: "backlog", pending: 0, inProgress: 0, completed: 0, topics: [] };
   const sharedStateSummary: SharedStateSummary = { enabled: false, storeKind: "none", version: 0, entries: [] };
   const busStats: BusStats = { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} };
+  const callAgent: PatternExecutionContext["callAgent"] = async ({ agentId, title }) => {
+    callLog.push(`${agentId}:${title}`);
+    if (agentId === "ora" && title.includes("Plan")) {
+      return codeDevTriageJson();
+    }
+    if (agentId === "builder") {
+      return codeDevBuildJson();
+    }
+    if (agentId === "reviewer") {
+      return codeDevPassReviewJson();
+    }
+    if (agentId === "debugger") {
+      return codeDevDebugClearJson();
+    }
+    if (agentId === "ora" && title.includes("Finalize")) {
+      return codeDevHandoffJson();
+    }
+    return `${agentId}:${title}`;
+  };
   return {
     projectId: "test-project",
     queueSummary,
@@ -498,25 +674,8 @@ function createCodeDevPassContext(callLog: string[]): PatternExecutionContext {
     claimWorker: () => {},
     releaseWorker: () => {},
     agentLabel: (agentId) => agentId,
-    callAgent: async ({ agentId, title }) => {
-      callLog.push(`${agentId}:${title}`);
-      if (agentId === "ora" && title.includes("Plan")) {
-        return codeDevTriageJson();
-      }
-      if (agentId === "builder") {
-        return codeDevBuildJson();
-      }
-      if (agentId === "reviewer") {
-        return codeDevPassReviewJson();
-      }
-      if (agentId === "debugger") {
-        return codeDevDebugClearJson();
-      }
-      if (agentId === "ora" && title.includes("Finalize")) {
-        return codeDevHandoffJson();
-      }
-      return `${agentId}:${title}`;
-    },
+    callAgent,
+    callAgentStructured: createStructuredCallAgent(CODE_DEVELOPMENT_MODE_ID, callAgent),
     remember: () => {},
     captureMemory: () => {},
     publishArtifact: () => {},
@@ -536,6 +695,13 @@ describe("executeOrchestratorSubagent code_development review gate", () => {
     const queueSummary: QueueSummary = { mode: "backlog", pending: 0, inProgress: 0, completed: 0, topics: [] };
     const sharedStateSummary: SharedStateSummary = { enabled: false, storeKind: "none", version: 0, entries: [] };
     const busStats: BusStats = { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} };
+    const callAgent: PatternExecutionContext["callAgent"] = async ({ agentId, title }) => {
+      callLog.push(`${agentId}:${title}`);
+      if (agentId === "ora" && title.includes("Plan")) {
+        return "{\"text\":\"only partial triage\"}";
+      }
+      return `${agentId}:${title}`;
+    };
     const context: PatternExecutionContext = {
       projectId: "test-project",
       queueSummary,
@@ -552,13 +718,8 @@ describe("executeOrchestratorSubagent code_development review gate", () => {
       claimWorker: () => {},
       releaseWorker: () => {},
       agentLabel: (agentId) => agentId,
-      callAgent: async ({ agentId, title }) => {
-        callLog.push(`${agentId}:${title}`);
-        if (agentId === "ora" && title.includes("Plan")) {
-          return "{\"text\":\"only partial triage\"}";
-        }
-        return `${agentId}:${title}`;
-      },
+      callAgent,
+      callAgentStructured: createStructuredCallAgent(CODE_DEVELOPMENT_MODE_ID, callAgent),
       remember: () => {},
       captureMemory: () => {},
       publishArtifact: () => {},
@@ -733,6 +894,31 @@ describe("executeOrchestratorSubagent code_development review gate", () => {
     const queueSummary: QueueSummary = { mode: "backlog", pending: 0, inProgress: 0, completed: 0, topics: [] };
     const sharedStateSummary: SharedStateSummary = { enabled: false, storeKind: "none", version: 0, entries: [] };
     const busStats: BusStats = { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} };
+    const callAgent: PatternExecutionContext["callAgent"] = async ({ agentId, title }) => {
+      callLog.push(`${agentId}:${title}`);
+      if (agentId === "ora" && title.includes("Plan")) {
+        return codeDevTriageJson();
+      }
+      if (agentId === "builder") {
+        return codeDevBuildJson();
+      }
+      if (agentId === "reviewer") {
+        reviewCount += 1;
+        return reviewCount === 1
+          ? JSON.stringify({
+              ...JSON.parse(codeDevNeedsFixReviewJson("Missing tests for changed files")),
+              text: "审查未通过，需要重新实施。",
+            })
+          : codeDevPassReviewJson();
+      }
+      if (agentId === "debugger") {
+        return codeDevDebugClearJson();
+      }
+      if (agentId === "ora" && title.includes("Finalize")) {
+        return codeDevHandoffJson();
+      }
+      return `${agentId}:${title}`;
+    };
     const context: PatternExecutionContext = {
       projectId: "test-project",
       queueSummary,
@@ -749,31 +935,8 @@ describe("executeOrchestratorSubagent code_development review gate", () => {
       claimWorker: () => {},
       releaseWorker: () => {},
       agentLabel: (agentId) => agentId,
-      callAgent: async ({ agentId, title }) => {
-        callLog.push(`${agentId}:${title}`);
-        if (agentId === "ora" && title.includes("Plan")) {
-          return codeDevTriageJson();
-        }
-        if (agentId === "builder") {
-          return codeDevBuildJson();
-        }
-        if (agentId === "reviewer") {
-          reviewCount += 1;
-          return reviewCount === 1
-            ? JSON.stringify({
-                ...JSON.parse(codeDevNeedsFixReviewJson("Missing tests for changed files")),
-                text: "审查未通过，需要重新实施。",
-              })
-            : codeDevPassReviewJson();
-        }
-        if (agentId === "debugger") {
-          return codeDevDebugClearJson();
-        }
-        if (agentId === "ora" && title.includes("Finalize")) {
-          return codeDevHandoffJson();
-        }
-        return `${agentId}:${title}`;
-      },
+      callAgent,
+      callAgentStructured: createStructuredCallAgent(CODE_DEVELOPMENT_MODE_ID, callAgent),
       remember: () => {},
       captureMemory: () => {},
       publishArtifact: () => {},
@@ -827,6 +990,36 @@ describe("executeOrchestratorSubagent code_development review gate", () => {
     const queueSummary: QueueSummary = { mode: "backlog", pending: 0, inProgress: 0, completed: 0, topics: [] };
     const sharedStateSummary: SharedStateSummary = { enabled: false, storeKind: "none", version: 0, entries: [] };
     const busStats: BusStats = { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} };
+    const callAgent: PatternExecutionContext["callAgent"] = async ({ agentId, title }) => {
+      callLog.push(`${agentId}:${title}`);
+      if (agentId === "ora" && title.includes("Plan")) {
+        return codeDevTriageJson();
+      }
+      if (agentId === "builder") {
+        return codeDevBuildJson();
+      }
+      if (agentId === "reviewer") {
+        reviewCount += 1;
+        return reviewCount === 1
+          ? codeDevPassReviewJson()
+          : codeDevNeedsFixReviewJson("Review still requires follow-up evidence");
+      }
+      if (agentId === "debugger") {
+        debugCount += 1;
+        return debugCount === 1
+          ? JSON.stringify({
+              text: "需要重新复核验证证据。",
+              status: "needs_fix",
+              rootCauses: ["Review needs a second pass on verification evidence"],
+              requiredRework: [{ nodeId: "review", reason: "Re-check the reported verification evidence" }],
+            })
+          : codeDevDebugClearJson();
+      }
+      if (agentId === "ora" && title.includes("Finalize")) {
+        return codeDevHandoffJson();
+      }
+      return `${agentId}:${title}`;
+    };
     const context: PatternExecutionContext = {
       projectId: "test-project",
       queueSummary,
@@ -843,36 +1036,8 @@ describe("executeOrchestratorSubagent code_development review gate", () => {
       claimWorker: () => {},
       releaseWorker: () => {},
       agentLabel: (agentId) => agentId,
-      callAgent: async ({ agentId, title }) => {
-        callLog.push(`${agentId}:${title}`);
-        if (agentId === "ora" && title.includes("Plan")) {
-          return codeDevTriageJson();
-        }
-        if (agentId === "builder") {
-          return codeDevBuildJson();
-        }
-        if (agentId === "reviewer") {
-          reviewCount += 1;
-          return reviewCount === 1
-            ? codeDevPassReviewJson()
-            : codeDevNeedsFixReviewJson("Review still requires follow-up evidence");
-        }
-        if (agentId === "debugger") {
-          debugCount += 1;
-          return debugCount === 1
-            ? JSON.stringify({
-                text: "需要重新复核验证证据。",
-                status: "needs_fix",
-                rootCauses: ["Review needs a second pass on verification evidence"],
-                requiredRework: [{ nodeId: "review", reason: "Re-check the reported verification evidence" }],
-              })
-            : codeDevDebugClearJson();
-        }
-        if (agentId === "ora" && title.includes("Finalize")) {
-          return codeDevHandoffJson();
-        }
-        return `${agentId}:${title}`;
-      },
+      callAgent,
+      callAgentStructured: createStructuredCallAgent(CODE_DEVELOPMENT_MODE_ID, callAgent),
       remember: () => {},
       captureMemory: () => {},
       publishArtifact: () => {},
@@ -922,6 +1087,25 @@ describe("executeOrchestratorSubagent code_development review gate", () => {
     const queueSummary: QueueSummary = { mode: "backlog", pending: 0, inProgress: 0, completed: 0, topics: [] };
     const sharedStateSummary: SharedStateSummary = { enabled: false, storeKind: "none", version: 0, entries: [] };
     const busStats: BusStats = { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} };
+    const callAgent: PatternExecutionContext["callAgent"] = async ({ agentId, title }) => {
+      callLog.push(`${agentId}:${title}`);
+      if (agentId === "ora" && title.includes("Plan")) {
+        return codeDevTriageJson();
+      }
+      if (agentId === "builder") {
+        return codeDevBuildJson();
+      }
+      if (agentId === "reviewer") {
+        return codeDevPassReviewJson();
+      }
+      if (agentId === "debugger") {
+        return codeDevDebugClearJson();
+      }
+      if (agentId === "ora" && title.includes("Finalize")) {
+        return codeDevIncompleteHandoffJson();
+      }
+      return `${agentId}:${title}`;
+    };
     const context: PatternExecutionContext = {
       projectId: "test-project",
       queueSummary,
@@ -938,25 +1122,8 @@ describe("executeOrchestratorSubagent code_development review gate", () => {
       claimWorker: () => {},
       releaseWorker: () => {},
       agentLabel: (agentId) => agentId,
-      callAgent: async ({ agentId, title }) => {
-        callLog.push(`${agentId}:${title}`);
-        if (agentId === "ora" && title.includes("Plan")) {
-          return codeDevTriageJson();
-        }
-        if (agentId === "builder") {
-          return codeDevBuildJson();
-        }
-        if (agentId === "reviewer") {
-          return codeDevPassReviewJson();
-        }
-        if (agentId === "debugger") {
-          return codeDevDebugClearJson();
-        }
-        if (agentId === "ora" && title.includes("Finalize")) {
-          return codeDevIncompleteHandoffJson();
-        }
-        return `${agentId}:${title}`;
-      },
+      callAgent,
+      callAgentStructured: createStructuredCallAgent(CODE_DEVELOPMENT_MODE_ID, callAgent),
       remember: () => {},
       captureMemory: () => {},
       publishArtifact: () => {},
@@ -1009,6 +1176,16 @@ function createTargetedReworkContext(callLog: string[]): PatternExecutionContext
   const sharedStateSummary: SharedStateSummary = { enabled: false, storeKind: "none", version: 0, entries: [] };
   const busStats: BusStats = { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} };
   let verifyCount = 0;
+  const callAgent: PatternExecutionContext["callAgent"] = async ({ agentId, title }) => {
+    callLog.push(`${agentId}:${title}`);
+    if (agentId === "fact_checker") {
+      verifyCount += 1;
+      return verifyCount === 1
+        ? "Verdict: NEEDS_FIX\nRework: gather\n- Need primary sources for claims about market size"
+        : "Verdict: PASS\n- Source coverage now sufficient";
+    }
+    return `${agentId}:${title}`;
+  };
   return {
     projectId: "test-project",
     queueSummary,
@@ -1025,16 +1202,8 @@ function createTargetedReworkContext(callLog: string[]): PatternExecutionContext
     claimWorker: () => {},
     releaseWorker: () => {},
     agentLabel: (agentId) => agentId,
-    callAgent: async ({ agentId, title }) => {
-      callLog.push(`${agentId}:${title}`);
-      if (agentId === "fact_checker") {
-        verifyCount += 1;
-        return verifyCount === 1
-          ? "Verdict: NEEDS_FIX\nRework: gather\n- Need primary sources for claims about market size"
-          : "Verdict: PASS\n- Source coverage now sufficient";
-      }
-      return `${agentId}:${title}`;
-    },
+    callAgent,
+    callAgentStructured: createStructuredCallAgent(DEEP_RESEARCH_MODE_ID, callAgent),
     remember: () => {},
     captureMemory: () => {},
     publishArtifact: () => {},
@@ -1051,6 +1220,16 @@ function createJsonVerdictReworkContext(callLog: string[]): PatternExecutionCont
   const sharedStateSummary: SharedStateSummary = { enabled: false, storeKind: "none", version: 0, entries: [] };
   const busStats: BusStats = { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} };
   let verifyCount = 0;
+  const callAgent: PatternExecutionContext["callAgent"] = async ({ agentId, title }) => {
+    callLog.push(`${agentId}:${title}`);
+    if (agentId === "fact_checker") {
+      verifyCount += 1;
+      return verifyCount === 1
+        ? JSON.stringify({ verdict: "needs_fix", reworkNodeIds: ["analyze"], issues: ["Analysis contains unsupported causal claims"] })
+        : JSON.stringify({ verdict: "pass" });
+    }
+    return `${agentId}:${title}`;
+  };
   return {
     projectId: "test-project",
     queueSummary,
@@ -1067,16 +1246,8 @@ function createJsonVerdictReworkContext(callLog: string[]): PatternExecutionCont
     claimWorker: () => {},
     releaseWorker: () => {},
     agentLabel: (agentId) => agentId,
-    callAgent: async ({ agentId, title }) => {
-      callLog.push(`${agentId}:${title}`);
-      if (agentId === "fact_checker") {
-        verifyCount += 1;
-        return verifyCount === 1
-          ? JSON.stringify({ verdict: "needs_fix", reworkNodeIds: ["analyze"], issues: ["Analysis contains unsupported causal claims"] })
-          : JSON.stringify({ verdict: "pass" });
-      }
-      return `${agentId}:${title}`;
-    },
+    callAgent,
+    callAgentStructured: createStructuredCallAgent(DEEP_RESEARCH_MODE_ID, callAgent),
     remember: () => {},
     captureMemory: () => {},
     publishArtifact: () => {},
@@ -1093,6 +1264,16 @@ function createFullReworkFallbackContext(callLog: string[]): PatternExecutionCon
   const sharedStateSummary: SharedStateSummary = { enabled: false, storeKind: "none", version: 0, entries: [] };
   const busStats: BusStats = { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} };
   let verifyCount = 0;
+  const callAgent: PatternExecutionContext["callAgent"] = async ({ agentId, title }) => {
+    callLog.push(`${agentId}:${title}`);
+    if (agentId === "fact_checker") {
+      verifyCount += 1;
+      return verifyCount === 1
+        ? "Verdict: NEEDS_FIX\n- Both source coverage and analysis quality are insufficient"
+        : "Verdict: PASS\n- All issues resolved";
+    }
+    return `${agentId}:${title}`;
+  };
   return {
     projectId: "test-project",
     queueSummary,
@@ -1109,16 +1290,8 @@ function createFullReworkFallbackContext(callLog: string[]): PatternExecutionCon
     claimWorker: () => {},
     releaseWorker: () => {},
     agentLabel: (agentId) => agentId,
-    callAgent: async ({ agentId, title }) => {
-      callLog.push(`${agentId}:${title}`);
-      if (agentId === "fact_checker") {
-        verifyCount += 1;
-        return verifyCount === 1
-          ? "Verdict: NEEDS_FIX\n- Both source coverage and analysis quality are insufficient"
-          : "Verdict: PASS\n- All issues resolved";
-      }
-      return `${agentId}:${title}`;
-    },
+    callAgent,
+    callAgentStructured: createStructuredCallAgent(DEEP_RESEARCH_MODE_ID, callAgent),
     remember: () => {},
     captureMemory: () => {},
     publishArtifact: () => {},
@@ -1139,6 +1312,14 @@ function createToolIdsCaptureContext(
   const queueSummary: QueueSummary = { mode: "backlog", pending: 0, inProgress: 0, completed: 0, topics: [] };
   const sharedStateSummary: SharedStateSummary = { enabled: false, storeKind: "none", version: 0, entries: [] };
   const busStats: BusStats = { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} };
+  const callAgent: PatternExecutionContext["callAgent"] = async ({ agentId, title, toolIds }) => {
+    callLog.push(`${agentId}:${title}`);
+    toolIdsByNode.set(title, toolIds);
+    if (agentId === "fact_checker") {
+      return "Verdict: PASS";
+    }
+    return `${agentId}:${title}`;
+  };
   return {
     projectId: "test-project",
     queueSummary,
@@ -1155,14 +1336,8 @@ function createToolIdsCaptureContext(
     claimWorker: () => {},
     releaseWorker: () => {},
     agentLabel: (agentId) => agentId,
-    callAgent: async ({ agentId, title, toolIds }) => {
-      callLog.push(`${agentId}:${title}`);
-      toolIdsByNode.set(title, toolIds);
-      if (agentId === "fact_checker") {
-        return "Verdict: PASS";
-      }
-      return `${agentId}:${title}`;
-    },
+    callAgent,
+    callAgentStructured: createStructuredCallAgent(DEEP_RESEARCH_MODE_ID, callAgent),
     remember: () => {},
     captureMemory: () => {},
     publishArtifact: () => {},
@@ -1185,6 +1360,102 @@ function createAcceptedArtifactFilterContext(
   const queueSummary: QueueSummary = { mode: "backlog", pending: 0, inProgress: 0, completed: 0, topics: [] };
   const sharedStateSummary: SharedStateSummary = { enabled: false, storeKind: "none", version: 0, entries: [] };
   const busStats: BusStats = { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} };
+  const callAgent: PatternExecutionContext["callAgent"] = async ({ agentId, title, prompt }) => {
+    callLog.push(`${agentId}:${title}`);
+    promptsByTitle.set(title, prompt ?? "");
+    if (title.includes("规划")) {
+      return JSON.stringify({
+        text: "Plan summary",
+        goal: "Assess company",
+        successCriteria: ["Need sourced claims"],
+        steps: [{ id: "1", description: "Gather evidence" }],
+        scopeBoundaries: ["No valuation"],
+      });
+    }
+    if (title.includes("收集")) {
+      return JSON.stringify({
+        text: "Gather summary",
+        findings: [
+          options?.invalidGatherContract
+            ? {
+                claim: "accepted-gather-claim",
+                source: "Source A",
+              }
+            : {
+                claim: "accepted-gather-claim",
+                source: "Source A",
+                sourceTitle: "Primary Source A",
+                sourceUrl: "https://example.com/a",
+                excerpt: "accepted gather excerpt",
+                retrievedAt: "2026-05-21",
+                sourceType: "report",
+                confidence: "high",
+              },
+        ],
+        confidence: "high",
+      });
+    }
+    if (title.includes("缺口")) {
+      return JSON.stringify({
+        text: "Gap summary",
+        gaps: [
+          {
+            dimension: "rejected-gap-dimension",
+            severity: "major",
+            description: "gap-only-marker",
+            suggestedAction: "Collect more",
+          },
+        ],
+        coverageScore: 0.65,
+        suggestedReworkNodeIds: ["gather"],
+      });
+    }
+    if (title.includes("分析")) {
+      return JSON.stringify({
+        text: "Analyze summary",
+        analysis: [
+          {
+            claim: "rejected-analysis-claim",
+            confidence: "medium",
+            rationale: "analysis-only-marker",
+            supportingEvidence: ["Source A"],
+          },
+        ],
+        issues: ["analysis issue"],
+      });
+    }
+    if (title.includes("整理")) {
+      return JSON.stringify({
+        text: "Compile summary",
+        findings: [
+          {
+            claim: "accepted-compile-claim",
+            sources: ["https://example.com/a"],
+            confidence: "high",
+            contradictions: [],
+          },
+        ],
+      });
+    }
+    if (title.includes("核查")) {
+      const verifyOutput: Record<string, unknown> = {
+        text: "Verify summary",
+        verdict: "pass",
+        findings: [
+          { artifactId: "analyze", severity: "concern", issue: "Keep analysis out of final synthesis" },
+        ],
+        issues: [],
+      };
+      if (options?.acceptedArtifactIds) {
+        verifyOutput.acceptedArtifactIds = options.acceptedArtifactIds;
+      }
+      return JSON.stringify(verifyOutput);
+    }
+    if (title === "综合报告") {
+      return "Final synthesized report";
+    }
+    return `${agentId}:${title}`;
+  };
   return {
     projectId: "test-project",
     queueSummary,
@@ -1201,102 +1472,8 @@ function createAcceptedArtifactFilterContext(
     claimWorker: () => {},
     releaseWorker: () => {},
     agentLabel: (agentId) => agentId,
-    callAgent: async ({ agentId, title, prompt }) => {
-      callLog.push(`${agentId}:${title}`);
-      promptsByTitle.set(title, prompt ?? "");
-      if (title.includes("规划")) {
-        return JSON.stringify({
-          text: "Plan summary",
-          goal: "Assess company",
-          successCriteria: ["Need sourced claims"],
-          steps: [{ id: "1", description: "Gather evidence" }],
-          scopeBoundaries: ["No valuation"],
-        });
-      }
-      if (title.includes("收集")) {
-        return JSON.stringify({
-          text: "Gather summary",
-          findings: [
-            options?.invalidGatherContract
-              ? {
-                  claim: "accepted-gather-claim",
-                  source: "Source A",
-                }
-              : {
-                  claim: "accepted-gather-claim",
-                  source: "Source A",
-                  sourceTitle: "Primary Source A",
-                  sourceUrl: "https://example.com/a",
-                  excerpt: "accepted gather excerpt",
-                  retrievedAt: "2026-05-21",
-                  sourceType: "report",
-                  confidence: "high",
-                },
-          ],
-          confidence: "high",
-        });
-      }
-      if (title.includes("缺口")) {
-        return JSON.stringify({
-          text: "Gap summary",
-          gaps: [
-            {
-              dimension: "rejected-gap-dimension",
-              severity: "major",
-              description: "gap-only-marker",
-              suggestedAction: "Collect more",
-            },
-          ],
-          coverageScore: 0.65,
-          suggestedReworkNodeIds: ["gather"],
-        });
-      }
-      if (title.includes("分析")) {
-        return JSON.stringify({
-          text: "Analyze summary",
-          analysis: [
-            {
-              claim: "rejected-analysis-claim",
-              confidence: "medium",
-              rationale: "analysis-only-marker",
-              supportingEvidence: ["Source A"],
-            },
-          ],
-          issues: ["analysis issue"],
-        });
-      }
-      if (title.includes("整理")) {
-        return JSON.stringify({
-          text: "Compile summary",
-          findings: [
-            {
-              claim: "accepted-compile-claim",
-              sources: ["https://example.com/a"],
-              confidence: "high",
-              contradictions: [],
-            },
-          ],
-        });
-      }
-      if (title.includes("核查")) {
-        const verifyOutput: Record<string, unknown> = {
-          text: "Verify summary",
-          verdict: "pass",
-          findings: [
-            { artifactId: "analyze", severity: "concern", issue: "Keep analysis out of final synthesis" },
-          ],
-          issues: [],
-        };
-        if (options?.acceptedArtifactIds) {
-          verifyOutput.acceptedArtifactIds = options.acceptedArtifactIds;
-        }
-        return JSON.stringify(verifyOutput);
-      }
-      if (title === "综合报告") {
-        return "Final synthesized report";
-      }
-      return `${agentId}:${title}`;
-    },
+    callAgent,
+    callAgentStructured: createStructuredCallAgent(DEEP_RESEARCH_MODE_ID, callAgent),
     remember: () => {},
     captureMemory: () => {},
     publishArtifact: () => {},

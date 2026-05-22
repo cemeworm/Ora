@@ -274,7 +274,8 @@ export function planListCompletionGuard(
     followUpReason: "plan_list_incomplete_follow_up",
     followUpContent: [
       "The current plan list is not complete yet, so do not provide a final answer.",
-      "Continue executing the remaining plan steps. Use plan.update with the full plan array as you make progress.",
+      "Continue only from the current unfinished step. Use plan.update with the full plan array as you make progress.",
+      "If the current step cannot continue without user input or a user decision, use the clarification path instead of marking later steps completed.",
       "Unfinished steps:",
       detail,
     ].join("\n"),

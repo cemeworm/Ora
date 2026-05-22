@@ -6,6 +6,7 @@ import type {
   QueueSummary,
   SharedStateSummary,
 } from "@cemeworm/shared";
+import type { ZodTypeAny } from "zod";
 
 export interface PatternModeResumeState {
   activeFrameId?: string;
@@ -13,6 +14,47 @@ export interface PatternModeResumeState {
   activeAgentId?: string;
   bag: Record<string, unknown>;
   completedNodeIds: string[];
+}
+
+export interface StructuredAgentCallDiagnostics {
+  modeId: string;
+  outputKey: string;
+  usedProviderJsonMode: boolean;
+  repairAttempted: boolean;
+  repairSucceeded: boolean;
+  initialText: string;
+  finalText?: string;
+  repairText?: string;
+  parseError?: string;
+  schemaIssues?: string[];
+  degraded?: boolean;
+  degradedReason?: string;
+  repairSkippedReason?: "agent_degraded";
+  repairActionId?: string;
+}
+
+export type StructuredAgentCallResult<T> =
+  | {
+      ok: true;
+      rawText: string;
+      value: T;
+      diagnostics: StructuredAgentCallDiagnostics;
+    }
+  | {
+      ok: false;
+      rawText: string;
+      diagnostics: StructuredAgentCallDiagnostics;
+    };
+
+export interface CallAgentParams {
+  agentId: string;
+  planItemId?: string;
+  title: string;
+  prompt: string;
+  system: string;
+  customAgentId?: string;
+  riskLevel?: "low" | "medium" | "high";
+  toolIds?: string[];
 }
 
 export interface PatternExecutionContext {
@@ -63,16 +105,12 @@ export interface PatternExecutionContext {
     agentId: string;
     title: string;
   }): Promise<unknown | undefined>;
-  callAgent(params: {
-    agentId: string;
-    planItemId?: string;
-    title: string;
-    prompt: string;
-    system: string;
-    customAgentId?: string;
-    riskLevel?: "low" | "medium" | "high";
-    toolIds?: string[];
-  }): Promise<string>;
+  callAgent(params: CallAgentParams): Promise<string>;
+  callAgentStructured<T>(params: CallAgentParams & {
+    modeId: string;
+    outputKey: string;
+    schema: ZodTypeAny;
+  }): Promise<StructuredAgentCallResult<T>>;
   remember(params: {
     id: string;
     namespace: string[];

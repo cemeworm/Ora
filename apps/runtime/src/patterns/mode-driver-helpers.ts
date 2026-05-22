@@ -1,6 +1,7 @@
 import type { ModeNodeSpec } from "@cemeworm/shared";
 import { BAG_OUTPUT_SCHEMAS } from "@cemeworm/shared";
 import type { PatternExecutionContext } from "./execution-context.js";
+import type { StructuredAgentCallDiagnostics } from "./execution-context.js";
 import { asText } from "./driver-utils.js";
 export { runGenericModeNode, runModeNode } from "./generic-node-executor.js";
 
@@ -14,7 +15,7 @@ export type ExecutionBag = Record<string, unknown>;
  * the raw text is wrapped as { text, _degraded: true }.
  * The raw text is always preserved under `<key>_raw`.
  */
-function extractJsonFromText(raw: string): unknown | undefined {
+export function extractJsonFromText(raw: string): unknown | undefined {
   // try direct JSON parse
   try {
     return JSON.parse(raw);
@@ -42,6 +43,43 @@ function extractJsonFromText(raw: string): unknown | undefined {
   return undefined;
 }
 
+export function degradedBagEntry(
+  raw: string,
+  diagnostics?: StructuredAgentCallDiagnostics,
+): { text: string; _degraded: true; _diagnostics?: StructuredAgentCallDiagnostics } {
+  return diagnostics
+    ? { text: raw, _degraded: true, _diagnostics: diagnostics }
+    : { text: raw, _degraded: true };
+}
+
+export function markBagKeyDegraded(
+  bag: ExecutionBag,
+  key: string,
+  raw: string,
+  diagnostics?: StructuredAgentCallDiagnostics,
+): void {
+  bag[key] = degradedBagEntry(raw, diagnostics);
+  const degradedKeys: string[] = Array.isArray(bag._degradedKeys) ? (bag._degradedKeys as string[]) : [];
+  if (!degradedKeys.includes(key)) {
+    degradedKeys.push(key);
+    bag._degradedKeys = degradedKeys;
+  }
+}
+
+export function writeStructuredBagValue(
+  bag: ExecutionBag,
+  key: string,
+  raw: string,
+  value: unknown,
+  diagnostics?: StructuredAgentCallDiagnostics,
+): void {
+  bag[`${key}_raw`] = raw;
+  bag[key] = value;
+  if (diagnostics) {
+    bag[`${key}_diagnostics`] = diagnostics;
+  }
+}
+
 export function writeBag(
   bag: ExecutionBag,
   key: string,
@@ -66,12 +104,7 @@ export function writeBag(
     }
   }
 
-  bag[key] = { text: raw, _degraded: true } satisfies { text: string; _degraded: true };
-  const degradedKeys: string[] = Array.isArray(bag._degradedKeys) ? (bag._degradedKeys as string[]) : [];
-  if (!degradedKeys.includes(key)) {
-    degradedKeys.push(key);
-    bag._degradedKeys = degradedKeys;
-  }
+  markBagKeyDegraded(bag, key, raw);
   console.warn(
     `[bag] schema validation failed for key "${key}" (template: ${template}), stored as degraded text`,
   );

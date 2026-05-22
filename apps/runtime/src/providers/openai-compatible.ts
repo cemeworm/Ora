@@ -217,6 +217,12 @@ function configuredPayload<T extends Record<string, unknown>>(payload: T, dropPa
   return next;
 }
 
+function compatibleResponseFormat(request: Parameters<ModelProvider>[0]) {
+  return request.responseFormat?.type === "json_object"
+    ? { type: "json_object" as const }
+    : undefined;
+}
+
 function createResponsesPayload(config: ProviderConfig, request: Parameters<ModelProvider>[0]) {
   const previousResponseId = request.providerCache?.openaiPreviousResponseId?.trim();
   const deltaMessages = request.providerCache?.openaiDeltaMessages;
@@ -247,10 +253,11 @@ function createResponsesPayload(config: ProviderConfig, request: Parameters<Mode
     ? appendIfDefined(withTools, "tool_choice", request.toolChoice ?? "auto")
     : withTools;
 
-  return configuredPayload(
-    appendIfDefined(withChoice, "temperature", config.temperature ?? request.temperature),
-    config.dropParams ?? []
-  );
+  const withTemperature = appendIfDefined(withChoice, "temperature", config.temperature ?? request.temperature);
+  const withTextFormat = appendIfDefined(withTemperature, "text", compatibleResponseFormat(request)
+    ? { format: compatibleResponseFormat(request) }
+    : undefined);
+  return configuredPayload(withTextFormat, config.dropParams ?? []);
 }
 
 function createChatCompletionsPayload(config: ProviderConfig, request: Parameters<ModelProvider>[0]) {
@@ -323,10 +330,9 @@ function createChatCompletionsPayload(config: ProviderConfig, request: Parameter
     ? appendIfDefined(withTools, "tool_choice", request.toolChoice ?? "auto")
     : withTools;
 
-  return configuredPayload(
-    appendIfDefined(withChoice, "temperature", config.temperature ?? request.temperature),
-    config.dropParams ?? []
-  );
+  const withTemperature = appendIfDefined(withChoice, "temperature", config.temperature ?? request.temperature);
+  const withResponseFormat = appendIfDefined(withTemperature, "response_format", compatibleResponseFormat(request));
+  return configuredPayload(withResponseFormat, config.dropParams ?? []);
 }
 
 export function createOpenAICompatibleProvider(

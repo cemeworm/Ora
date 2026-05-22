@@ -8,6 +8,17 @@ function createError(status: number, body: string, providerId: string) {
   return new Error(`OpenAI provider ${providerId} failed with ${status}: ${body}`);
 }
 
+function openAiResponsesTextFormat(request: Parameters<ModelProvider>[0]) {
+  if (request.responseFormat?.type !== "json_object") {
+    return undefined;
+  }
+  return {
+    format: {
+      type: "json_object" as const,
+    },
+  };
+}
+
 function parseOpenAIModels(raw: unknown): ProviderModelsResult["models"] {
   if (!raw || typeof raw !== "object" || !Array.isArray((raw as Record<string, unknown>).data)) {
     return [];
@@ -150,6 +161,7 @@ export function createOpenAIProvider(
       "temperature",
       config.temperature ?? request.temperature
     );
+    const withTextFormat = appendIfDefined(payload, "text", openAiResponsesTextFormat(request));
 
     const endpoint = resolveProviderEndpoint({
       providerId: config.id,
@@ -174,7 +186,7 @@ export function createOpenAIProvider(
         "Content-Type": "application/json",
         ...(config.headers ?? {}),
       },
-      body: JSON.stringify(payload),
+      body: JSON.stringify(withTextFormat),
     });
 
     const rawText = await response.text();
@@ -243,6 +255,7 @@ export function createOpenAIProvider(
       "temperature",
       config.temperature ?? request.temperature
     );
+    const withTextFormat = appendIfDefined(payload, "text", openAiResponsesTextFormat(request));
 
     const tNow = Date.now();
     const invokeModelElapsed = tNow - (((globalThis as any).__latencyInvokeModelStart as number) ?? tNow);
@@ -271,7 +284,7 @@ export function createOpenAIProvider(
         "Content-Type": "application/json",
         ...(config.headers ?? {}),
       },
-      body: JSON.stringify(payload),
+      body: JSON.stringify(withTextFormat),
     });
 
     if (!response.ok) {

@@ -79,6 +79,7 @@ import {
   invokeRunProvider,
   invokeRunProviderStream,
 } from "../providers/index.js";
+import { parseJsonObject } from "../provider-json.js";
 import {
   RuntimeSkillRegistry,
   RuntimeToolRegistry,
@@ -98,8 +99,9 @@ import {
   type RecoveryIncident,
 } from "./recovery-policy.js";
 import { executeModeSpec } from "../patterns/driver-registry.js";
-import type { PatternExecutionContext } from "../patterns/execution-context.js";
+import type { CallAgentParams, PatternExecutionContext, StructuredAgentCallResult } from "../patterns/execution-context.js";
 import type { ModelMessage, ModelRequest, ModelResponse } from "../providers/index.js";
+import type { ZodTypeAny } from "zod";
 import { RuntimeCompletionController } from "./runtime-completion.js";
 import {
   coerceNoToolResponse as coerceNoToolResponseWithDeps,
@@ -1695,6 +1697,7 @@ export async function executeRuntimeKernel(
   }
   const runtimeToolExecutor = new RuntimeToolExecutor({
     workspace: input.context?.projectWorkspace,
+    hostFilesystem: config.hostFilesystem,
     toolDescriptors: tools.tools,
     skillRegistry,
     modeRegistry: options.modeRegistry,
@@ -2546,15 +2549,221 @@ export async function executeRuntimeKernel(
     return `${runId}:assistant:${params.agentId}:${params.nodeId}${actionSegment}${suffixSegment}`;
   };
 
-  const callAgent = async (params: {
-    agentId: string;
-    planItemId?: string;
-    title: string;
-    prompt: string;
-    system: string;
-    customAgentId?: string;
-    riskLevel?: ActionRiskLevel;
-    toolIds?: string[];
+  const supportsStructuredJsonMode =
+    config.providerConfig?.capabilities?.includes("json_mode") ?? false;
+
+  const structuredResponseFormat = supportsStructuredJsonMode
+    ? { type: "json_object" as const }
+    : undefined;
+
+  const normalizeStructuredCandidateText = (text: string): string => {
+    const stripped = stripInternalAssistantText(text).trim();
+    return stripped.length > 0 ? stripped : text.trim();
+  };
+
+  const summarizeSchemaIssues = (schemaResult: ReturnType<ZodTypeAny["safeParse"]>): string[] =>
+    schemaResult.success
+      ? []
+      : schemaResult.error.issues.map((issue) => {
+          const pathLabel = issue.path.length > 0 ? issue.path.join(".") : "<root>";
+          return `${pathLabel}: ${issue.message}`;
+        });
+
+  const validateStructuredAgentOutput = <T>(text: string, schema: ZodTypeAny):
+    | { ok: true; value: T; normalizedText: string }
+    | { ok: false; normalizedText: string; parseError?: string; schemaIssues?: string[] } => {
+    const normalizedText = normalizeStructuredCandidateText(text);
+    let parsedJson: Record<string, unknown>;
+    try {
+      parsedJson = parseJsonObject(normalizedText);
+    } catch (error) {
+      return {
+        ok: false,
+        normalizedText,
+        parseError: error instanceof Error ? error.message : String(error),
+      };
+    }
+    const schemaResult = schema.safeParse(parsedJson);
+    if (!schemaResult.success) {
+      return {
+        ok: false,
+        normalizedText,
+        schemaIssues: summarizeSchemaIssues(schemaResult),
+      };
+    }
+    return {
+      ok: true,
+      normalizedText,
+      value: schemaResult.data as T,
+    };
+  };
+
+  const structuredRepairPrompt = (params: CallAgentParams & { modeId: string; outputKey: string }, diagnostics: {
+    initialText: string;
+    parseError?: string;
+    schemaIssues?: string[];
+  }): string => {
+    const issueLines = [
+      diagnostics.parseError ? `- parse_error: ${diagnostics.parseError}` : "",
+      ...(diagnostics.schemaIssues ?? []).map((issue) => `- schema_issue: ${issue}`),
+    ].filter(Boolean);
+    return [
+      `Mode: ${params.modeId}`,
+      `Stage output key: ${params.outputKey}`,
+      "Repair the invalid stage response into one strict JSON object.",
+      "Do not use markdown, code fences, or commentary.",
+      "Preserve the original meaning and keep the object faithful to the stage prompt.",
+      "If a required field is missing, derive it only from the original stage prompt or the invalid response. Do not invent unrelated claims.",
+      issueLines.length > 0 ? `Validation failures:\n${issueLines.join("\n")}` : "",
+      `Original stage system prompt:\n${params.system}`,
+      `Original stage prompt:\n${params.prompt}`,
+      `Invalid stage response:\n${diagnostics.initialText}`,
+    ].filter(Boolean).join("\n\n");
+  };
+
+  const runStructuredRepairAttempt = async (
+    params: CallAgentParams & {
+      modeId: string;
+      outputKey: string;
+    },
+    diagnostics: {
+      initialText: string;
+      parseError?: string;
+      schemaIssues?: string[];
+    },
+  ): Promise<{ actionId: string; responseText: string }> => {
+    const eventContext = {
+      agentId: params.agentId,
+      nodeId: params.planItemId ?? params.agentId,
+    };
+    const expectedPlanItemId = params.planItemId
+      ? `${runId}:${params.planItemId}`
+      : undefined;
+    const action = actionLedger.propose({
+      id: `${params.agentId}-${kernelRuntimeContext.eventCount()}-structured-repair`,
+      type: `agent.${params.agentId}.structured_repair`,
+      riskLevel: "low",
+      input: {
+        title: params.title,
+        modeId: params.modeId,
+        outputKey: params.outputKey,
+        parseError: diagnostics.parseError,
+        schemaIssues: diagnostics.schemaIssues,
+      },
+      planItemId: expectedPlanItemId,
+      agentId: params.agentId,
+    });
+    if (params.planItemId) {
+      planService.linkAction(`${runId}:${params.planItemId}`, action.id);
+    }
+    emit(
+      "action.updated",
+      { actionId: action.id, status: "proposed", record: action },
+      eventContext,
+    );
+    const running = actionLedger.transition(action.id, "running");
+    emit(
+      "action.updated",
+      { actionId: action.id, status: "running", record: running },
+      eventContext,
+    );
+    emit(
+      "structured_output.repair",
+      {
+        status: "started",
+        actionId: action.id,
+        modeId: params.modeId,
+        outputKey: params.outputKey,
+        parseError: diagnostics.parseError,
+        schemaIssues: diagnostics.schemaIssues,
+      },
+      eventContext,
+    );
+    try {
+      const repairResponse = await invokeRunProvider(config, {
+        system: "You repair Ora stage outputs into strict JSON objects. Return strict JSON only with no markdown or commentary.",
+        messages: [
+          {
+            role: "user",
+            content: structuredRepairPrompt(params, diagnostics),
+          },
+        ],
+        temperature: 0,
+        maxTokens: config.budget?.maxTokens,
+        toolChoice: "none",
+        responseFormat: structuredResponseFormat,
+      });
+      const succeeded = actionLedger.transition(action.id, "succeeded", {
+        output: repairResponse.raw,
+      });
+      emit(
+        "tool.called",
+        {
+          actionId: action.id,
+          providerId: repairResponse.providerId,
+          modelId: repairResponse.modelId,
+          title: `${params.title} structured repair`,
+          status: "succeeded",
+        },
+        eventContext,
+      );
+      emit(
+        "action.updated",
+        { actionId: action.id, status: "succeeded", record: succeeded },
+        eventContext,
+      );
+      emit(
+        "structured_output.repair",
+        {
+          status: "succeeded",
+          actionId: action.id,
+          modeId: params.modeId,
+          outputKey: params.outputKey,
+        },
+        eventContext,
+      );
+      return {
+        actionId: action.id,
+        responseText: repairResponse.text,
+      };
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      const failed = actionLedger.transition(action.id, "failed", {
+        error: detail,
+      });
+      emit(
+        "tool.called",
+        {
+          actionId: action.id,
+          providerId: configuredProviderId(config) ?? "unknown",
+          title: `${params.title} structured repair`,
+          status: "failed",
+          error: detail,
+        },
+        eventContext,
+      );
+      emit(
+        "action.updated",
+        { actionId: action.id, status: "failed", record: failed },
+        eventContext,
+      );
+      emit(
+        "structured_output.repair",
+        {
+          status: "failed",
+          actionId: action.id,
+          modeId: params.modeId,
+          outputKey: params.outputKey,
+          error: detail,
+        },
+        eventContext,
+      );
+      throw error;
+    }
+  };
+
+  const callAgent = async (params: CallAgentParams & {
+    responseFormat?: ModelRequest["responseFormat"];
   }) => {
     latestAgentInvocationContext.set(params.agentId, {
       prompt: params.prompt,
@@ -2792,6 +3001,7 @@ export async function executeRuntimeKernel(
           cacheDiagnosticsContext: {
             derivedContextBlocks: runtimePromptContext.cacheDiagnosticsContext.derivedContextBlocks,
           },
+          responseFormat: params.responseFormat,
           toolIds: effectiveToolIds,
           timeoutMs:
             resolvedModeSpec.nodes.find(
@@ -3056,6 +3266,129 @@ export async function executeRuntimeKernel(
         });
       }
     }
+  };
+
+  const callAgentStructured = async <T>(params: CallAgentParams & {
+    modeId: string;
+    outputKey: string;
+    schema: ZodTypeAny;
+  }): Promise<StructuredAgentCallResult<T>> => {
+    let initialText: string;
+    let degradedError: AgentDegradedError | undefined;
+    try {
+      initialText = await callAgent({
+        ...params,
+        responseFormat: structuredResponseFormat,
+      });
+    } catch (error) {
+      if (!isAgentDegradedError(error)) {
+        throw error;
+      }
+      degradedError = error;
+      initialText = error.degradedOutput;
+    }
+
+    if (degradedError) {
+      const normalizedText = normalizeStructuredCandidateText(initialText);
+      return {
+        ok: false,
+        rawText: normalizedText,
+        diagnostics: {
+          modeId: params.modeId,
+          outputKey: params.outputKey,
+          usedProviderJsonMode: supportsStructuredJsonMode,
+          repairAttempted: false,
+          repairSucceeded: false,
+          initialText: normalizedText,
+          degraded: true,
+          degradedReason: degradedError.message,
+          repairSkippedReason: "agent_degraded",
+        },
+      };
+    }
+
+    const initialAttempt = validateStructuredAgentOutput<T>(initialText, params.schema);
+    if (initialAttempt.ok) {
+      return {
+        ok: true,
+        rawText: initialAttempt.normalizedText,
+        value: initialAttempt.value,
+        diagnostics: {
+          modeId: params.modeId,
+          outputKey: params.outputKey,
+          usedProviderJsonMode: supportsStructuredJsonMode,
+          repairAttempted: false,
+          repairSucceeded: false,
+          initialText: initialAttempt.normalizedText,
+          finalText: initialAttempt.normalizedText,
+        },
+      };
+    }
+
+    let repairResponseText = "";
+    let repairActionId: string | undefined;
+    try {
+      const repairAttempt = await runStructuredRepairAttempt(params, {
+        initialText: initialAttempt.normalizedText,
+        parseError: initialAttempt.parseError,
+        schemaIssues: initialAttempt.schemaIssues,
+      });
+      repairActionId = repairAttempt.actionId;
+      repairResponseText = repairAttempt.responseText;
+    } catch (error) {
+      return {
+        ok: false,
+        rawText: initialAttempt.normalizedText,
+        diagnostics: {
+          modeId: params.modeId,
+          outputKey: params.outputKey,
+          usedProviderJsonMode: supportsStructuredJsonMode,
+          repairAttempted: true,
+          repairSucceeded: false,
+          initialText: initialAttempt.normalizedText,
+          repairActionId,
+          parseError: initialAttempt.parseError ?? (error instanceof Error ? error.message : String(error)),
+          schemaIssues: initialAttempt.schemaIssues,
+        },
+      };
+    }
+
+    const repairedAttempt = validateStructuredAgentOutput<T>(repairResponseText, params.schema);
+    if (repairedAttempt.ok) {
+      return {
+        ok: true,
+        rawText: repairedAttempt.normalizedText,
+        value: repairedAttempt.value,
+        diagnostics: {
+          modeId: params.modeId,
+          outputKey: params.outputKey,
+          usedProviderJsonMode: supportsStructuredJsonMode,
+          repairAttempted: true,
+          repairSucceeded: true,
+          initialText: initialAttempt.normalizedText,
+          repairActionId,
+          repairText: repairedAttempt.normalizedText,
+          finalText: repairedAttempt.normalizedText,
+        },
+      };
+    }
+
+    return {
+      ok: false,
+      rawText: initialAttempt.normalizedText,
+      diagnostics: {
+        modeId: params.modeId,
+        outputKey: params.outputKey,
+        usedProviderJsonMode: supportsStructuredJsonMode,
+        repairAttempted: true,
+        repairSucceeded: false,
+        initialText: initialAttempt.normalizedText,
+        repairActionId,
+        repairText: repairedAttempt.normalizedText,
+        parseError: repairedAttempt.parseError ?? initialAttempt.parseError,
+        schemaIssues: repairedAttempt.schemaIssues ?? initialAttempt.schemaIssues,
+      },
+    };
   };
 
   let spawnDepth = 0;
@@ -5182,6 +5515,8 @@ export async function executeRuntimeKernel(
     nodeLabel: string;
     question: string;
     options?: PendingClarificationOption[];
+    missingVariables?: string[];
+    counterfactualRiskIfSkipped?: string;
     narrate?: boolean;
   }) => {
     return ensureRuntimeClarification(params, {
@@ -5454,6 +5789,7 @@ export async function executeRuntimeKernel(
       agentLabel,
       resumeSuspendedNode,
       callAgent,
+      callAgentStructured,
       remember,
       captureMemory,
       publishArtifact,
