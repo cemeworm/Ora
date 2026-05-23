@@ -8,33 +8,54 @@ const capturedSystems: string[] = [];
 const providerResponses: string[] = [];
 let providerShouldFail = false;
 
-vi.mock("../src/providers/index.js", async () => {
-  const actual = await vi.importActual<typeof import("../src/providers/index.js")>(
-    "../src/providers/index.js"
-  );
+async function buildMockedProviderModule<T extends typeof import("../src/providers/index.js") | typeof import("../src/providers/registry.js")>(
+  modulePath: "../src/providers/index.js" | "../src/providers/registry.js",
+): Promise<T> {
+  const actual = await vi.importActual<T>(modulePath);
+  const mockResponse = async (
+    config: { providerId?: string; modelRef?: string },
+    request: { prompt?: string; messages?: Array<{ role: string; content?: string }>; system?: string },
+  ) => {
+    const requestText = [
+      request.system ?? "",
+      request.prompt ?? "",
+      ...(request.messages ?? []).map((message) => message.content ?? ""),
+    ].filter(Boolean).join("\n");
+    capturedSystems.push(requestText);
+    if (providerShouldFail) {
+      throw new Error("provider unavailable");
+    }
+    const text = providerResponses.shift() ?? `reply:${request.prompt ?? ""}`;
+    return {
+      providerId: config.providerId ?? "mock-provider",
+      providerType: "local_smoke",
+      modelId: config.modelRef ?? "mock-model",
+      text,
+      raw: {
+        prompt: request.prompt,
+        messages: request.messages ?? [],
+        system: request.system,
+      },
+    };
+  };
 
   return {
     ...actual,
-    invokeRunProvider: vi.fn(async (config, request) => {
-      capturedSystems.push(request.system ?? "");
-      if (providerShouldFail) {
-        throw new Error("provider unavailable");
-      }
-      const text = providerResponses.shift() ?? `reply:${request.prompt ?? ""}`;
-      return {
-        providerId: config.providerId ?? "mock-provider",
-        providerType: "local_smoke",
-        modelId: config.modelRef ?? "mock-model",
-        text,
-        raw: {
-          prompt: request.prompt,
-          messages: request.messages ?? [],
-          system: request.system,
-        },
-      };
+    invokeRunProvider: vi.fn(async (config, request) => mockResponse(config, request)),
+    invokeRunProviderStream: vi.fn(async (config, request, callbacks) => {
+      const response = await mockResponse(config, request);
+      await callbacks?.onTextDelta?.({
+        delta: response.text,
+        text: response.text,
+        raw: response.raw,
+      });
+      return response;
     }),
   };
-});
+}
+
+vi.mock("../src/providers/index.js", () => buildMockedProviderModule("../src/providers/index.js"));
+vi.mock("../src/providers/registry.js", () => buildMockedProviderModule("../src/providers/registry.js"));
 
 import { LocalRunStore, createRuntimeMethodHandler } from "../src/index.js";
 
@@ -43,6 +64,17 @@ const clock = () => FIXED_TIME;
 
 function freshStoreDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "ora-runtime-custom-agents-"));
+}
+
+function freshWorkspaceDir(): string {
+  return fs.mkdtempSync(path.join(os.tmpdir(), "ora-runtime-custom-agents-workspace-"));
+}
+
+function debugCapturedSystems(label: string) {
+  if (process.env.DEBUG_CUSTOM_AGENT_PROMPTS !== "1") {
+    return;
+  }
+  console.log(`DEBUG ${label}\n${capturedSystems.join("\n---\n")}`);
 }
 
 describe("custom agent runtime behavior", () => {
@@ -225,8 +257,10 @@ describe("custom agent runtime behavior", () => {
       },
     });
 
-    const system = capturedSystems.find((value) => value.includes("System Agent Override: researcher")) ?? "";
-    expect(system).toContain("Carry forward the legacy research override.");
+    expect(capturedSystems.some((value) =>
+      value.includes("System Agent Override: researcher") &&
+      value.includes("Carry forward the legacy research override.")
+    )).toBe(true);
 
     await handle({
       jsonrpc: "2.0",
@@ -240,6 +274,7 @@ describe("custom agent runtime behavior", () => {
 
   it("applies and resets global built-in agent overrides during execution", async () => {
     const dir = freshStoreDir();
+    const workspaceRoot = freshWorkspaceDir();
     const store = new LocalRunStore({ dataDir: dir, clock });
     const handle = createRuntimeMethodHandler(store);
 
@@ -279,7 +314,10 @@ describe("custom agent runtime behavior", () => {
       id: 3,
       method: "runs.start",
       params: {
-        input: { prompt: "Read the project notes." },
+        input: {
+          prompt: "Read the project notes.",
+          context: { projectWorkspace: { label: "Override Workspace", rootPath: workspaceRoot } },
+        },
         config: {
           modeId: "single_agent",
           toolIds: ["file.read", "web.search"],
@@ -287,10 +325,13 @@ describe("custom agent runtime behavior", () => {
       },
     });
 
-    const system = capturedSystems.find((value) => value.includes("System Agent Override: ora")) ?? "";
-    expect(system).toContain("Answer as the overridden solo captain.");
-    expect(system).toContain("file.read");
-    expect(system).not.toContain("web.search");
+    debugCapturedSystems("system-override-root");
+    expect(capturedSystems.some((value) =>
+      value.includes("System Agent Override: ora") &&
+      value.includes("Answer as the overridden solo captain.") &&
+      value.includes("file.read") &&
+      !value.includes("web.search")
+    )).toBe(true);
 
     await handle({
       jsonrpc: "2.0",
@@ -345,6 +386,7 @@ describe("custom agent runtime behavior", () => {
   });
 
   it("uses profile-bound custom agent capabilities without exceeding mode capabilities", async () => {
+    const workspaceRoot = freshWorkspaceDir();
     const store = new LocalRunStore({ dataDir: freshStoreDir(), clock });
     const handle = createRuntimeMethodHandler(store);
     await handle({
@@ -387,19 +429,25 @@ describe("custom agent runtime behavior", () => {
       id: 2,
       method: "runs.start",
       params: {
-        input: { prompt: "Read the project notes." },
+        input: {
+          prompt: "Read the project notes.",
+          context: { projectWorkspace: { label: "Profile Bound Workspace", rootPath: workspaceRoot } },
+        },
         config: {
           modeId: "profile-bound-agent-test",
         },
       },
     });
 
-    const system = capturedSystems.find((value) => value.includes("Custom Agent Persona: focused-builder")) ?? "";
-    expect(system).toContain("Only use the narrow tools and skills assigned to this role.");
-    expect(system).toContain("file.read");
-    expect(system).not.toContain("web.search");
-    expect(system).not.toContain("shell.execute");
-    expect(system).toContain("# Long-task Protocol");
+    debugCapturedSystems("profile-bound-agent");
+    expect(capturedSystems.some((value) =>
+      value.includes("Custom Agent Persona: focused-builder") &&
+      value.includes("Only use the narrow tools and skills assigned to this role.") &&
+      value.includes("file.read") &&
+      !value.includes("web.search") &&
+      !value.includes("shell.execute") &&
+      value.includes("# Long-task Protocol")
+    )).toBe(true);
   });
 
   it("asks for more input before generating a custom agent from a vague prompt", async () => {

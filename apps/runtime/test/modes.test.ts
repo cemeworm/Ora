@@ -1,9 +1,9 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { CODE_DEVELOPMENT_MODE_ID, DEBATE_MODE_ID, DEEP_RESEARCH_MODE_ID, ORA_ROOT_AGENT_ID } from "@cemeworm/shared";
+import { CODE_DEVELOPMENT_MODE_ID, DEBATE_MODE_ID, DEEP_RESEARCH_MODE_ID, ORA_ROOT_AGENT_ID, SINGLE_AGENT_MODE_ID } from "@cemeworm/shared";
 import { describe, expect, it } from "vitest";
-import { LocalRunStore } from "../src/index.js";
+import { LocalRunStore, ModeSpecFileStore } from "../src/index.js";
 
 function freshStoreDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "ora-runtime-modes-"));
@@ -88,5 +88,23 @@ describe("runtime built-in modes", () => {
     expect(configuredToolIds(gather)).toBeUndefined();
     expect(verify?.template).toBe("review");
     expect((verify?.config as { gateOnReviewVerdict?: unknown } | undefined)?.gateOnReviewVerdict).toBe(true);
+  });
+
+  it("resolves system preset ids before enforcing built-in family fallback", () => {
+    const store = new ModeSpecFileStore(freshStoreDir());
+
+    const resolved = store.resolve(undefined, SINGLE_AGENT_MODE_ID);
+
+    expect(resolved.id).toBe(SINGLE_AGENT_MODE_ID);
+    expect(resolved.systemPreset).toBe(true);
+    expect(resolved.family).toBe("orchestrator_subagent");
+  });
+
+  it("rejects unknown non-built-in fallback families", () => {
+    const store = new ModeSpecFileStore(freshStoreDir());
+
+    expect(() => store.resolve(undefined, "custom_unregistered_family")).toThrow(
+      "Mode 'custom_unregistered_family' not found.",
+    );
   });
 });

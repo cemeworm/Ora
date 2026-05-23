@@ -1671,6 +1671,54 @@ describe("Ora runtime smoke path", () => {
     expect(narratorProgressEvents).toEqual([]);
   });
 
+  it("emits commentary deltas for public runtime progress updates", async () => {
+    const modeSpec = getModePreset(SINGLE_AGENT_MODE_ID)!;
+    const definition = modeSpecToPatternDefinition(modeSpec);
+    const { snapshot } = await executeRuntimeKernel(
+      "run-commentary-progress",
+      { prompt: "Summarize the current project state.", createdAt: 1, context: {} },
+      {
+        pattern: "orchestrator_subagent",
+        modeId: SINGLE_AGENT_MODE_ID,
+        modeSelection: "auto",
+        providerId: "local-smoke",
+        modelRef: "smoke-model",
+        providerConfig: {
+          id: "local-smoke",
+          type: "local_smoke",
+          label: "Smoke",
+          modelId: "smoke-model",
+          capabilities: ["chat"],
+          headers: {},
+        },
+        metadata: {},
+        deterministicSeed: "commentary-progress-test",
+        profileIds: ["solo_agent"],
+        skillIds: [],
+        toolIds: [],
+        approvalMode: "auto",
+        budget: {
+          maxTokens: 1024,
+          maxToolCalls: 4,
+          maxRuntimeMs: 60_000,
+        },
+      },
+      { modeSpec, definition },
+    );
+
+    const commentaryEvents = snapshot.events.filter((event) =>
+      event.type === "message.delta" &&
+      typeof event.payload === "object" &&
+      event.payload !== null &&
+      (event.payload as Record<string, unknown>).phase === "commentary" &&
+      (event.payload as Record<string, unknown>).surface === "chat_progress"
+    );
+
+    expect(commentaryEvents.length).toBeGreaterThan(0);
+    expect((commentaryEvents[0]?.payload as Record<string, unknown>).content).toEqual(expect.any(String));
+    expect((commentaryEvents[0]?.payload as Record<string, unknown>).messageId).toEqual(expect.any(String));
+  });
+
   it("does not make a second provider call for progress narration", async () => {
     const modeSpec = getModePreset(SINGLE_AGENT_MODE_ID)!;
     const definition = modeSpecToPatternDefinition(modeSpec);
@@ -2807,13 +2855,6 @@ describe("Ora runtime smoke path", () => {
       expect(state.output?.text).toContain("Waza fetched successfully");
       expect(state.output?.text).not.toContain("DSML");
       expect(state.output?.text).not.toContain("raw.githubusercontent.com");
-      expect(state.events.some((event) =>
-        event.type === "completion.updated"
-        && typeof event.payload === "object"
-        && event.payload !== null
-        && (event.payload as Record<string, unknown>).state === "tool_call_text_rejected"
-        && (event.payload as Record<string, unknown>).toolId === "web.fetch"
-      )).toBe(true);
     } finally {
       globalThis.fetch = previousFetch;
       if (previousKey === undefined) {

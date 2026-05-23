@@ -97,6 +97,7 @@ import {
   getModePreset,
   MVP_TOOLS,
   ORA_ROOT_AGENT_ID,
+  projectAssistantTextFromSnapshot,
   RunConfig,
   RunConfigSchema,
   RunHandle,
@@ -4988,17 +4989,7 @@ function numberValue(value: unknown): number | undefined {
 }
 
 function extractOutputText(snapshot: StateSnapshot) {
-  if (typeof snapshot.output === "string") {
-    return snapshot.output;
-  }
-  if (snapshot.output && typeof snapshot.output === "object" && typeof (snapshot.output as Record<string, unknown>).text === "string") {
-    return String((snapshot.output as Record<string, unknown>).text);
-  }
-  const event = [...snapshot.events].reverse().find((candidate) => candidate.type === "message.delta" && candidate.payload && typeof candidate.payload === "object" && typeof (candidate.payload as Record<string, unknown>).content === "string");
-  if (event) {
-    return String((event.payload as Record<string, unknown>).content);
-  }
-  return "";
+  return projectAssistantTextFromSnapshot(snapshot);
 }
 
 function fallbackFeedbackDraft(

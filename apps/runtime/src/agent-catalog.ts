@@ -161,7 +161,7 @@ export function buildAgentCatalog(params: {
       }
       const effectiveProfile = effectiveMode.profiles.find((candidate) => candidate.id === profile.id) ?? profile;
       const override = systemAgentOverrideStore.get(profile.id);
-      const modelRef = explicitSystemAgentModelRef(effectiveProfile.modelRef);
+      const modelRef = explicitSystemAgentModelRef(profile.modelRef);
       systemProfiles.set(profile.id, {
         source: "system",
         id: profile.id,

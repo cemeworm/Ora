@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import {
+  BuiltInCoordinationPatternSchema,
+  createModeSpecFromPattern,
   ModeCloneParamsSchema,
   ModeCreateParamsSchema,
   ModeDeleteParamsSchema,
@@ -54,9 +56,21 @@ export class ModeSpecFileStore {
 
   resolve(modeId: string | undefined, fallbackFamily: CoordinationPattern): ModeSpec {
     if (modeId) {
-      return this.get({ modeId });
+      try {
+        return this.get({ modeId });
+      } catch {
+        // Fall through to family compatibility for legacy pattern-only configs.
+      }
     }
-    return this.get({ modeId: fallbackFamily });
+    const preset = getModePreset(fallbackFamily);
+    if (preset) {
+      return preset;
+    }
+    const builtInFallback = BuiltInCoordinationPatternSchema.safeParse(fallbackFamily);
+    if (builtInFallback.success) {
+      return createModeSpecFromPattern(builtInFallback.data);
+    }
+    throw new Error(`Mode '${modeId ?? fallbackFamily}' not found.`);
   }
 
   create(params: ModeCreateParams | unknown): ModeSpec {

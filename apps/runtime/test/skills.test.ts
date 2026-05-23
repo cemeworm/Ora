@@ -5,15 +5,19 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const capturedSystems: string[] = [];
 
-vi.mock("../src/providers/index.js", async () => {
-  const actual = await vi.importActual<typeof import("../src/providers/index.js")>(
-    "../src/providers/index.js"
-  );
-
+async function buildMockedProviderModule<T extends typeof import("../src/providers/index.js") | typeof import("../src/providers/registry.js")>(
+  modulePath: "../src/providers/index.js" | "../src/providers/registry.js",
+): Promise<T> {
+  const actual = await vi.importActual<T>(modulePath);
   return {
     ...actual,
     invokeRunProvider: vi.fn(async (config, request) => {
-      capturedSystems.push(request.system ?? "");
+      const requestText = [
+        request.system ?? "",
+        request.prompt ?? "",
+        ...(request.messages ?? []).map((message) => message.content ?? ""),
+      ].filter(Boolean).join("\n");
+      capturedSystems.push(requestText);
       return {
         providerId: config.providerId ?? "mock-provider",
         providerType: "local_smoke",
@@ -21,12 +25,16 @@ vi.mock("../src/providers/index.js", async () => {
         text: `reply:${request.prompt ?? ""}`,
         raw: {
           prompt: request.prompt,
+          messages: request.messages ?? [],
           system: request.system,
         },
       };
     }),
   };
-});
+}
+
+vi.mock("../src/providers/index.js", () => buildMockedProviderModule("../src/providers/index.js"));
+vi.mock("../src/providers/registry.js", () => buildMockedProviderModule("../src/providers/registry.js"));
 
 import { LocalRunStore, createRuntimeMethodHandler } from "../src/index.js";
 
@@ -79,13 +87,10 @@ describe("managed skill runtime behavior", () => {
       skill.editable === true
     )).toBe(true);
     expect(listed.skills.some((skill) =>
-      skill.name === "frontend-design" &&
+      skill.name === "design" &&
       skill.category === "public" &&
-      skill.editable === true
-    )).toBe(true);
-    expect(listed.skills.some((skill) =>
-      skill.name === "bootstrap" &&
-      skill.description.includes("Generate a personalized SOUL.md")
+      skill.editable === true &&
+      skill.description.includes("production-grade UI")
     )).toBe(true);
     expect(listed.skills.some((skill) =>
       skill.name === "agent-creator" &&
@@ -559,7 +564,9 @@ describe("managed skill runtime behavior", () => {
     expect(capturedSystems.some((system) => system.includes("<description>Runtime review skill.</description>"))).toBe(true);
     expect(capturedSystems.some((system) => system.includes("Runtime skill injection marker"))).toBe(false);
     expect(capturedSystems.some((system) => system.includes("runtime-disabled-review"))).toBe(false);
-    expect(capturedSystems.some((system) => system.includes("Skill-first rule"))).toBe(true);
+    expect(capturedSystems.some((system) =>
+      system.includes("inspect that skill before answering or acting")
+    )).toBe(true);
   });
 
   it("injects only enabled selected skills into provider system prompts", async () => {

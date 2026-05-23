@@ -661,8 +661,16 @@ async function routeAutoMode(
     ? SINGLE_AGENT_MODE_ID
     : candidates[0]?.id ?? config.pattern;
   const autoTaskIntent = isAutoTaskIntentMode(config.metadata);
-  const fallback = (reason: string, detail?: unknown) => ({
+  const seededTaskIntent = taskIntentFromMetadata(config.metadata);
+  const fallback = (
+    reason: string,
+    detail?: unknown,
+    options?: { taskIntent?: TaskIntent },
+  ) => {
+    const fallbackTaskIntent = options?.taskIntent ?? seededTaskIntent;
+    return ({
     modeId: fallbackModeId,
+    ...(autoTaskIntent && fallbackTaskIntent ? { taskIntent: fallbackTaskIntent } : {}),
     metadata: {
       entryAgentId: ORA_ROOT_AGENT_ID,
       selectedModeId: fallbackModeId,
@@ -671,8 +679,10 @@ async function routeAutoMode(
       status: "fallback",
       handoffSummary: reason,
       detail,
+      ...(autoTaskIntent && fallbackTaskIntent ? { selectedTaskIntent: fallbackTaskIntent } : {}),
     },
   });
+  };
 
   if (candidates.length === 0) {
     return fallback("No modes were available to route.");
@@ -730,11 +740,15 @@ async function routeAutoMode(
       return fallback(`Router selected unknown mode '${parsed.modeId}'.`, { raw: response.text });
     }
     if (parsed.confidence < AUTO_MODE_ROUTER_CONFIDENCE_THRESHOLD) {
-      return fallback(`Router confidence ${parsed.confidence} was below ${AUTO_MODE_ROUTER_CONFIDENCE_THRESHOLD}.`, {
-        raw: response.text,
-        selectedModeId: parsed.modeId,
-        reason: parsed.reason,
-      });
+      return fallback(
+        `Router confidence ${parsed.confidence} was below ${AUTO_MODE_ROUTER_CONFIDENCE_THRESHOLD}.`,
+        {
+          raw: response.text,
+          selectedModeId: parsed.modeId,
+          reason: parsed.reason,
+        },
+        { taskIntent: parsed.taskIntent },
+      );
     }
     return {
       modeId: parsed.modeId,

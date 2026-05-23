@@ -4,6 +4,7 @@ import {
   ChannelIngestParamsSchema,
   ChannelIngestResultSchema,
   ChannelOutboundMessageSchema,
+  isCommentaryDeltaPayload,
   type ChannelBinding,
   type ChannelConfig,
   type ChannelInboundMessage,
@@ -1050,12 +1051,17 @@ function channelRunConfig(channel: ChannelConfig): Record<string, unknown> | und
   const metadata = existing.metadata && typeof existing.metadata === "object" && !Array.isArray(existing.metadata)
     ? existing.metadata as Record<string, unknown>
     : {};
+  const hasExplicitTaskIntent = metadata.taskIntent === "chat" ||
+    metadata.taskIntent === "plan" ||
+    metadata.taskIntent === "implement";
+  const hasFixedTaskIntentMode = metadata.taskIntentMode === "fixed";
   return {
     modeSelection: "auto",
     permissionMode: "default",
     ...existing,
     metadata: {
       taskIntentMode: "auto",
+      ...(!hasExplicitTaskIntent && !hasFixedTaskIntentMode ? { taskIntent: "plan" } : {}),
       ...metadata,
     },
   };
@@ -1067,6 +1073,9 @@ function extractDeltaText(event: { type?: string; payload?: unknown }): string {
   const payload = event.payload;
   if (!payload || typeof payload !== "object") return "";
   const record = payload as Record<string, unknown>;
+  if (event.type === "message.delta" && isCommentaryDeltaPayload(record)) {
+    return "";
+  }
   if (typeof record.delta === "string" && record.delta.length > 0) return record.delta;
   if (typeof record.content === "string" && record.content.length > 0) return record.content;
   return "";

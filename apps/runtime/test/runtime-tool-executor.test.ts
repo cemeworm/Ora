@@ -649,17 +649,17 @@ describe("RuntimeToolExecutor", () => {
 
     const listed = await executor.execute({
       tool: "skills.list",
-      args: { query: "frontend", limit: 5 },
+      args: { query: "design", limit: 5 },
     }) as { skills: Array<{ name: string; description: string }> };
-    expect(listed.skills.some((skill) => skill.name === "frontend-design")).toBe(true);
+    expect(listed.skills.some((skill) => skill.name === "design")).toBe(true);
 
     const detail = await executor.execute({
       tool: "skills.get",
-      args: { name: "frontend-design" },
+      args: { name: "design" },
     }) as { name: string; content: string; usageHint: string };
-    expect(detail.name).toBe("frontend-design");
-    expect(detail.content).toContain("## Output Requirements");
-    expect(detail.usageHint).toContain("frontend-design");
+    expect(detail.name).toBe("design");
+    expect(detail.content).toContain("# Design");
+    expect(detail.usageHint).toContain("design");
   });
 
   it("reads, lists, globs, and greps files inside the workspace root", async () => {
