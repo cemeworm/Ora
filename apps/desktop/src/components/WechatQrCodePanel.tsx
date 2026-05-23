@@ -46,6 +46,21 @@ export function WechatQrCodePanel({
     };
   }, []);
 
+  useEffect(() => {
+    if (isBound) {
+      setState("bound");
+      setError("");
+      return;
+    }
+    if (state === "bound") {
+      setState("idle");
+      setQrImageSrc("");
+      setQrPageSrc("");
+      setQrImageMeta(undefined);
+      setError("");
+    }
+  }, [isBound, state]);
+
   const startBinding = async () => {
     setState("loading_qr");
     setError("");

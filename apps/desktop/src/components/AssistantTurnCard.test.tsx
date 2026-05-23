@@ -883,6 +883,7 @@ describe("assistant turn display helpers", () => {
     expect(html).toContain("-1");
     expect(html).toContain("Preview");
     expect(html).toContain("file - text/plain");
+    expect(html).toContain("m-0 block w-full appearance-none rounded-none border-0 bg-transparent p-0 text-left shadow-none");
     expect(html).toContain("data-slot=\"artifact\"");
     expect(html).toContain("rounded-md border border-border bg-card/70 shadow-xs");
     expect(html).toContain("data-slot=\"artifact-header\"");

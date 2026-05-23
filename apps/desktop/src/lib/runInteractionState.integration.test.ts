@@ -480,6 +480,57 @@ describe("runInteractionState cross-surface consistency", () => {
     });
   });
 
+  it("resolved durable plan decisions beat stale needs_plan_decision attention across surfaces", () => {
+    const resolvedSnapshot = activeSnapshot({
+      status: "succeeded",
+      attention: {
+        kind: "needs_plan_decision",
+        blocking: true,
+        sourceRunId: "run-1",
+        reason: "plan_decision_required",
+        planDecisionId: "decision-1",
+        pendingActionIds: [],
+        pendingToolCallIds: [],
+        pendingClarificationIds: [],
+      },
+      planDecisions: [{
+        id: "decision-1",
+        runId: "run-1",
+        sessionId: "session-1",
+        status: "accepted",
+        createdAt: 1001,
+        resolvedAt: 1002,
+      }],
+    });
+
+    const state = derive({
+      selectedSessionId: "session-1",
+      activeSnapshot: resolvedSnapshot,
+    });
+    const planDecision = deriveComposerPlanDecisionState({
+      sessionId: "session-1",
+      activeSnapshot: resolvedSnapshot,
+    });
+    const composer = getComposerTrayVisibility({
+      isLoading: state.isProcessing,
+      clarificationCount: 0,
+      canSubmitClarifications: true,
+      hasPlanDecision: planDecision.planDecisionPending,
+      canResolvePlanDecision: state.status === "decision_needed",
+    });
+
+    expect(state.status).toBe("done");
+    expect(planDecision).toEqual({
+      pendingPlanDecisionId: undefined,
+      planDecisionPending: false,
+    });
+    expect(composer).toEqual({
+      showClarificationTray: false,
+      showPlanDecisionTray: false,
+      hideComposer: false,
+    });
+  });
+
   it("paused: all surfaces agree on interrupted", () => {
     const state = derive({
       selectedSessionId: "session-1",

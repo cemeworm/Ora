@@ -45,6 +45,8 @@ import {
   buildAgentLanes,
   buildActiveMemorySummary,
   buildCausalDecisionSummary,
+  buildCausalDecisionSummaryExpanded,
+  buildCausalDecisionChainSummary,
   buildCommunicationGraph,
   buildContextWindowSummary,
   buildConversationView,
@@ -69,6 +71,7 @@ import {
   toolSourceLabel,
   toolStatusLabel,
   type CausalDecisionSummary,
+  type CausalDecisionChainSummary,
   type CommunicationEdge,
   type ContextWindowSummary,
   type ConversationViewEntry,
@@ -206,6 +209,7 @@ export function TrailsTabs({
   const contextWindow = useMemo(() => buildContextWindowSummary(activeSnapshot), [activeSnapshot]);
   const communicationEdges = useMemo(() => buildCommunicationGraph(activeSnapshot), [activeSnapshot]);
   const causalDecisionSummary = useMemo(() => buildCausalDecisionSummary(activeSnapshot), [activeSnapshot]);
+  const causalDecisionChainSummary = useMemo(() => buildCausalDecisionChainSummary(activeSnapshot), [activeSnapshot]);
   const visibleFindings = severityFilter === "all" ? findings : findings.filter((finding) => finding.severity === severityFilter);
   const searchLower = searchQuery.toLowerCase().trim();
   const visibleTimeline = timelineItems
@@ -320,6 +324,7 @@ export function TrailsTabs({
             policyDecisions={policyDecisions}
             effectiveStrategy={effectiveStrategy}
             causalDecisionSummary={causalDecisionSummary}
+            causalDecisionChainSummary={causalDecisionChainSummary}
             selectedCheckpoint={selectedCheckpoint}
             selectedNode={selectedNode}
             runInteractionState={runInteractionState}
@@ -431,6 +436,7 @@ function TrailOverview({
   policyDecisions,
   effectiveStrategy,
   causalDecisionSummary,
+  causalDecisionChainSummary,
   runInteractionState,
   selectedCheckpoint,
   selectedNode,
@@ -463,6 +469,7 @@ function TrailOverview({
   policyDecisions?: PolicyDecisionsSummary;
   effectiveStrategy: ReturnType<typeof buildEffectiveStrategySummary>;
   causalDecisionSummary: CausalDecisionSummary;
+  causalDecisionChainSummary: CausalDecisionChainSummary;
   runInteractionState: DesktopRunInteractionState;
   selectedCheckpoint?: CheckpointRecord;
   selectedNode?: TopologyNode;
@@ -550,83 +557,12 @@ function TrailOverview({
       )}
 
       {causalDecisionSummary.totalDecisions > 0 && (
-        <DockCard title="Agent 干预决策" icon={<Route size={16} />}>
-          <div className="space-y-3">
-            {causalDecisionSummary.hiddenDecisionCount > 0 && (
-              <p className="text-[11px] leading-5 text-bench-600">
-                默认仅展示真正形成独立干预证据的有效决策；已过滤 {causalDecisionSummary.hiddenDecisionCount} 条候选但未生效的记录。
-              </p>
-            )}
-            {causalDecisionSummary.decisions.map((decision) => (
-              <div
-                key={decision.decisionId}
-                className="rounded-md bg-bench-50 px-3 py-2.5 ring-1 ring-inset ring-bench-200"
-              >
-                <div className="mb-2 flex items-start justify-between gap-2">
-                  <div className="min-w-0">
-                    <span className="text-sm font-semibold text-bench-900">
-                      {interventionLabel(decision.intervention)}
-                    </span>
-                    <p className="mt-0.5 text-[11px] leading-5 text-bench-600">
-                      第 {decision.turnIndex} 轮 · {decision.phaseLabel}
-                      {decision.eventSeq ? ` · 事件 #${decision.eventSeq}` : ""}
-                    </p>
-                    {(decision.agentLabel || decision.nodeLabel) && (
-                      <p className="text-[11px] leading-5 text-bench-500">
-                        {[decision.agentLabel, decision.nodeLabel].filter(Boolean).join(" / ")}
-                      </p>
-                    )}
-                  </div>
-                  <div className="flex shrink-0 flex-col items-end gap-1">
-                    <span className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${
-                      decision.wouldChangeOutcomeIfWrong
-                        ? "bg-amber-100 text-amber-800"
-                        : "bg-emerald-100 text-emerald-800"
-                    }`}>
-                      {decision.wouldChangeOutcomeIfWrong ? "可能改变结果" : "影响有限"}
-                    </span>
-                    {decision.eventId && (
-                      <button
-                        type="button"
-                        onClick={() => onTimelineEventClick(decision.eventId!)}
-                        className="rounded px-1.5 py-0.5 text-[11px] font-semibold text-bench-700 underline-offset-2 hover:bg-white hover:text-bench-900 hover:underline focus:outline-none focus:ring-2 focus:ring-bench-300"
-                      >
-                        查看时间线
-                      </button>
-                    )}
-                  </div>
-                </div>
-
-                <div className="mb-2 rounded bg-white/70 px-2 py-1.5 text-[11px] leading-5 text-bench-700 ring-1 ring-inset ring-bench-200">
-                  <p><span className="font-semibold text-bench-900">结果</span> · {episodeStatusLabel(decision.status)} · {goalImpactLabel(decision.goalImpact)}</p>
-                  <p className="mt-1">{decision.outcomeSummary}</p>
-                </div>
-
-                <p className="mb-2 line-clamp-2 rounded bg-white/70 px-2 py-1.5 text-[11px] leading-5 text-bench-700 ring-1 ring-inset ring-bench-200">
-                  {decision.assistantPreview}
-                </p>
-
-                <div className="mb-2 space-y-1">
-                  <UncertaintyBar label="目标不确定性" value={decision.goalUncertainty} />
-                  <UncertaintyBar label="事实不确定性" value={decision.factUncertainty} />
-                  <UncertaintyBar label="上下文不确定性" value={decision.contextUncertainty} />
-                  <UncertaintyBar label="行动风险" value={decision.actionRisk} warn />
-                </div>
-
-                <div className="mb-2 flex items-center gap-3 text-[11px] text-bench-700">
-                  <span>用户成本: <span className="font-semibold text-bench-900">{formatPct(decision.userCost)}</span></span>
-                  <span>可逆性: <span className="font-semibold text-bench-900">{reversibilityLabel(decision.reversibility)}</span></span>
-                </div>
-
-                {decision.reason && (
-                  <p className="mt-1.5 border-t border-bench-200 pt-1.5 text-[11px] leading-5 text-bench-600">
-                    {decision.reason}
-                  </p>
-                )}
-              </div>
-            ))}
-          </div>
-        </DockCard>
+        <CausalDecisionPanel
+          summary={causalDecisionSummary}
+          chainSummary={causalDecisionChainSummary}
+          snapshot={activeSnapshot}
+          onTimelineEventClick={onTimelineEventClick}
+        />
       )}
 
       {activeMemorySummary && (
@@ -2054,6 +1990,291 @@ function UncertaintyBar({ label, value, warn }: { label: string; value: number; 
       </div>
       <span className={`text-[11px] font-semibold w-9 text-right ${textColor}`}>
         {pct}%
+      </span>
+    </div>
+  );
+}
+
+function significanceLabel(sig: string): string {
+  switch (sig) {
+    case "strategic": return "战略";
+    case "tactical": return "战术";
+    case "trace": return "执行";
+    default: return sig;
+  }
+}
+
+function GoalUncertaintyTrendBar({ values, isDiscreteOnly }: { values: number[]; isDiscreteOnly: boolean }) {
+  const maxPoints = 6;
+  const display = values.length > maxPoints ? values.slice(0, maxPoints) : values;
+  const hasMore = values.length > maxPoints;
+
+  const getColor = (v: number) => {
+    if (v >= 0.6) return "bg-rose-400";
+    if (v >= 0.3) return "bg-amber-400";
+    return "bg-emerald-400";
+  };
+
+  const getLabel = (v: number) => `${Math.round(v * 100)}%`;
+
+  return (
+    <div className="flex items-center gap-1.5">
+      <span className="text-[11px] text-bench-600 shrink-0">目标不确定性趋势</span>
+      <div className="flex-1 flex items-center gap-1">
+        {display.map((v, i) => (
+          <>
+            <div
+              key={i}
+              className={`h-2 flex-1 rounded-full ${getColor(v)}`}
+              title={getLabel(v)}
+            />
+            {i < display.length - 1 && (
+              <span className="text-[10px] text-bench-400">→</span>
+            )}
+          </>
+        ))}
+        {hasMore && <span className="text-[10px] text-bench-400"> ...</span>}
+        <span className="text-[10px] text-bench-500 ml-1">
+          {display.map(getLabel).join(" → ")}{hasMore ? " ..." : ""}
+        </span>
+      </div>
+      {isDiscreteOnly && (
+        <span className="text-[9px] text-bench-400 italic shrink-0">(离散估计)</span>
+      )}
+    </div>
+  );
+}
+
+function isAllDiscrete(values: number[]): boolean {
+  const discreteValues = new Set([0.1, 0.3, 0.4, 0.5, 0.7]);
+  return values.length > 0 && values.every((v) => discreteValues.has(v));
+}
+
+function CausalDecisionPanel({
+  summary,
+  chainSummary,
+  snapshot,
+  onTimelineEventClick,
+}: {
+  summary: CausalDecisionSummary;
+  chainSummary: CausalDecisionChainSummary;
+  snapshot: OraStateSnapshot;
+  onTimelineEventClick: (eventId: string) => void;
+}) {
+  const [showTrace, setShowTrace] = useState(false);
+  const [expandedChainId, setExpandedChainId] = useState<string | undefined>(undefined);
+
+  const expandedSummary = useMemo(() => {
+    if (!showTrace) return undefined;
+    return buildCausalDecisionSummaryExpanded(snapshot);
+  }, [showTrace, snapshot]);
+
+  const strategicDecisions = summary.decisions.filter((d) => d.significance === "strategic");
+  const tacticalDecisions = summary.decisions.filter((d) => d.significance === "tactical");
+  const traceDecisions = expandedSummary
+    ? expandedSummary.decisions.filter((d) => d.significance === "trace")
+    : [];
+
+  const hasSignificant = strategicDecisions.length > 0 || tacticalDecisions.length > 0;
+
+  const renderDecisionCard = (decision: CausalDecisionSummary["decisions"][number], isStrategic: boolean) => (
+    <div
+      key={decision.decisionId}
+      className={`rounded-md px-3 py-2.5 ring-1 ring-inset ${
+        isStrategic
+          ? "bg-blue-50/60 ring-blue-200 border-l-2 border-l-blue-400"
+          : "bg-bench-50 ring-bench-200"
+      }`}
+    >
+      <div className="mb-2 flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div className="flex items-center gap-1.5">
+            <span className="text-sm font-semibold text-bench-900">
+              {interventionLabel(decision.intervention)}
+            </span>
+            {isStrategic && (
+              <span className="rounded bg-blue-100 px-1.5 py-0.5 text-[10px] font-semibold text-blue-800">
+                战略
+              </span>
+            )}
+          </div>
+          <p className="mt-0.5 text-[11px] leading-5 text-bench-600">
+            第 {decision.turnIndex} 轮 · {decision.phaseLabel}
+            {decision.eventSeq ? ` · 事件 #${decision.eventSeq}` : ""}
+          </p>
+          {(decision.agentLabel || decision.nodeLabel) && (
+            <p className="text-[11px] leading-5 text-bench-500">
+              {[decision.agentLabel, decision.nodeLabel].filter(Boolean).join(" / ")}
+            </p>
+          )}
+        </div>
+        <div className="flex shrink-0 flex-col items-end gap-1">
+          <span className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${
+            decision.wouldChangeOutcomeIfWrong
+              ? "bg-amber-100 text-amber-800"
+              : "bg-emerald-100 text-emerald-800"
+          }`}>
+            {decision.wouldChangeOutcomeIfWrong ? "可能改变结果" : "影响有限"}
+          </span>
+          {decision.eventId && (
+            <button
+              type="button"
+              onClick={() => onTimelineEventClick(decision.eventId!)}
+              className="rounded px-1.5 py-0.5 text-[11px] font-semibold text-bench-700 underline-offset-2 hover:bg-white hover:text-bench-900 hover:underline focus:outline-none focus:ring-2 focus:ring-bench-300"
+            >
+              查看时间线
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className="mb-2 rounded bg-white/70 px-2 py-1.5 text-[11px] leading-5 text-bench-700 ring-1 ring-inset ring-bench-200">
+        <p><span className="font-semibold text-bench-900">结果</span> · {episodeStatusLabel(decision.status)} · {goalImpactLabel(decision.goalImpact)}</p>
+        <p className="mt-1">{decision.outcomeSummary}</p>
+      </div>
+
+      <p className="mb-2 line-clamp-2 rounded bg-white/70 px-2 py-1.5 text-[11px] leading-5 text-bench-700 ring-1 ring-inset ring-bench-200">
+        {decision.assistantPreview}
+      </p>
+
+      <div className="mb-2 space-y-1">
+        <UncertaintyBar label="目标不确定性" value={decision.goalUncertainty} />
+        <UncertaintyBar label="事实不确定性" value={decision.factUncertainty} />
+        <UncertaintyBar label="上下文不确定性" value={decision.contextUncertainty} />
+        <UncertaintyBar label="行动风险" value={decision.actionRisk} warn />
+      </div>
+
+      <div className="mb-2 flex items-center gap-3 text-[11px] text-bench-700">
+        <span>用户成本: <span className="font-semibold text-bench-900">{formatPct(decision.userCost)}</span></span>
+        <span>可逆性: <span className="font-semibold text-bench-900">{reversibilityLabel(decision.reversibility)}</span></span>
+      </div>
+
+      {decision.reason && (
+        <p className="mt-1.5 border-t border-bench-200 pt-1.5 text-[11px] leading-5 text-bench-600">
+          {decision.reason}
+        </p>
+      )}
+    </div>
+  );
+
+  return (
+    <DockCard title="Agent 干预决策" icon={<Route size={16} />}>
+      <div className="space-y-3">
+        {/* Summary bar */}
+        <p className="text-[11px] leading-5 text-bench-600">
+          共 {summary.strategicCount + summary.tacticalCount + summary.traceCount} 条决策 · {summary.strategicCount} 战略 / {summary.tacticalCount} 战术 / {summary.traceCount} 执行
+        </p>
+
+        {/* Chain trend area */}
+        {chainSummary.totalChains > 1 && (
+          <div className="rounded-md bg-bench-50 px-3 py-2 ring-1 ring-inset ring-bench-200 space-y-2">
+            <GoalUncertaintyTrendBar
+              values={chainSummary.uncertaintyTrend}
+              isDiscreteOnly={isAllDiscrete(chainSummary.uncertaintyTrend)}
+            />
+            <div className="space-y-1">
+              {chainSummary.chains.map((chain) => (
+                <div key={chain.chainId}>
+                  <button
+                    type="button"
+                    onClick={() => setExpandedChainId(expandedChainId === chain.chainId ? undefined : chain.chainId)}
+                    className="w-full flex items-center justify-between rounded px-2 py-1 text-left text-[11px] hover:bg-white transition"
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className={`transition-transform ${expandedChainId === chain.chainId ? "rotate-90" : ""}`}>
+                        ▸
+                      </span>
+                      <span className="font-medium text-bench-800">
+                        {chain.label} · {chain.dominantInterventionLabel}
+                      </span>
+                      <span className="text-bench-500">
+                        {formatPct(chain.entryGoalUncertainty)} → {formatPct(chain.exitGoalUncertainty)}
+                      </span>
+                    </div>
+                    <span className="text-bench-400">{chain.episodeCount} 条决策</span>
+                  </button>
+                  {expandedChainId === chain.chainId && (
+                    <div className="mt-1 ml-5 pl-3 border-l-2 border-bench-200 text-[10px] text-bench-600">
+                      该轮共 {chain.episodeCount} 条决策，主导干预为 {chain.dominantInterventionLabel}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Empty state when no significant decisions */}
+        {!hasSignificant && (
+          <p className="text-[11px] leading-5 text-bench-500 italic">
+            当前 session 未产生显著干预决策
+          </p>
+        )}
+
+        {/* Strategic decisions */}
+        {strategicDecisions.map((d) => renderDecisionCard(d, true))}
+
+        {/* Tactical decisions */}
+        {tacticalDecisions.length > 0 && (
+          <details className="group">
+            <summary className="cursor-pointer text-xs font-semibold text-bench-600 hover:text-bench-900 transition">
+              战术选择（{tacticalDecisions.length} 项）
+            </summary>
+            <div className="mt-2 space-y-2">
+              {tacticalDecisions.map((d) => renderDecisionCard(d, false))}
+            </div>
+          </details>
+        )}
+
+        {/* Trace decisions toggle */}
+        {summary.traceCount > 0 && (
+          <div className="border-t border-bench-200 pt-2">
+            {!showTrace ? (
+              <button
+                type="button"
+                onClick={() => setShowTrace(true)}
+                className="text-[11px] font-semibold text-bench-600 hover:text-bench-900 transition"
+              >
+                显示全部决策（{summary.traceCount} 条执行轨迹）
+              </button>
+            ) : (
+              <>
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-[11px] font-semibold text-bench-600">
+                    执行轨迹（{summary.traceCount} 条）
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setShowTrace(false)}
+                    className="text-[11px] text-bench-500 hover:text-bench-900 transition"
+                  >
+                    收起
+                  </button>
+                </div>
+                <div className="space-y-1.5 max-h-60 overflow-y-auto">
+                  {traceDecisions.map((d) => (
+                    <CompactTraceRow key={d.decisionId} decision={d} />
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+        )}
+      </div>
+    </DockCard>
+  );
+}
+
+function CompactTraceRow({ decision }: { decision: CausalDecisionSummary["decisions"][number] }) {
+  const barColor = decision.goalUncertainty >= 0.6 ? "bg-rose-300" : decision.goalUncertainty >= 0.35 ? "bg-amber-300" : "bg-emerald-300";
+  return (
+    <div className="flex items-center gap-2 rounded bg-bench-50 px-2 py-1 text-[11px] text-bench-600 ring-1 ring-inset ring-bench-100">
+      <div className={`h-1.5 w-6 rounded-full shrink-0 ${barColor}`} title={formatPct(decision.goalUncertainty)} />
+      <span className="font-medium text-bench-800 truncate">{interventionLabel(decision.intervention)}</span>
+      <span className="text-bench-400 shrink-0">第 {decision.turnIndex} 轮</span>
+      <span className="text-bench-400 shrink-0">· {decision.phaseLabel}</span>
+      <span className={`ml-auto shrink-0 ${decision.effective ? "text-emerald-600" : "text-bench-400"}`}>
+        {episodeStatusLabel(decision.status)}
       </span>
     </div>
   );

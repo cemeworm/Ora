@@ -170,6 +170,16 @@ function renderApp() {
   };
 }
 
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 async function waitFor(assertion: () => void | Promise<void>, timeoutMs = 3000) {
   const start = Date.now();
   while (true) {
@@ -324,6 +334,117 @@ describe("App session history loading", () => {
       "run-a-2",
       "run-b-1",
     ]);
+
+    view.unmount();
+  });
+
+  it("restarts a cancelled history load when re-entering the same session", async () => {
+    const baseBootstrap = await createRuntimeClient().bootstrap();
+    const sessionA = sessionSummary("session-a", "Session A", "run-a-2", 1_714_000_000_200);
+    const sessionB = sessionSummary("session-b", "Session B", "run-b-1", 1_714_000_000_300);
+    const snapshotA1 = snapshot({
+      runId: "run-a-1",
+      sessionId: "session-a",
+      turnIndex: 1,
+      updatedAt: 1_714_000_000_100,
+    });
+    const snapshotA2 = snapshot({
+      runId: "run-a-2",
+      sessionId: "session-a",
+      turnIndex: 2,
+      updatedAt: 1_714_000_000_200,
+    });
+    const snapshotB1 = snapshot({
+      runId: "run-b-1",
+      sessionId: "session-b",
+      turnIndex: 1,
+      updatedAt: 1_714_000_000_300,
+    });
+    const detailA = detail(
+      sessionA,
+      [
+        sessionTurn("run-a-1", "session-a", 1, 1_714_000_000_100),
+        sessionTurn("run-a-2", "session-a", 2, 1_714_000_000_200),
+      ],
+      snapshotA2,
+    );
+    const detailB = detail(
+      sessionB,
+      [sessionTurn("run-b-1", "session-b", 1, 1_714_000_000_300)],
+      snapshotB1,
+    );
+
+    const blockedA1 = deferred<OraStateSnapshot>();
+    let runA1Calls = 0;
+    const getSession = vi.fn(async (sessionId: string, _options?: { includeLatestSnapshot?: boolean }) => {
+      if (sessionId === "session-a") return detailA;
+      if (sessionId === "session-b") return detailB;
+      throw new Error(`unknown session: ${sessionId}`);
+    });
+    const getRunState = vi.fn(async (runId: string) => {
+      if (runId === "run-a-1") {
+        runA1Calls += 1;
+        if (runA1Calls === 1) {
+          return blockedA1.promise;
+        }
+        return snapshotA1;
+      }
+      if (runId === "run-a-2") return snapshotA2;
+      if (runId === "run-b-1") return snapshotB1;
+      throw new Error(`unknown run: ${runId}`);
+    });
+
+    runtimeHarness.client = {
+      ...createRuntimeClient(),
+      workbenchBootstrap: vi.fn(async () => ({
+        bootstrap: baseBootstrap,
+        projects: [],
+        sessions: [sessionA, sessionB],
+        activeSessionDetail: detailA,
+      })),
+      listProjects: vi.fn(async () => []),
+      listSessions: vi.fn(async () => [sessionA, sessionB]),
+      getSession,
+      getRunState,
+      subscribeRunEvents: vi.fn(async () => () => {}),
+      subscribeChannelSessionUpdates: vi.fn(async () => () => {}),
+    } as RuntimeClient;
+
+    window.localStorage.setItem(ONBOARDING_STORAGE_KEY, "completed");
+    const view = renderApp();
+
+    await waitFor(() => {
+      expect(sessionButton(view.container, "Session A")).toBeTruthy();
+      expect(sessionButton(view.container, "Session B")).toBeTruthy();
+      expect(getRunState.mock.calls.map(([runId]) => runId)).toEqual(["run-a-1", "run-a-2"]);
+    });
+
+    await act(async () => {
+      sessionButton(view.container, "Session B").click();
+    });
+
+    await waitFor(() => {
+      expect(getRunState.mock.calls.map(([runId]) => runId)).toEqual([
+        "run-a-1",
+        "run-a-2",
+        "run-b-1",
+      ]);
+    });
+
+    await act(async () => {
+      sessionButton(view.container, "Session A").click();
+    });
+
+    await waitFor(() => {
+      expect(
+        getRunState.mock.calls.filter(([runId]) => runId === "run-a-1"),
+      ).toHaveLength(2);
+    });
+
+    blockedA1.resolve(snapshotA1);
+    await act(async () => {
+      await Promise.resolve();
+    });
 
     view.unmount();
   });

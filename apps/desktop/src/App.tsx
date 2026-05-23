@@ -32,17 +32,27 @@ import {
   type OnboardingStatus,
 } from "./lib/onboarding";
 import {
+  beginSessionHistorySnapshotLoad,
+  beginSessionHistorySnapshotLoadRegistryLease,
   deriveSessionHistorySnapshotLoadKey,
   deriveSessionHistorySnapshotLoadPlan,
+  deriveSessionHistorySnapshotLoadTarget,
   deriveRenderableTurnSnapshots,
   evictSessionTurnSnapshotCache,
   getActiveSnapshot,
   getPendingRunState,
+  markSessionHistorySnapshotLoaded,
   mergeSessionHistorySnapshotBatch,
   mergeRunStreamSnapshot,
   mergeStateSnapshot,
   pruneTurnSnapshotsForActiveSession,
+  releaseSessionHistorySnapshotLoadTarget,
+  releaseSessionHistorySnapshotLoadRegistryLease,
+  releaseSessionHistorySnapshotLoadRegistryTarget,
+  sameSessionHistorySnapshotLoadTarget,
   sessionTurnSnapshotsForSession,
+  type SessionHistorySnapshotLoadRegistry,
+  type SessionHistorySnapshotLoadTarget,
   updateSessionTurnSnapshotCache,
   useWorkbench,
   WorkbenchProvider,
@@ -111,6 +121,7 @@ const MIN_MAIN_PANEL_WIDTH = 640;
 const WINDOW_TITLE_BASE = "Ora";
 const MAX_TURN_SNAPSHOT_SESSIONS = 8;
 const MAX_TURN_SNAPSHOTS_PER_SESSION = 40;
+const HISTORY_SNAPSHOT_LOAD_CONCURRENCY = 4;
 
 import {
   coalesceLiveDeltaStreams,
@@ -623,7 +634,10 @@ function WorkbenchInner() {
     void runtimeClient
       .subscribeChannelSessionUpdates(async (event) => {
         try {
-          const sessions = await runtimeClient.listSessions();
+          const sessions = await runtimeClient.listSessions({
+            priority: "background",
+            tag: "channel-sync:list-sessions",
+          });
           if (cancelled) return;
           dispatch({
             type: "SET_COLLECTIONS",
@@ -636,7 +650,14 @@ function WorkbenchInner() {
           // fast-fails on missing ids, but skipping early avoids the RPC.
           const knownIds = new Set(sessions.map((s) => s.sessionId));
           if (!knownIds.has(event.sessionId)) return;
-          const detail = await runtimeClient.getSession(event.sessionId);
+          const detail = await runtimeClient.getSession(
+            event.sessionId,
+            {},
+            {
+              priority: "background",
+              tag: "channel-sync:get-session",
+            },
+          );
           if (cancelled) return;
           dispatch({
             type: "HYDRATE_SESSION",
@@ -742,12 +763,18 @@ function WorkbenchInner() {
     () => deriveSessionHistorySnapshotLoadKey(state.activeSessionDetail),
     [state.activeSessionDetail],
   );
-  const activeSessionCachedTurnSnapshots = useMemo(
-    () => sessionTurnSnapshotsForSession(turnSnapshotsBySession, state.selectedSessionId),
-    [state.selectedSessionId, turnSnapshotsBySession],
+  const activeSessionHistoryLoadTarget = useMemo(
+    () => deriveSessionHistorySnapshotLoadTarget(state.activeSessionDetail),
+    [state.activeSessionDetail],
   );
-  const loadingHistorySnapshotsRef = useRef<Record<string, string | undefined>>({});
+  const activeSessionCachedTurnSnapshots = useMemo(
+    () => sessionTurnSnapshotsForSession(turnSnapshotsBySession, state.activeSessionDetail?.session.sessionId),
+    [state.activeSessionDetail, turnSnapshotsBySession],
+  );
   const historyLoadMountedRef = useRef(true);
+  const historyLoadLeaseCounterRef = useRef(0);
+  const previousHistoryLoadTargetRef = useRef<SessionHistorySnapshotLoadTarget | undefined>(undefined);
+  const historyLoadRegistryRef = useRef<SessionHistorySnapshotLoadRegistry>({});
 
   useEffect(() => {
     return () => {
@@ -762,8 +789,12 @@ function WorkbenchInner() {
       detail,
       cachedSnapshots: activeSessionCachedTurnSnapshots,
       cachedLoadedRevisionKey: sessionId ? turnSnapshotsBySession[sessionId]?.loadedRevisionKey : undefined,
-      activeLoadKey: activeSessionHistoryLoadKey,
-      loadingLoadKey: sessionId ? loadingHistorySnapshotsRef.current[sessionId] : undefined,
+      loadingLease: sessionId
+        ? (() => {
+            const lease = historyLoadRegistryRef.current[sessionId];
+            return lease ? { sessionId, loadKey: lease.loadKey, leaseId: lease.leaseId } : undefined;
+          })()
+        : undefined,
     });
     if (loadPlan.kind === "skip") {
       return;
@@ -771,26 +802,75 @@ function WorkbenchInner() {
 
     if (loadPlan.kind === "mark_loaded") {
       setTurnSnapshotsBySession((current) =>
-        updateSessionTurnSnapshotCache({
+        markSessionHistorySnapshotLoaded({
           cache: current,
           sessionId: loadPlan.sessionId,
           loadedRevisionKey: loadPlan.loadedRevisionKey,
           now: Date.now(),
         }),
       );
-      delete loadingHistorySnapshotsRef.current[loadPlan.sessionId];
       return;
     }
 
     let cancelled = false;
-    if (loadPlan.loadedRevisionKey) {
-      loadingHistorySnapshotsRef.current[loadPlan.sessionId] = loadPlan.loadedRevisionKey;
+    const lease = loadPlan.loadedRevisionKey
+      ? {
+          sessionId: loadPlan.sessionId,
+          loadKey: loadPlan.loadedRevisionKey,
+          leaseId: ++historyLoadLeaseCounterRef.current,
+        }
+      : undefined;
+    if (lease) {
+      historyLoadRegistryRef.current = beginSessionHistorySnapshotLoadRegistryLease(
+        historyLoadRegistryRef.current,
+        lease,
+      );
     }
     void (async () => {
-      const results = await Promise.allSettled(
-        loadPlan.missingRunIds.map((runId) => runtimeClient.getRunState(runId)),
-      );
-      if (cancelled || !historyLoadMountedRef.current) return;
+      const results: PromiseSettledResult<OraStateSnapshot>[] = [];
+      for (let index = 0; index < loadPlan.missingRunIds.length; index += HISTORY_SNAPSHOT_LOAD_CONCURRENCY) {
+        if (!historyLoadMountedRef.current) return;
+        if (cancelled) break;
+        const chunk = loadPlan.missingRunIds.slice(index, index + HISTORY_SNAPSHOT_LOAD_CONCURRENCY);
+        const chunkResults = await Promise.allSettled(
+          chunk.map((runId) =>
+            runtimeClient.getRunState(runId, {
+              priority: "background",
+              tag: "history-snapshot-load",
+            }),
+          ),
+        );
+        results.push(...chunkResults);
+      }
+      if (!historyLoadMountedRef.current) return;
+      if (lease) {
+        const released = releaseSessionHistorySnapshotLoadRegistryLease({
+          registry: historyLoadRegistryRef.current,
+          lease,
+        });
+        historyLoadRegistryRef.current = released.registry;
+        if (!released.matched) {
+          setTurnSnapshotsBySession((current) =>
+            evictSessionTurnSnapshotCache({
+              cache: updateSessionTurnSnapshotCache({
+                cache: current,
+                sessionId: lease.sessionId,
+                snapshots: mergeSessionHistorySnapshotBatch({
+                  currentSnapshots: sessionTurnSnapshotsForSession(current, lease.sessionId),
+                  results,
+                  maxSnapshots: MAX_TURN_SNAPSHOTS_PER_SESSION,
+                }).snapshots,
+                replaceSnapshots: true,
+                maxSnapshots: MAX_TURN_SNAPSHOTS_PER_SESSION,
+                now: Date.now(),
+              }),
+              activeSessionId: state.selectedSessionId,
+              maxSessions: MAX_TURN_SNAPSHOT_SESSIONS,
+            }),
+          );
+          return;
+        }
+      }
       setTurnSnapshotsBySession((current) => {
         const batch = mergeSessionHistorySnapshotBatch({
           currentSnapshots: sessionTurnSnapshotsForSession(current, loadPlan.sessionId),
@@ -816,9 +896,6 @@ function WorkbenchInner() {
 
     return () => {
       cancelled = true;
-      if (!historyLoadMountedRef.current) {
-        delete loadingHistorySnapshotsRef.current[loadPlan.sessionId];
-      }
     };
   }, [
     activeSessionCachedTurnSnapshots,
@@ -828,6 +905,20 @@ function WorkbenchInner() {
     state.selectedSessionId,
     turnSnapshotsBySession,
   ]);
+
+  useEffect(() => {
+    const previousTarget = previousHistoryLoadTargetRef.current;
+    if (
+      previousTarget &&
+      !sameSessionHistorySnapshotLoadTarget(previousTarget, activeSessionHistoryLoadTarget)
+    ) {
+      historyLoadRegistryRef.current = releaseSessionHistorySnapshotLoadRegistryTarget({
+        registry: historyLoadRegistryRef.current,
+        target: previousTarget,
+      });
+    }
+    previousHistoryLoadTargetRef.current = activeSessionHistoryLoadTarget;
+  }, [activeSessionHistoryLoadTarget]);
 
   useEffect(() => {
     if (state.detailDrawer !== "trails" || !state.selectedTurnRunId) {

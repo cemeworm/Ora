@@ -839,7 +839,7 @@ function ArtifactCard({
         type="button"
         onClick={() => onOpenArtifact?.(artifact.id)}
         onContextMenu={handleContextMenu}
-        className="block w-full text-left"
+        className="m-0 block w-full appearance-none rounded-none border-0 bg-transparent p-0 text-left shadow-none"
         disabled={!onOpenArtifact}
       >
         <Artifact

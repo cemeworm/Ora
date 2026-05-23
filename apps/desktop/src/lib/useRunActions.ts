@@ -612,11 +612,13 @@ export function useRunActions() {
   async function dedupedGetSession(
     sessionId: string,
     options: { includeLatestSnapshot?: boolean } = {},
+    dispatchOptions?: { priority?: "background" | "interactive" | "urgent"; tag?: string },
   ): Promise<OraSessionDetail> {
-    const key = `${sessionId}:${options.includeLatestSnapshot ? "full" : "slim"}`;
+    const dispatchKey = dispatchOptions?.priority ?? "interactive";
+    const key = `${sessionId}:${options.includeLatestSnapshot ? "full" : "slim"}:${dispatchKey}`;
     const inFlight = inFlightGetSessionRef.current.get(key);
     if (inFlight) return inFlight;
-    const promise = runtimeClient.getSession(sessionId, options).finally(() => {
+    const promise = runtimeClient.getSession(sessionId, options, dispatchOptions).finally(() => {
       inFlightGetSessionRef.current.delete(key);
     });
     inFlightGetSessionRef.current.set(key, promise);
@@ -638,7 +640,11 @@ export function useRunActions() {
     const [projects, sessions, detail] = await Promise.all([
       refreshCollections ? runtimeClient.listProjects() : Promise.resolve(state.projects),
       refreshCollections ? runtimeClient.listSessions() : Promise.resolve(state.sessions),
-      dedupedGetSession(sessionId, { includeLatestSnapshot: options.includeLatestSnapshot ?? false }),
+      dedupedGetSession(
+        sessionId,
+        { includeLatestSnapshot: options.includeLatestSnapshot ?? false },
+        { priority: "interactive", tag: "hydrate-session" },
+      ),
     ]);
     if (options.shouldApply && !options.shouldApply()) {
       return { projects, sessions, detail };
@@ -697,7 +703,11 @@ export function useRunActions() {
     }
     sessionPrefetchesRef.current.add(sessionId);
     try {
-      const detail = await dedupedGetSession(sessionId);
+      const detail = await dedupedGetSession(
+        sessionId,
+        {},
+        { priority: "background", tag: "session-prefetch" },
+      );
       dispatch({ type: "CACHE_SESSION_DETAIL", detail });
     } catch {
       // Prefetch is opportunistic; clicking the session still performs the authoritative load.

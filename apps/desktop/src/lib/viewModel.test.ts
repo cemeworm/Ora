@@ -1345,6 +1345,79 @@ describe("desktop session view model", () => {
     expect(timelineText).not.toContain("boundary violation");
   });
 
+  it("falls back to public message deltas when snapshot.output is polluted by DSML protocol text", () => {
+    const createdAt = 1_714_000_000_000;
+    const snapshot = {
+      runId: "run-dsml-output-fallback",
+      sessionId: "session-dsml-output-fallback",
+      turnIndex: 1,
+      status: "succeeded",
+      pattern: "orchestrator_subagent",
+      modeId: SINGLE_AGENT_MODE_ID,
+      input: { prompt: "总结这次修复", createdAt, context: {} },
+      config: {
+        modeId: SINGLE_AGENT_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["solo_agent"],
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-dsml-output-fallback-test",
+        skillIds: [],
+        toolIds: [],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      planList: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [{
+        id: "evt-public-delta",
+        runId: "run-dsml-output-fallback",
+        seq: 0,
+        type: "message.delta",
+        createdAt,
+        pattern: "orchestrator_subagent",
+        agentId: ORA_ROOT_AGENT_ID,
+        payload: {
+          role: "assistant",
+          content: "修复已经完成，终态 guard 现在会拒绝内部协议文本。",
+        },
+      }],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 0, completed: 1, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      output: {
+        text: [
+          "修复已经完成，终态 guard 现在会拒绝内部协议文本。",
+          "",
+          "<｜｜DSML｜｜tool_calls>",
+          '<｜｜DSML｜｜invoke name="file__read">',
+          "</｜｜DSML｜｜invoke>",
+          "</｜｜DSML｜｜tool_calls>",
+        ].join("\n"),
+      },
+      updatedAt: createdAt + 1000,
+    } as unknown as OraStateSnapshot;
+
+    const presented = derivePresentedAssistantTurnFromSnapshot(snapshot);
+
+    expect(presented.content).toBe("修复已经完成，终态 guard 现在会拒绝内部协议文本。");
+    expect(presented.content).not.toContain("DSML");
+  });
+
   it("uses partial proposed plan content while plan mode output is still streaming", () => {
     const createdAt = 1_714_000_000_000;
     const partialPlanOutput = [
@@ -5335,6 +5408,107 @@ describe("desktop session view model", () => {
     expect(assistant?.turn?.processSteps).toEqual([]);
     expect(assistant?.turn?.timelineItems).toEqual([]);
     expect(assistant?.turn?.timelineItems?.some((item) => item.kind === "assistant_text")).toBe(false);
+  });
+
+  it("shows commentary deltas in the running assistant message while keeping process steps clean", () => {
+    const createdAt = 1_714_000_010_000;
+    const snapshot = {
+      runId: "run-commentary-progress",
+      sessionId: "session-commentary-progress",
+      turnIndex: 1,
+      status: "running",
+      pattern: "orchestrator_subagent",
+      modeId: DEERFLOW_HARNESS_MODE_ID,
+      input: { prompt: "帮我调查当前 runtime 的状态。", createdAt, context: {} },
+      config: {
+        modeId: DEERFLOW_HARNESS_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["orchestrator"],
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-commentary-progress-test",
+        skillIds: [],
+        toolIds: [],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [
+        {
+          id: "run-commentary-progress:evt-0",
+          runId: "run-commentary-progress",
+          seq: 0,
+          type: "message.delta",
+          createdAt: createdAt + 1_000,
+          pattern: "orchestrator_subagent",
+          agentId: ORA_ROOT_AGENT_ID,
+          nodeId: "run",
+          payload: {
+            role: "assistant",
+            messageId: "run-commentary-progress:assistant:ora:run:commentary:0:mode.selection",
+            content: "我先检查运行中的关键状态，再把结论整理出来。",
+            phase: "commentary",
+            surface: "chat_progress",
+          },
+        },
+        {
+          id: "run-commentary-progress:evt-1",
+          runId: "run-commentary-progress",
+          seq: 1,
+          type: "task.progress",
+          createdAt: createdAt + 1_001,
+          pattern: "orchestrator_subagent",
+          payload: {
+            kind: "chat_progress",
+            source: "runtime_status",
+            trigger: "mode.selection",
+            summary: "我先检查运行中的关键状态，再把结论整理出来。",
+            basedOnSeq: 0,
+          },
+        },
+      ],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 1, completed: 0, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      updatedAt: createdAt + 1_001,
+    } as unknown as OraStateSnapshot;
+
+    const messages = adaptChatMessages(
+      [{
+        id: "run-commentary-progress:user",
+        sessionId: "session-commentary-progress",
+        runId: "run-commentary-progress",
+        turnIndex: 1,
+        role: "user",
+        content: "帮我调查当前 runtime 的状态。",
+        pattern: "orchestrator_subagent",
+        modeId: DEERFLOW_HARNESS_MODE_ID,
+        createdAt,
+      }],
+      { "run-commentary-progress": snapshot },
+    );
+    const assistant = messages.find((message) => message.role === "assistant");
+
+    expect(assistant?.content).toBe("我先检查运行中的关键状态，再把结论整理出来。");
+    expect(assistant?.turn?.processSteps).toEqual([]);
+    expect(assistant?.turn?.timelineItems).toContainEqual(expect.objectContaining({
+      kind: "assistant_text",
+      content: "我先检查运行中的关键状态，再把结论整理出来。",
+    }));
   });
 
   it("shows parent-visible spawn milestones while keeping child internal activity hidden", () => {

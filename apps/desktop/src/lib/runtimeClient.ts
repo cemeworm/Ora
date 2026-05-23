@@ -321,7 +321,27 @@ export function createRuntimeClient() {
   let tauriUnavailableReason = "Runtime sidecar is unavailable.";
   let managedLangfuseDetail: string | undefined;
 
-  async function call<T>(method: string, params?: unknown): Promise<T> {
+  type RuntimeRpcPriority = "background" | "interactive" | "urgent";
+  type RuntimeRpcDispatchOptions = {
+    priority?: RuntimeRpcPriority;
+    tag?: string;
+  };
+
+  function defaultDispatchOptionsForMethod(method: string): RuntimeRpcDispatchOptions {
+    if (method === "runs.cancel" || method === "runs.interrupt" || method === "flows.cancel") {
+      return { priority: "urgent", tag: method };
+    }
+    if (method === "sessions.create" || method === "sessions.get" || method === "runs.state") {
+      return { priority: "interactive", tag: method };
+    }
+    return { priority: "interactive", tag: method };
+  }
+
+  async function call<T>(
+    method: string,
+    params?: unknown,
+    dispatchOptions?: RuntimeRpcDispatchOptions,
+  ): Promise<T> {
     const isSessionGet = method === "sessions.get";
     if (isSessionGet) timeStart("RPC sessions.get (bridge)");
     const request: JsonRpcRequest = {
@@ -330,11 +350,15 @@ export function createRuntimeClient() {
       method,
       params,
     };
+    const mergedDispatchOptions = {
+      ...defaultDispatchOptionsForMethod(method),
+      ...(dispatchOptions ?? {}),
+    };
 
     try {
       const tauriAvailable = isTauriAvailable();
       const tauriResponse = tauriAvailable
-        ? await tryTauriJsonRpc(request)
+        ? await tryTauriJsonRpc(request, mergedDispatchOptions)
         : { ok: false as const, tauriAvailable };
       // When the Tauri bridge returns a JSON-RPC error or is unavailable,
       // fall through to the local handler — same behavior as browser mode.
@@ -483,8 +507,11 @@ export function createRuntimeClient() {
         activeSessionDetail: result.activeSessionDetail,
       };
     },
-    async createSession(params: OraSessionCreateParams = {}): Promise<OraSessionSummary> {
-      return call<OraSessionSummary>("sessions.create", params);
+    async createSession(
+      params: OraSessionCreateParams = {},
+      dispatchOptions?: { priority?: "background" | "interactive" | "urgent"; tag?: string },
+    ): Promise<OraSessionSummary> {
+      return call<OraSessionSummary>("sessions.create", params, dispatchOptions);
     },
     async listChannels(params: { kind?: string; enabled?: boolean; limit?: number } = {}): Promise<OraChannelConfig[]> {
       return call<OraChannelConfig[]>("channels.list", params);
@@ -629,8 +656,10 @@ export function createRuntimeClient() {
     async prunePackages(includeFailed = true): Promise<OraPackageStoreSnapshot> {
       return call<OraPackageStoreSnapshot>("packages.prune", { includeFailed });
     },
-    async listSessions(): Promise<OraSessionSummary[]> {
-      return call<OraSessionSummary[]>("sessions.list");
+    async listSessions(
+      dispatchOptions?: { priority?: "background" | "interactive" | "urgent"; tag?: string },
+    ): Promise<OraSessionSummary[]> {
+      return call<OraSessionSummary[]>("sessions.list", undefined, dispatchOptions);
     },
     async archiveSession(sessionId: string): Promise<OraSessionSummary> {
       return call<OraSessionSummary>("sessions.archive", { sessionId });
@@ -808,8 +837,9 @@ export function createRuntimeClient() {
     async getSession(
       sessionId: string,
       options: { includeLatestSnapshot?: boolean } = {},
+      dispatchOptions?: { priority?: "background" | "interactive" | "urgent"; tag?: string },
     ): Promise<OraSessionDetail> {
-      return call<OraSessionDetail>("sessions.get", { sessionId, ...options });
+      return call<OraSessionDetail>("sessions.get", { sessionId, ...options }, dispatchOptions);
     },
     async getMemory(): Promise<OraLongTermMemoryProfile> {
       return call<OraLongTermMemoryProfile>("memory.get");
@@ -949,8 +979,11 @@ export function createRuntimeClient() {
       const { listen } = await import("@tauri-apps/api/event");
       return listen<OraChannelSessionUpdate>(CHANNEL_SESSION_UPDATED_NOTIFICATION, (event) => callback(event.payload));
     },
-    async getRunState(runId: string): Promise<OraStateSnapshot> {
-      return call<OraStateSnapshot>("runs.state", { runId });
+    async getRunState(
+      runId: string,
+      dispatchOptions?: { priority?: "background" | "interactive" | "urgent"; tag?: string },
+    ): Promise<OraStateSnapshot> {
+      return call<OraStateSnapshot>("runs.state", { runId }, dispatchOptions);
     },
     async getFlowRun(flowRunId: string): Promise<OraFlowRunDetail> {
       return call<OraFlowRunDetail>("flows.get", { flowRunId });
@@ -1195,7 +1228,10 @@ function deriveProviderStatuses(
   });
 }
 
-async function tryTauriJsonRpc(request: JsonRpcRequest): Promise<
+async function tryTauriJsonRpc(
+  request: JsonRpcRequest,
+  dispatch?: { priority?: "background" | "interactive" | "urgent"; tag?: string },
+): Promise<
   | { ok: true; response: JsonRpcResponse; tauriAvailable: true }
   | { ok: false; tauriAvailable: boolean; error?: unknown }
 > {
@@ -1205,7 +1241,7 @@ async function tryTauriJsonRpc(request: JsonRpcRequest): Promise<
 
   try {
     const { invoke } = await import("@tauri-apps/api/core");
-    const response = await invoke<JsonRpcResponse>("runtime_json_rpc", { request });
+    const response = await invoke<JsonRpcResponse>("runtime_json_rpc", { request, dispatch });
     return { ok: true, response, tauriAvailable: true };
   } catch (error) {
     return { ok: false, tauriAvailable: true, error };

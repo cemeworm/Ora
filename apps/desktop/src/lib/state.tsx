@@ -4,6 +4,7 @@ import {
   CoordinationPatternSchema,
   ModeTranscriptLayoutSchema,
   DEBATE_MODE_ID,
+  isCommentaryDeltaPayload,
   ParentCoordinationStateSchema,
   SINGLE_AGENT_MODE_ID,
   deriveSessionBranchGroupStatus,
@@ -137,9 +138,29 @@ export interface SessionTurnSnapshotCacheEntry {
   snapshots: Record<string, OraStateSnapshot>;
   lastAccessedAt: number;
   loadedRevisionKey?: string;
+  loadingLease?: SessionHistorySnapshotLoadLeaseState;
 }
 
 export type SessionTurnSnapshotCache = Record<string, SessionTurnSnapshotCacheEntry>;
+
+export interface SessionHistorySnapshotLoadTarget {
+  sessionId: string;
+  loadKey: string;
+}
+
+export interface SessionHistorySnapshotLoadLeaseState {
+  loadKey: string;
+  leaseId: number;
+}
+
+export interface SessionHistorySnapshotLoadLease extends SessionHistorySnapshotLoadTarget {
+  leaseId: number;
+}
+
+export type SessionHistorySnapshotLoadRegistry = Record<
+  string,
+  SessionHistorySnapshotLoadLeaseState | undefined
+>;
 
 export function getActiveSnapshot(lc: RunLifecycle): OraStateSnapshot | undefined {
   return lc.stage === "streaming" || lc.stage === "settled" ? lc.snapshot : undefined;
@@ -822,6 +843,30 @@ export function deriveSessionHistorySnapshotLoadKey(
   ].join(":");
 }
 
+export function deriveSessionHistorySnapshotLoadTarget(
+  detail: OraSessionDetail | undefined,
+): SessionHistorySnapshotLoadTarget | undefined {
+  const loadKey = deriveSessionHistorySnapshotLoadKey(detail);
+  const sessionId = detail?.session.sessionId;
+  if (!sessionId || !loadKey) {
+    return undefined;
+  }
+  return {
+    sessionId,
+    loadKey,
+  };
+}
+
+export function sameSessionHistorySnapshotLoadTarget(
+  left: SessionHistorySnapshotLoadTarget | undefined,
+  right: SessionHistorySnapshotLoadTarget | undefined,
+): boolean {
+  if (!left || !right) {
+    return left === right;
+  }
+  return left.sessionId === right.sessionId && left.loadKey === right.loadKey;
+}
+
 export type SessionHistorySnapshotLoadPlan =
   | { kind: "skip"; reason: "no_detail" | "already_loaded" | "in_flight" | "no_revision_key" }
   | { kind: "mark_loaded"; sessionId: string; loadedRevisionKey: string }
@@ -831,30 +876,31 @@ export function deriveSessionHistorySnapshotLoadPlan(params: {
   detail: OraSessionDetail | undefined;
   cachedSnapshots: Record<string, OraStateSnapshot>;
   cachedLoadedRevisionKey?: string;
-  activeLoadKey?: string;
-  loadingLoadKey?: string;
+  loadingLease?: SessionHistorySnapshotLoadLease;
 }): SessionHistorySnapshotLoadPlan {
-  const { detail, cachedSnapshots, cachedLoadedRevisionKey, activeLoadKey, loadingLoadKey } = params;
+  const { detail, cachedSnapshots, cachedLoadedRevisionKey, loadingLease } = params;
   if (!detail) {
     return { kind: "skip", reason: "no_detail" };
   }
+  const activeTarget = deriveSessionHistorySnapshotLoadTarget(detail);
+  if (!activeTarget) {
+    return { kind: "skip", reason: "no_revision_key" };
+  }
+  const activeLoadKey = activeTarget.loadKey;
 
-  if (activeLoadKey && cachedLoadedRevisionKey === activeLoadKey) {
+  if (cachedLoadedRevisionKey === activeLoadKey) {
     return { kind: "skip", reason: "already_loaded" };
   }
-  if (activeLoadKey && loadingLoadKey === activeLoadKey) {
+  if (loadingLease && loadingLease.sessionId === activeTarget.sessionId && loadingLease.loadKey === activeLoadKey) {
     return { kind: "skip", reason: "in_flight" };
   }
 
-  const sessionId = detail.session.sessionId;
+  const sessionId = activeTarget.sessionId;
   const missingRunIds = detail.turns
     .map((turn) => turn.runId)
     .filter((runId) => !cachedSnapshots[runId]);
 
   if (missingRunIds.length === 0) {
-    if (!activeLoadKey) {
-      return { kind: "skip", reason: "no_revision_key" };
-    }
     return {
       kind: "mark_loaded",
       sessionId,
@@ -934,11 +980,48 @@ export function mergeSessionHistorySnapshotBatch(params: {
   };
 }
 
+export function sessionHistorySnapshotLoadLeaseForSession(
+  cache: SessionTurnSnapshotCache,
+  sessionId: string | undefined,
+): SessionHistorySnapshotLoadLease | undefined {
+  if (!sessionId) {
+    return undefined;
+  }
+  const loadingLease = cache[sessionId]?.loadingLease;
+  if (!loadingLease) {
+    return undefined;
+  }
+  return {
+    sessionId,
+    loadKey: loadingLease.loadKey,
+    leaseId: loadingLease.leaseId,
+  };
+}
+
+export function sessionHistorySnapshotLoadLeaseFromRegistry(
+  registry: SessionHistorySnapshotLoadRegistry,
+  sessionId: string | undefined,
+): SessionHistorySnapshotLoadLease | undefined {
+  if (!sessionId) {
+    return undefined;
+  }
+  const loadingLease = registry[sessionId];
+  if (!loadingLease) {
+    return undefined;
+  }
+  return {
+    sessionId,
+    loadKey: loadingLease.loadKey,
+    leaseId: loadingLease.leaseId,
+  };
+}
+
 export function updateSessionTurnSnapshotCache(params: {
   cache: SessionTurnSnapshotCache;
   sessionId: string;
   snapshots?: Record<string, OraStateSnapshot>;
   loadedRevisionKey?: string;
+  loadingLease?: SessionHistorySnapshotLoadLeaseState | null;
   now: number;
   replaceSnapshots?: boolean;
   maxSnapshots?: number;
@@ -957,11 +1040,15 @@ export function updateSessionTurnSnapshotCache(params: {
     snapshots: nextSnapshots,
     lastAccessedAt: params.now,
     loadedRevisionKey: params.loadedRevisionKey ?? existing?.loadedRevisionKey,
+    loadingLease:
+      params.loadingLease === undefined ? existing?.loadingLease : (params.loadingLease ?? undefined),
   };
   if (
     existing &&
     existing.lastAccessedAt === nextEntry.lastAccessedAt &&
     existing.loadedRevisionKey === nextEntry.loadedRevisionKey &&
+    existing.loadingLease?.loadKey === nextEntry.loadingLease?.loadKey &&
+    existing.loadingLease?.leaseId === nextEntry.loadingLease?.leaseId &&
     existing.snapshots === nextEntry.snapshots
   ) {
     return params.cache;
@@ -998,6 +1085,135 @@ export function evictSessionTurnSnapshotCache(params: {
   return Object.keys(next).length === Object.keys(params.cache).length
     ? params.cache
     : next;
+}
+
+export function beginSessionHistorySnapshotLoad(params: {
+  cache: SessionTurnSnapshotCache;
+  lease: SessionHistorySnapshotLoadLease;
+  now: number;
+}): SessionTurnSnapshotCache {
+  return updateSessionTurnSnapshotCache({
+    cache: params.cache,
+    sessionId: params.lease.sessionId,
+    loadingLease: {
+      loadKey: params.lease.loadKey,
+      leaseId: params.lease.leaseId,
+    },
+    now: params.now,
+  });
+}
+
+export function beginSessionHistorySnapshotLoadRegistryLease(
+  registry: SessionHistorySnapshotLoadRegistry,
+  lease: SessionHistorySnapshotLoadLease,
+): SessionHistorySnapshotLoadRegistry {
+  const current = registry[lease.sessionId];
+  if (current?.loadKey === lease.loadKey && current.leaseId === lease.leaseId) {
+    return registry;
+  }
+  return {
+    ...registry,
+    [lease.sessionId]: {
+      loadKey: lease.loadKey,
+      leaseId: lease.leaseId,
+    },
+  };
+}
+
+export function releaseSessionHistorySnapshotLoadTarget(params: {
+  cache: SessionTurnSnapshotCache;
+  target: SessionHistorySnapshotLoadTarget;
+  now: number;
+}): SessionTurnSnapshotCache {
+  const existing = params.cache[params.target.sessionId];
+  if (!existing?.loadingLease || existing.loadingLease.loadKey !== params.target.loadKey) {
+    return params.cache;
+  }
+  return updateSessionTurnSnapshotCache({
+    cache: params.cache,
+    sessionId: params.target.sessionId,
+    loadingLease: null,
+    now: params.now,
+  });
+}
+
+export function releaseSessionHistorySnapshotLoadRegistryTarget(params: {
+  registry: SessionHistorySnapshotLoadRegistry;
+  target: SessionHistorySnapshotLoadTarget;
+}): SessionHistorySnapshotLoadRegistry {
+  const current = params.registry[params.target.sessionId];
+  if (!current || current.loadKey !== params.target.loadKey) {
+    return params.registry;
+  }
+  const { [params.target.sessionId]: _released, ...rest } = params.registry;
+  return rest;
+}
+
+export function releaseSessionHistorySnapshotLoadRegistryLease(params: {
+  registry: SessionHistorySnapshotLoadRegistry;
+  lease: SessionHistorySnapshotLoadLease;
+}): {
+  registry: SessionHistorySnapshotLoadRegistry;
+  matched: boolean;
+} {
+  const current = params.registry[params.lease.sessionId];
+  if (!current || current.loadKey !== params.lease.loadKey || current.leaseId !== params.lease.leaseId) {
+    return {
+      registry: params.registry,
+      matched: false,
+    };
+  }
+  const { [params.lease.sessionId]: _released, ...rest } = params.registry;
+  return {
+    registry: rest,
+    matched: true,
+  };
+}
+
+export function markSessionHistorySnapshotLoaded(params: {
+  cache: SessionTurnSnapshotCache;
+  sessionId: string;
+  loadedRevisionKey: string;
+  now: number;
+}): SessionTurnSnapshotCache {
+  const existing = params.cache[params.sessionId];
+  const shouldClearLease = existing?.loadingLease?.loadKey === params.loadedRevisionKey;
+  return updateSessionTurnSnapshotCache({
+    cache: params.cache,
+    sessionId: params.sessionId,
+    loadedRevisionKey: params.loadedRevisionKey,
+    loadingLease: shouldClearLease ? null : undefined,
+    now: params.now,
+  });
+}
+
+export function completeSessionHistorySnapshotLoad(params: {
+  cache: SessionTurnSnapshotCache;
+  lease: SessionHistorySnapshotLoadLease;
+  results: readonly PromiseSettledResult<OraStateSnapshot>[];
+  now: number;
+  maxSnapshots?: number;
+}): SessionTurnSnapshotCache {
+  const existing = params.cache[params.lease.sessionId];
+  const batch = mergeSessionHistorySnapshotBatch({
+    currentSnapshots: existing?.snapshots ?? {},
+    results: params.results,
+    loadedRevisionKey: params.lease.loadKey,
+    maxSnapshots: params.maxSnapshots,
+  });
+  const currentLease = existing?.loadingLease;
+  const leaseMatches =
+    currentLease?.loadKey === params.lease.loadKey && currentLease.leaseId === params.lease.leaseId;
+  return updateSessionTurnSnapshotCache({
+    cache: params.cache,
+    sessionId: params.lease.sessionId,
+    snapshots: batch.snapshots,
+    loadedRevisionKey: leaseMatches ? batch.loadedRevisionKey : undefined,
+    loadingLease: leaseMatches ? null : undefined,
+    replaceSnapshots: true,
+    maxSnapshots: params.maxSnapshots,
+    now: params.now,
+  });
 }
 
 function resolveSessionAuthoritySnapshot(params: {
@@ -1914,6 +2130,7 @@ function markDesktopLatencyForStream(
           event.payload.visibility !== "collaboration" &&
           event.payload.audience !== "collaboration" &&
           event.payload.surface !== "collaboration" &&
+          !isCommentaryDeltaPayload(event.payload) &&
           typeof event.payload.content === "string" &&
           event.payload.content.trim(),
       )
@@ -1965,6 +2182,7 @@ function markPendingRunLatencyForStream(
         (event) =>
           event.type === "message.delta" &&
           isRecord(event.payload) &&
+          !isCommentaryDeltaPayload(event.payload) &&
           typeof event.payload.content === "string" &&
           event.payload.content.trim(),
       )

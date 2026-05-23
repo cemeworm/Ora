@@ -401,4 +401,85 @@ describe("desktop runtime client agent catalog", () => {
     const updated = await client.updateSelfIterationPolicy({ ...policy, evaluationAutoApply: false });
     expect(updated.evaluationAutoApply).toBe(false);
   });
+
+  it("forwards dispatch priority metadata to the Tauri runtime bridge", async () => {
+    const invoke = vi.fn(async (_command: string, payload: Record<string, unknown>) => {
+      const request = payload.request as { id: number; method: string };
+      return {
+        jsonrpc: "2.0",
+        id: request.id,
+        result:
+          request.method === "sessions.create"
+            ? {
+                sessionId: "session-0001",
+                title: "New Chat",
+                turnCount: 0,
+                createdAt: 1,
+                updatedAt: 1,
+              }
+            : request.method === "sessions.list"
+              ? []
+              : {
+                  runId: "run-0001",
+                  status: "running",
+                  updatedAt: 1,
+                  input: { prompt: "", context: {} },
+                  events: [],
+                  checkpoints: [],
+                  toolCalls: [],
+                  toolResults: [],
+                  pendingApprovals: [],
+                  pendingClarifications: [],
+                  plan: [],
+                  planDecisions: [],
+                  todos: [],
+                  topology: { nodes: [], edges: [] },
+                  actions: [],
+                  artifacts: [],
+                  agentMessages: [],
+                },
+      };
+    });
+
+    vi.doMock("@tauri-apps/api/core", () => ({ invoke }));
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: { __TAURI_INTERNALS__: {} },
+    });
+
+    try {
+      const client = createRuntimeClient();
+      await client.createSession();
+      await client.listSessions({ priority: "background", tag: "test-list" });
+      await client.getRunState("run-0001", { priority: "background", tag: "test-run-state" });
+    } finally {
+      vi.doUnmock("@tauri-apps/api/core");
+      Reflect.deleteProperty(globalThis, "window");
+    }
+
+    expect(invoke).toHaveBeenNthCalledWith(
+      1,
+      "runtime_json_rpc",
+      expect.objectContaining({
+        request: expect.objectContaining({ method: "sessions.create" }),
+        dispatch: expect.objectContaining({ priority: "interactive", tag: "sessions.create" }),
+      }),
+    );
+    expect(invoke).toHaveBeenNthCalledWith(
+      2,
+      "runtime_json_rpc",
+      expect.objectContaining({
+        request: expect.objectContaining({ method: "sessions.list" }),
+        dispatch: expect.objectContaining({ priority: "background", tag: "test-list" }),
+      }),
+    );
+    expect(invoke).toHaveBeenNthCalledWith(
+      3,
+      "runtime_json_rpc",
+      expect.objectContaining({
+        request: expect.objectContaining({ method: "runs.state" }),
+        dispatch: expect.objectContaining({ priority: "background", tag: "test-run-state" }),
+      }),
+    );
+  });
 });

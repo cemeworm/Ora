@@ -281,6 +281,37 @@ describe("chat view composer plan decision state", () => {
     });
   });
 
+  it("does not show a resolved plan decision panel when stale attention still says needs_plan_decision", () => {
+    expect(deriveComposerPlanDecisionState({
+      sessionId: "session-1",
+      activeSnapshot: {
+        runId: "run-1",
+        status: "succeeded",
+        attention: {
+          kind: "needs_plan_decision",
+          blocking: true,
+          sourceRunId: "run-1",
+          reason: "plan_decision_required",
+          planDecisionId: "decision-1",
+          pendingActionIds: [],
+          pendingToolCallIds: [],
+          pendingClarificationIds: [],
+        },
+        planDecisions: [{
+          id: "decision-1",
+          runId: "run-1",
+          sessionId: "session-1",
+          status: "declined",
+          createdAt: 1,
+          resolvedAt: 2,
+        }],
+      } as any,
+    })).toEqual({
+      pendingPlanDecisionId: undefined,
+      planDecisionPending: false,
+    });
+  });
+
   it("hides plan decision panel while that decision is resolving", () => {
     expect(deriveComposerPlanDecisionState({
       sessionId: "session-1",

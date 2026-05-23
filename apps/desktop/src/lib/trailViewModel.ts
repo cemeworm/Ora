@@ -11,6 +11,7 @@ import { deriveSnapshotInteractionProjection, snapshotPendingPlanDecision, type 
 import { deriveCurrentExecutorProjection } from "./currentExecutor";
 import {
   deriveCausalInterventionEpisodes,
+  deriveCausalDecisionChains,
   deriveSnapshotGateProjection,
   isCollaborationDeltaPayload,
   isInternalDeltaPayload,
@@ -20,6 +21,10 @@ import {
   ORA_ROOT_AGENT_LABEL,
   projectAssistantTextFromEvents,
   projectAssistantTextFromSnapshot,
+  resolvePublicAssistantText,
+  type CausalInterventionEpisode,
+  type CausalInterventionSignificance,
+  type CausalDecisionChain,
 } from "@cemeworm/shared";
 
 export type TrailDebuggerTab = "overview" | "flow" | "agents" | "tools" | "latency" | "evidence" | "compare";
@@ -434,7 +439,7 @@ export function deriveFirstTextEvidence(
 
 function snapshotOutputHasReadableText(snapshot: OraStateSnapshot): boolean {
   if (typeof snapshot.output === "string" && snapshot.output.trim()) {
-    return true;
+    return !resolvePublicAssistantText(snapshot.output).isRejected;
   }
   if (
     snapshot.output &&
@@ -442,7 +447,7 @@ function snapshotOutputHasReadableText(snapshot: OraStateSnapshot): boolean {
     typeof (snapshot.output as { text?: unknown }).text === "string" &&
     (snapshot.output as { text: string }).text.trim()
   ) {
-    return true;
+    return !resolvePublicAssistantText((snapshot.output as { text: string }).text).isRejected;
   }
   return false;
 }
@@ -2388,12 +2393,16 @@ export interface CausalDecisionSummaryItem {
   surfaceRequest: string;
   selectedLatentGoal: string;
   keyUncertainties: string[];
+  significance: CausalInterventionSignificance;
 }
 
 export interface CausalDecisionSummary {
   decisions: CausalDecisionSummaryItem[];
   totalDecisions: number;
   hiddenDecisionCount: number;
+  strategicCount: number;
+  tacticalCount: number;
+  traceCount: number;
 }
 
 export function buildCausalDecisionSummary(snapshot: OraStateSnapshot): CausalDecisionSummary {
@@ -2405,7 +2414,19 @@ export function buildCausalDecisionSummary(snapshot: OraStateSnapshot): CausalDe
   const visibleEpisodes = episodes.filter((episode) => episode.effective);
   const assistantPreviewIndex = buildAssistantReplyPreviewIndex(snapshot);
 
+  let strategicCount = 0;
+  let tacticalCount = 0;
+  let traceCount = 0;
+
   for (const episode of visibleEpisodes) {
+    // Increment counts for all effective episodes
+    if (episode.significance === "strategic") strategicCount++;
+    else if (episode.significance === "tactical") tacticalCount++;
+    else traceCount++;
+
+    // Default filter: skip trace decisions
+    if (episode.significance === "trace") continue;
+
     const turnIndex = episode.turnIndex ?? snapshot.turnIndex ?? 1;
     const replyMessageId = episode.evidenceMessageId ?? episode.replyMessageId ?? `${episode.runId}:assistant`;
     const agentId = episode.agentId;
@@ -2448,12 +2469,89 @@ export function buildCausalDecisionSummary(snapshot: OraStateSnapshot): CausalDe
       surfaceRequest: episode.surfaceRequest,
       selectedLatentGoal: episode.selectedLatentGoal,
       keyUncertainties: episode.keyUncertainties,
+      significance: episode.significance,
     });
   }
   return {
     decisions,
     totalDecisions: decisions.length,
-    hiddenDecisionCount: Math.max(episodes.length - decisions.length, 0),
+    hiddenDecisionCount: traceCount,
+    strategicCount,
+    tacticalCount,
+    traceCount,
+  };
+}
+
+export function buildCausalDecisionSummaryExpanded(snapshot: OraStateSnapshot): CausalDecisionSummary {
+  const eventSeqById = new Map(snapshot.events.map((event) => [event.id, event.seq]));
+  const decisions: CausalDecisionSummaryItem[] = [];
+  const nodeLabels = new Map(snapshot.topology.nodes.map((node) => [node.id, node.label]));
+  const agentLabels = buildAgentLabelMap(snapshot);
+  const episodes = deriveCausalInterventionEpisodes(snapshot);
+  const visibleEpisodes = episodes.filter((episode) => episode.effective);
+  const assistantPreviewIndex = buildAssistantReplyPreviewIndex(snapshot);
+
+  let strategicCount = 0;
+  let tacticalCount = 0;
+  let traceCount = 0;
+
+  for (const episode of visibleEpisodes) {
+    if (episode.significance === "strategic") strategicCount++;
+    else if (episode.significance === "tactical") tacticalCount++;
+    else traceCount++;
+
+    const turnIndex = episode.turnIndex ?? snapshot.turnIndex ?? 1;
+    const replyMessageId = episode.evidenceMessageId ?? episode.replyMessageId ?? `${episode.runId}:assistant`;
+    const agentId = episode.agentId;
+    const nodeId = episode.nodeId;
+    const phase = episode.phase ?? inferCausalDecisionPhase({}, undefined);
+    const iteration = episode.iteration;
+    const toolId = episode.toolId;
+    decisions.push({
+      eventId: episode.eventId,
+      eventSeq: episode.eventId ? eventSeqById.get(episode.eventId) : undefined,
+      decisionId: episode.decisionId,
+      runId: episode.runId,
+      turnIndex,
+      timestamp: formatTimestamp(episode.recordedAt),
+      source: episode.source,
+      effective: episode.effective,
+      status: episode.status,
+      goalImpact: episode.goalImpact,
+      outcomeSummary: episode.outcomeSummary,
+      replyMessageId,
+      replyLabel: shortReplyId(replyMessageId),
+      phase,
+      phaseLabel: causalDecisionPhaseLabel(phase, toolId, iteration),
+      agentId,
+      agentLabel: agentId ? agentLabels.get(agentId) ?? agentId : undefined,
+      nodeId,
+      nodeLabel: nodeId ? nodeLabels.get(nodeId) ?? nodeId : undefined,
+      toolId,
+      iteration,
+      assistantPreview: previewAssistantReplyForEpisode(episode, assistantPreviewIndex),
+      intervention: episode.chosenIntervention,
+      reason: episode.reason,
+      goalUncertainty: episode.goalUncertainty,
+      factUncertainty: episode.factUncertainty,
+      contextUncertainty: episode.contextUncertainty,
+      actionRisk: episode.actionRisk,
+      userCost: episode.userCost,
+      reversibility: episode.reversibility,
+      wouldChangeOutcomeIfWrong: episode.wouldChangeOutcomeIfWrong,
+      surfaceRequest: episode.surfaceRequest,
+      selectedLatentGoal: episode.selectedLatentGoal,
+      keyUncertainties: episode.keyUncertainties,
+      significance: episode.significance,
+    });
+  }
+  return {
+    decisions,
+    totalDecisions: decisions.length,
+    hiddenDecisionCount: 0,
+    strategicCount,
+    tacticalCount,
+    traceCount,
   };
 }
 
@@ -2621,5 +2719,64 @@ function causalDecisionPhaseLabel(phase: string, toolId?: string, iteration?: nu
       return "节点决策";
     default:
       return "决策";
+  }
+}
+
+// ---- Causal Decision Chain Summary ----
+
+export interface CausalDecisionChainItem {
+  chainId: string;
+  label: string;
+  turnIndex: number;
+  episodeCount: number;
+  entryGoalUncertainty: number;
+  exitGoalUncertainty: number;
+  dominantIntervention: string;
+  dominantInterventionLabel: string;
+}
+
+export interface CausalDecisionChainSummary {
+  chains: CausalDecisionChainItem[];
+  totalChains: number;
+  uncertaintyTrend: number[];
+}
+
+export function buildCausalDecisionChainSummary(
+  snapshot: OraStateSnapshot,
+): CausalDecisionChainSummary {
+  const episodes = deriveCausalInterventionEpisodes(snapshot);
+  const chains = deriveCausalDecisionChains(episodes);
+
+  const items: CausalDecisionChainItem[] = chains.map((chain) => ({
+    chainId: chain.chainId,
+    label: chain.label,
+    turnIndex: chain.turnIndex,
+    episodeCount: chain.episodeCount,
+    entryGoalUncertainty: chain.entryGoalUncertainty,
+    exitGoalUncertainty: chain.exitGoalUncertainty,
+    dominantIntervention: chain.dominantIntervention,
+    dominantInterventionLabel: interventionActionToLabel(chain.dominantIntervention),
+  }));
+
+  const uncertaintyTrend = items.map((item) => item.entryGoalUncertainty);
+
+  return {
+    chains: items,
+    totalChains: items.length,
+    uncertaintyTrend,
+  };
+}
+
+function interventionActionToLabel(action: string): string {
+  switch (action) {
+    case "answer_directly": return "直接回答";
+    case "clarify": return "澄清目标";
+    case "search_web": return "网络搜索";
+    case "read_context": return "读取上下文";
+    case "use_tool": return "使用工具";
+    case "plan": return "制定计划";
+    case "request_approval": return "请求确认";
+    case "stop": return "停止";
+    default: return action;
   }
 }

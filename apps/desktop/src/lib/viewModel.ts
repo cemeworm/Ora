@@ -1,8 +1,11 @@
 import {
   deriveRuntimeTimelineProjection,
+  isInternalAssistantText as isSharedInternalAssistantText,
+  isInternalRecoveryFallbackText as isSharedInternalRecoveryFallbackText,
   modeSpecToPatternDefinition,
   ORA_ROOT_AGENT_ID,
   ORA_ROOT_AGENT_LABEL,
+  resolvePublicAssistantText,
   runtimeStatusForRunAttention,
   type GateProjection,
 } from "@cemeworm/shared";
@@ -2802,7 +2805,8 @@ function outputTextFromSnapshot(
 ): string | undefined {
   if (typeof snapshot.output === "string" && snapshot.output.trim()) {
     const output = snapshot.output.trim();
-    return isInternalRecoveryFallbackText(output) ? undefined : output;
+    const resolved = resolvePublicAssistantText(output);
+    return resolved.isRejected ? undefined : output;
   }
   if (
     isRecord(snapshot.output) &&
@@ -2810,7 +2814,8 @@ function outputTextFromSnapshot(
     snapshot.output.text.trim()
   ) {
     const output = snapshot.output.text.trim();
-    return isInternalRecoveryFallbackText(output) ? undefined : output;
+    const resolved = resolvePublicAssistantText(output);
+    return resolved.isRejected ? undefined : output;
   }
   return undefined;
 }
@@ -2876,28 +2881,11 @@ function assistantDeltaText(event: OraEventEnvelope): string {
 }
 
 function isInternalAssistantText(text: string): boolean {
-  const trimmed = text.trim();
-  if (!trimmed) {
-    return false;
-  }
-  if (/<\/?tool_plan_mode_reminder\b|<\/?file_grep_policy\b/i.test(trimmed)) {
-    return true;
-  }
-  if (/<[^>]*DSML[^>]*tool_calls|<tool_call\b|parameter\s+name=|<\/?previous_tool_call\b|<\/?result\b/i.test(trimmed)) {
-    return true;
-  }
-  if (/<file\.(?:read|list|grep|glob)\b[^>]*\/?>/i.test(trimmed)) {
-    return true;
-  }
-  return /^\{"tool"\s*:\s*"[a-z0-9_.-]+"\s*,\s*"args"\s*:/i.test(trimmed);
+  return isSharedInternalAssistantText(text);
 }
 
 function isInternalRecoveryFallbackText(text: string): boolean {
-  const trimmed = text.trim();
-  return (
-    trimmed.startsWith("[tool-error-boundary]") ||
-    trimmed.startsWith("[recovery:fallback]")
-  );
+  return isSharedInternalRecoveryFallbackText(text);
 }
 
 function hasRejectedFinalToolCall(snapshot: OraStateSnapshot): boolean {

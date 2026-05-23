@@ -1,17 +1,23 @@
 import { describe, expect, it } from "vitest";
 import { CODE_DEVELOPMENT_MODE_ID, SINGLE_AGENT_MODE_ID } from "@cemeworm/shared";
 import {
+  beginSessionHistorySnapshotLoad,
+  completeSessionHistorySnapshotLoad,
   deriveSessionHistorySnapshotLoadKey,
   deriveSessionHistorySnapshotLoadPlan,
+  deriveSessionHistorySnapshotLoadTarget,
   deriveRenderableTurnSnapshots,
   evictSessionTurnSnapshotCache,
   getActiveSnapshot,
   getPendingRunState,
+  markSessionHistorySnapshotLoaded,
   initialWorkbenchState,
   mergeSessionHistorySnapshotBatch,
   mergeRunStreamSnapshot,
   mergeStateSnapshot,
   pruneTurnSnapshotsForActiveSession,
+  releaseSessionHistorySnapshotLoadTarget,
+  sessionHistorySnapshotLoadLeaseForSession,
   sessionTurnSnapshotsForSession,
   updateSessionTurnSnapshotCache,
   workbenchReducer,
@@ -515,7 +521,6 @@ describe("session turn snapshot cache helpers", () => {
     const missingPlan = deriveSessionHistorySnapshotLoadPlan({
       detail,
       cachedSnapshots: { [cachedRun1.runId]: cachedRun1 },
-      activeLoadKey,
     });
     const warmPlan = deriveSessionHistorySnapshotLoadPlan({
       detail,
@@ -523,7 +528,6 @@ describe("session turn snapshot cache helpers", () => {
         [cachedRun1.runId]: cachedRun1,
         [cachedRun2.runId]: cachedRun2,
       },
-      activeLoadKey,
     });
 
     expect(missingPlan).toEqual({
@@ -574,8 +578,11 @@ describe("session turn snapshot cache helpers", () => {
     const plan = deriveSessionHistorySnapshotLoadPlan({
       detail,
       cachedSnapshots: {},
-      activeLoadKey,
-      loadingLoadKey: activeLoadKey,
+      loadingLease: {
+        sessionId: "session-in-flight",
+        loadKey: activeLoadKey,
+        leaseId: 1,
+      },
     });
 
     expect(plan).toEqual({
@@ -583,6 +590,199 @@ describe("session turn snapshot cache helpers", () => {
       reason: "in_flight",
     });
   });
+
+  it("treats a stale lease from another session as cancelled and allows reentry reload", () => {
+    const detailA: OraSessionDetail = {
+      session: {
+        ...sessionSummary("session-a"),
+        updatedAt: 1_714_000_000_200,
+      },
+      turns: [{
+        runId: "run-a-1",
+        sessionId: "session-a",
+        turnIndex: 1,
+        status: "succeeded",
+        pattern: "orchestrator_subagent",
+        modeId: "debate",
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+        prompt: "A1",
+        startedAt: 1_714_000_000_000,
+        updatedAt: 1_714_000_000_200,
+        eventCount: 0,
+        checkpointCount: 0,
+        artifactCount: 0,
+      }],
+      transcript: [],
+      latestSnapshot: testSnapshot({
+        runId: "run-a-1",
+        sessionId: "session-a",
+        status: "succeeded",
+        updatedAt: 1_714_000_000_200,
+      }),
+    };
+    const detailB: OraSessionDetail = {
+      session: {
+        ...sessionSummary("session-b"),
+        updatedAt: 1_714_000_000_300,
+      },
+      turns: [{
+        runId: "run-b-1",
+        sessionId: "session-b",
+        turnIndex: 1,
+        status: "succeeded",
+        pattern: "orchestrator_subagent",
+        modeId: "debate",
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+        prompt: "B1",
+        startedAt: 1_714_000_000_100,
+        updatedAt: 1_714_000_000_300,
+        eventCount: 0,
+        checkpointCount: 0,
+        artifactCount: 0,
+      }],
+      transcript: [],
+      latestSnapshot: testSnapshot({
+        runId: "run-b-1",
+        sessionId: "session-b",
+        status: "succeeded",
+        updatedAt: 1_714_000_000_300,
+      }),
+    };
+    const targetA = deriveSessionHistorySnapshotLoadTarget(detailA)!;
+    const targetB = deriveSessionHistorySnapshotLoadTarget(detailB)!;
+
+    let cache = beginSessionHistorySnapshotLoad({
+      cache: {},
+      lease: {
+        ...targetA,
+        leaseId: 1,
+      },
+      now: 100,
+    });
+
+    cache = releaseSessionHistorySnapshotLoadTarget({
+      cache,
+      target: targetA,
+      now: 200,
+    });
+
+    cache = beginSessionHistorySnapshotLoad({
+      cache,
+      lease: {
+        ...targetB,
+        leaseId: 2,
+      },
+      now: 300,
+    });
+
+    const plan = deriveSessionHistorySnapshotLoadPlan({
+      detail: detailA,
+      cachedSnapshots: sessionTurnSnapshotsForSession(cache, "session-a"),
+      cachedLoadedRevisionKey: cache["session-a"]?.loadedRevisionKey,
+      loadingLease: sessionHistorySnapshotLoadLeaseForSession(cache, "session-a"),
+    });
+
+    expect(plan).toEqual({
+      kind: "load_missing",
+      sessionId: "session-a",
+      loadedRevisionKey: targetA.loadKey,
+      missingRunIds: ["run-a-1"],
+    });
+  });
+
+  it("does not let a stale completion seal a newer lease for the same session", () => {
+    const detail: OraSessionDetail = {
+      session: {
+        ...sessionSummary("session-stale-complete"),
+        updatedAt: 1_714_000_000_300,
+      },
+      turns: [{
+        runId: "run-stale-1",
+        sessionId: "session-stale-complete",
+        turnIndex: 1,
+        status: "succeeded",
+        pattern: "orchestrator_subagent",
+        modeId: "debate",
+        providerId: "local-smoke",
+        modelRef: "local-smoke",
+        prompt: "stale",
+        startedAt: 1_714_000_000_000,
+        updatedAt: 1_714_000_000_300,
+        eventCount: 0,
+        checkpointCount: 0,
+        artifactCount: 0,
+      }],
+      transcript: [],
+      latestSnapshot: testSnapshot({
+        runId: "run-stale-1",
+        sessionId: "session-stale-complete",
+        status: "succeeded",
+        updatedAt: 1_714_000_000_300,
+      }),
+    };
+    const target = deriveSessionHistorySnapshotLoadTarget(detail)!;
+    const fulfilled = [{
+      status: "fulfilled",
+      value: testSnapshot({
+        runId: "run-stale-1",
+        sessionId: "session-stale-complete",
+        status: "succeeded",
+        updatedAt: 1_714_000_000_300,
+      }),
+    }] as const satisfies readonly PromiseSettledResult<OraStateSnapshot>[];
+
+    let cache = beginSessionHistorySnapshotLoad({
+      cache: {},
+      lease: {
+        ...target,
+        leaseId: 1,
+      },
+      now: 100,
+    });
+
+    cache = beginSessionHistorySnapshotLoad({
+      cache,
+      lease: {
+        ...target,
+        leaseId: 2,
+      },
+      now: 200,
+    });
+
+    cache = completeSessionHistorySnapshotLoad({
+      cache,
+      lease: {
+        ...target,
+        leaseId: 1,
+      },
+      results: fulfilled,
+      now: 300,
+      maxSnapshots: 40,
+    });
+
+    expect(cache["session-stale-complete"]?.loadedRevisionKey).toBeUndefined();
+    expect(cache["session-stale-complete"]?.loadingLease).toEqual({
+      loadKey: target.loadKey,
+      leaseId: 2,
+    });
+
+    cache = completeSessionHistorySnapshotLoad({
+      cache,
+      lease: {
+        ...target,
+        leaseId: 2,
+      },
+      results: fulfilled,
+      now: 400,
+      maxSnapshots: 40,
+    });
+
+    expect(cache["session-stale-complete"]?.loadedRevisionKey).toBe(target.loadKey);
+    expect(cache["session-stale-complete"]?.loadingLease).toBeUndefined();
+  });
+
 });
 
 describe("desktop workbench state", () => {

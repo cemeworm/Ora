@@ -14,8 +14,11 @@ import {
   eventKindLabel,
   severityLabel,
   snapshotPendingClarifications,
+  buildCausalDecisionSummaryExpanded,
+  buildCausalDecisionChainSummary,
 } from "./trailViewModel";
 import type { OraStateSnapshot } from "./runtimeClient";
+import type { CausalInterventionSignificance } from "@cemeworm/shared";
 
 describe("trail debugger view model", () => {
   it("renders authority-rich child session and spawn preflight timeline details", () => {
@@ -458,7 +461,7 @@ describe("trail debugger view model", () => {
       }],
     });
 
-    const summary = buildCausalDecisionSummary(snapshot);
+    const summary = buildCausalDecisionSummaryExpanded(snapshot);
 
     expect(summary.decisions).toHaveLength(2);
     expect(summary.decisions[0]?.assistantPreview).toBe("第一段解释。");
@@ -549,7 +552,7 @@ describe("trail debugger view model", () => {
       }],
     });
 
-    const summary = buildCausalDecisionSummary(snapshot);
+    const summary = buildCausalDecisionSummaryExpanded(snapshot);
 
     expect(summary.decisions[0]?.assistantPreview).toBe("公开说明");
     expect(summary.decisions[0]?.assistantPreview).not.toContain("<tool_call>");
@@ -1266,6 +1269,28 @@ describe("trail debugger view model", () => {
     expect(evidence.observedSources).toContain("snapshot_output");
   });
 
+  it("rejected internal protocol snapshot.output does not count as readable evidence", () => {
+    const snapshot = baseSnapshot({
+      output: {
+        text: [
+          "这是一个可见前缀。",
+          "",
+          "<｜｜DSML｜｜tool_calls>",
+          '<｜｜DSML｜｜invoke name="file__read">',
+          "</｜｜DSML｜｜invoke>",
+          "</｜｜DSML｜｜tool_calls>",
+        ].join("\n"),
+      },
+    });
+
+    expect(deriveFirstTextEvidence(snapshot)).toMatchObject({
+      observed: false,
+      measured: false,
+      status: "missing",
+      observedSources: [],
+    });
+  });
+
   it("prefers runtime mark at for firstMeasuredTextAt", () => {
     const snapshot = baseSnapshot({
       latency: {
@@ -1323,6 +1348,492 @@ describe("trail debugger view model", () => {
       traceSummaryLine: "Deterministic: 1 selected, 1 rejected",
       traceCoverageLine: "溯源覆盖：3 条全链路，1 条部分链路，共 4 条",
     });
+  });
+
+  it("counts strategic/tactical/trace in causal decision summary and filters trace by default", () => {
+    const snapshot = baseSnapshot({
+      turnIndex: 1,
+      events: [
+        {
+          id: "evt-clarify",
+          runId: "run-test",
+          seq: 1,
+          type: "causal.decision.recorded",
+          createdAt: 1000,
+          agentId: "ora",
+          nodeId: "ora",
+          payload: {
+            source: "router_primary",
+            taskState: { surfaceRequest: "读取文件" },
+            policyDecision: {
+              goalUncertainty: 0.7,
+              factUncertainty: 0.3,
+              contextUncertainty: 0.4,
+              actionRisk: 0.1,
+              userCost: 0.3,
+              reversibility: "high",
+              recommendedAction: "clarify",
+              reason: "clarify: goal unclear",
+              wouldChangeOutcomeIfWrong: true,
+            },
+            chosenIntervention: "clarify",
+            alternativeInterventions: [],
+            recordedAt: 1000,
+            decisionContext: { phase: "clarification_triggered", agentId: "ora", nodeId: "ora", turnIndex: 1 },
+          },
+        },
+        {
+          id: "evt-search",
+          runId: "run-test",
+          seq: 2,
+          type: "causal.decision.recorded",
+          createdAt: 2000,
+          agentId: "ora",
+          nodeId: "ora",
+          payload: {
+            source: "router_primary",
+            taskState: { surfaceRequest: "读取文件" },
+            policyDecision: {
+              goalUncertainty: 0.3,
+              factUncertainty: 0.2,
+              contextUncertainty: 0.2,
+              actionRisk: 0.1,
+              userCost: 0.05,
+              reversibility: "high",
+              recommendedAction: "search_web",
+              reason: "search_web: need info",
+              wouldChangeOutcomeIfWrong: false,
+            },
+            chosenIntervention: "search_web",
+            alternativeInterventions: [],
+            recordedAt: 2000,
+            decisionContext: { phase: "tool_request", toolId: "web.search", agentId: "ora", nodeId: "ora", turnIndex: 1 },
+          },
+        },
+        {
+          id: "evt-tool",
+          runId: "run-test",
+          seq: 3,
+          type: "causal.decision.recorded",
+          createdAt: 3000,
+          agentId: "ora",
+          nodeId: "ora",
+          payload: {
+            source: "router_primary",
+            taskState: { surfaceRequest: "读取文件" },
+            policyDecision: {
+              goalUncertainty: 0.2,
+              factUncertainty: 0.1,
+              contextUncertainty: 0.1,
+              actionRisk: 0.1,
+              userCost: 0.05,
+              reversibility: "high",
+              recommendedAction: "use_tool",
+              reason: "use_tool: safe",
+              wouldChangeOutcomeIfWrong: false,
+            },
+            chosenIntervention: "use_tool",
+            alternativeInterventions: [],
+            recordedAt: 3000,
+            decisionContext: { phase: "tool_request", toolId: "file.write", agentId: "ora", nodeId: "ora", turnIndex: 1 },
+          },
+        },
+      ],
+      toolCalls: [
+        {
+          id: "run-test:tool-search",
+          runId: "run-test",
+          agentId: "ora",
+          nodeId: "ora",
+          toolId: "web.search",
+          args: {},
+          source: "provider_native",
+          status: "succeeded",
+          requestedAt: 2001,
+          updatedAt: 2002,
+        },
+        {
+          id: "run-test:tool-write",
+          runId: "run-test",
+          agentId: "ora",
+          nodeId: "ora",
+          toolId: "file.write",
+          args: {},
+          source: "provider_native",
+          status: "succeeded",
+          requestedAt: 3001,
+          updatedAt: 3002,
+        },
+      ],
+      pendingClarifications: [
+        {
+          id: "clarify-1",
+          nodeId: "ora",
+          nodeLabel: "Ora",
+          key: "file_path",
+          question: "请确认文件路径。",
+          options: [],
+          requestedAt: 1000,
+        } as const,
+      ],
+    });
+
+    const summary = buildCausalDecisionSummary(snapshot);
+
+    // strategic=1 (clarification_gate), tactical=1 (search_web), trace=1 (file.write tool) — trace filtered
+    expect(summary.strategicCount).toBe(1);
+    expect(summary.tacticalCount).toBe(1);
+    expect(summary.traceCount).toBe(1);
+    expect(summary.hiddenDecisionCount).toBe(1);
+    expect(summary.totalDecisions).toBe(2);
+    expect(summary.decisions).toHaveLength(2);
+    expect(summary.decisions[0]?.significance).toBe("strategic");
+    expect(summary.decisions[0]?.intervention).toBe("clarify");
+    expect(summary.decisions[1]?.significance).toBe("tactical");
+  });
+
+  it("significance field appears on every decision item", () => {
+    const snapshot = baseSnapshot({
+      events: [
+        {
+          id: "evt-plan",
+          runId: "run-test",
+          seq: 1,
+          type: "causal.decision.recorded",
+          createdAt: 1000,
+          agentId: "ora",
+          nodeId: "ora",
+          payload: {
+            source: "router_primary",
+            taskState: { surfaceRequest: "做一个计划" },
+            policyDecision: {
+              goalUncertainty: 0.3,
+              factUncertainty: 0.2,
+              contextUncertainty: 0.2,
+              actionRisk: 0.1,
+              userCost: 0.1,
+              reversibility: "high",
+              recommendedAction: "plan",
+              reason: "plan: need structure",
+              wouldChangeOutcomeIfWrong: false,
+            },
+            chosenIntervention: "plan",
+            alternativeInterventions: [],
+            recordedAt: 1000,
+            decisionContext: { phase: "plan_request", agentId: "ora", nodeId: "ora", turnIndex: 1 },
+          },
+        },
+      ],
+      planDecisions: [
+        {
+          id: "plan-1",
+          runId: "run-test",
+          sessionId: "session-test",
+          status: "accepted",
+          planContent: "合理计划",
+          createdAt: 1001,
+        } as const,
+      ],
+    });
+
+    const summary = buildCausalDecisionSummary(snapshot);
+
+    expect(summary.decisions).toHaveLength(1);
+    expect(summary.decisions[0]?.significance).toBe("strategic");
+    expect(summary.strategicCount).toBe(1);
+  });
+
+  it("expanded summary returns all decisions including trace", () => {
+    const snapshot = baseSnapshot({
+      turnIndex: 1,
+      events: [
+        {
+          id: "evt-clarify",
+          runId: "run-test",
+          seq: 1,
+          type: "causal.decision.recorded",
+          createdAt: 1000,
+          agentId: "ora",
+          nodeId: "ora",
+          payload: {
+            source: "router_primary",
+            taskState: { surfaceRequest: "读取文件" },
+            policyDecision: {
+              goalUncertainty: 0.7,
+              factUncertainty: 0.2,
+              contextUncertainty: 0.2,
+              actionRisk: 0.1,
+              userCost: 0.3,
+              reversibility: "high",
+              recommendedAction: "clarify",
+              reason: "clarify: goal unclear",
+              wouldChangeOutcomeIfWrong: true,
+            },
+            chosenIntervention: "clarify",
+            alternativeInterventions: [],
+            recordedAt: 1000,
+            decisionContext: { phase: "clarification_triggered", agentId: "ora", nodeId: "ora", turnIndex: 1 },
+          },
+        },
+        {
+          id: "evt-tool",
+          runId: "run-test",
+          seq: 2,
+          type: "causal.decision.recorded",
+          createdAt: 2000,
+          agentId: "ora",
+          nodeId: "ora",
+          payload: {
+            source: "router_primary",
+            taskState: { surfaceRequest: "读取文件" },
+            policyDecision: {
+              goalUncertainty: 0.2,
+              factUncertainty: 0.2,
+              contextUncertainty: 0.2,
+              actionRisk: 0.1,
+              userCost: 0.05,
+              reversibility: "high",
+              recommendedAction: "use_tool",
+              reason: "use_tool: safe",
+              wouldChangeOutcomeIfWrong: false,
+            },
+            chosenIntervention: "use_tool",
+            alternativeInterventions: [],
+            recordedAt: 2000,
+            decisionContext: { phase: "tool_request", toolId: "file.patch", agentId: "ora", nodeId: "ora", turnIndex: 1 },
+          },
+        },
+      ],
+      toolCalls: [
+        {
+          id: "run-test:tool-patch",
+          runId: "run-test",
+          agentId: "ora",
+          nodeId: "ora",
+          toolId: "file.patch",
+          args: {},
+          source: "provider_native",
+          status: "succeeded",
+          requestedAt: 2001,
+          updatedAt: 2002,
+        },
+      ],
+      pendingClarifications: [
+        {
+          id: "clarify-1",
+          nodeId: "ora",
+          nodeLabel: "Ora",
+          key: "file_path",
+          question: "请确认文件路径。",
+          options: [],
+          requestedAt: 1000,
+        } as const,
+      ],
+    });
+
+    const summary = buildCausalDecisionSummaryExpanded(snapshot);
+
+    expect(summary.decisions).toHaveLength(2);
+    expect(summary.strategicCount).toBe(1);
+    expect(summary.traceCount).toBe(1);
+    expect(summary.hiddenDecisionCount).toBe(0);
+    // strategic + trace both present
+    const sigs = summary.decisions.map((d) => d.significance);
+    expect(sigs).toContain("strategic");
+    expect(sigs).toContain("trace");
+  });
+
+  it("builds causal decision chain summary with uncertainty trend", () => {
+    const snapshot = baseSnapshot({
+      turnIndex: 3,
+      events: [
+        {
+          id: "evt-1",
+          runId: "run-test",
+          seq: 1,
+          type: "causal.decision.recorded",
+          createdAt: 1000,
+          agentId: "ora",
+          nodeId: "ora",
+          payload: {
+            source: "router_primary",
+            taskState: { surfaceRequest: "读取文件" },
+            policyDecision: {
+              goalUncertainty: 0.7,
+              factUncertainty: 0.3,
+              contextUncertainty: 0.4,
+              actionRisk: 0.1,
+              userCost: 0.3,
+              reversibility: "high",
+              recommendedAction: "clarify",
+              reason: "clarify: goal unclear",
+              wouldChangeOutcomeIfWrong: true,
+            },
+            chosenIntervention: "clarify",
+            alternativeInterventions: [],
+            recordedAt: 1000,
+            decisionContext: { phase: "clarification_triggered", agentId: "ora", nodeId: "ora", turnIndex: 1 },
+          },
+        },
+        {
+          id: "evt-2",
+          runId: "run-test",
+          seq: 2,
+          type: "causal.decision.recorded",
+          createdAt: 2000,
+          agentId: "ora",
+          nodeId: "ora",
+          payload: {
+            source: "router_primary",
+            taskState: { surfaceRequest: "读取文件" },
+            policyDecision: {
+              goalUncertainty: 0.4,
+              factUncertainty: 0.2,
+              contextUncertainty: 0.2,
+              actionRisk: 0.1,
+              userCost: 0.05,
+              reversibility: "high",
+              recommendedAction: "use_tool",
+              reason: "use_tool: safe",
+              wouldChangeOutcomeIfWrong: false,
+            },
+            chosenIntervention: "use_tool",
+            alternativeInterventions: [],
+            recordedAt: 2000,
+            decisionContext: { phase: "tool_request", toolId: "file.read", agentId: "ora", nodeId: "ora", turnIndex: 2 },
+          },
+        },
+        {
+          id: "evt-3",
+          runId: "run-test",
+          seq: 3,
+          type: "causal.decision.recorded",
+          createdAt: 3000,
+          agentId: "ora",
+          nodeId: "ora",
+          payload: {
+            source: "router_primary",
+            taskState: { surfaceRequest: "读取文件" },
+            policyDecision: {
+              goalUncertainty: 0.1,
+              factUncertainty: 0.1,
+              contextUncertainty: 0.1,
+              actionRisk: 0.1,
+              userCost: 0.05,
+              reversibility: "high",
+              recommendedAction: "answer_directly",
+              reason: "answer_directly: done",
+              wouldChangeOutcomeIfWrong: false,
+            },
+            chosenIntervention: "answer_directly",
+            alternativeInterventions: [],
+            recordedAt: 3000,
+            decisionContext: { phase: "completion", agentId: "ora", nodeId: "ora", turnIndex: 3 },
+          },
+        },
+      ],
+      toolCalls: [
+        {
+          id: "run-test:tool-read",
+          runId: "run-test",
+          agentId: "ora",
+          nodeId: "ora",
+          toolId: "file.read",
+          args: {},
+          source: "provider_native",
+          status: "succeeded",
+          requestedAt: 2001,
+          updatedAt: 2002,
+        },
+      ],
+      pendingClarifications: [
+        {
+          id: "clarify-1",
+          nodeId: "ora",
+          nodeLabel: "Ora",
+          key: "file_path",
+          question: "请确认文件路径。",
+          options: [],
+          requestedAt: 1000,
+        } as const,
+      ],
+    });
+
+    const chainSummary = buildCausalDecisionChainSummary(snapshot);
+
+    expect(chainSummary.totalChains).toBe(3);
+    expect(chainSummary.chains).toHaveLength(3);
+    expect(chainSummary.uncertaintyTrend).toEqual([0.7, 0.4, 0.1]);
+
+    // Chain 1: clarification
+    expect(chainSummary.chains[0]).toMatchObject({
+      chainId: "1:ora",
+      turnIndex: 1,
+      entryGoalUncertainty: 0.7,
+      exitGoalUncertainty: 0.7,
+      dominantIntervention: "clarify",
+      dominantInterventionLabel: "澄清目标",
+    });
+
+    // Chain 2: tool use
+    expect(chainSummary.chains[1]).toMatchObject({
+      chainId: "2:ora",
+      turnIndex: 2,
+      entryGoalUncertainty: 0.4,
+      exitGoalUncertainty: 0.4,
+      dominantIntervention: "use_tool",
+    });
+
+    // Chain 3: completion
+    expect(chainSummary.chains[2]).toMatchObject({
+      chainId: "3:ora",
+      turnIndex: 3,
+      entryGoalUncertainty: 0.1,
+      exitGoalUncertainty: 0.1,
+      dominantIntervention: "answer_directly",
+    });
+  });
+
+  it("chain summary returns empty trend when no effective episodes exist", () => {
+    const snapshot = baseSnapshot({
+      events: [
+        {
+          id: "evt-ineffective",
+          runId: "run-test",
+          seq: 1,
+          type: "causal.decision.recorded",
+          createdAt: 1000,
+          agentId: "ora",
+          nodeId: "ora",
+          payload: {
+            source: "router_primary",
+            taskState: { surfaceRequest: "测试" },
+            policyDecision: {
+              goalUncertainty: 0.3,
+              factUncertainty: 0.2,
+              contextUncertainty: 0.2,
+              actionRisk: 0.1,
+              userCost: 0.1,
+              reversibility: "high",
+              recommendedAction: "use_tool",
+              reason: "test",
+              wouldChangeOutcomeIfWrong: false,
+            },
+            chosenIntervention: "use_tool",
+            alternativeInterventions: [],
+            recordedAt: 1000,
+            decisionContext: { phase: "tool_request", toolId: "file.read", agentId: "ora", nodeId: "ora", turnIndex: 1 },
+          },
+        },
+      ],
+      toolCalls: [],
+    });
+
+    const chainSummary = buildCausalDecisionChainSummary(snapshot);
+
+    expect(chainSummary.totalChains).toBe(0);
+    expect(chainSummary.chains).toHaveLength(0);
+    expect(chainSummary.uncertaintyTrend).toEqual([]);
   });
 });
 
