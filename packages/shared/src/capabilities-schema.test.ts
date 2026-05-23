@@ -162,6 +162,22 @@ describe("MVP_TOOLS parameter schemas", () => {
     expect(resolution.visibleToolIds).not.toContain("skills.create");
   });
 
+  it("resolves single_agent_readonly without repo.explore", () => {
+    const availableToolIds = MVP_TOOLS.map((tool) => tool.id);
+    const resolution = resolveToolVisibility({
+      availableToolIds,
+      toolDescriptors: MVP_TOOLS,
+      presetId: "single_agent_readonly",
+      defaultDecisionSource: "resolver_default",
+    });
+
+    expect(resolution.visibleToolIds).toEqual(visibleToolIdsForPreset("single_agent_readonly", availableToolIds));
+    expect(resolution.visibleToolIds).not.toContain("repo.explore");
+    expect(resolution.visibleToolIds).toContain("file.read");
+    expect(resolution.visibleToolIds).toContain("agent.spawn");
+    expect(resolution.visibleToolIds).toContain("web.search");
+  });
+
   it("repo.explore request and response contracts parse the phase-1 shape", () => {
     const request = RepoExploreRequestSchema.parse({
       goal: "Find the auth entrypoint",

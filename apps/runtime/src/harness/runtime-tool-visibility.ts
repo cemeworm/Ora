@@ -54,6 +54,9 @@ function presetForNode(
     if (modeSpec.id === SINGLE_AGENT_MODE_ID && taskIntent === "implement") {
       return "single_agent_implement";
     }
+    if (modeSpec.id === SINGLE_AGENT_MODE_ID && (taskIntent === "chat" || taskIntent === "plan")) {
+      return "single_agent_readonly";
+    }
     if (modeSpec.id === ORA_SELF_BUILDER_MODE_ID) {
       return "self_builder_root";
     }

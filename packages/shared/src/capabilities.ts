@@ -254,6 +254,7 @@ export type ToolCapabilityGroup = z.infer<typeof ToolCapabilityGroupSchema>;
 export const ToolVisibilityPresetIdSchema = z.enum([
   "root_default",
   "coding_root",
+  "single_agent_readonly",
   "single_agent_implement",
   "self_builder_root",
   "self_builder_build",
@@ -409,6 +410,13 @@ export const TOOL_VISIBILITY_PRESETS: Record<ToolVisibilityPresetId, ToolVisibil
     allowedFamilies: ["explore", "coordinate", "execute"],
     toolIds: ["repo.explore", "file.read", "file.list", "file.glob", "file.grep", "plan.update", "agent.wait", "message.send"],
     blockedToolIds: ["file.write", "file.patch", "file.apply_patch", "shell.execute"],
+  },
+  single_agent_readonly: {
+    id: "single_agent_readonly",
+    label: "Single Agent Read Only",
+    allowedFamilies: ["explore", "coordinate", "execute", "environment"],
+    toolIds: ["file.read", "file.list", "file.glob", "file.grep", "plan.update", "agent.spawn", "agent.wait", "message.send", "web.fetch", "web.search"],
+    blockedToolIds: ["repo.explore", "file.write", "file.patch", "file.apply_patch", "shell.execute"],
   },
   single_agent_implement: {
     id: "single_agent_implement",

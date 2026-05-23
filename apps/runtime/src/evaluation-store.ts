@@ -3480,6 +3480,11 @@ function buildResolverVisibilityObservation(snapshot: StateSnapshot, modeSpec: S
   if (!modeSpec) {
     return undefined;
   }
+  const taskIntent = snapshot.config.metadata.taskIntent === "chat" ||
+    snapshot.config.metadata.taskIntent === "plan" ||
+    snapshot.config.metadata.taskIntent === "implement"
+    ? snapshot.config.metadata.taskIntent
+    : undefined;
   const rootProfile = snapshot.profiles.find((profile) => profile.id === ORA_ROOT_AGENT_ID);
   const resolution = resolveVisibleToolsForAgent({
     availableToolIds: snapshot.config.toolIds,
@@ -3487,6 +3492,7 @@ function buildResolverVisibilityObservation(snapshot: StateSnapshot, modeSpec: S
     modeSpec,
     agentId: ORA_ROOT_AGENT_ID,
     profileToolIds: rootProfile?.toolIds ?? [],
+    taskIntent,
   });
   const presetCounts: Record<string, number> = {};
   for (const child of snapshot.childSessions ?? []) {

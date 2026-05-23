@@ -3,6 +3,7 @@ import {
   CODE_DEVELOPMENT_MODE_ID,
   EvaluationCaseSchema,
   EvaluationObjectiveSchema,
+  SINGLE_AGENT_MODE_ID,
   StateSnapshotSchema,
   getModePreset,
 } from "@cemeworm/shared";
@@ -31,17 +32,20 @@ const evaluationCase = EvaluationCaseSchema.parse({
 function makeSnapshot(params: {
   toolCalls: Array<Record<string, unknown>>;
   events?: Array<Record<string, unknown>>;
+  modeId?: string;
+  metadata?: Record<string, unknown>;
 }) {
+  const modeId = params.modeId ?? CODE_DEVELOPMENT_MODE_ID;
   return StateSnapshotSchema.parse({
     runId: "run-eval-metrics",
     status: "succeeded",
     pattern: "orchestrator_subagent",
-    modeId: CODE_DEVELOPMENT_MODE_ID,
-    modeSpec: getModePreset(CODE_DEVELOPMENT_MODE_ID),
+    modeId,
+    modeSpec: getModePreset(modeId),
     input: { prompt: "Inspect the runtime authority path", createdAt: 1, context: {} },
     config: {
       pattern: "orchestrator_subagent",
-      modeId: CODE_DEVELOPMENT_MODE_ID,
+      modeId,
       toolIds: [
         "repo.explore",
         "file.read",
@@ -59,7 +63,7 @@ function makeSnapshot(params: {
         "web.fetch",
         "web.search",
       ],
-      metadata: {},
+      metadata: params.metadata ?? {},
     },
     topology: { nodes: [], edges: [] },
     profiles: [],
@@ -177,5 +181,34 @@ describe("resolver-aware evaluation metrics", () => {
     expect(byId.get("atomic_tool_hops")?.score).toBeLessThan(0.7);
     expect(byId.get("first_locate_success")?.score).toBeLessThan(0.7);
     expect(byId.get("shell_explore_restraint")?.score).toBeLessThan(0.7);
+  });
+
+  it("respects single_agent chat surface when rebuilding resolver visibility", () => {
+    const snapshot = makeSnapshot({
+      modeId: SINGLE_AGENT_MODE_ID,
+      metadata: { taskIntent: "chat" },
+      toolCalls: [
+        {
+          id: "tool-1",
+          runId: "run-eval-metrics",
+          toolId: "file.read",
+          args: { path: "apps/runtime/src/harness/causal-policy-router.ts" },
+          source: "provider_native",
+          status: "succeeded",
+          requestedAt: 1,
+          updatedAt: 2,
+        },
+      ],
+    });
+
+    const observations = extractEvaluationObservations(snapshot, 900);
+    const visibleToolIds = ((observations.runtime as Record<string, unknown>).toolVisibility as Record<string, unknown>).root as Record<string, unknown>;
+    expect(visibleToolIds.visibleToolIds).not.toContain("repo.explore");
+
+    const scores = scoreObjectiveMetrics(resolverWorkflowObjective, evaluationCase, observations);
+    const byId = new Map<string, (typeof scores)[number]>(scores.map((score) => [score.metricId, score]));
+
+    expect(byId.get("atomic_tool_hops")?.passed).toBe(true);
+    expect(byId.get("first_locate_success")?.passed).toBe(true);
   });
 });
