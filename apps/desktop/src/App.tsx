@@ -32,12 +32,18 @@ import {
   type OnboardingStatus,
 } from "./lib/onboarding";
 import {
+  deriveSessionHistorySnapshotLoadKey,
+  deriveSessionHistorySnapshotLoadPlan,
   deriveRenderableTurnSnapshots,
+  evictSessionTurnSnapshotCache,
   getActiveSnapshot,
   getPendingRunState,
+  mergeSessionHistorySnapshotBatch,
   mergeRunStreamSnapshot,
   mergeStateSnapshot,
   pruneTurnSnapshotsForActiveSession,
+  sessionTurnSnapshotsForSession,
+  updateSessionTurnSnapshotCache,
   useWorkbench,
   WorkbenchProvider,
 } from "./lib/state";
@@ -103,7 +109,8 @@ const MIN_DETAIL_PANEL_WIDTH = 360;
 const MIN_ARTIFACT_PANEL_WIDTH = 320;
 const MIN_MAIN_PANEL_WIDTH = 640;
 const WINDOW_TITLE_BASE = "Ora";
-const MAX_TURN_SNAPSHOTS = 40;
+const MAX_TURN_SNAPSHOT_SESSIONS = 8;
+const MAX_TURN_SNAPSHOTS_PER_SESSION = 40;
 
 import {
   coalesceLiveDeltaStreams,
@@ -306,38 +313,53 @@ function WorkbenchInner() {
       timeEnd("raf-batch");
     }
 
-    setTurnSnapshots((current) => {
+    setTurnSnapshotsBySession((current) => {
       let next = current;
       for (const { stream } of coalesced) {
         if (isLiveDeltaOnlyStream(stream)) continue;
-        const merged = mergeRunStreamSnapshot(next[stream.runId], stream);
+        const sessionId =
+          stream.snapshot?.sessionId ??
+          stream.sessionId ??
+          activeSessionIdRef.current;
+        if (!sessionId) continue;
+        const existing = sessionTurnSnapshotsForSession(next, sessionId)[stream.runId];
+        const merged = mergeRunStreamSnapshot(existing, stream);
         if (!merged) continue;
         if (
-          next[stream.runId] &&
-          next[stream.runId]!.updatedAt === merged.updatedAt &&
-          next[stream.runId]!.events.length === merged.events.length
+          existing &&
+          existing.updatedAt === merged.updatedAt &&
+          existing.events.length === merged.events.length
         ) {
           continue;
         }
-        next = { ...next, [stream.runId]: merged };
+        next = updateSessionTurnSnapshotCache({
+          cache: next,
+          sessionId,
+          snapshots: { [stream.runId]: merged },
+          maxSnapshots: MAX_TURN_SNAPSHOTS_PER_SESSION,
+          now: flushedAt,
+        });
       }
-
-      const keys = Object.keys(next);
-      if (keys.length > MAX_TURN_SNAPSHOTS) {
-        const evict = keys.slice(0, keys.length - MAX_TURN_SNAPSHOTS);
-        for (const key of evict) {
-          delete next[key];
-        }
-      }
-      return next;
+      return evictSessionTurnSnapshotCache({
+        cache: next,
+        activeSessionId: activeSessionIdRef.current,
+        maxSessions: MAX_TURN_SNAPSHOT_SESSIONS,
+      });
     });
   }, [dispatch]);
 
   const [artifactPanelWidth, setArtifactPanelWidth] = useState(
     DEFAULT_ARTIFACT_PANEL_WIDTH,
   );
-  const [turnSnapshots, setTurnSnapshots] = useState<
-    Record<string, OraStateSnapshot>
+  const [turnSnapshotsBySession, setTurnSnapshotsBySession] = useState<
+    Record<
+      string,
+      {
+        snapshots: Record<string, OraStateSnapshot>;
+        lastAccessedAt: number;
+        loadedRevisionKey?: string;
+      }
+    >
   >({});
   const [projectFileArtifact, setProjectFileArtifact] =
     useState<ArtifactRecord>();
@@ -642,10 +664,11 @@ function WorkbenchInner() {
 
   useEffect(() => {
     const snapshot = getActiveSnapshot(state.runLifecycle);
-    if (!snapshot) return;
+    const sessionId = snapshot?.sessionId ?? state.selectedSessionId;
+    if (!snapshot || !sessionId) return;
 
-    setTurnSnapshots((current) => {
-      const existing = current[snapshot.runId];
+    setTurnSnapshotsBySession((current) => {
+      const existing = sessionTurnSnapshotsForSession(current, sessionId)[snapshot.runId];
       const merged = mergeStateSnapshot(existing, snapshot);
       if (!merged) {
         return current;
@@ -658,81 +681,160 @@ function WorkbenchInner() {
       ) {
         return current;
       }
-      return { ...current, [snapshot.runId]: merged };
+        return evictSessionTurnSnapshotCache({
+          cache: updateSessionTurnSnapshotCache({
+            cache: current,
+            sessionId,
+            snapshots: { [snapshot.runId]: merged },
+            maxSnapshots: MAX_TURN_SNAPSHOTS_PER_SESSION,
+            now: Date.now(),
+          }),
+        activeSessionId: state.activeSessionDetail?.session.sessionId ?? state.selectedSessionId,
+        maxSessions: MAX_TURN_SNAPSHOT_SESSIONS,
+      });
     });
-  }, [getActiveSnapshot(state.runLifecycle)]);
-
-  function limitTurnSnapshots(
-    current: Record<string, OraStateSnapshot>,
-  ): Record<string, OraStateSnapshot> {
-    const keys = Object.keys(current);
-    if (keys.length <= MAX_TURN_SNAPSHOTS) return current;
-    const evict = keys.slice(0, keys.length - MAX_TURN_SNAPSHOTS);
-    const next = { ...current };
-    for (const key of evict) {
-      delete next[key];
-    }
-    return next;
-  }
+  }, [
+    getActiveSnapshot(state.runLifecycle),
+    state.activeSessionDetail?.session.sessionId,
+    state.selectedSessionId,
+  ]);
 
   useEffect(() => {
-    setTurnSnapshots((current) =>
-      limitTurnSnapshots(
-        pruneTurnSnapshotsForActiveSession(current, state.activeSessionDetail),
-      ),
-    );
+    const sessionId = state.activeSessionDetail?.session.sessionId;
+    if (!sessionId) {
+      return;
+    }
+    setTurnSnapshotsBySession((current) => {
+      const existing = sessionTurnSnapshotsForSession(current, sessionId);
+      const pruned = pruneTurnSnapshotsForActiveSession(existing, state.activeSessionDetail);
+      if (pruned === existing) {
+        return current;
+      }
+      return updateSessionTurnSnapshotCache({
+        cache: current,
+        sessionId,
+        snapshots: pruned,
+        replaceSnapshots: true,
+        maxSnapshots: MAX_TURN_SNAPSHOTS_PER_SESSION,
+        now: Date.now(),
+      });
+    });
   }, [state.activeSessionDetail]);
 
-  const loadedHistorySnapshotsRef = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (!state.selectedSessionId) {
+      return;
+    }
+    setTurnSnapshotsBySession((current) =>
+      evictSessionTurnSnapshotCache({
+        cache: updateSessionTurnSnapshotCache({
+          cache: current,
+          sessionId: state.selectedSessionId!,
+          now: Date.now(),
+        }),
+        activeSessionId: state.selectedSessionId,
+        maxSessions: MAX_TURN_SNAPSHOT_SESSIONS,
+      }),
+    );
+  }, [state.selectedSessionId]);
+
+  const activeSessionHistoryLoadKey = useMemo(
+    () => deriveSessionHistorySnapshotLoadKey(state.activeSessionDetail),
+    [state.activeSessionDetail],
+  );
+  const activeSessionCachedTurnSnapshots = useMemo(
+    () => sessionTurnSnapshotsForSession(turnSnapshotsBySession, state.selectedSessionId),
+    [state.selectedSessionId, turnSnapshotsBySession],
+  );
+  const loadingHistorySnapshotsRef = useRef<Record<string, string | undefined>>({});
+  const historyLoadMountedRef = useRef(true);
+
+  useEffect(() => {
+    return () => {
+      historyLoadMountedRef.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     const detail = state.activeSessionDetail;
-    if (!detail) return;
-    const sessionId = detail.session.sessionId;
-    if (loadedHistorySnapshotsRef.current === sessionId) return;
+    const sessionId = detail?.session.sessionId;
+    const loadPlan = deriveSessionHistorySnapshotLoadPlan({
+      detail,
+      cachedSnapshots: activeSessionCachedTurnSnapshots,
+      cachedLoadedRevisionKey: sessionId ? turnSnapshotsBySession[sessionId]?.loadedRevisionKey : undefined,
+      activeLoadKey: activeSessionHistoryLoadKey,
+      loadingLoadKey: sessionId ? loadingHistorySnapshotsRef.current[sessionId] : undefined,
+    });
+    if (loadPlan.kind === "skip") {
+      return;
+    }
 
-    const missingRunIds = detail.turns
-      .map((t) => t.runId)
-      .filter((runId) => !turnSnapshots[runId]);
-
-    if (missingRunIds.length === 0) {
-      loadedHistorySnapshotsRef.current = sessionId;
+    if (loadPlan.kind === "mark_loaded") {
+      setTurnSnapshotsBySession((current) =>
+        updateSessionTurnSnapshotCache({
+          cache: current,
+          sessionId: loadPlan.sessionId,
+          loadedRevisionKey: loadPlan.loadedRevisionKey,
+          now: Date.now(),
+        }),
+      );
+      delete loadingHistorySnapshotsRef.current[loadPlan.sessionId];
       return;
     }
 
     let cancelled = false;
+    if (loadPlan.loadedRevisionKey) {
+      loadingHistorySnapshotsRef.current[loadPlan.sessionId] = loadPlan.loadedRevisionKey;
+    }
     void (async () => {
       const results = await Promise.allSettled(
-        missingRunIds.map((runId) => runtimeClient.getRunState(runId)),
+        loadPlan.missingRunIds.map((runId) => runtimeClient.getRunState(runId)),
       );
-      if (cancelled) return;
-      setTurnSnapshots((current) => {
-        let next = { ...current };
-        for (const result of results) {
-          if (result.status !== "fulfilled") continue;
-          const snapshot = result.value;
-          const existing = current[snapshot.runId];
-          const merged = mergeStateSnapshot(existing, snapshot);
-          if (merged) {
-            next[snapshot.runId] = merged;
-          }
-        }
-        return limitTurnSnapshots(next);
+      if (cancelled || !historyLoadMountedRef.current) return;
+      setTurnSnapshotsBySession((current) => {
+        const batch = mergeSessionHistorySnapshotBatch({
+          currentSnapshots: sessionTurnSnapshotsForSession(current, loadPlan.sessionId),
+          results,
+          loadedRevisionKey: loadPlan.loadedRevisionKey,
+          maxSnapshots: MAX_TURN_SNAPSHOTS_PER_SESSION,
+        });
+        return evictSessionTurnSnapshotCache({
+          cache: updateSessionTurnSnapshotCache({
+            cache: current,
+            sessionId: loadPlan.sessionId,
+            snapshots: batch.snapshots,
+            loadedRevisionKey: batch.loadedRevisionKey,
+            replaceSnapshots: true,
+            maxSnapshots: MAX_TURN_SNAPSHOTS_PER_SESSION,
+            now: Date.now(),
+          }),
+          activeSessionId: state.selectedSessionId,
+          maxSessions: MAX_TURN_SNAPSHOT_SESSIONS,
+        });
       });
-      loadedHistorySnapshotsRef.current = sessionId;
     })();
 
     return () => {
       cancelled = true;
+      if (!historyLoadMountedRef.current) {
+        delete loadingHistorySnapshotsRef.current[loadPlan.sessionId];
+      }
     };
-  }, [state.activeSessionDetail?.session.sessionId, turnSnapshots, runtimeClient]);
+  }, [
+    activeSessionCachedTurnSnapshots,
+    activeSessionHistoryLoadKey,
+    runtimeClient,
+    state.activeSessionDetail,
+    state.selectedSessionId,
+    turnSnapshotsBySession,
+  ]);
 
   useEffect(() => {
     if (state.detailDrawer !== "trails" || !state.selectedTurnRunId) {
       return;
     }
 
-    const cached = turnSnapshots[state.selectedTurnRunId];
+    const cached = activeSessionCachedTurnSnapshots[state.selectedTurnRunId];
     if (cached) {
       if (
         getActiveSnapshot(state.runLifecycle)?.runId !== state.selectedTurnRunId
@@ -753,8 +855,12 @@ function WorkbenchInner() {
           state.selectedTurnRunId!,
         );
         if (cancelled) return;
-        setTurnSnapshots((current) => {
-          const existing = current[snapshot.runId];
+        const sessionId = snapshot.sessionId ?? state.selectedSessionId;
+        if (!sessionId) {
+          return;
+        }
+        setTurnSnapshotsBySession((current) => {
+          const existing = sessionTurnSnapshotsForSession(current, sessionId)[snapshot.runId];
           const merged = mergeStateSnapshot(existing, snapshot);
           if (!merged) {
             return current;
@@ -766,14 +872,23 @@ function WorkbenchInner() {
           ) {
             return current;
           }
-          return { ...current, [snapshot.runId]: merged };
+          return evictSessionTurnSnapshotCache({
+            cache: updateSessionTurnSnapshotCache({
+              cache: current,
+              sessionId,
+              snapshots: { [snapshot.runId]: merged },
+              maxSnapshots: MAX_TURN_SNAPSHOTS_PER_SESSION,
+              now: Date.now(),
+            }),
+            activeSessionId: state.selectedSessionId,
+            maxSessions: MAX_TURN_SNAPSHOT_SESSIONS,
+          });
         });
         dispatch({
           type: "SELECT_TURN",
           runId: snapshot.runId,
           snapshot,
         });
-        setTurnSnapshots(limitTurnSnapshots);
       } catch {
         // Historical snapshots load on demand; a missing one should not block chat.
       }
@@ -788,7 +903,8 @@ function WorkbenchInner() {
     getActiveSnapshot(state.runLifecycle)?.runId,
     state.detailDrawer,
     state.selectedTurnRunId,
-    turnSnapshots,
+    activeSessionCachedTurnSnapshots,
+    state.selectedSessionId,
   ]);
 
   const activeSessionTurnSnapshots = useMemo(
@@ -796,13 +912,13 @@ function WorkbenchInner() {
       deriveRenderableTurnSnapshots({
         detail: state.activeSessionDetail,
         activeSnapshot: getActiveSnapshot(state.runLifecycle),
-        turnSnapshots,
+        turnSnapshots: activeSessionCachedTurnSnapshots,
         selectedSessionId: state.selectedSessionId,
         preservedSettledSnapshots: state.preservedSettledSnapshots,
       }),
     [
       state.activeSessionDetail,
-      turnSnapshots,
+      activeSessionCachedTurnSnapshots,
       getActiveSnapshot(state.runLifecycle),
       state.selectedSessionId,
       state.preservedSettledSnapshots,

@@ -133,6 +133,14 @@ export interface LiveMessageDeltaBufferEntry {
 
 export type LiveMessageDeltaBuffer = Record<string, LiveMessageDeltaBufferEntry>;
 
+export interface SessionTurnSnapshotCacheEntry {
+  snapshots: Record<string, OraStateSnapshot>;
+  lastAccessedAt: number;
+  loadedRevisionKey?: string;
+}
+
+export type SessionTurnSnapshotCache = Record<string, SessionTurnSnapshotCacheEntry>;
+
 export function getActiveSnapshot(lc: RunLifecycle): OraStateSnapshot | undefined {
   return lc.stage === "streaming" || lc.stage === "settled" ? lc.snapshot : undefined;
 }
@@ -544,17 +552,28 @@ function snapshotMatchesSessionSummary(
   );
 }
 
+function shouldApplySnapshotAuthorityToSession(
+  session: OraSessionSummary,
+  snapshot: OraStateSnapshot | undefined,
+): snapshot is OraStateSnapshot {
+  return Boolean(
+    snapshot &&
+      snapshot.sessionId === session.sessionId &&
+      (session.latestRunId === undefined || session.latestRunId === snapshot.runId),
+  );
+}
+
 function applySnapshotAuthorityToSessionSummary(
   session: OraSessionSummary,
   snapshot: OraStateSnapshot | undefined,
 ): OraSessionSummary {
-  if (!snapshotMatchesSessionSummary(snapshot, session)) {
+  if (!shouldApplySnapshotAuthorityToSession(session, snapshot)) {
     return session;
   }
   const normalizedSnapshot = normalizeDesktopSnapshot(snapshot);
   if (
-    !isFinalRunStatus(normalizedSnapshot.status) &&
-    isFinalRunStatus(session.status)
+    !isTerminalRunStatus(normalizedSnapshot.status) &&
+    isTerminalRunStatus(session.status)
   ) {
     return session;
   }
@@ -574,6 +593,34 @@ function applySnapshotAuthorityToSessionSummary(
   };
 }
 
+function applySnapshotAuthorityToSessionDetail(
+  detail: OraSessionDetail,
+  snapshot: OraStateSnapshot | undefined,
+): OraSessionDetail {
+  if (!shouldApplySnapshotAuthorityToSession(detail.session, snapshot)) {
+    return detail;
+  }
+  const normalizedSnapshot = normalizeDesktopSnapshot(snapshot);
+  const nextSession = applySnapshotAuthorityToSessionSummary(
+    detail.session,
+    normalizedSnapshot,
+  );
+  const nextSnapshot =
+    detail.latestSnapshot?.runId === normalizedSnapshot.runId ||
+    detail.session.latestRunId === undefined ||
+    detail.session.latestRunId === normalizedSnapshot.runId
+      ? normalizedSnapshot
+      : detail.latestSnapshot;
+  if (nextSession === detail.session && nextSnapshot === detail.latestSnapshot) {
+    return detail;
+  }
+  return {
+    ...detail,
+    session: nextSession,
+    latestSnapshot: nextSnapshot,
+  };
+}
+
 function preserveFinalSessionSummary(
   incoming: OraSessionSummary,
   existing: OraSessionSummary | undefined,
@@ -582,8 +629,8 @@ function preserveFinalSessionSummary(
     !existing ||
     existing.sessionId !== incoming.sessionId ||
     existing.latestRunId !== incoming.latestRunId ||
-    !isFinalRunStatus(existing.status) ||
-    isFinalRunStatus(incoming.status)
+    !isTerminalRunStatus(existing.status) ||
+    isTerminalRunStatus(incoming.status)
   ) {
     return incoming;
   }
@@ -757,6 +804,200 @@ function clearSessionLiveSnapshot(
   }
   const { [sessionId]: _cleared, ...rest } = cache;
   return rest;
+}
+
+export function deriveSessionHistorySnapshotLoadKey(
+  detail: OraSessionDetail | undefined,
+): string | undefined {
+  if (!detail) {
+    return undefined;
+  }
+  const latestTurn = detail.turns.at(-1);
+  return [
+    detail.session.sessionId,
+    detail.session.updatedAt,
+    detail.turns.length,
+    latestTurn?.runId ?? "none",
+    latestTurn?.updatedAt ?? 0,
+  ].join(":");
+}
+
+export type SessionHistorySnapshotLoadPlan =
+  | { kind: "skip"; reason: "no_detail" | "already_loaded" | "in_flight" | "no_revision_key" }
+  | { kind: "mark_loaded"; sessionId: string; loadedRevisionKey: string }
+  | { kind: "load_missing"; sessionId: string; loadedRevisionKey?: string; missingRunIds: string[] };
+
+export function deriveSessionHistorySnapshotLoadPlan(params: {
+  detail: OraSessionDetail | undefined;
+  cachedSnapshots: Record<string, OraStateSnapshot>;
+  cachedLoadedRevisionKey?: string;
+  activeLoadKey?: string;
+  loadingLoadKey?: string;
+}): SessionHistorySnapshotLoadPlan {
+  const { detail, cachedSnapshots, cachedLoadedRevisionKey, activeLoadKey, loadingLoadKey } = params;
+  if (!detail) {
+    return { kind: "skip", reason: "no_detail" };
+  }
+
+  if (activeLoadKey && cachedLoadedRevisionKey === activeLoadKey) {
+    return { kind: "skip", reason: "already_loaded" };
+  }
+  if (activeLoadKey && loadingLoadKey === activeLoadKey) {
+    return { kind: "skip", reason: "in_flight" };
+  }
+
+  const sessionId = detail.session.sessionId;
+  const missingRunIds = detail.turns
+    .map((turn) => turn.runId)
+    .filter((runId) => !cachedSnapshots[runId]);
+
+  if (missingRunIds.length === 0) {
+    if (!activeLoadKey) {
+      return { kind: "skip", reason: "no_revision_key" };
+    }
+    return {
+      kind: "mark_loaded",
+      sessionId,
+      loadedRevisionKey: activeLoadKey,
+    };
+  }
+
+  return {
+    kind: "load_missing",
+    sessionId,
+    loadedRevisionKey: activeLoadKey,
+    missingRunIds,
+  };
+}
+
+export function sessionTurnSnapshotsForSession(
+  cache: SessionTurnSnapshotCache,
+  sessionId: string | undefined,
+): Record<string, OraStateSnapshot> {
+  return sessionId ? (cache[sessionId]?.snapshots ?? {}) : {};
+}
+
+function pruneSessionTurnSnapshots(
+  snapshots: Record<string, OraStateSnapshot>,
+  maxSnapshots: number | undefined,
+): Record<string, OraStateSnapshot> {
+  if (!maxSnapshots) {
+    return snapshots;
+  }
+  const entries = Object.entries(snapshots);
+  if (entries.length <= maxSnapshots) {
+    return snapshots;
+  }
+  return Object.fromEntries(
+    entries
+      .sort(([, left], [, right]) => {
+        const updatedAtDiff = right.updatedAt - left.updatedAt;
+        if (updatedAtDiff !== 0) {
+          return updatedAtDiff;
+        }
+        return right.runId.localeCompare(left.runId);
+      })
+      .slice(0, maxSnapshots),
+  );
+}
+
+export function mergeSessionHistorySnapshotBatch(params: {
+  currentSnapshots: Record<string, OraStateSnapshot>;
+  results: readonly PromiseSettledResult<OraStateSnapshot>[];
+  loadedRevisionKey?: string;
+  maxSnapshots?: number;
+}): {
+  snapshots: Record<string, OraStateSnapshot>;
+  loadedRevisionKey?: string;
+} {
+  let nextSnapshots = params.currentSnapshots;
+  let complete = true;
+  for (const result of params.results) {
+    if (result.status !== "fulfilled") {
+      complete = false;
+      continue;
+    }
+    const snapshot = result.value;
+    const existing = nextSnapshots[snapshot.runId];
+    const merged = mergeStateSnapshot(existing, snapshot);
+    if (!merged || merged === existing) {
+      continue;
+    }
+    if (nextSnapshots === params.currentSnapshots) {
+      nextSnapshots = { ...params.currentSnapshots };
+    }
+    nextSnapshots[snapshot.runId] = merged;
+  }
+  return {
+    snapshots: pruneSessionTurnSnapshots(nextSnapshots, params.maxSnapshots),
+    loadedRevisionKey: complete ? params.loadedRevisionKey : undefined,
+  };
+}
+
+export function updateSessionTurnSnapshotCache(params: {
+  cache: SessionTurnSnapshotCache;
+  sessionId: string;
+  snapshots?: Record<string, OraStateSnapshot>;
+  loadedRevisionKey?: string;
+  now: number;
+  replaceSnapshots?: boolean;
+  maxSnapshots?: number;
+}): SessionTurnSnapshotCache {
+  const existing = params.cache[params.sessionId];
+  const nextSnapshots = pruneSessionTurnSnapshots(
+    params.replaceSnapshots
+      ? (params.snapshots ?? {})
+      : {
+          ...(existing?.snapshots ?? {}),
+          ...(params.snapshots ?? {}),
+        },
+    params.maxSnapshots,
+  );
+  const nextEntry: SessionTurnSnapshotCacheEntry = {
+    snapshots: nextSnapshots,
+    lastAccessedAt: params.now,
+    loadedRevisionKey: params.loadedRevisionKey ?? existing?.loadedRevisionKey,
+  };
+  if (
+    existing &&
+    existing.lastAccessedAt === nextEntry.lastAccessedAt &&
+    existing.loadedRevisionKey === nextEntry.loadedRevisionKey &&
+    existing.snapshots === nextEntry.snapshots
+  ) {
+    return params.cache;
+  }
+  return {
+    ...params.cache,
+    [params.sessionId]: nextEntry,
+  };
+}
+
+export function evictSessionTurnSnapshotCache(params: {
+  cache: SessionTurnSnapshotCache;
+  activeSessionId?: string;
+  maxSessions: number;
+}): SessionTurnSnapshotCache {
+  const entries = Object.entries(params.cache);
+  if (entries.length <= params.maxSessions) {
+    return params.cache;
+  }
+  const retained = new Map<string, SessionTurnSnapshotCacheEntry>();
+  if (params.activeSessionId && params.cache[params.activeSessionId]) {
+    retained.set(params.activeSessionId, params.cache[params.activeSessionId]!);
+  }
+  for (const [sessionId, entry] of entries.sort(([, left], [, right]) => right.lastAccessedAt - left.lastAccessedAt)) {
+    if (retained.has(sessionId)) {
+      continue;
+    }
+    retained.set(sessionId, entry);
+    if (retained.size >= params.maxSessions) {
+      break;
+    }
+  }
+  const next = Object.fromEntries(retained);
+  return Object.keys(next).length === Object.keys(params.cache).length
+    ? params.cache
+    : next;
 }
 
 function resolveSessionAuthoritySnapshot(params: {
@@ -1248,6 +1489,12 @@ function isFinalRunStatus(
   status: OraStateSnapshot["status"] | undefined,
 ): status is OraStateSnapshot["status"] {
   return status === "succeeded" || status === "failed" || status === "cancelled" || status === "interrupted";
+}
+
+function isTerminalRunStatus(
+  status: OraStateSnapshot["status"] | undefined,
+): status is OraStateSnapshot["status"] {
+  return status === "succeeded" || status === "failed" || status === "cancelled";
 }
 
 export function mergeStateSnapshot(
@@ -2328,17 +2575,20 @@ function syncSessionStateForStream(
     if (!sessionSummaryMatchesStream(session, stream, snapshot)) {
       return session;
     }
-    const nextSession = {
-      ...session,
-      status: status ?? session.status,
-      attention: snapshot?.attention ?? session.attention,
-      latestRunId: snapshot?.runId ?? session.latestRunId ?? stream.runId,
-      latestPattern: snapshot?.pattern ?? session.latestPattern,
-      latestModeId: snapshot?.modeId ?? session.latestModeId,
-      latestProviderId: snapshot?.config.providerId ?? session.latestProviderId,
-      latestModelRef: snapshot?.config.modelRef ?? session.latestModelRef,
-      updatedAt: updatedAt ?? session.updatedAt,
-    };
+    const nextSession = applySnapshotAuthorityToSessionSummary(
+      {
+        ...session,
+        status: status ?? session.status,
+        attention: snapshot ? snapshot.attention : session.attention,
+        latestRunId: snapshot?.runId ?? session.latestRunId ?? stream.runId,
+        latestPattern: snapshot?.pattern ?? session.latestPattern,
+        latestModeId: snapshot?.modeId ?? session.latestModeId,
+        latestProviderId: snapshot?.config.providerId ?? session.latestProviderId,
+        latestModelRef: snapshot?.config.modelRef ?? session.latestModelRef,
+        updatedAt: updatedAt ?? session.updatedAt,
+      },
+      snapshot,
+    );
     if (nextSession !== session) {
       sessionsChanged = true;
     }
@@ -2430,18 +2680,18 @@ function applyStreamToSessionDetail(
     });
   }
 
-  return {
+  return applySnapshotAuthorityToSessionDetail({
     ...detail,
     session: {
       ...detail.session,
       status: status ?? detail.session.status,
-      attention: snapshot?.attention ?? detail.session.attention,
+      attention: snapshot ? snapshot.attention : detail.session.attention,
       latestRunId: stream.runId,
       updatedAt: updatedAt ?? detail.session.updatedAt,
     },
     turns,
     latestSnapshot: snapshot ?? detail.latestSnapshot,
-  };
+  }, snapshot);
 }
 
 function applyBranchStreamToSessionDetail(
@@ -2960,17 +3210,14 @@ export function workbenchReducer(
         activeSnapshot: activeSnapshotForSession,
       });
       const latestTurn = action.detail.turns.at(-1);
-      const attention = effectiveSnapshot?.attention ?? action.detail.session.attention;
-      const status = effectiveSnapshot?.status ?? action.detail.session.status;
-      const normalizedDetail = {
+      const normalizedDetail = applySnapshotAuthorityToSessionDetail({
         ...action.detail,
         session: {
           ...action.detail.session,
-          status,
-          attention,
+          status: effectiveSnapshot?.status ?? action.detail.session.status,
         },
         latestSnapshot: effectiveSnapshot ?? action.detail.latestSnapshot,
-      };
+      }, effectiveSnapshot);
       const sessions = reconcileSessionSummariesWithLocalAuthority(
         state,
         replaceSessionSummary(
@@ -3412,10 +3659,10 @@ export function workbenchReducer(
           })
         : state.sessionLiveSnapshotsById[action.sessionId];
       const activeSessionDetail = detail
-        ? {
+        ? applySnapshotAuthorityToSessionDetail({
             ...detail,
             latestSnapshot: snapshot ?? detail.latestSnapshot,
-          }
+          }, snapshot)
         : detail;
       const latestTurn = detail?.turns.at(-1);
       const currentPendingRun = getPendingRunState(state.runLifecycle);
@@ -3866,6 +4113,18 @@ export function workbenchReducer(
           : state.acceptedPlanDecisionTurnProjections;
       return {
         ...state,
+        sessions: activeSnapshot
+          ? state.sessions.map((session) =>
+              applySnapshotAuthorityToSessionSummary(session, activeSnapshot),
+            )
+          : state.sessions,
+        activeSessionDetail:
+          state.activeSessionDetail && activeSnapshot
+            ? applySnapshotAuthorityToSessionDetail(
+                state.activeSessionDetail,
+                activeSnapshot,
+              )
+            : state.activeSessionDetail,
         sessionLiveSnapshotsById: cacheSessionLiveSnapshot(
           state.sessionLiveSnapshotsById,
           activeSnapshot,

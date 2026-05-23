@@ -1,13 +1,19 @@
 import { describe, expect, it } from "vitest";
 import { CODE_DEVELOPMENT_MODE_ID, SINGLE_AGENT_MODE_ID } from "@cemeworm/shared";
 import {
+  deriveSessionHistorySnapshotLoadKey,
+  deriveSessionHistorySnapshotLoadPlan,
   deriveRenderableTurnSnapshots,
+  evictSessionTurnSnapshotCache,
   getActiveSnapshot,
   getPendingRunState,
   initialWorkbenchState,
+  mergeSessionHistorySnapshotBatch,
   mergeRunStreamSnapshot,
   mergeStateSnapshot,
   pruneTurnSnapshotsForActiveSession,
+  sessionTurnSnapshotsForSession,
+  updateSessionTurnSnapshotCache,
   workbenchReducer,
 } from "./state";
 import type { WorkbenchAction, WorkbenchState } from "./state";
@@ -190,6 +196,394 @@ function agentMessageEvent(message: OraStateSnapshot["agentMessages"][number], s
     payload: { message },
   } as unknown as OraStateSnapshot["events"][number];
 }
+
+describe("session turn snapshot cache helpers", () => {
+  it("binds loaded-history keys to session revision and latest turn state", () => {
+    const detail: OraSessionDetail = {
+      session: {
+        ...sessionSummary("session-history-key"),
+        updatedAt: 1_714_000_000_100,
+      },
+      turns: [{
+        runId: "run-history",
+        sessionId: "session-history-key",
+        turnIndex: 1,
+        status: "succeeded",
+        pattern: "orchestrator_subagent",
+        modeId: "debate",
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+        prompt: "History",
+        startedAt: 1_714_000_000_000,
+        updatedAt: 1_714_000_000_100,
+        eventCount: 0,
+        checkpointCount: 0,
+        artifactCount: 0,
+      }],
+      transcript: [],
+      latestSnapshot: testSnapshot({
+        runId: "run-history",
+        sessionId: "session-history-key",
+        status: "succeeded",
+        updatedAt: 1_714_000_000_100,
+      }),
+    };
+
+    const initialKey = deriveSessionHistorySnapshotLoadKey(detail);
+    const refreshedKey = deriveSessionHistorySnapshotLoadKey({
+      ...detail,
+      session: {
+        ...detail.session,
+        updatedAt: 1_714_000_000_200,
+      },
+      turns: detail.turns.map((turn) =>
+        turn.runId === "run-history"
+          ? { ...turn, updatedAt: 1_714_000_000_200 }
+          : turn,
+      ),
+      latestSnapshot: testSnapshot({
+        runId: "run-history",
+        sessionId: "session-history-key",
+        status: "succeeded",
+        updatedAt: 1_714_000_000_200,
+      }),
+    });
+
+    expect(initialKey).not.toBe(refreshedKey);
+  });
+
+  it("keeps the active session bucket while evicting older snapshot caches", () => {
+    const snapshotA = testSnapshot({ runId: "run-a", sessionId: "session-a", updatedAt: 100 });
+    const snapshotB = testSnapshot({ runId: "run-b", sessionId: "session-b", updatedAt: 200 });
+    const snapshotC = testSnapshot({ runId: "run-c", sessionId: "session-c", updatedAt: 300 });
+
+    let cache = updateSessionTurnSnapshotCache({
+      cache: {},
+      sessionId: "session-a",
+      snapshots: { "run-a": snapshotA },
+      now: 100,
+    });
+    cache = updateSessionTurnSnapshotCache({
+      cache,
+      sessionId: "session-b",
+      snapshots: { "run-b": snapshotB },
+      loadedRevisionKey: "session-b:rev-1",
+      now: 200,
+    });
+    cache = updateSessionTurnSnapshotCache({
+      cache,
+      sessionId: "session-c",
+      snapshots: { "run-c": snapshotC },
+      now: 300,
+    });
+
+    const evicted = evictSessionTurnSnapshotCache({
+      cache,
+      activeSessionId: "session-a",
+      maxSessions: 2,
+    });
+
+    expect(Object.keys(evicted).sort()).toEqual(["session-a", "session-c"]);
+    expect(sessionTurnSnapshotsForSession(evicted, "session-a")).toEqual({ "run-a": snapshotA });
+    expect(sessionTurnSnapshotsForSession(evicted, "session-b")).toEqual({});
+    expect(evicted["session-a"]?.lastAccessedAt).toBe(100);
+  });
+
+  it("does not seal a history revision when some run snapshots fail to load", () => {
+    const existing = testSnapshot({
+      runId: "run-existing",
+      sessionId: "session-history-key",
+      status: "succeeded",
+      updatedAt: 100,
+    });
+    const loaded = testSnapshot({
+      runId: "run-loaded",
+      sessionId: "session-history-key",
+      status: "succeeded",
+      updatedAt: 200,
+    });
+
+    const merged = mergeSessionHistorySnapshotBatch({
+      currentSnapshots: { [existing.runId]: existing },
+      results: [
+        { status: "fulfilled", value: loaded },
+        { status: "rejected", reason: new Error("temporary fetch failure") },
+      ],
+      loadedRevisionKey: "session-history-key:rev-2",
+      maxSnapshots: 40,
+    });
+
+    expect(merged.snapshots).toMatchObject({
+      [existing.runId]: existing,
+      [loaded.runId]: loaded,
+    });
+    expect(merged.loadedRevisionKey).toBeUndefined();
+  });
+
+  it("caps snapshots retained within a single session bucket", () => {
+    const snapshotA = testSnapshot({ runId: "run-a", sessionId: "session-limit", updatedAt: 100 });
+    const snapshotB = testSnapshot({ runId: "run-b", sessionId: "session-limit", updatedAt: 200 });
+    const snapshotC = testSnapshot({ runId: "run-c", sessionId: "session-limit", updatedAt: 300 });
+
+    const cache = updateSessionTurnSnapshotCache({
+      cache: {},
+      sessionId: "session-limit",
+      snapshots: {
+        [snapshotA.runId]: snapshotA,
+        [snapshotB.runId]: snapshotB,
+        [snapshotC.runId]: snapshotC,
+      },
+      loadedRevisionKey: "session-limit:rev-1",
+      maxSnapshots: 2,
+      now: 300,
+    });
+
+    expect(Object.keys(sessionTurnSnapshotsForSession(cache, "session-limit")).sort()).toEqual([
+      "run-b",
+      "run-c",
+    ]);
+    expect(cache["session-limit"]?.loadedRevisionKey).toBe("session-limit:rev-1");
+  });
+
+  it("keeps a visited session warm across an A/B/A switch when the revision is unchanged", () => {
+    const detailA: OraSessionDetail = {
+      session: {
+        ...sessionSummary("session-a"),
+        updatedAt: 1_714_000_000_200,
+      },
+      turns: [
+        {
+          runId: "run-a-1",
+          sessionId: "session-a",
+          turnIndex: 1,
+          status: "succeeded",
+          pattern: "orchestrator_subagent",
+          modeId: "debate",
+          providerId: "local-smoke",
+          modelRef: "local/smoke-model",
+          prompt: "A1",
+          startedAt: 1_714_000_000_000,
+          updatedAt: 1_714_000_000_100,
+          eventCount: 0,
+          checkpointCount: 0,
+          artifactCount: 0,
+        },
+        {
+          runId: "run-a-2",
+          sessionId: "session-a",
+          turnIndex: 2,
+          status: "succeeded",
+          pattern: "orchestrator_subagent",
+          modeId: "debate",
+          providerId: "local-smoke",
+          modelRef: "local/smoke-model",
+          prompt: "A2",
+          startedAt: 1_714_000_000_150,
+          updatedAt: 1_714_000_000_200,
+          eventCount: 0,
+          checkpointCount: 0,
+          artifactCount: 0,
+        },
+      ],
+      transcript: [],
+      latestSnapshot: testSnapshot({
+        runId: "run-a-2",
+        sessionId: "session-a",
+        status: "succeeded",
+        updatedAt: 1_714_000_000_200,
+      }),
+    };
+    const detailB: OraSessionDetail = {
+      session: {
+        ...sessionSummary("session-b"),
+        updatedAt: 1_714_000_000_300,
+      },
+      turns: [],
+      transcript: [],
+      latestSnapshot: undefined,
+    };
+    const keyA = deriveSessionHistorySnapshotLoadKey(detailA);
+    const snapshotA1 = testSnapshot({
+      runId: "run-a-1",
+      sessionId: "session-a",
+      status: "succeeded",
+      updatedAt: 1_714_000_000_100,
+    });
+    const snapshotA2 = testSnapshot({
+      runId: "run-a-2",
+      sessionId: "session-a",
+      status: "succeeded",
+      updatedAt: 1_714_000_000_200,
+    });
+
+    let cache = updateSessionTurnSnapshotCache({
+      cache: {},
+      sessionId: "session-a",
+      snapshots: {
+        "run-a-1": snapshotA1,
+        "run-a-2": snapshotA2,
+      },
+      loadedRevisionKey: keyA,
+      maxSnapshots: 40,
+      now: 200,
+    });
+    cache = updateSessionTurnSnapshotCache({
+      cache,
+      sessionId: "session-b",
+      loadedRevisionKey: deriveSessionHistorySnapshotLoadKey(detailB),
+      maxSnapshots: 40,
+      now: 300,
+    });
+    cache = evictSessionTurnSnapshotCache({
+      cache,
+      activeSessionId: "session-b",
+      maxSessions: 8,
+    });
+
+    const cachedA = sessionTurnSnapshotsForSession(cache, "session-a");
+    const missingRunIds = detailA.turns
+      .map((turn) => turn.runId)
+      .filter((runId) => !cachedA[runId]);
+
+    expect(cache["session-a"]?.loadedRevisionKey).toBe(keyA);
+    expect(Object.keys(cachedA).sort()).toEqual(["run-a-1", "run-a-2"]);
+    expect(missingRunIds).toEqual([]);
+  });
+
+  it("plans only uncached history runs and seals the revision once the session is warm", () => {
+    const detail: OraSessionDetail = {
+      session: {
+        ...sessionSummary("session-plan"),
+        updatedAt: 1_714_000_000_200,
+      },
+      turns: [
+        {
+          runId: "run-plan-1",
+          sessionId: "session-plan",
+          turnIndex: 1,
+          status: "succeeded",
+          pattern: "orchestrator_subagent",
+          modeId: "debate",
+          providerId: "local-smoke",
+          modelRef: "local/smoke-model",
+          prompt: "P1",
+          startedAt: 1_714_000_000_000,
+          updatedAt: 1_714_000_000_100,
+          eventCount: 0,
+          checkpointCount: 0,
+          artifactCount: 0,
+        },
+        {
+          runId: "run-plan-2",
+          sessionId: "session-plan",
+          turnIndex: 2,
+          status: "succeeded",
+          pattern: "orchestrator_subagent",
+          modeId: "debate",
+          providerId: "local-smoke",
+          modelRef: "local/smoke-model",
+          prompt: "P2",
+          startedAt: 1_714_000_000_150,
+          updatedAt: 1_714_000_000_200,
+          eventCount: 0,
+          checkpointCount: 0,
+          artifactCount: 0,
+        },
+      ],
+      transcript: [],
+      latestSnapshot: testSnapshot({
+        runId: "run-plan-2",
+        sessionId: "session-plan",
+        status: "succeeded",
+        updatedAt: 1_714_000_000_200,
+      }),
+    };
+    const activeLoadKey = deriveSessionHistorySnapshotLoadKey(detail)!;
+    const cachedRun1 = testSnapshot({
+      runId: "run-plan-1",
+      sessionId: "session-plan",
+      status: "succeeded",
+      updatedAt: 1_714_000_000_100,
+    });
+    const cachedRun2 = testSnapshot({
+      runId: "run-plan-2",
+      sessionId: "session-plan",
+      status: "succeeded",
+      updatedAt: 1_714_000_000_200,
+    });
+
+    const missingPlan = deriveSessionHistorySnapshotLoadPlan({
+      detail,
+      cachedSnapshots: { [cachedRun1.runId]: cachedRun1 },
+      activeLoadKey,
+    });
+    const warmPlan = deriveSessionHistorySnapshotLoadPlan({
+      detail,
+      cachedSnapshots: {
+        [cachedRun1.runId]: cachedRun1,
+        [cachedRun2.runId]: cachedRun2,
+      },
+      activeLoadKey,
+    });
+
+    expect(missingPlan).toEqual({
+      kind: "load_missing",
+      sessionId: "session-plan",
+      loadedRevisionKey: activeLoadKey,
+      missingRunIds: ["run-plan-2"],
+    });
+    expect(warmPlan).toEqual({
+      kind: "mark_loaded",
+      sessionId: "session-plan",
+      loadedRevisionKey: activeLoadKey,
+    });
+  });
+
+  it("suppresses duplicate history batch loads while the same revision is already in flight", () => {
+    const detail: OraSessionDetail = {
+      session: {
+        ...sessionSummary("session-in-flight"),
+        updatedAt: 1_714_000_000_200,
+      },
+      turns: [{
+        runId: "run-in-flight",
+        sessionId: "session-in-flight",
+        turnIndex: 1,
+        status: "succeeded",
+        pattern: "orchestrator_subagent",
+        modeId: "debate",
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+        prompt: "In flight",
+        startedAt: 1_714_000_000_000,
+        updatedAt: 1_714_000_000_200,
+        eventCount: 0,
+        checkpointCount: 0,
+        artifactCount: 0,
+      }],
+      transcript: [],
+      latestSnapshot: testSnapshot({
+        runId: "run-in-flight",
+        sessionId: "session-in-flight",
+        status: "succeeded",
+        updatedAt: 1_714_000_000_200,
+      }),
+    };
+    const activeLoadKey = deriveSessionHistorySnapshotLoadKey(detail)!;
+
+    const plan = deriveSessionHistorySnapshotLoadPlan({
+      detail,
+      cachedSnapshots: {},
+      activeLoadKey,
+      loadingLoadKey: activeLoadKey,
+    });
+
+    expect(plan).toEqual({
+      kind: "skip",
+      reason: "in_flight",
+    });
+  });
+});
 
 describe("desktop workbench state", () => {
   it("does not leave a disabled provider selected after registry updates", () => {
@@ -3067,6 +3461,77 @@ describe("desktop workbench state", () => {
       expect(state.selectedSessionId).toBe("session-a");
     });
 
+    it("does not revive stale plan-decision attention when selecting a cached resumed session", () => {
+      const sessionId = "session-select-plan";
+      const runId = "run-select-plan";
+      const staleAttention = {
+        kind: "needs_plan_decision" as const,
+        blocking: true,
+        sourceRunId: runId,
+        reason: "plan_decision_required",
+        planDecisionId: `${runId}:plan-decision`,
+        pendingActionIds: [],
+        pendingToolCallIds: [],
+        pendingClarificationIds: [],
+      };
+      const resumedSnapshot = testSnapshot({
+        runId,
+        sessionId,
+        status: "running",
+        planDecisions: [{
+          id: `${runId}:plan-decision`,
+          runId,
+          sessionId,
+          status: "accepted",
+          createdAt: 1_714_000_000_000,
+          resolvedAt: 1_714_000_000_100,
+        }],
+        attention: undefined,
+      });
+      const session = {
+        ...sessionSummary(sessionId),
+        latestRunId: runId,
+        status: "interrupted" as const,
+        attention: staleAttention,
+      };
+
+      const next = workbenchReducer({
+        ...initialWorkbenchState,
+        sessions: [session],
+        sessionDetailsById: {
+          [sessionId]: {
+            session,
+            turns: [{
+              runId,
+              sessionId,
+              turnIndex: 1,
+              status: "running",
+              pattern: "orchestrator_subagent",
+              modeId: "debate",
+              providerId: "local-smoke",
+              modelRef: "local/smoke-model",
+              prompt: "Resume accepted plan.",
+              startedAt: 1_714_000_000_000,
+              updatedAt: resumedSnapshot.updatedAt,
+              eventCount: 0,
+              checkpointCount: 0,
+              artifactCount: 0,
+            }],
+            transcript: [],
+            latestSnapshot: resumedSnapshot,
+          },
+        },
+      }, {
+        type: "SELECT_SESSION",
+        sessionId,
+      });
+
+      expect(next.activeSessionDetail?.session.attention).toBeUndefined();
+      expect(next.activeSessionDetail?.latestSnapshot?.attention).toBeUndefined();
+      expect(getActiveSnapshot(next.runLifecycle)?.attention).toBeUndefined();
+      expect(next.runLifecycle.stage).toBe("streaming");
+    });
+
     it("replaces running planList with terminal snapshot on hydrate", () => {
       const sessionId = "session-terminal-plan";
       const runId = "run-terminal-plan";
@@ -3310,6 +3775,74 @@ describe("desktop workbench state", () => {
     expect(next.runLifecycle.stage).toBe("streaming");
     expect(getActiveSnapshot(next.runLifecycle)?.status).toBe("running");
     expect(getActiveSnapshot(next.runLifecycle)?.pendingApprovals).toEqual([]);
+  });
+
+  it("clears stale plan-decision session attention during optimistic resume", () => {
+    const runId = "run-plan-resume";
+    const sessionId = "session-plan-resume";
+    const staleAttention = {
+      kind: "needs_plan_decision" as const,
+      blocking: true,
+      sourceRunId: runId,
+      reason: "plan_decision_required",
+      planDecisionId: `${runId}:plan-decision`,
+      pendingActionIds: [],
+      pendingToolCallIds: [],
+      pendingClarificationIds: [],
+    };
+    const snapshot = testSnapshot({
+      runId,
+      sessionId,
+      status: "interrupted",
+      planDecisions: [{
+        id: `${runId}:plan-decision`,
+        runId,
+        sessionId,
+        status: "pending",
+        createdAt: 1_714_000_000_000,
+      }],
+      attention: staleAttention,
+    });
+    const session = {
+      ...sessionSummary(sessionId),
+      latestRunId: runId,
+      status: "interrupted" as const,
+      attention: staleAttention,
+    };
+
+    const next = workbenchReducer({
+      ...initialWorkbenchState,
+      selectedSessionId: sessionId,
+      selectedTurnRunId: runId,
+      sessions: [session],
+      activeSessionDetail: {
+        session,
+        turns: [{
+          runId,
+          sessionId,
+          turnIndex: 1,
+          status: "interrupted",
+          updatedAt: snapshot.updatedAt,
+        } as NonNullable<WorkbenchState["activeSessionDetail"]>["turns"][number]],
+        transcript: [],
+        latestSnapshot: snapshot,
+      },
+      runLifecycle: lifecycleFromSnapshot(snapshot),
+    }, {
+      type: "BEGIN_RUN_RESUME",
+      runId,
+      approvedActionIds: [],
+      resolvedClarificationIds: [],
+      planDecisionId: `${runId}:plan-decision`,
+      planDecisionStatus: "accepted",
+      updatedAt: snapshot.updatedAt + 10,
+    });
+
+    expect(getActiveSnapshot(next.runLifecycle)?.status).toBe("running");
+    expect(getActiveSnapshot(next.runLifecycle)?.attention).toBeUndefined();
+    expect(next.activeSessionDetail?.session.attention).toBeUndefined();
+    expect(next.sessions[0]?.attention).toBeUndefined();
+    expect(next.sessions[0]?.interactionGate).toBeUndefined();
   });
 
   it("does not merge same-run snapshots from different sessions", () => {
@@ -3955,6 +4488,61 @@ describe("desktop workbench state", () => {
       expect(next.pendingPlanDecisionResolution).toBeUndefined();
       expect(next.isLoading).toBe(false);
       expect(next.commandFeedback).toBe("Plan accepted and resumed.");
+    });
+
+    it("does not revive stale plan-decision attention when hydrate receives a resumed running snapshot", () => {
+      const sessionId = "session-plan-resumed";
+      const runId = "run-plan-resumed";
+      const snapshot = testSnapshot({
+        runId,
+        sessionId,
+        status: "running",
+        planDecisions: [{
+          id: `${runId}:plan-decision`,
+          runId,
+          sessionId,
+          status: "accepted",
+          createdAt: 1_714_000_000_000,
+          resolvedAt: 1_714_000_000_100,
+        }],
+        attention: undefined,
+      });
+      const staleAttention = {
+        kind: "needs_plan_decision" as const,
+        blocking: true,
+        sourceRunId: runId,
+        reason: "plan_decision_required",
+        planDecisionId: `${runId}:plan-decision`,
+        pendingActionIds: [],
+        pendingToolCallIds: [],
+        pendingClarificationIds: [],
+      };
+      const session = {
+        ...sessionSummary(sessionId),
+        latestRunId: runId,
+        status: "interrupted" as const,
+        attention: staleAttention,
+      };
+
+      const next = workbenchReducer(initialWorkbenchState, {
+        type: "HYDRATE_SESSION",
+        projects: [],
+        sessions: [session],
+        detail: {
+          session,
+          turns: [],
+          transcript: [],
+          latestSnapshot: snapshot,
+        },
+        snapshot,
+      });
+
+      expect(next.activeSessionDetail?.session.status).toBe("running");
+      expect(next.activeSessionDetail?.session.attention).toBeUndefined();
+      expect(next.sessions[0]?.attention).toBeUndefined();
+      expect(next.sessions[0]?.interactionGate).toBeUndefined();
+      expect(getActiveSnapshot(next.runLifecycle)?.attention).toBeUndefined();
+      expect(next.runLifecycle.stage).toBe("streaming");
     });
 
     it("rolls back failed accepted plan decisions and removes the synthetic user turn projection", () => {
