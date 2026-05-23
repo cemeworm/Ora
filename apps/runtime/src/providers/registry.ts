@@ -14,6 +14,23 @@ type ProviderRegistryOptions = ProviderRuntimeOptions & {
   providerHealthGuard?: ProviderHealthGuard;
 };
 
+const RUNTIME_LOCAL_SMOKE_PROVIDER: ProviderConfig = {
+  id: "local-smoke",
+  type: "local_smoke",
+  label: "Local Smoke",
+  modelId: "local/smoke-model",
+  enabled: true,
+  headers: {},
+};
+
+function withRuntimeSmokeFallback(providers: ProviderConfig[]): ProviderConfig[] {
+  const hasLocalSmoke = providers.some((provider) =>
+    provider.id === RUNTIME_LOCAL_SMOKE_PROVIDER.id ||
+    provider.modelId === RUNTIME_LOCAL_SMOKE_PROVIDER.modelId,
+  );
+  return hasLocalSmoke ? providers : [RUNTIME_LOCAL_SMOKE_PROVIDER, ...providers];
+}
+
 export function createModelProvider(
   config: ProviderConfig,
   options: ProviderRuntimeOptions = {}
@@ -136,10 +153,11 @@ function resolveDefaultProviderId(providers: ProviderConfig[]): string {
 }
 
 export function createDefaultProviderRegistry(options: ProviderRegistryOptions = {}) {
+  const providers = withRuntimeSmokeFallback(DEFAULT_PROVIDERS);
   return createProviderRegistry(
     {
-      providers: DEFAULT_PROVIDERS,
-      defaultProviderId: resolveDefaultProviderId(DEFAULT_PROVIDERS),
+      providers,
+      defaultProviderId: resolveDefaultProviderId(providers),
     },
     options
   );
@@ -149,12 +167,12 @@ export function createProviderRegistryForRun(
   runConfig: RunConfig,
   options: ProviderRegistryOptions = {}
 ): ProviderRegistry {
-  const providers = runConfig.providerConfig
+  const providers = withRuntimeSmokeFallback(runConfig.providerConfig
     ? [
         runConfig.providerConfig,
         ...DEFAULT_PROVIDERS.filter((provider) => provider.id !== runConfig.providerConfig?.id),
       ]
-    : DEFAULT_PROVIDERS;
+    : DEFAULT_PROVIDERS);
 
   return createProviderRegistry(
     {
