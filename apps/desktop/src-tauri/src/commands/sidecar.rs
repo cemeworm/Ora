@@ -10,7 +10,7 @@ use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -107,7 +107,7 @@ pub struct RuntimeSidecarManager {
     managed_langfuse: Mutex<ManagedLangfuseStatus>,
     active_streaming_children: StreamingChildRegistry,
     channel_daemon_child: Mutex<Option<Child>>,
-    request_bridge_child: Mutex<Option<PersistentJsonRpcChild>>,
+    request_bridge: Mutex<Option<RequestBridgeHandle>>,
 }
 
 impl Default for RuntimeSidecarManager {
@@ -119,7 +119,7 @@ impl Default for RuntimeSidecarManager {
             managed_langfuse: Mutex::new(disabled_managed_langfuse_status()),
             active_streaming_children: StreamingChildRegistry::default(),
             channel_daemon_child: Mutex::new(None),
-            request_bridge_child: Mutex::new(None),
+            request_bridge: Mutex::new(None),
         }
     }
 }
@@ -139,7 +139,7 @@ impl RuntimeSidecarManager {
             managed_langfuse: Mutex::new(managed_langfuse),
             active_streaming_children: StreamingChildRegistry::default(),
             channel_daemon_child: Mutex::new(None),
-            request_bridge_child: Mutex::new(None),
+            request_bridge: Mutex::new(None),
         };
         if process_spawn_available {
             manager.ensure_channel_daemon(Some(&app));
@@ -151,11 +151,11 @@ impl RuntimeSidecarManager {
     }
 
     fn prewarm_request_bridge(&self) {
-        if let (Ok(mut child_slot), Some(command)) =
-            (self.request_bridge_child.lock(), self.configured_command.as_ref())
+        if let (Ok(mut bridge_slot), Some(command)) =
+            (self.request_bridge.lock(), self.configured_command.as_ref())
         {
-            if child_slot.is_none() {
-                *child_slot = PersistentJsonRpcChild::spawn(command).ok();
+            if bridge_slot.is_none() {
+                *bridge_slot = RequestBridgeHandle::spawn(command.clone()).ok();
             }
         }
     }
@@ -173,8 +173,16 @@ impl RuntimeSidecarManager {
             managed_langfuse: Mutex::new(disabled_managed_langfuse_status()),
             active_streaming_children: StreamingChildRegistry::default(),
             channel_daemon_child: Mutex::new(None),
-            request_bridge_child: Mutex::new(None),
+            request_bridge: Mutex::new(None),
         }
+    }
+
+    #[cfg(test)]
+    fn has_request_bridge(&self) -> bool {
+        self.request_bridge
+            .lock()
+            .map(|bridge_slot| bridge_slot.is_some())
+            .unwrap_or(false)
     }
 
     fn status(&self) -> SidecarStatus {
@@ -238,6 +246,7 @@ impl RuntimeSidecarManager {
         &self,
         request: &RuntimeJsonRpcRequest,
         app: Option<&AppHandle>,
+        dispatch: RuntimeRpcDispatchOptions,
     ) -> Option<RuntimeJsonRpcResponse> {
         self.refresh_managed_langfuse_health();
         if !self
@@ -266,7 +275,7 @@ impl RuntimeSidecarManager {
                 self.active_streaming_children.clone(),
             )
         } else {
-            self.run_persistent_process_json_rpc(&command, request)
+            self.run_persistent_process_json_rpc(&command, request, dispatch)
         };
         match response {
             Ok(response) => {
@@ -287,40 +296,42 @@ impl RuntimeSidecarManager {
         &self,
         command: &RuntimeCommandSpec,
         request: &RuntimeJsonRpcRequest,
+        dispatch: RuntimeRpcDispatchOptions,
     ) -> Result<RuntimeJsonRpcResponse, RuntimeJsonRpcError> {
-        let Ok(mut child_slot) = self.request_bridge_child.lock() else {
-            return Err(runtime_error(
-                -32058,
-                "Runtime sidecar request bridge lock failed",
-                Some(json!({ "command": command.display })),
-            ));
+        let handle = {
+            let Ok(mut bridge_slot) = self.request_bridge.lock() else {
+                return Err(runtime_error(
+                    -32058,
+                    "Runtime sidecar request bridge lock failed",
+                    Some(json!({ "command": command.display })),
+                ));
+            };
+            if bridge_slot.is_none() {
+                *bridge_slot = Some(RequestBridgeHandle::spawn(command.clone())?);
+            }
+            bridge_slot
+                .as_ref()
+                .expect("request bridge handle should be initialized")
+                .clone()
         };
 
-        for attempt in 0..2 {
-            if child_slot.is_none() {
-                *child_slot = Some(PersistentJsonRpcChild::spawn(command)?);
-            }
-
-            let result = child_slot
-                .as_mut()
-                .expect("request bridge child should be initialized")
-                .request(command, request);
-            match result {
-                Ok(response) => return Ok(response),
-                Err(error) => {
-                    child_slot.take();
-                    if attempt == 1 {
-                        return Err(error);
-                    }
-                }
-            }
-        }
-
-        Err(runtime_error(
-            -32058,
-            "Runtime sidecar request bridge failed",
-            Some(json!({ "command": command.display })),
-        ))
+        let (response_tx, response_rx) = mpsc::channel();
+        let request_with_priority = RequestBridgeMessage {
+            request: request.clone(),
+            priority: dispatch.priority,
+            response_tx,
+        };
+        handle.enqueue(request_with_priority)?;
+        response_rx.recv().map_err(|error| {
+            runtime_error(
+                -32058,
+                "Runtime sidecar request bridge failed",
+                Some(json!({
+                    "command": command.display,
+                    "error": error.to_string()
+                })),
+            )
+        })?
     }
 
     fn disable_process_bridge(&self) {
@@ -357,10 +368,10 @@ impl RuntimeSidecarManager {
 
     fn stop_request_bridge(&self) {
         let _ = self
-            .request_bridge_child
+            .request_bridge
             .lock()
             .ok()
-            .and_then(|mut child_slot| child_slot.take());
+            .and_then(|mut bridge_slot| bridge_slot.take());
     }
 
     fn ensure_channel_daemon(&self, app: Option<&AppHandle>) {
@@ -531,6 +542,170 @@ impl Drop for PersistentJsonRpcChild {
                 terminate_child_process_group(&mut self.child);
             }
         }
+    }
+}
+
+#[derive(Clone)]
+struct RequestBridgeHandle {
+    tx: mpsc::Sender<RequestBridgeEnvelope>,
+}
+
+impl RequestBridgeHandle {
+    fn spawn(command: RuntimeCommandSpec) -> Result<Self, RuntimeJsonRpcError> {
+        let (tx, rx) = mpsc::channel::<RequestBridgeEnvelope>();
+        thread::Builder::new()
+            .name("ora-runtime-request-bridge".to_string())
+            .spawn(move || run_request_bridge_actor(command, rx))
+            .map_err(|error| {
+                runtime_error(
+                    -32058,
+                    "Runtime sidecar request bridge spawn failed",
+                    Some(json!({ "error": error.to_string() })),
+                )
+            })?;
+        Ok(Self { tx })
+    }
+
+    fn enqueue(&self, message: RequestBridgeMessage) -> Result<(), RuntimeJsonRpcError> {
+        self.tx
+            .send(RequestBridgeEnvelope::Request(message))
+            .map_err(|error| {
+                runtime_error(
+                    -32058,
+                    "Runtime sidecar request bridge enqueue failed",
+                    Some(json!({ "error": error.to_string() })),
+                )
+            })
+    }
+}
+
+struct RequestBridgeMessage {
+    request: RuntimeJsonRpcRequest,
+    priority: RuntimeRpcPriority,
+    response_tx: mpsc::Sender<Result<RuntimeJsonRpcResponse, RuntimeJsonRpcError>>,
+}
+
+enum RequestBridgeEnvelope {
+    Request(RequestBridgeMessage),
+}
+
+fn run_request_bridge_actor(
+    command: RuntimeCommandSpec,
+    rx: mpsc::Receiver<RequestBridgeEnvelope>,
+) {
+    let mut child: Option<PersistentJsonRpcChild> = None;
+    let mut urgent = Vec::<RequestBridgeMessage>::new();
+    let mut interactive = Vec::<RequestBridgeMessage>::new();
+    let mut background = Vec::<RequestBridgeMessage>::new();
+    let shutdown = false;
+
+    loop {
+      if urgent.is_empty() && interactive.is_empty() && background.is_empty() && !shutdown {
+            match rx.recv() {
+                Ok(RequestBridgeEnvelope::Request(message)) => {
+                    enqueue_request(&mut urgent, &mut interactive, &mut background, message);
+                }
+                Err(_) => break,
+            }
+        }
+
+        while let Ok(envelope) = rx.try_recv() {
+            match envelope {
+                RequestBridgeEnvelope::Request(message) => {
+                    enqueue_request(&mut urgent, &mut interactive, &mut background, message);
+                }
+            }
+        }
+
+        let Some(message) = pop_next_request(&mut urgent, &mut interactive, &mut background) else {
+            if shutdown {
+                break;
+            }
+            continue;
+        };
+
+        let result = request_via_persistent_child(&command, &mut child, &message.request);
+        let bridge_failed = result.is_err();
+        let _ = message.response_tx.send(result);
+        if bridge_failed {
+            drain_request_queue_with_bridge_error(&mut urgent);
+            drain_request_queue_with_bridge_error(&mut interactive);
+            drain_request_queue_with_bridge_error(&mut background);
+            break;
+        }
+    }
+}
+
+fn enqueue_request(
+    urgent: &mut Vec<RequestBridgeMessage>,
+    interactive: &mut Vec<RequestBridgeMessage>,
+    background: &mut Vec<RequestBridgeMessage>,
+    message: RequestBridgeMessage,
+) {
+    match message.priority {
+        RuntimeRpcPriority::Urgent => urgent.push(message),
+        RuntimeRpcPriority::Interactive => interactive.push(message),
+        RuntimeRpcPriority::Background => background.push(message),
+    }
+}
+
+fn pop_next_request(
+    urgent: &mut Vec<RequestBridgeMessage>,
+    interactive: &mut Vec<RequestBridgeMessage>,
+    background: &mut Vec<RequestBridgeMessage>,
+) -> Option<RequestBridgeMessage> {
+    if !urgent.is_empty() {
+        return Some(urgent.remove(0));
+    }
+    if !interactive.is_empty() {
+        return Some(interactive.remove(0));
+    }
+    if !background.is_empty() {
+        return Some(background.remove(0));
+    }
+    None
+}
+
+fn request_via_persistent_child(
+    command: &RuntimeCommandSpec,
+    child_slot: &mut Option<PersistentJsonRpcChild>,
+    request: &RuntimeJsonRpcRequest,
+) -> Result<RuntimeJsonRpcResponse, RuntimeJsonRpcError> {
+    for attempt in 0..2 {
+        if child_slot.is_none() {
+            *child_slot = Some(PersistentJsonRpcChild::spawn(command)?);
+        }
+
+        let result = child_slot
+            .as_mut()
+            .expect("request bridge child should be initialized")
+            .request(command, request);
+        match result {
+            Ok(response) => return Ok(response),
+            Err(error) => {
+                child_slot.take();
+                if attempt == 1 {
+                    return Err(error);
+                }
+            }
+        }
+    }
+
+    Err(runtime_error(
+        -32058,
+        "Runtime sidecar request bridge failed",
+        Some(json!({ "command": command.display })),
+    ))
+}
+
+fn drain_request_queue_with_bridge_error(queue: &mut Vec<RequestBridgeMessage>) {
+    let pending = std::mem::take(queue);
+    for message in pending {
+        let _ = message.response_tx.send(Err(runtime_error(
+            -32058,
+            "Runtime sidecar request bridge failed",
+            None,
+        )));
     }
 }
 
@@ -719,6 +894,36 @@ pub struct RuntimeJsonRpcResponse {
     pub result: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<RuntimeJsonRpcError>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, Eq, PartialEq, Ord, PartialOrd)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeRpcPriority {
+    Background,
+    Interactive,
+    Urgent,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeRpcDispatchOptions {
+    #[serde(default = "default_runtime_rpc_priority")]
+    pub priority: RuntimeRpcPriority,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
+}
+
+impl Default for RuntimeRpcDispatchOptions {
+    fn default() -> Self {
+        Self {
+            priority: default_runtime_rpc_priority(),
+            tag: None,
+        }
+    }
+}
+
+fn default_runtime_rpc_priority() -> RuntimeRpcPriority {
+    RuntimeRpcPriority::Interactive
 }
 
 fn request_run_id(request: &RuntimeJsonRpcRequest) -> Option<String> {
@@ -984,11 +1189,13 @@ pub fn read_local_chat_file(path: String) -> Result<LocalChatFileAttachment, Str
 #[tauri::command]
 pub async fn runtime_json_rpc(
     request: RuntimeJsonRpcRequest,
+    dispatch: Option<RuntimeRpcDispatchOptions>,
     manager: State<'_, RuntimeSidecarManager>,
     facade: State<'_, RuntimeFacade>,
     app: AppHandle,
 ) -> Result<RuntimeJsonRpcResponse, String> {
-    Ok(if let Some(response) = manager.try_process_json_rpc(&request, Some(&app)) {
+    let dispatch = dispatch.unwrap_or_default();
+    Ok(if let Some(response) = manager.try_process_json_rpc(&request, Some(&app), dispatch) {
         response
     } else {
         facade.handle_runtime_json_rpc(request)
@@ -5759,6 +5966,20 @@ mod tests {
         }
     }
 
+    fn interactive_dispatch() -> RuntimeRpcDispatchOptions {
+        RuntimeRpcDispatchOptions {
+            priority: RuntimeRpcPriority::Interactive,
+            tag: Some("test-interactive".to_string()),
+        }
+    }
+
+    fn background_dispatch() -> RuntimeRpcDispatchOptions {
+        RuntimeRpcDispatchOptions {
+            priority: RuntimeRpcPriority::Background,
+            tag: Some("test-background".to_string()),
+        }
+    }
+
     fn process_bridge_manager(
         command: RuntimeCommandSpec,
         available: bool,
@@ -5988,7 +6209,7 @@ mod tests {
         );
         let facade = RuntimeFacade::default();
         let response = manager
-            .try_process_json_rpc(&request("runtime.health", None), None)
+            .try_process_json_rpc(&request("runtime.health", None), None, interactive_dispatch())
             .unwrap_or_else(|| facade.handle_runtime_json_rpc(request("runtime.health", None)));
 
         assert_eq!(response.jsonrpc, JSON_RPC_VERSION);
@@ -6014,10 +6235,10 @@ mod tests {
         );
 
         let first = manager
-            .try_process_json_rpc(&request("runtime.health", None), None)
+            .try_process_json_rpc(&request("runtime.health", None), None, interactive_dispatch())
             .expect("first persistent request should succeed");
         let second = manager
-            .try_process_json_rpc(&request("sessions.list", None), None)
+            .try_process_json_rpc(&request("sessions.list", None), None, interactive_dispatch())
             .expect("second persistent request should reuse the child");
 
         let first_result = first.result.unwrap();
@@ -6048,7 +6269,7 @@ mod tests {
         );
 
         let response = manager
-            .try_process_json_rpc(&request("runtime.health", None), None)
+            .try_process_json_rpc(&request("runtime.health", None), None, interactive_dispatch())
             .expect("request bridge should restart once and return the response");
 
         assert_eq!(response.result.unwrap()["bridge"], json!("restarted"));
@@ -6076,12 +6297,13 @@ mod tests {
             .try_process_json_rpc(
                 &request("flows.createStreaming", Some(json!({ "input": { "prompt": "hello" } }))),
                 None,
+                interactive_dispatch(),
             )
             .expect("streaming request should return the initial handle");
 
         assert_eq!(response.result.unwrap()["runId"], json!("run-0001"));
         assert_eq!(manager.active_streaming_children.len(), 1);
-        assert!(manager.request_bridge_child.lock().unwrap().is_none());
+        assert!(!manager.has_request_bridge());
 
         manager.cleanup_streaming_children();
         assert_eq!(manager.active_streaming_children.len(), 0);
@@ -6109,16 +6331,16 @@ mod tests {
         );
 
         manager
-            .try_process_json_rpc(&request("runtime.health", None), None)
+            .try_process_json_rpc(&request("runtime.health", None), None, interactive_dispatch())
             .expect("persistent request bridge should start");
         manager.ensure_channel_daemon(None);
 
-        assert!(manager.request_bridge_child.lock().unwrap().is_some());
+        assert!(manager.has_request_bridge());
         assert!(manager.channel_daemon_child.lock().unwrap().is_some());
 
         manager.cleanup_streaming_children();
 
-        assert!(manager.request_bridge_child.lock().unwrap().is_none());
+        assert!(!manager.has_request_bridge());
         assert!(manager.channel_daemon_child.lock().unwrap().is_none());
     }
 
@@ -6140,7 +6362,7 @@ mod tests {
 
         let started = std::time::Instant::now();
         let response = manager
-            .try_process_json_rpc(&request("runtime.health", None), None)
+            .try_process_json_rpc(&request("runtime.health", None), None, interactive_dispatch())
             .expect("valid JSON-RPC response should be returned before child cleanup");
 
         assert!(
@@ -6272,7 +6494,7 @@ mod tests {
 
         let busy_manager = manager.clone();
         let busy = thread::spawn(move || {
-            busy_manager.try_process_json_rpc(&request("sessions.list", None), None)
+            busy_manager.try_process_json_rpc(&request("sessions.list", None), None, background_dispatch())
         });
         thread::sleep(Duration::from_millis(100));
 
@@ -6281,6 +6503,7 @@ mod tests {
             .try_process_json_rpc(
                 &request("runs.cancel", Some(json!({ "runId": "run-0001", "reason": "stop" }))),
                 None,
+                interactive_dispatch(),
             )
             .expect("cancel should return through the priority one-shot bridge");
 
@@ -6292,6 +6515,56 @@ mod tests {
         assert_eq!(manager.active_streaming_children.len(), 0);
 
         let _ = busy.join();
+        manager.cleanup_streaming_children();
+    }
+
+    #[test]
+    fn interactive_request_beats_queued_background_requests() {
+        let manager = Arc::new(process_bridge_manager(
+            RuntimeCommandSpec::new(
+                "sh -c qos-queue-json-rpc",
+                "sh",
+                vec![
+                    "-c".to_string(),
+                    "while read line; do if printf '%s' \"$line\" | grep -q 'sessions.create'; then printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"kind\":\"interactive\"}}'; else sleep 1; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"kind\":\"background\"}}'; fi; done".to_string(),
+                ],
+                None,
+                Vec::new(),
+            ),
+            true,
+        ));
+
+        let manager_a = manager.clone();
+        let background_a = thread::spawn(move || {
+            manager_a
+                .try_process_json_rpc(&request("sessions.list", None), None, background_dispatch())
+                .expect("first background request should complete")
+        });
+
+        thread::sleep(Duration::from_millis(100));
+
+        let manager_b = manager.clone();
+        let background_b = thread::spawn(move || {
+            manager_b
+                .try_process_json_rpc(&request("sessions.list", None), None, background_dispatch())
+                .expect("second background request should complete")
+        });
+
+        thread::sleep(Duration::from_millis(100));
+
+        let started = std::time::Instant::now();
+        let interactive = manager
+            .try_process_json_rpc(&request("sessions.create", None), None, interactive_dispatch())
+            .expect("interactive request should complete");
+
+        assert!(
+            started.elapsed() < Duration::from_millis(1800),
+            "interactive request should not wait for both queued background requests"
+        );
+        assert_eq!(interactive.result.unwrap()["kind"], json!("interactive"));
+        assert_eq!(background_a.join().unwrap().result.unwrap()["kind"], json!("background"));
+        assert_eq!(background_b.join().unwrap().result.unwrap()["kind"], json!("background"));
+
         manager.cleanup_streaming_children();
     }
 
