@@ -9,7 +9,7 @@ import {
   ModeSpecSchema,
   ModeUpdateParamsSchema,
   ModeValidationResultSchema,
-  MVP_MODES,
+  SYSTEM_MODE_PRESETS,
   getModePreset,
   type CoordinationPattern,
   type ModeCreateParams,
@@ -38,7 +38,7 @@ export class ModeSpecFileStore {
       });
 
     return [
-      ...MVP_MODES,
+      ...SYSTEM_MODE_PRESETS.filter((mode) => mode.visibility !== "internal"),
       ...customModes.sort((left, right) => right.updatedAt - left.updatedAt || left.label.localeCompare(right.label)),
     ];
   }

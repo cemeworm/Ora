@@ -189,6 +189,7 @@ import {
   deriveSessionBranchGroupStatus,
   deriveSessionBranchGroupsForSession,
   ensureModeNodePositions,
+  getModePreset,
   getModeNodeRuntimeTemplateDefinition,
   modeSpecToPatternDefinition,
   projectModeRuntimeTopology,
@@ -269,6 +270,13 @@ describe("Ora shared contracts", () => {
     expect(singleAgent.capabilityFlags.toolIds).toContain("shell.execute");
     expect(singleAgent.capabilityFlags.toolIds).toContain("agent.spawn");
     expect(singleAgent.capabilityFlags.toolIds).not.toContain("skills.create");
+
+    expect(getModePreset("agent_teams")?.id).toBe("agent_teams");
+    expect(getModePreset(DEERFLOW_HARNESS_MODE_ID)?.id).toBe(DEERFLOW_HARNESS_MODE_ID);
+    expect(getModePreset(DYNAMIC_ORCHESTRATOR_MODE_ID)?.id).toBe(DYNAMIC_ORCHESTRATOR_MODE_ID);
+    expect(MVP_MODES.some((mode) => mode.id === "agent_teams")).toBe(false);
+    expect(MVP_MODES.some((mode) => mode.id === DEERFLOW_HARNESS_MODE_ID)).toBe(false);
+    expect(MVP_MODES.some((mode) => mode.id === DYNAMIC_ORCHESTRATOR_MODE_ID)).toBe(false);
 
     const debate = MVP_MODES.find((mode) => mode.id === DEBATE_MODE_ID)!;
     expect(debate.systemPreset).toBe(true);

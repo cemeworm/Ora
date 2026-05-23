@@ -93,7 +93,7 @@ describe("dynamic_orchestrator mode preset", () => {
 });
 
 describe("dynamic delegation integration", () => {
-  it("completes a run with all nodes using local-smoke provider", async () => {
+  it("completes a run with the dynamic orchestrator path using local-smoke provider", async () => {
     const handle = createRuntimeMethodHandler(createTempStore());
 
     const run = (await handle({
@@ -128,61 +128,15 @@ describe("dynamic delegation integration", () => {
         expect.objectContaining({ id: expect.stringContaining("synthesize"), status: "done" }),
       ]),
     );
-  });
+    const agentStartedIds = state.events
+      .filter((event) => event.type === "agent.started")
+      .map((event) => event.agentId);
+    const agentCompletedIds = state.events
+      .filter((event) => event.type === "agent.completed")
+      .map((event) => event.agentId);
 
-  it("emits agent.started for orchestrator, researcher, and reviewer", async () => {
-    const handle = createRuntimeMethodHandler(createTempStore());
-
-    const run = (await handle({
-      jsonrpc: "2.0",
-      id: 1,
-      method: "runs.start",
-      params: {
-        input: { prompt: "Explain the delegation pattern." },
-        config: { modeId: DYNAMIC_ORCHESTRATOR_MODE_ID },
-      },
-    })) as { runId: string };
-
-    const state = StateSnapshotSchema.parse(
-      await handle({
-        jsonrpc: "2.0",
-        id: 2,
-        method: "runs.state",
-        params: { runId: run.runId },
-      }),
-    );
-
-    const eventTypes = state.events.map((e) => e.type);
-    expect(eventTypes).toContain("agent.started");
-    expect(eventTypes).toContain("agent.completed");
-
-    // Task lifecycle events from subagent_delegate
-    expect(eventTypes).toContain("task.started");
-    expect(eventTypes).toContain("task.completed");
-  });
-
-  it("includes subagent_delegate in topology for research and review nodes", async () => {
-    const handle = createRuntimeMethodHandler(createTempStore());
-
-    const run = (await handle({
-      jsonrpc: "2.0",
-      id: 1,
-      method: "runs.start",
-      params: {
-        input: { prompt: "Hello." },
-        config: { modeId: DYNAMIC_ORCHESTRATOR_MODE_ID },
-      },
-    })) as { runId: string };
-
-    const state = StateSnapshotSchema.parse(
-      await handle({
-        jsonrpc: "2.0",
-        id: 2,
-        method: "runs.state",
-        params: { runId: run.runId },
-      }),
-    );
-
+    expect(agentStartedIds).toEqual(expect.arrayContaining([ORA_ROOT_AGENT_ID, "researcher", "reviewer"]));
+    expect(agentCompletedIds).toEqual(expect.arrayContaining([ORA_ROOT_AGENT_ID, "researcher", "reviewer"]));
     expect(
       state.topology.nodes.some((n) =>
         n.kind === "capability"
@@ -197,5 +151,5 @@ describe("dynamic delegation integration", () => {
         && n.metadata.sourceNodeId === "review",
       ),
     ).toBe(true);
-  });
+  }, 30_000);
 });

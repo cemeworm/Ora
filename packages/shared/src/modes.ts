@@ -3340,8 +3340,18 @@ export const MVP_MODES = [
   createOraSelfBuilderModeSpec(),
 ];
 
+export const SYSTEM_MODE_PRESETS = [
+  ...MVP_MODES,
+  createModeSpecFromPattern("generator_verifier"),
+  createModeSpecFromPattern("agent_teams"),
+  createModeSpecFromPattern("message_bus"),
+  createModeSpecFromPattern("shared_state"),
+  createDeerflowHarnessModeSpec(),
+  createDynamicOrchestratorModeSpec(),
+];
+
 export function getModePreset(modeId: string): ModeSpec | undefined {
-  return MVP_MODES.find((mode) => mode.id === modeId);
+  return SYSTEM_MODE_PRESETS.find((mode) => mode.id === modeId);
 }
 
 export function modeSpecToPatternDefinition(mode: ModeSpec): PatternDefinition {
