@@ -122,6 +122,10 @@ import { AutomationService } from "./automation-service.js";
 import { WidgetStore } from "./widget-store.js";
 import { TodoService } from "./capabilities.js";
 import type { ChannelSessionUpdateEvent } from "./channels/manager.js";
+import type {
+  ProjectDiscoveryConfirmationRequest,
+  ProjectDiscoveryConfirmationResult,
+} from "./channels/manager.js";
 import { ChannelService } from "./channels/service.js";
 import {
   activeUsageForMessages,
@@ -176,8 +180,48 @@ import type {
 } from "./persistence/types.js";
 import type { ModelImageBlock, ModelMessage } from "./providers/index.js";
 import { invokeRunProvider } from "./providers/index.js";
+import { parseJsonObject } from "./provider-json.js";
 import { readLangfuseRunTrace } from "./telemetry/langfuse.js";
 import { mergeTrailObservations, synthesizeLocalTrail } from "./telemetry/trails.js";
+
+const PROJECT_DISCOVERY_CONFIRMER_CONFIDENCE_THRESHOLD = 0.75;
+const ProjectDiscoveryConfirmerResponseSchema = z.object({
+  selectedPath: z.string().min(1).optional(),
+  confidence: z.number().min(0).max(1).default(0),
+  reason: z.string().min(1),
+});
+
+function buildProjectDiscoveryConfirmerRunConfig(
+  runConfig: Record<string, unknown> | undefined,
+): RunConfig | undefined {
+  const parsed = RunConfigSchema.parse(runConfig ?? {});
+  const explicitProviderId = typeof parsed.providerId === "string" && parsed.providerId.length > 0
+    ? parsed.providerId
+    : typeof parsed.providerConfig?.id === "string" && parsed.providerConfig.id.length > 0
+      ? parsed.providerConfig.id
+      : undefined;
+  const explicitModelRef = typeof parsed.modelRef === "string" && parsed.modelRef.length > 0
+    ? parsed.modelRef
+    : typeof parsed.providerConfig?.modelId === "string" && parsed.providerConfig.modelId.length > 0
+      ? parsed.providerConfig.modelId
+      : undefined;
+  if (!explicitProviderId && !parsed.providerConfig) {
+    return undefined;
+  }
+  return RunConfigSchema.parse({
+    ...parsed,
+    modeId: parsed.modeId ?? SINGLE_AGENT_MODE_ID,
+    modeSelection: "manual",
+    providerId: explicitProviderId,
+    modelRef: explicitModelRef,
+    toolIds: [],
+    skillIds: [],
+    metadata: {
+      ...parsed.metadata,
+      taskIntentMode: "auto",
+    },
+  });
+}
 import { LocalEvaluationStore } from "./evaluation-store.js";
 import { LocalFeedbackLoopStore } from "./feedback-loop-store.js";
 import { LocalSelfIterationStore, type SelfIterationDerivationInput } from "./self-iteration-store.js";
@@ -356,6 +400,16 @@ const ACCEPT_PLAN_RESUME_RETRY_BASE_DELAY_MS = 150;
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function formatEvaluationAttemptCancelReason(reason: unknown): string {
+  if (typeof reason === "string" && reason.trim().length > 0) {
+    return reason.trim();
+  }
+  if (reason instanceof Error && reason.message.trim().length > 0) {
+    return reason.message.trim();
+  }
+  return "Evaluation attempt timed out.";
 }
 
 export interface LocalRunStoreOptions {
@@ -837,6 +891,82 @@ export class LocalRunStore {
 
   ingestChannel(params: unknown) {
     return this.channelService.ingest(params);
+  }
+
+  async confirmProjectDiscoverySelection(
+    params: ProjectDiscoveryConfirmationRequest,
+  ): Promise<ProjectDiscoveryConfirmationResult> {
+    const candidates = params.candidates.filter((candidate) =>
+      candidate
+      && typeof candidate.label === "string"
+      && candidate.label.trim().length > 0
+      && typeof candidate.path === "string"
+      && candidate.path.trim().length > 0
+    );
+    if (candidates.length <= 1) {
+      return { status: "none", reason: "Project confirmer skipped because fewer than two candidates were available." };
+    }
+    const config = buildProjectDiscoveryConfirmerRunConfig(params.runConfig);
+    if (!config) {
+      return { status: "none", reason: "Project confirmer skipped because no explicit provider was configured." };
+    }
+    try {
+      const response = await invokeRunProvider(config, {
+        system: [
+          "You are Ora's project discovery confirmer.",
+          "Choose at most one candidate project path that best matches the user's explicit /project query.",
+          "Return only compact JSON with keys selectedPath, confidence, and reason.",
+          "selectedPath is optional. Omit it when no candidate is clearly better than the others.",
+          "Only select a path when the match is explicit from the query and candidate labels/paths.",
+          "Do not guess from general relevance or popularity.",
+          "confidence must be a number from 0 to 1.",
+          "reason must be a short plain string under 120 characters.",
+          "Do not include markdown or extra text.",
+        ].join(" "),
+        prompt: JSON.stringify({
+          query: params.query ?? "",
+          candidates,
+        }),
+        temperature: 0,
+        maxTokens: 240,
+        toolChoice: "none",
+      });
+      const parsed = ProjectDiscoveryConfirmerResponseSchema.parse(parseJsonObject(response.text));
+      if (!parsed.selectedPath) {
+        return {
+          status: "none",
+          reason: parsed.reason,
+          confidence: parsed.confidence,
+        };
+      }
+      if (!candidates.some((candidate) => candidate.path === parsed.selectedPath)) {
+        return {
+          status: "none",
+          reason: `Project confirmer returned an unknown candidate path.`,
+          confidence: parsed.confidence,
+        };
+      }
+      if (parsed.confidence < PROJECT_DISCOVERY_CONFIRMER_CONFIDENCE_THRESHOLD) {
+        return {
+          status: "none",
+          reason: parsed.reason,
+          confidence: parsed.confidence,
+        };
+      }
+      return {
+        status: "selected",
+        path: parsed.selectedPath,
+        reason: parsed.reason,
+        confidence: parsed.confidence,
+      };
+    } catch (error) {
+      return {
+        status: "none",
+        reason: error instanceof Error
+          ? `Project confirmer failed: ${error.message}`
+          : "Project confirmer failed before producing a valid result.",
+      };
+    }
   }
 
   listChannelBindings(params: unknown = {}) {
@@ -2756,12 +2886,19 @@ export class LocalRunStore {
 
   async startEvaluationRun(
     params: unknown,
-    createRun: (params: { input: UserTaskInput; config: Partial<RunConfig> }) => Promise<StateSnapshot>
+    createRun: (params: {
+      input: UserTaskInput;
+      config: Partial<RunConfig>;
+      signal?: AbortSignal;
+      onStarted?: (handle: RunHandle) => void;
+    }) => Promise<StateSnapshot>
   ) {
     const detail = await this.evaluationStore.startRun(params, async (runParams) => {
       const snapshot = await createRun({
         input: runParams.input,
         config: runParams.config,
+        signal: runParams.signal,
+        onStarted: runParams.onStarted,
       });
       if (snapshot.sessionId) {
         this.archiveSession({ sessionId: snapshot.sessionId });
@@ -2771,6 +2908,51 @@ export class LocalRunStore {
 
     this.queueSelfIterationCurator("evaluation_run_completed");
     return detail;
+  }
+
+  async executeEvaluationRunWithLifecycle(params: {
+    input: UserTaskInput;
+    config: Partial<RunConfig>;
+    signal?: AbortSignal;
+    onStarted?: (handle: RunHandle) => void;
+  }): Promise<StateSnapshot> {
+    const handle = await this.startStreamingRun({
+      input: params.input,
+      config: params.config,
+    });
+    params.onStarted?.(handle);
+
+    const cancelReason = formatEvaluationAttemptCancelReason(params.signal?.reason);
+    const abortActiveRun = () => {
+      try {
+        this.cancelRun({ runId: handle.runId, reason: cancelReason });
+      } catch {
+        // Best-effort cancellation. The polling loop below will still return
+        // the final snapshot if the run has already settled.
+      }
+    };
+
+    if (params.signal?.aborted) {
+      abortActiveRun();
+    } else {
+      params.signal?.addEventListener("abort", abortActiveRun, { once: true });
+    }
+
+    try {
+      return await this.waitForRunToSettle(handle.runId);
+    } finally {
+      params.signal?.removeEventListener("abort", abortActiveRun);
+    }
+  }
+
+  private async waitForRunToSettle(runId: string): Promise<StateSnapshot> {
+    while (true) {
+      const snapshot = this.getRunState({ runId });
+      if (snapshot.status !== "queued" && snapshot.status !== "running") {
+        return snapshot;
+      }
+      await delay(25);
+    }
   }
 
   listEvaluationRuns(params: unknown = {}) {
@@ -5380,10 +5562,9 @@ export class LocalRunStore {
         targetKind: candidate.targetKind,
       },
     });
-    const detail = await this.startEvaluationRun(spec, async ({ input, config }) => {
-      const handle = await this.startRun({ input, config });
-      return this.getRunState({ runId: handle.runId });
-    });
+    const detail = await this.startEvaluationRun(spec, ({ input, config, signal, onStarted }) =>
+      this.executeEvaluationRunWithLifecycle({ input, config, signal, onStarted })
+    );
     const scorecard = detail.run.scorecard;
     const passed = detail.run.status === "succeeded" && scorecard.passRate >= 1 && scorecard.regressionCount === 0;
     const scoreEvidence = selfIterationScoreEvidence(detail.run.id, scorecard.configSummaries);
@@ -5516,10 +5697,9 @@ export class LocalRunStore {
         },
       });
 
-      const detail = await this.startEvaluationRun(spec, async ({ input, config }) => {
-        const handle = await this.startRun({ input, config });
-        return this.getRunState({ runId: handle.runId });
-      });
+      const detail = await this.startEvaluationRun(spec, ({ input, config, signal, onStarted }) =>
+        this.executeEvaluationRunWithLifecycle({ input, config, signal, onStarted })
+      );
 
       return this.buildImpactEvaluationResult(detail, candidate);
     } finally {
@@ -5611,10 +5791,9 @@ export class LocalRunStore {
       },
     });
 
-    const detail = await this.startEvaluationRun(spec, async ({ input, config }) => {
-      const handle = await this.startRun({ input, config });
-      return this.getRunState({ runId: handle.runId });
-    });
+    const detail = await this.startEvaluationRun(spec, ({ input, config, signal, onStarted }) =>
+      this.executeEvaluationRunWithLifecycle({ input, config, signal, onStarted })
+    );
 
     return this.buildImpactEvaluationResult(detail, candidate);
   }

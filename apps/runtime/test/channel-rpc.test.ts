@@ -193,7 +193,7 @@ describe("channel JSON-RPC", () => {
     expect(fresh.sessionId).not.toBe(help.sessionId);
   });
 
-  it("discovers local project candidates and continues the original request after numeric confirmation", async () => {
+  it("discovers local project candidates from /project and uses the binding for follow-up requests", async () => {
     const scanRoot = fs.mkdtempSync(path.join(tempDir, "home-scan-"));
     const vaultRoot = path.join(scanRoot, "Obsidian", "DeepSeek Vault");
     fs.mkdirSync(path.join(vaultRoot, ".obsidian"), { recursive: true });
@@ -213,7 +213,8 @@ describe("channel JSON-RPC", () => {
       channelId: "channel-project-discovery",
       externalMessageId: "project-discovery-1",
       externalChatId: "chat-project-discovery",
-      text: "搜索 Obsidian 中 DeepSeek 相关文档",
+      type: "command",
+      text: "/project DeepSeek",
     })));
     expect(discovery.runId).toBeUndefined();
     expect(discovery.outboundMessage?.text).toContain("请回复数字确认");
@@ -227,15 +228,10 @@ describe("channel JSON-RPC", () => {
       text: "1",
     })));
     expect(selected.sessionId).toBe(discovery.sessionId);
-    expect(selected.runId).toBeTruthy();
-    const snapshot = StateSnapshotSchema.parse(store.getRunState({ runId: selected.runId }));
-    expect(snapshot.input.prompt).toBe("搜索 Obsidian 中 DeepSeek 相关文档");
-    expect(snapshot.input.context.projectWorkspace).toMatchObject({
-      rootPath: vaultRoot,
-      markdownFiles: 2,
-    });
+    expect(selected.runId).toBeUndefined();
+    expect(selected.outboundMessage?.text).toContain("项目文件夹切换为");
     const detail = SessionDetailSchema.parse(store.getSession({ sessionId: selected.sessionId }));
-    expect(detail.session.projectId).toBe(snapshot.input.projectId);
+    expect(detail.session.projectId).toBeTruthy();
 
     const followUp = ChannelIngestResultSchema.parse(await handler(request("channels.ingest", {
       channelId: "channel-project-discovery",
@@ -244,16 +240,17 @@ describe("channel JSON-RPC", () => {
       text: "继续查找 README",
     })));
     const followUpSnapshot = StateSnapshotSchema.parse(store.getRunState({ runId: followUp.runId }));
+    expect(followUpSnapshot.input.prompt).toBe("继续查找 README");
     expect(followUpSnapshot.input.context.projectWorkspace).toMatchObject({ rootPath: vaultRoot });
   }, 30_000);
 
-  it("uses an existing Ora project without asking for channel confirmation", async () => {
+  it("does not auto-bind an existing Ora project from a natural-language prompt", async () => {
     const vaultRoot = fs.mkdtempSync(path.join(tempDir, "known-deepseek-vault-"));
     fs.mkdirSync(path.join(vaultRoot, ".obsidian"), { recursive: true });
     fs.writeFileSync(path.join(vaultRoot, "DeepSeek.md"), "# DeepSeek\n");
 
     const store = createStore();
-    const project = store.createProject({ rootPath: vaultRoot, label: "DeepSeek Vault" });
+    store.createProject({ rootPath: vaultRoot, label: "DeepSeek Vault" });
     const handler = createRuntimeMethodHandler(store);
     await handler(request("channels.create", {
       channelId: "channel-known-project",
@@ -270,8 +267,8 @@ describe("channel JSON-RPC", () => {
     expect(result.runId).toBeTruthy();
     expect(result.outboundMessage?.text).not.toContain("请回复数字确认");
     const snapshot = StateSnapshotSchema.parse(store.getRunState({ runId: result.runId }));
-    expect(snapshot.input.projectId).toBe(project.projectId);
-    expect(snapshot.input.context.projectWorkspace).toMatchObject({ rootPath: vaultRoot });
+    expect(snapshot.input.projectId).toBeUndefined();
+    expect(snapshot.input.context.projectWorkspace).toBeUndefined();
   });
 
   it("rediscovers project candidates when the user rejects the first list", async () => {
@@ -296,7 +293,8 @@ describe("channel JSON-RPC", () => {
       channelId: "channel-project-rescan",
       externalMessageId: "project-rescan-1",
       externalChatId: "chat-project-rescan",
-      text: "搜索本地 vault",
+      type: "command",
+      text: "/project vault",
     })));
     expect(discovery.outboundMessage?.text).toContain("First Vault");
 
@@ -346,6 +344,89 @@ describe("channel JSON-RPC", () => {
     expect(store.listRuns({ sessionId: selected.sessionId })).toHaveLength(0);
     const detail = SessionDetailSchema.parse(store.getSession({ sessionId: selected.sessionId }));
     expect(detail.session.projectId).toBeTruthy();
+  });
+
+  it("auto-binds a discovered project when the structured confirmer selects a candidate with high confidence", async () => {
+    const scanRoot = fs.mkdtempSync(path.join(tempDir, "home-confirmed-project-"));
+    const alphaRoot = path.join(scanRoot, "DeepSeek Alpha Vault");
+    const betaRoot = path.join(scanRoot, "DeepSeek Beta Vault");
+    fs.mkdirSync(path.join(alphaRoot, ".obsidian"), { recursive: true });
+    fs.mkdirSync(path.join(betaRoot, ".obsidian"), { recursive: true });
+    fs.writeFileSync(path.join(alphaRoot, "alpha.md"), "# Alpha\n");
+    fs.writeFileSync(path.join(betaRoot, "beta.md"), "# Beta\n");
+
+    const previousFetch = globalThis.fetch;
+    process.env.CHANNEL_PROJECT_CONFIRMER_KEY = "test";
+    globalThis.fetch = (async (_input, init) => {
+      const body = JSON.parse(String((init as { body?: string })?.body ?? "{}")) as {
+        messages?: Array<{ role: string; content?: string }>;
+      };
+      const prompt = body.messages
+        ?.map((message) => message.content ?? "")
+        .join("\n") ?? "";
+      if (!prompt.includes("project discovery confirmer")) {
+        throw new Error(`Unexpected provider request: ${prompt}`);
+      }
+      return new Response(JSON.stringify({
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              selectedPath: betaRoot,
+              confidence: 0.93,
+              reason: "Beta candidate exactly matches the explicit DeepSeek Beta query.",
+            }),
+          },
+        }],
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    try {
+      const store = createStore();
+      const handler = createRuntimeMethodHandler(store);
+      await handler(request("channels.create", {
+        channelId: "channel-project-confirmed",
+        label: "Project Confirmed",
+        kind: "http_webhook",
+        config: {
+          projectDiscoveryRoots: [scanRoot],
+          runConfig: {
+            providerId: "channel-project-confirmer",
+            modelRef: "channel-project-confirmer-model",
+            providerConfig: {
+              id: "channel-project-confirmer",
+              label: "Channel Project Confirmer",
+              type: "openai_compatible",
+              modelId: "channel-project-confirmer-model",
+              baseUrl: "https://channel-project-confirmer.test/v1",
+              apiKeyEnv: "CHANNEL_PROJECT_CONFIRMER_KEY",
+              capabilities: ["chat"],
+              headers: {},
+            },
+          },
+        },
+      }));
+
+      const result = ChannelIngestResultSchema.parse(await handler(request("channels.ingest", {
+        channelId: "channel-project-confirmed",
+        externalMessageId: "project-confirmed-1",
+        externalChatId: "chat-project-confirmed",
+        type: "command",
+        text: "/project DeepSeek Beta",
+      })));
+      expect(result.runId).toBeUndefined();
+      expect(result.outboundMessage?.text).toContain("项目文件夹切换为");
+      expect(result.outboundMessage?.text).toContain("DeepSeek Beta Vault");
+      expect(result.outboundMessage?.text).not.toContain("请回复数字确认");
+      const detail = SessionDetailSchema.parse(store.getSession({ sessionId: result.sessionId }));
+      const project = store.getProject({ projectId: detail.session.projectId });
+      expect(project.project.rootPath).toBe(betaRoot);
+    } finally {
+      globalThis.fetch = previousFetch;
+      delete process.env.CHANNEL_PROJECT_CONFIRMER_KEY;
+    }
   });
 
   it("binds an existing Ora project from /project without asking for confirmation", async () => {

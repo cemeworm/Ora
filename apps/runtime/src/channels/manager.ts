@@ -41,7 +41,18 @@ export interface ChannelRunRuntime {
   cancelRun(params: unknown): StateSnapshot;
   getRunState(params: unknown): StateSnapshot;
   listRuns(params?: unknown): RunSummary[];
+  confirmProjectDiscoverySelection?(params: ProjectDiscoveryConfirmationRequest): Promise<ProjectDiscoveryConfirmationResult>;
 }
+
+export interface ProjectDiscoveryConfirmationRequest {
+  query?: string;
+  candidates: Array<Pick<ProjectDiscoveryCandidate, "label" | "path" | "reason">>;
+  runConfig?: Record<string, unknown>;
+}
+
+export type ProjectDiscoveryConfirmationResult =
+  | { status: "selected"; path: string; reason: string; confidence: number }
+  | { status: "none"; reason: string; confidence?: number };
 
 
 export interface ChannelManagerOptions {
@@ -196,12 +207,6 @@ export class ChannelManager {
       return continuation;
     }
     const resolution = this.resolveProjectForRun(enrichedInbound.text, binding.sessionId);
-    if (resolution.kind === "discovery") {
-      return this.deliverProjectDiscoveryReply(enrichedInbound, channel, binding, {
-        originalPrompt: resolution.originalPrompt,
-        query: resolution.query,
-      });
-    }
 
     const effectivePrompt = resolution.kind === "resolved" && resolution.switched
       ? `[已自动切换工作目录至项目：${this.sessionProjectPath(binding.sessionId)}]\n\n${enrichedInbound.text}`
@@ -709,6 +714,39 @@ export class ChannelManager {
         "command_response",
       );
     }
+    const confirmation = candidates.length > 1
+      ? await this.runtime.confirmProjectDiscoverySelection?.({
+          query: options.query ?? options.originalPrompt,
+          candidates: candidates.map((candidate) => ({
+            label: candidate.label,
+            path: candidate.path,
+            reason: candidate.reason,
+          })),
+          runConfig: channelRunConfig(channel),
+        })
+      : undefined;
+    if (confirmation?.status === "selected") {
+      const selectedCandidate = candidates.find((candidate) => candidate.path === confirmation.path);
+      if (selectedCandidate) {
+        const existingProject = this.projectByRootPath(selectedCandidate.path);
+        if (existingProject) {
+          return this.bindProjectAndMaybeContinue(inbound, channel, binding, {
+            projectId: existingProject.projectId,
+            label: existingProject.label,
+            rootPath: existingProject.rootPath,
+          }, options.originalPrompt);
+        }
+        const createdProject = this.runtime.createProject({
+          rootPath: selectedCandidate.path,
+          label: selectedCandidate.label,
+        });
+        return this.bindProjectAndMaybeContinue(inbound, channel, binding, {
+          projectId: createdProject.projectId,
+          label: selectedCandidate.label,
+          rootPath: selectedCandidate.path,
+        }, options.originalPrompt);
+      }
+    }
 
     const pending: PendingProjectSelection = {
       originalPrompt: options.originalPrompt,
@@ -872,38 +910,15 @@ export class ChannelManager {
   }
 
   private resolveProjectForRun(
-    text: string,
+    _text: string,
     sessionId: string,
   ):
     | { kind: "resolved"; projectId: string; switched: boolean }
-    | { kind: "discovery"; originalPrompt: string; query: string }
     | { kind: "none" }
   {
     const currentProjectId = this.sessionProjectId(sessionId);
-    const projects = this.runtime.listProjects({ limit: 500 });
-    const mentionedLabel = extractProjectMention(text, projects);
-    const hasFileIntent = shouldDiscoverProjectForPrompt(text);
-
-    if (mentionedLabel) {
-      const match = this.matchExistingProject(mentionedLabel, new Set());
-      if (match) {
-        if (match.projectId !== currentProjectId) {
-          this.runtime.setSessionProject({ sessionId, projectId: match.projectId });
-          return { kind: "resolved", projectId: match.projectId, switched: true };
-        }
-        return { kind: "resolved", projectId: match.projectId, switched: false };
-      }
-      if (hasFileIntent) {
-        return { kind: "discovery", originalPrompt: text, query: mentionedLabel };
-      }
-    }
-
     if (currentProjectId) {
       return { kind: "resolved", projectId: currentProjectId, switched: false };
-    }
-
-    if (hasFileIntent) {
-      return { kind: "discovery", originalPrompt: text, query: text };
     }
 
     return { kind: "none" };
@@ -929,6 +944,15 @@ export class ChannelManager {
     return matches.length === 1 || matches[0]!.score > matches[1]!.score
       ? matches[0]!.project
       : undefined;
+  }
+
+  private projectByRootPath(rootPath: string): ProjectSummary | undefined {
+    const resolved = rootPath.trim();
+    if (!resolved) {
+      return undefined;
+    }
+    return this.runtime.listProjects({ limit: 500 })
+      .find((project) => project.rootPath === resolved);
   }
 }
 
@@ -972,22 +996,6 @@ function numericSelection(text: string): number | undefined {
 function isNegativeProjectSelection(text: string): boolean {
   const normalized = text.trim().toLowerCase();
   return ["不对", "都不是", "不是", "错误", "wrong", "no", "none"].includes(normalized);
-}
-
-function shouldDiscoverProjectForPrompt(text: string): boolean {
-  return /(obsidian|vault|本地|文件|文档|目录|项目|搜索|查找|grep|readme|\.md|markdown)/i.test(text);
-}
-
-function extractProjectMention(text: string, projects: ProjectSummary[]): string | undefined {
-  if (projects.length === 0) return undefined;
-  const lowerText = text.toLowerCase();
-  const sorted = [...projects].sort((a, b) => b.label.length - a.label.length);
-  for (const project of sorted) {
-    if (project.label.length >= 2 && lowerText.includes(project.label.toLowerCase())) {
-      return project.label;
-    }
-  }
-  return undefined;
 }
 
 function projectDiscoveryRoots(channel: ChannelConfig): string[] | undefined {
