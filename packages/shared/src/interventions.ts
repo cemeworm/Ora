@@ -12,6 +12,13 @@ export const InterventionActionSchema = z.enum([
 ]);
 export type InterventionAction = z.infer<typeof InterventionActionSchema>;
 
+export const CausalInterventionSignificanceSchema = z.enum([
+  "strategic",
+  "tactical",
+  "trace",
+]);
+export type CausalInterventionSignificance = z.infer<typeof CausalInterventionSignificanceSchema>;
+
 export const CausalDecisionSourceSchema = z.enum([
   "router_primary",
   "runtime_followup",

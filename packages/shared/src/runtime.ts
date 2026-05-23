@@ -1851,14 +1851,31 @@ export function deriveSnapshotGateProjection(snapshot: StateSnapshot, options: G
     }
   }
 
-  const pendingPlanDecision = (snapshot.planDecisions ?? []).find((decision) => decision.status === "pending");
-  if (pendingPlanDecision || attention?.kind === "needs_plan_decision") {
-    const planDecisionId = pendingPlanDecision?.id ?? attention?.planDecisionId;
+  const planDecisions = snapshot.planDecisions ?? [];
+  const pendingPlanDecision = planDecisions.find((decision) => decision.status === "pending");
+  if (pendingPlanDecision) {
     return {
       kind: "plan_decision",
-      source: pendingPlanDecision ? "plan_decisions" : "attention",
-      durable: Boolean(pendingPlanDecision),
-      staleRisk: !pendingPlanDecision,
+      source: "plan_decisions",
+      durable: true,
+      staleRisk: false,
+      gateIds: [pendingPlanDecision.id],
+      pendingActionIds: [],
+      pendingToolCallIds: [],
+      pendingClarificationIds: [],
+      planDecisionId: pendingPlanDecision.id,
+    };
+  }
+  if (planDecisions.length > 0) {
+    return undefined;
+  }
+  if (attention?.kind === "needs_plan_decision") {
+    const planDecisionId = attention.planDecisionId;
+    return {
+      kind: "plan_decision",
+      source: "attention",
+      durable: false,
+      staleRisk: true,
       gateIds: planDecisionId ? [planDecisionId] : [],
       pendingActionIds: [],
       pendingToolCallIds: [],

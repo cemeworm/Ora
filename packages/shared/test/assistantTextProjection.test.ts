@@ -9,6 +9,10 @@ import {
   projectAssistantTextFromEvents,
   projectAssistantTextFromSnapshot,
 } from "../src/assistantTextProjection.js";
+import {
+  resolvePublicAssistantText,
+  stripInternalAssistantProtocolText,
+} from "../src/assistantOutputContract.js";
 
 describe("mergeAssistantDeltaText", () => {
   it("appends explicit deltas", () => {
@@ -175,7 +179,7 @@ describe("projectAssistantTextFromEvents", () => {
       { type: "message.delta", payload: { delta: "Normal", content: "Normal" } },
       { type: "message.delta", payload: { delta: "<tool_call>", content: "<tool_call>" } },
     ];
-    expect(projectAssistantTextFromEvents(events)).toBe("Normal");
+    expect(projectAssistantTextFromEvents(events)).toBe("");
   });
 
   // --- truncation ---
@@ -246,6 +250,18 @@ describe("projectAssistantTextFromSnapshot", () => {
     expect(projectAssistantTextFromSnapshot(snapshot)).toBe("Real text");
   });
 
+  it("ignores internal protocol output text and falls back to events", () => {
+    const snapshot = {
+      output: {
+        text: "Visible prefix\n\n<｜｜DSML｜｜invoke name=\"file__read\">\n<｜｜DSML｜｜parameter name=\"path\">x</｜｜DSML｜｜parameter>\n</｜｜DSML｜｜invoke>",
+      },
+      events: [
+        { type: "message.delta", payload: { delta: "Event text", content: "Event text" } },
+      ],
+    };
+    expect(projectAssistantTextFromSnapshot(snapshot)).toBe("Event text");
+  });
+
   // --- truncation ---
   it("truncates output.text at maxChars", () => {
     const snapshot = {
@@ -295,5 +311,81 @@ describe("projectAssistantTextFromSnapshot", () => {
       ],
     };
     expect(projectAssistantTextFromSnapshot(snapshot)).toBe("Parent synthesis");
+  });
+
+  it("ignores commentary deltas by default in events fallback", () => {
+    const snapshot = {
+      events: [
+        { type: "message.delta", payload: { phase: "commentary", surface: "chat_progress", content: "Working through the tool results." } },
+        { type: "message.delta", payload: { delta: "Final", content: "Final" } },
+      ],
+    };
+    expect(projectAssistantTextFromSnapshot(snapshot)).toBe("Final");
+  });
+
+  it("can include commentary deltas when explicitly requested", () => {
+    const snapshot = {
+      events: [
+        { type: "message.delta", payload: { phase: "commentary", surface: "chat_progress", content: "Working through the tool results." } },
+      ],
+    };
+    expect(projectAssistantTextFromSnapshot(snapshot, { includeCommentary: true })).toBe("Working through the tool results.");
+  });
+
+  it("drops a message when later deltas complete an internal protocol fragment", () => {
+    const snapshot = {
+      events: [
+        { type: "message.delta", seq: 0, payload: { messageId: "msg-1", delta: "Visible prefix\n\n<｜｜DSML｜｜in", content: "Visible prefix\n\n<｜｜DSML｜｜in" } },
+        { type: "message.delta", seq: 1, payload: { messageId: "msg-1", delta: 'voke name="file__read">', content: 'Visible prefix\n\n<｜｜DSML｜｜invoke name="file__read">' } },
+      ],
+    };
+
+    expect(projectAssistantTextFromSnapshot(snapshot)).toBe("");
+  });
+
+  it("falls back to the latest clean message when a later message is rejected", () => {
+    const snapshot = {
+      events: [
+        { type: "message.delta", seq: 0, payload: { messageId: "msg-1", delta: "First clean answer", content: "First clean answer" } },
+        { type: "message.delta", seq: 1, payload: { messageId: "msg-2", delta: "<｜｜DSML｜｜in", content: "<｜｜DSML｜｜in" } },
+        { type: "message.delta", seq: 2, payload: { messageId: "msg-2", delta: 'voke name="file__read">', content: '<｜｜DSML｜｜invoke name="file__read">' } },
+      ],
+    };
+
+    expect(projectAssistantTextFromSnapshot(snapshot)).toBe("First clean answer");
+  });
+});
+
+describe("assistant output contract", () => {
+  it("strips DSML protocol lines while preserving visible prefix", () => {
+    expect(stripInternalAssistantProtocolText(
+      "Visible prefix\n\n<｜｜DSML｜｜invoke name=\"file__read\">\n<｜｜DSML｜｜parameter name=\"path\">x</｜｜DSML｜｜parameter>\n</｜｜DSML｜｜invoke>",
+    )).toBe("Visible prefix");
+  });
+
+  it("rejects raw output that contains internal protocol even when visible text remains", () => {
+    const resolved = resolvePublicAssistantText(
+      "Visible prefix\n\n<｜｜DSML｜｜invoke name=\"file__read\">\n<｜｜DSML｜｜parameter name=\"path\">x</｜｜DSML｜｜parameter>\n</｜｜DSML｜｜invoke>",
+    );
+    expect(resolved.isRejected).toBe(true);
+    expect(resolved.rejectionReason).toBe("internal_protocol");
+    expect(resolved.visibleText).toBe("Visible prefix");
+    expect(resolved.acceptedText).toBeUndefined();
+  });
+
+  it("rejects inline tool json even when prose appears before it", () => {
+    const resolved = resolvePublicAssistantText(
+      'Visible prefix {"tool":"file.write","args":{"path":"notes.txt","content":"x"}}',
+    );
+    expect(resolved.isRejected).toBe(true);
+    expect(resolved.rejectionReason).toBe("internal_protocol");
+  });
+
+  it("rejects writer file tags as internal protocol text", () => {
+    const resolved = resolvePublicAssistantText(
+      "Visible prefix\n<file.write path=\"notes.txt\">approved</file.write>",
+    );
+    expect(resolved.isRejected).toBe(true);
+    expect(resolved.rejectionReason).toBe("internal_protocol");
   });
 });

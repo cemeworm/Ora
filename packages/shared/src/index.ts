@@ -14,6 +14,7 @@ export * from "./mode-studio-builder.js";
 export * from "./runtime.js";
 export * from "./runtime-ledger.js";
 export * from "./runtime-timeline.js";
+export * from "./assistantOutputContract.js";
 export * from "./assistantTextProjection.js";
 export * from "./diagnostics.js";
 export * from "./comparison.js";

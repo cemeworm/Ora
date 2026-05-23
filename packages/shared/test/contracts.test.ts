@@ -186,6 +186,7 @@ import {
   TodoItemSchema,
   autoLayoutModeSpec,
   deriveRunInteraction,
+  deriveSnapshotGateProjection,
   deriveSessionBranchGroupStatus,
   deriveSessionBranchGroupsForSession,
   ensureModeNodePositions,
@@ -2788,6 +2789,98 @@ describe("SessionConfigSchema", () => {
 });
 
 describe("Session thread contracts", () => {
+  it("does not revive a resolved plan decision from stale attention when durable decisions exist", () => {
+    expect(deriveSnapshotGateProjection(StateSnapshotSchema.parse({
+      runId: "run-1",
+      sessionId: "session-1",
+      turnIndex: 1,
+      status: "succeeded",
+      pattern: "orchestrator_subagent",
+      input: { prompt: "Adjust the plan.", context: {}, createdAt: 1000 },
+      config: RunConfigSchema.parse({}),
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      actions: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 0, completed: 0, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: {},
+      pendingApprovals: [],
+      pendingClarifications: [],
+      planDecisions: [{
+        id: "decision-1",
+        runId: "run-1",
+        sessionId: "session-1",
+        status: "declined",
+        createdAt: 1001,
+        resolvedAt: 1002,
+      }],
+      attention: {
+        kind: "needs_plan_decision",
+        blocking: true,
+        sourceRunId: "run-1",
+        reason: "plan_decision_required",
+        planDecisionId: "decision-1",
+        pendingActionIds: [],
+        pendingToolCallIds: [],
+        pendingClarificationIds: [],
+      },
+      updatedAt: 1002,
+    }))).toBeUndefined();
+  });
+
+  it("keeps legacy plan-decision attention as fallback when no durable plan decisions exist", () => {
+    expect(deriveSnapshotGateProjection(StateSnapshotSchema.parse({
+      runId: "run-1",
+      sessionId: "session-1",
+      turnIndex: 1,
+      status: "succeeded",
+      pattern: "orchestrator_subagent",
+      input: { prompt: "Adjust the plan.", context: {}, createdAt: 1000 },
+      config: RunConfigSchema.parse({}),
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      actions: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 0, completed: 0, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: {},
+      pendingApprovals: [],
+      pendingClarifications: [],
+      planDecisions: [],
+      attention: {
+        kind: "needs_plan_decision",
+        blocking: true,
+        sourceRunId: "run-1",
+        reason: "plan_decision_required",
+        planDecisionId: "decision-legacy",
+        pendingActionIds: [],
+        pendingToolCallIds: [],
+        pendingClarificationIds: [],
+      },
+      updatedAt: 1002,
+    }))).toMatchObject({
+      kind: "plan_decision",
+      source: "attention",
+      durable: false,
+      staleRisk: true,
+      gateIds: ["decision-legacy"],
+      planDecisionId: "decision-legacy",
+    });
+  });
+
   it("accepts session create params and session summaries", () => {
     const createParams = SessionCreateParamsSchema.parse({ projectId: "ora-mvp" });
     const summary = SessionSummarySchema.parse({

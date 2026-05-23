@@ -4,8 +4,10 @@ import type { StateSnapshot, OraEventEnvelope, PlanDecisionGate, PendingClarific
 import {
   CausalDecisionRecordSchema,
   CausalDecisionSourceSchema,
+  CausalInterventionSignificanceSchema,
   type CausalDecisionRecord,
   type CausalDecisionSource,
+  type CausalInterventionSignificance,
   type InterventionAction,
 } from "./interventions.js";
 
@@ -79,6 +81,7 @@ export const CausalInterventionEpisodeSchema = z.object({
   status: CausalInterventionEpisodeStatusSchema,
   goalImpact: CausalInterventionGoalImpactSchema,
   outcomeSummary: z.string(),
+  significance: CausalInterventionSignificanceSchema,
 });
 export type CausalInterventionEpisode = z.infer<typeof CausalInterventionEpisodeSchema>;
 
@@ -253,6 +256,7 @@ function buildEpisode(
     status: outcome.status,
     goalImpact: outcome.goalImpact,
     outcomeSummary: outcome.summary,
+    significance: classifySignificance(record, outcome, snapshot.turnIndex ?? 1, laterCarriers),
   });
 }
 
@@ -569,6 +573,116 @@ function evidenceKindForIntervention(intervention: InterventionAction): CausalIn
     default:
       return "tool_call";
   }
+}
+
+export function classifySignificance(
+  record: CausalDecisionRecord,
+  outcome: {
+    effective: boolean;
+    status: string;
+    evidenceKind: CausalInterventionEvidenceKind;
+  },
+  fallbackTurnIndex: number,
+  laterCarriers: readonly DecisionCarrier[],
+): CausalInterventionSignificance {
+  const intervention = record.chosenIntervention;
+  const phase = record.decisionContext?.phase;
+  const context = record.decisionContext ?? {};
+  const currentTurn = context.turnIndex ?? fallbackTurnIndex;
+
+  // strategic: gates and critical interventions
+  if (outcome.evidenceKind === "clarification_gate") return "strategic";
+  if (outcome.evidenceKind === "approval_gate") return "strategic";
+  if (outcome.evidenceKind === "plan_gate") return "strategic";
+  if (outcome.evidenceKind === "superseded") return "strategic";
+  if (intervention === "stop") return "strategic";
+
+  // strategic: tool blocked/abandoned but agent recovered with another tool in same turn
+  if (
+    outcome.evidenceKind === "tool_call" &&
+    (outcome.status === "blocked" || outcome.status === "abandoned")
+  ) {
+    if (outcome.effective) {
+      const hasRecovery = laterCarriers.some((carrier) => {
+        const nextContext = carrier.record.decisionContext ?? {};
+        const nextTurn = nextContext.turnIndex ?? fallbackTurnIndex;
+        return nextTurn === currentTurn
+          && (nextContext.phase === "tool_request" || carrier.record.chosenIntervention === "use_tool");
+      });
+      if (hasRecovery) return "strategic";
+    }
+  }
+
+  // tactical: explicit information-gathering choices (search_web / read_context)
+  if (
+    intervention === "search_web" || intervention === "read_context" ||
+    phase === "tool_request" && (context.toolId === "web.search" || context.toolId === "web.fetch" || context.toolId === "file.read" || context.toolId === "file.grep" || context.toolId === "file.glob")
+  ) {
+    if (outcome.effective) return "tactical";
+  }
+
+  // trace: everything else
+  return "trace";
+}
+
+const CausalDecisionChainSchema = z.object({
+  chainId: z.string().min(1),
+  label: z.string().min(1),
+  turnIndex: z.number().int().positive(),
+  episodeCount: z.number().int().nonnegative(),
+  entryGoalUncertainty: z.number().min(0).max(1),
+  exitGoalUncertainty: z.number().min(0).max(1),
+  dominantIntervention: z.string().min(1),
+});
+export type CausalDecisionChain = z.infer<typeof CausalDecisionChainSchema>;
+
+export function deriveCausalDecisionChains(
+  episodes: readonly CausalInterventionEpisode[],
+): CausalDecisionChain[] {
+  const chainMap = new Map<string, CausalInterventionEpisode[]>();
+
+  for (const episode of episodes) {
+    if (!episode.effective) continue;
+    const groupKey = `${episode.turnIndex}:${episode.agentId ?? "default"}`;
+    const group = chainMap.get(groupKey);
+    if (group) {
+      group.push(episode);
+    } else {
+      chainMap.set(groupKey, [episode]);
+    }
+  }
+
+  const chains: CausalDecisionChain[] = [];
+  for (const [groupKey, group] of chainMap) {
+    const sorted = group.sort((a, b) => a.recordedAt - b.recordedAt);
+    const first = sorted[0];
+    const last = sorted[sorted.length - 1];
+    if (!first || !last) continue;
+
+    const significancePriority: Record<CausalInterventionSignificance, number> = {
+      strategic: 3,
+      tactical: 2,
+      trace: 1,
+    };
+    let dominant = first;
+    for (const episode of sorted) {
+      if (significancePriority[episode.significance] > significancePriority[dominant.significance]) {
+        dominant = episode;
+      }
+    }
+
+    chains.push(CausalDecisionChainSchema.parse({
+      chainId: groupKey,
+      label: `第 ${first.turnIndex} 轮`,
+      turnIndex: first.turnIndex,
+      episodeCount: group.length,
+      entryGoalUncertainty: first.goalUncertainty,
+      exitGoalUncertainty: last.goalUncertainty,
+      dominantIntervention: dominant.chosenIntervention,
+    }));
+  }
+
+  return chains.sort((a, b) => a.turnIndex - b.turnIndex);
 }
 
 function toolCallDistance(call: OraToolCallEnvelope, recordedAt: number): number {

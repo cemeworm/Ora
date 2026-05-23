@@ -1,4 +1,15 @@
 import { ORA_ROOT_AGENT_ID } from "./primitives.js";
+import {
+  isInternalAssistantText,
+  isInternalDeltaText,
+  isInternalRecoveryFallbackText,
+  resolvePublicAssistantText,
+} from "./assistantOutputContract.js";
+export {
+  isInternalAssistantText,
+  isInternalDeltaText,
+  isInternalRecoveryFallbackText,
+} from "./assistantOutputContract.js";
 
 export interface AssistantDeltaProjection {
   text: string;
@@ -57,38 +68,14 @@ export function isCollaborationDeltaPayload(payload: Record<string, unknown>): b
   );
 }
 
-export function isInternalAssistantText(text: string): boolean {
-  const trimmed = text.trim();
-  if (!trimmed) {
-    return false;
-  }
-  if (/<\/?tool_plan_mode_reminder\b|<\/?file_grep_policy\b/i.test(trimmed)) {
-    return true;
-  }
-  if (/<[^>]*DSML[^>]*tool_calls|<tool_call\b|parameter\s+name=|<\/?previous_tool_call\b|<\/?result\b/i.test(trimmed)) {
-    return true;
-  }
-  if (/<file\.(?:read|list|grep|glob)\b[^>]*\/?>/i.test(trimmed)) {
-    return true;
-  }
-  return /^\{"tool"\s*:\s*"[a-z0-9_.-]+"\s*,\s*"args"\s*:/i.test(trimmed);
-}
-
-export function isInternalRecoveryFallbackText(text: string): boolean {
-  const trimmed = text.trim();
-  return (
-    trimmed.startsWith("[tool-error-boundary]") ||
-    trimmed.startsWith("[recovery:fallback]")
-  );
-}
-
-export function isInternalDeltaText(text: string): boolean {
-  return isInternalRecoveryFallbackText(text) || isInternalAssistantText(text);
+export function isCommentaryDeltaPayload(payload: Record<string, unknown>): boolean {
+  return payload.phase === "commentary" || payload.surface === "chat_progress";
 }
 
 export interface ProjectAssistantTextOptions {
   publicOnly?: boolean;
   maxChars?: number;
+  includeCommentary?: boolean;
 }
 
 export function projectAssistantTextFromEvents(
@@ -96,13 +83,16 @@ export function projectAssistantTextFromEvents(
     type: string;
     payload?: unknown;
     agentId?: string | null;
+    seq?: number;
   }>,
   options: ProjectAssistantTextOptions = {},
 ): string {
-  const { publicOnly = true, maxChars } = options;
-  let text = "";
+  const { publicOnly = true, maxChars, includeCommentary = false } = options;
+  const textByMessageKey = new Map<string, { text: string; order: number }>();
+  const rejectedMessageKeys = new Set<string>();
 
-  for (const event of events) {
+  for (let index = 0; index < events.length; index += 1) {
+    const event = events[index]!;
     if (event.type !== "message.delta") {
       continue;
     }
@@ -113,15 +103,38 @@ export function projectAssistantTextFromEvents(
     if (publicOnly && (isInternalDeltaPayload(payload) || isCollaborationDeltaPayload(payload))) {
       continue;
     }
+    if (!includeCommentary && isCommentaryDeltaPayload(payload)) {
+      continue;
+    }
     const deltaText =
       typeof payload.delta === "string" ? payload.delta
       : typeof payload.content === "string" ? payload.content
       : "";
     if (publicOnly && isInternalDeltaText(deltaText)) {
+      rejectedMessageKeys.add(assistantEventMessageKey(event, payload));
+      textByMessageKey.delete(assistantEventMessageKey(event, payload));
       continue;
     }
-    text = mergeAssistantDeltaText(text, payload);
+    const messageKey = assistantEventMessageKey(event, payload);
+    if (rejectedMessageKeys.has(messageKey)) {
+      continue;
+    }
+    const currentText = textByMessageKey.get(messageKey)?.text ?? "";
+    const nextText = mergeAssistantDeltaText(currentText, payload);
+    if (publicOnly && resolvePublicAssistantText(nextText).isRejected) {
+      rejectedMessageKeys.add(messageKey);
+      textByMessageKey.delete(messageKey);
+      continue;
+    }
+    textByMessageKey.set(messageKey, {
+      text: nextText,
+      order: typeof event.seq === "number" ? event.seq : index,
+    });
   }
+
+  const text = [...textByMessageKey.values()]
+    .sort((left, right) => left.order - right.order)
+    .at(-1)?.text ?? "";
 
   if (maxChars !== undefined && text.length > maxChars) {
     return text.slice(0, maxChars);
@@ -162,12 +175,16 @@ export function projectAssistantTextFromSnapshot(
 
   const outputText = extractOutputText(snapshot.output);
   if (outputText !== undefined) {
-    if (publicOnly && isInternalRecoveryFallbackText(outputText)) {
+    const resolvedOutput = resolvePublicAssistantText(outputText);
+    if (publicOnly && resolvedOutput.isRejected) {
       // fall through to events
     } else {
-      return maxChars !== undefined && outputText.length > maxChars
-        ? outputText.slice(0, maxChars)
+      const visibleText = publicOnly
+        ? (resolvedOutput.acceptedText ?? outputText)
         : outputText;
+      return maxChars !== undefined && visibleText.length > maxChars
+        ? visibleText.slice(0, maxChars)
+        : visibleText;
     }
   }
 
@@ -177,6 +194,25 @@ export function projectAssistantTextFromSnapshot(
     snapshot.events.filter((event) => !isHiddenChildAssistantEvent(childAgentIds, event)),
     options,
   );
+}
+
+function assistantEventMessageKey(
+  event: {
+    agentId?: string | null;
+  },
+  payload: Record<string, unknown>,
+): string {
+  const messageId =
+    typeof payload.messageId === "string" && payload.messageId.trim()
+      ? payload.messageId.trim()
+      : undefined;
+  if (messageId) {
+    return messageId;
+  }
+  const agentId = typeof event.agentId === "string" && event.agentId.trim()
+    ? event.agentId.trim()
+    : ORA_ROOT_AGENT_ID;
+  return `${agentId}:default`;
 }
 
 function extractOutputText(output: unknown): string | undefined {
