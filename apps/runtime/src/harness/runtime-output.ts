@@ -1,4 +1,9 @@
-import type { CompletionStopReason, ModeSpec } from "@cemeworm/shared";
+import {
+  resolvePublicAssistantText,
+  type AssistantOutputRejectionReason,
+  type CompletionStopReason,
+  type ModeSpec,
+} from "@cemeworm/shared";
 import type { ModelResponse } from "../providers/index.js";
 import { FORCED_FINAL_FALLBACK_TEXT } from "./runtime-completion.js";
 import {
@@ -12,6 +17,11 @@ export interface RuntimeCompletionMetadata {
   toolAttempts: number;
   maxToolCalls: number;
   completionPolicy: ModeSpec["completionPolicy"];
+}
+
+export interface FinalOutputContractViolation {
+  reason: AssistantOutputRejectionReason;
+  visibleText: string;
 }
 
 type RuntimeCompletionEmit = (
@@ -123,7 +133,45 @@ export function incompleteForcedFinalError(
   if (metadata.forcedFinal && isForcedFinalFallbackOutput(value)) {
     return `Run stopped before completing the task: ${metadata.stopReason}. The model returned only Ora's forced-final fallback.`;
   }
+  const violation = finalOutputContractViolation(value);
+  if (violation) {
+    return violation.reason === "internal_protocol"
+      ? "Run cannot complete: final output contains internal protocol text."
+      : violation.reason === "recovery_fallback"
+        ? "Run cannot complete: final output resolved to recovery fallback text."
+        : "Run cannot complete: final output is empty after public-output filtering.";
+  }
   return undefined;
+}
+
+export function finalOutputContractViolation(
+  value: unknown,
+): FinalOutputContractViolation | undefined {
+  const text = outputText(value);
+  if (text === undefined) {
+    return undefined;
+  }
+  const resolved = resolvePublicAssistantText(text);
+  if (!resolved.isRejected) {
+    return undefined;
+  }
+  return {
+    reason: resolved.rejectionReason ?? "empty",
+    visibleText: resolved.visibleText,
+  };
+}
+
+function outputText(value: unknown): string | undefined {
+  if (typeof value === "string") {
+    return value.trim() || undefined;
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const record = value as Record<string, unknown>;
+  return typeof record.text === "string" && record.text.trim()
+    ? record.text.trim()
+    : undefined;
 }
 
 function isForcedFinalFallbackOutput(value: unknown): boolean {

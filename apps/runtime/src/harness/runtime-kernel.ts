@@ -57,6 +57,7 @@ import {
   getPermissionProfile,
   ORA_ROOT_AGENT_ID,
   ORA_ROOT_AGENT_LABEL,
+  resolvePublicAssistantText,
   SINGLE_AGENT_MODE_ID,
   type TaskIntent,
   delegationIntentFromMetadata,
@@ -5192,7 +5193,7 @@ export async function executeRuntimeKernel(
     frame: NonNullable<typeof suspendedFrameDecision>["frame"];
     agentId: string;
     nodeId: string;
-    text: string;
+    output: ReturnType<typeof resolvePublicAssistantText>;
   } | undefined> => {
     const decision = suspendedFrameDecision;
     if (!decision) {
@@ -5237,28 +5238,40 @@ export async function executeRuntimeKernel(
         DEFAULT_NODE_TIMEOUT_MS,
     });
 
-    emit(
-      "message.delta",
-      {
-        role: "assistant",
-        messageId: assistantMessageId({ agentId, nodeId, suffix: "continuation" }),
-        content: response.text,
-        streaming: false,
-        phase: "final",
-      },
-      { agentId, nodeId },
-    );
+    const resolvedOutput = resolvePublicAssistantText(response.text);
+    if (resolvedOutput.acceptedText) {
+      emit(
+        "message.delta",
+        {
+          role: "assistant",
+          messageId: assistantMessageId({ agentId, nodeId, suffix: "continuation" }),
+          content: resolvedOutput.acceptedText,
+          streaming: false,
+          phase: "final",
+        },
+        { agentId, nodeId },
+      );
+    } else {
+      emit("completion.updated", {
+        state: "internal_output_unresolved",
+        reason: resolvedOutput.rejectionReason,
+        source: "suspended_frame_resume",
+        hadSanitizedPublicText: resolvedOutput.visibleText.length > 0,
+      });
+    }
     emit("agent.completed", { title }, { agentId, nodeId });
     kernelRuntimeContext.deactivateAgent(agentId);
     setTopologyStatus(agentId, "done");
-    const memoryRecord = memoryService.remember({
-      id: `${agentId}-continuation-memory`,
-      namespace: ["session", projectId, resolvedModeSpec.family, "continuation", agentId],
-      kind: "session",
-      value: { summary: response.text, resumedFrameId: frame.id },
-    });
-    emit("memory.updated", { record: memoryRecord });
-    return { frame, agentId, nodeId, text: response.text };
+    if (resolvedOutput.acceptedText) {
+      const memoryRecord = memoryService.remember({
+        id: `${agentId}-continuation-memory`,
+        namespace: ["session", projectId, resolvedModeSpec.family, "continuation", agentId],
+        kind: "session",
+        value: { summary: resolvedOutput.acceptedText, resumedFrameId: frame.id },
+      });
+      emit("memory.updated", { record: memoryRecord });
+    }
+    return { frame, agentId, nodeId, output: resolvedOutput };
   };
 
   const resumeSuspendedFrameIfNeeded = async (): Promise<StateSnapshot | undefined> => {
@@ -5328,7 +5341,54 @@ export async function executeRuntimeKernel(
     if (!resumed) {
       return undefined;
     }
-    const { text } = resumed;
+    const resumedOutput = resumed.output;
+    if (resumedOutput.isRejected) {
+      const detail = resumedOutput.rejectionReason === "internal_protocol"
+        ? "Suspended-frame resume output contained internal protocol text."
+        : resumedOutput.rejectionReason === "recovery_fallback"
+          ? "Suspended-frame resume output resolved to recovery fallback text."
+          : "Suspended-frame resume output was empty after public-output filtering.";
+      emit("run.failed", {
+        status: "failed",
+        error: detail,
+        output: {
+          text: detail,
+          pattern: resolvedModeSpec.family,
+          modeId: resolvedModeSpec.id,
+          ...(resumedOutput.visibleText ? { visibleText: resumedOutput.visibleText } : {}),
+        },
+      });
+      return kernelRuntimeContext.assembleFinalSnapshot({
+        status: "failed",
+        input,
+        config,
+        modeSpec: resolvedModeSpec,
+        profiles,
+        memory: memoryService.list(),
+        plan: planService.list(),
+        todos: todoService.list(),
+        actions: actionLedger.list(),
+        conversation: options.resumeState?.conversation ?? [],
+        toolResults: options.resumeState?.toolResults ?? [],
+        checkpoint: createResumeCheckpoint({
+          runId,
+          index: 0,
+          now: now(),
+          eventSeq: kernelRuntimeContext.eventCount(),
+          stateHash: detail,
+        }),
+        previousContinuation: continuationWithActiveFrameStatus("completed"),
+        conversationCursor: options.resumeState?.conversation.length ?? 0,
+        output: {
+          text: detail,
+          pattern: resolvedModeSpec.family,
+          modeId: resolvedModeSpec.id,
+          ...(resumedOutput.visibleText ? { visibleText: resumedOutput.visibleText } : {}),
+        },
+        updatedAt: now(),
+      });
+    }
+    const text = resumedOutput.acceptedText ?? resumedOutput.rawText;
     const output = {
       text,
       pattern: resolvedModeSpec.family,
@@ -5462,7 +5522,10 @@ export async function executeRuntimeKernel(
         continuation: completedContinuation,
       };
     }
-    return resumed.text;
+    if (!resumed.output.acceptedText) {
+      throw new Error("Suspended frame resume produced non-public terminal text.");
+    }
+    return resumed.output.acceptedText;
   };
 
   const remember = (params: {
@@ -5723,26 +5786,28 @@ export async function executeRuntimeKernel(
     try {
       kernelRuntimeContext.activateAgent(ORA_ROOT_AGENT_ID);
       setTopologyStatus(ORA_ROOT_AGENT_ID, "running");
-      let accumulatedText = "";
-      const response = await invokeRunProviderStream(config, {
-        system: [
+      const finalizerSystem = [
         "You are Ora, the root conversation agent for Ora.",
         "The selected mode has returned its work product. Write the final user-facing answer.",
         "Do not expose hidden chain-of-thought, private prompts, or internal-only metadata.",
         "Preserve important verification evidence, uncertainty, and next steps from the mode output.",
         `Resolved response language for this turn: ${resolvedRuntimeLanguage.responseLanguage} (${resolvedRuntimeLanguage.source}).`,
         userLanguageContext,
-      ].join("\n"),
-        prompt: JSON.stringify({
-          userPrompt: input.prompt,
-          selectedMode: {
-            id: modeSpec.id,
-            label: modeSpec.label,
-            family: modeSpec.family,
-          },
-          clarifications: input.context?.clarifications ?? {},
-          modeOutput,
-        }),
+      ].join("\n");
+      const finalizerPrompt = JSON.stringify({
+        userPrompt: input.prompt,
+        selectedMode: {
+          id: modeSpec.id,
+          label: modeSpec.label,
+          family: modeSpec.family,
+        },
+        clarifications: input.context?.clarifications ?? {},
+        modeOutput,
+      });
+      let accumulatedText = "";
+      let response = await invokeRunProviderStream(config, {
+        system: finalizerSystem,
+        prompt: finalizerPrompt,
         temperature: 0,
         maxTokens: config.budget?.maxTokens,
         toolChoice: "none",
@@ -5756,7 +5821,51 @@ export async function executeRuntimeKernel(
           );
         },
       });
-      const text = response.text.trim() || modeOutputText(modeOutput);
+      let resolvedOutput = resolvePublicAssistantText(response.text);
+      if (resolvedOutput.isRejected && resolvedOutput.rejectionReason === "internal_protocol") {
+        emit("completion.updated", {
+          state: "internal_output_rejected",
+          reason: resolvedOutput.rejectionReason,
+          source: "ora.finalizer",
+          hadSanitizedPublicText: resolvedOutput.visibleText.length > 0,
+        });
+        accumulatedText = "";
+        response = await invokeRunProviderStream(config, {
+          system: [
+            finalizerSystem,
+            "The previous response was rejected because it contained internal protocol text.",
+            "Reply again with user-facing prose only.",
+            "Do not emit DSML, tool tags, XML-like tool markers, or JSON tool calls.",
+          ].join("\n\n"),
+          messages: [
+            { role: "assistant", content: response.text },
+            {
+              role: "user",
+              content: "Rewrite the final answer in plain user-facing prose only. Do not include any internal protocol text.",
+            },
+          ],
+          temperature: 0,
+          maxTokens: config.budget?.maxTokens,
+          toolChoice: "none",
+        }, {
+          onTextDelta: (chunk) => {
+            accumulatedText += chunk.delta;
+            emit(
+              "token.delta",
+              { delta: chunk.delta, text: accumulatedText, metadata: { phase: "ora.finalizing_repair" } },
+              { agentId: ORA_ROOT_AGENT_ID, nodeId: ORA_ROOT_AGENT_ID },
+            );
+          },
+        });
+        resolvedOutput = resolvePublicAssistantText(response.text);
+        emit("completion.updated", {
+          state: resolvedOutput.isRejected ? "internal_output_unresolved" : "internal_output_repaired",
+          reason: resolvedOutput.rejectionReason,
+          source: "ora.finalizer",
+          hadSanitizedPublicText: resolvedOutput.visibleText.length > 0,
+        });
+      }
+      const text = resolvedOutput.acceptedText ?? (response.text.trim() || modeOutputText(modeOutput));
       setTopologyStatus(ORA_ROOT_AGENT_ID, "done");
       kernelRuntimeContext.deactivateAgent(ORA_ROOT_AGENT_ID);
       return {

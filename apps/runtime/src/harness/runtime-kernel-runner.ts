@@ -21,6 +21,7 @@ import type {
 } from "../capabilities.js";
 import { executeModeSpec } from "../patterns/driver-registry.js";
 import type { RuntimeCompletionMetadata } from "./runtime-output.js";
+import { buildCommentaryDelta } from "../commentary-delta.js";
 import {
   ApprovalInterruptError,
   ClarificationInterruptError,
@@ -345,6 +346,7 @@ export class KernelRunner {
     } = this.deps.preflight;
     const { resolvedModeSpec } = this.deps.execution;
     const { setTopologyStatus } = this.deps.topology;
+    const { runId } = this.deps.checkpoint;
 
     setTopologyStatus(ORA_ROOT_AGENT_ID, "running");
     const intentClarificationAnswer = clarificationAnswer(INTENT_CLARIFICATION_KEY, INTENT_CLARIFICATION_ID);
@@ -353,6 +355,8 @@ export class KernelRunner {
       config.metadata.clarificationPreflight === true &&
       intentClarificationAnswer === undefined;
     if (config.modeSelection === "auto" || config.metadata.autoModeRouter) {
+      const basedOnSeq = kernelRuntimeContext.latestEventSeq();
+      const summary = selectedModeProgressText(resolvedModeSpec, shouldRunClarificationPreflight);
       emit(
         "task.progress",
         {
@@ -360,11 +364,22 @@ export class KernelRunner {
           source: "runtime_status",
           trigger: "mode.selection",
           title: "Prepare run",
-          summary: selectedModeProgressText(resolvedModeSpec, shouldRunClarificationPreflight),
-          basedOnSeq: kernelRuntimeContext.latestEventSeq(),
+          summary,
+          basedOnSeq,
         },
         { nodeId: "run" },
       );
+      const commentary = buildCommentaryDelta({
+        runId,
+        agentId: ORA_ROOT_AGENT_ID,
+        nodeId: "run",
+        trigger: "mode.selection",
+        summary,
+        basedOnSeq,
+      });
+      if (commentary) {
+        emit("message.delta", commentary.payload, commentary.extra);
+      }
     }
     if (
       resolvedModeSpec.runtimeAtoms.includes("clarification_interrupt") &&

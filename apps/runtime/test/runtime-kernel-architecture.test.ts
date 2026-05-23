@@ -33,6 +33,16 @@ function kernelRunnerDepsSource(): string {
   return source.slice(depsStart, depsEnd);
 }
 
+function suspendedFrameResumeSource(): string {
+  const source = readSource("src/harness/runtime-kernel.ts");
+  const resumeStart = source.indexOf("  const resumeSuspendedRuntimeFrame = async");
+  const resumeEnd = source.indexOf("\n  const remember = (params:", resumeStart);
+
+  expect(resumeStart).toBeGreaterThanOrEqual(0);
+  expect(resumeEnd).toBeGreaterThan(resumeStart);
+  return source.slice(resumeStart, resumeEnd);
+}
+
 describe("runtime kernel architecture guards", () => {
   it("routes node runtime loop dependencies through KernelRuntimeContext", () => {
     const source = readSource("src/harness/runtime-kernel.ts");
@@ -165,6 +175,18 @@ describe("runtime kernel architecture guards", () => {
     expect(source).toContain('emitDelegatedAgentState("degraded"');
     expect(source).not.toContain('emitNodeRuntimeState("interrupted"');
     expect(source).not.toContain('emitNodeRuntimeState("degraded"');
+  });
+
+  it("guards suspended-frame resume output with the public final output contract before emitting user-visible text", () => {
+    const source = suspendedFrameResumeSource();
+
+    expect(source).toContain("const resolvedOutput = resolvePublicAssistantText(response.text);");
+    expect(source).toContain('source: "suspended_frame_resume"');
+    expect(source).toContain("Suspended-frame resume output contained internal protocol text.");
+    expect(source).toContain("if (resolvedOutput.acceptedText) {");
+    expect(source).toContain("content: resolvedOutput.acceptedText");
+    expect(source).not.toContain("content: response.text");
+    expect(source).toContain("if (!resumed.output.acceptedText) {");
   });
 
   it("freezes the explicit KernelRunner dependency surface as narrow runner-facing groups", () => {

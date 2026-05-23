@@ -10,6 +10,12 @@ import type {
   PendingClarificationOption,
   RunConfig,
 } from "@cemeworm/shared";
+import {
+  isInternalAssistantText as isSharedInternalAssistantText,
+  isInternalRecoveryFallbackText as isSharedInternalRecoveryFallbackText,
+  stripInternalAssistantProtocolText,
+} from "@cemeworm/shared";
+import { buildCommentaryDelta } from "../commentary-delta.js";
 import { invokeRunProvider, invokeRunProviderStream } from "../providers/index.js";
 import type { ModelMessage, ModelRequest, ModelResponse } from "../providers/index.js";
 import type { ModelStreamEvent } from "../providers/types.js";
@@ -421,28 +427,20 @@ export function isInternalProviderAssistantText(text: string): boolean {
   if (!trimmed) {
     return false;
   }
-  if (/<\/?tool_plan_mode_reminder\b|<\/?file_grep_policy\b/i.test(trimmed)) {
+  if (isSharedInternalRecoveryFallbackText(trimmed)) {
     return true;
   }
-  if (/<[^>]*DSML[^>]*tool_calls|parameter\s+name=/i.test(trimmed)) {
+  if (isSharedInternalAssistantText(trimmed)) {
     return true;
   }
-  // Match <tool_call> at any stage to prevent streaming prefix leak.
   if (/<tool_c/i.test(trimmed)) {
     return true;
   }
-  // Match {"tool":"... JSON tool call (complete or partial).
   if (/\{"tool"\s*:\s*"/i.test(trimmed)) {
     return true;
   }
   return false;
 }
-
-const TOOL_CALL_TAG_RE = /<tool_call[\s\S]*?<\/tool_call>/gi;
-const PARAMETER_TAG_RE = /<parameter\s+name=["'][^"']*["'][\s\S]*?<\/parameter>/gi;
-const INTERNAL_META_TAG_RE = /<\/?(?:tool_plan_mode_reminder|file_grep_policy)[^>]*>/gi;
-const DSML_TAG_RE = /<[^>]*DSML[^>]*tool_calls[^>]*>/gi;
-const INLINE_TOOL_JSON_RE = /\{"tool"\s*:\s*"[a-z0-9_.-]+"\s*,\s*"args"\s*:\{[^}]*\}\s*\}/gi;
 
 /**
  * Strips tool-call markers, DSML tags, and other internal protocol text from
@@ -450,13 +448,7 @@ const INLINE_TOOL_JSON_RE = /\{"tool"\s*:\s*"[a-z0-9_.-]+"\s*,\s*"args"\s*:\{[^}
  * non-streaming / fallback paths where the full response is emitted at once.
  */
 export function stripInternalAssistantText(text: string): string {
-  return text
-    .replace(TOOL_CALL_TAG_RE, "")
-    .replace(PARAMETER_TAG_RE, "")
-    .replace(INTERNAL_META_TAG_RE, "")
-    .replace(DSML_TAG_RE, "")
-    .replace(INLINE_TOOL_JSON_RE, "")
-    .trim();
+  return stripInternalAssistantProtocolText(text);
 }
 
 function containsCompleteProposedPlanText(text: string): boolean {
@@ -566,6 +558,7 @@ function emitRuntimeStatusProgress(
   trigger: string,
   summary: string,
   basedOnSeq: number,
+  lastPublicCommentaryFingerprintRef?: { current?: string },
 ): void {
   emit(
     "task.progress",
@@ -580,6 +573,27 @@ function emitRuntimeStatusProgress(
     },
     { agentId: params.agentId, nodeId: params.nodeId },
   );
+  if (isInternalRuntimeStatusTrigger(trigger)) {
+    return;
+  }
+  const commentary = buildCommentaryDelta({
+    runId: params.runId,
+    agentId: params.agentId,
+    nodeId: params.nodeId,
+    trigger,
+    summary,
+    basedOnSeq,
+  });
+  if (!commentary) {
+    return;
+  }
+  if (lastPublicCommentaryFingerprintRef?.current === commentary.fingerprint) {
+    return;
+  }
+  if (lastPublicCommentaryFingerprintRef) {
+    lastPublicCommentaryFingerprintRef.current = commentary.fingerprint;
+  }
+  emit("message.delta", commentary.payload, commentary.extra);
 }
 
 function isInternalRuntimeStatusTrigger(trigger: string): boolean {
@@ -657,6 +671,7 @@ export async function runNodeRuntimeLoop(
     return envelope;
   };
   const input = { prompt: deps.inputPrompt };
+  const lastPublicCommentaryFingerprintRef: { current?: string } = {};
   const events = {
     get length(): number {
       return deps.eventsLength();
@@ -1392,6 +1407,7 @@ export async function runNodeRuntimeLoop(
       guardResult.progressTrigger,
       guardResult.progressSummary,
       Math.max(0, events.length - 1),
+      lastPublicCommentaryFingerprintRef,
     );
     if (
       (guardResult.reason === "pending_background_children" || guardResult.reason === "pending_background_results") &&

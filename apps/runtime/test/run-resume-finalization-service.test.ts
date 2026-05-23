@@ -173,6 +173,68 @@ describe("RunResumeFinalizationService", () => {
     });
   });
 
+  it("downgrades terminal resume output with DSML protocol text to failed", async () => {
+    const original = baseSnapshot();
+    const terminal = StateSnapshotSchema.parse({
+      ...original,
+      status: "succeeded",
+      events: [
+        ...original.events,
+        OraEventEnvelopeSchema.parse({
+          id: "run-resume-finalization:done",
+          runId: original.runId,
+          seq: original.events.length,
+          type: "run.done",
+          createdAt: 2_150,
+          pattern: original.pattern,
+          payload: {
+            status: "succeeded",
+            output: { text: "污染前的成功终态。" },
+          },
+        }),
+      ],
+      output: {
+        text: [
+          "这是一个会被污染的终态回复。",
+          "",
+          "<｜｜DSML｜｜tool_calls>",
+          '<｜｜DSML｜｜invoke name="file__read">',
+          "</｜｜DSML｜｜invoke>",
+          "</｜｜DSML｜｜tool_calls>",
+        ].join("\n"),
+      },
+      updatedAt: 2_200,
+    });
+    const service = new RunResumeFinalizationService({
+      withResumeResolutionEvents: (snapshot) => snapshot,
+      normalizeSnapshotForPersistence: (snapshot) => snapshot,
+      appendRunSnapshotUpdateToLedger: (snapshot) => snapshot,
+      persistRun: () => {},
+      persistRunWithGeneratedTitle: async () => {},
+    });
+
+    const persisted = await service.persistTerminal({
+      snapshot: terminal,
+      original,
+      clarificationPatch: {},
+      approvedActionIds: [],
+    });
+
+    expect(persisted.status).toBe("failed");
+    expect(persisted.error).toBe("Terminal resume output contained internal protocol text.");
+    expect(persisted.events.at(-1)).toMatchObject({
+      type: "run.failed",
+      payload: expect.objectContaining({
+        status: "failed",
+        error: "Terminal resume output contained internal protocol text.",
+      }),
+    });
+    expect(persisted.output).toMatchObject({
+      text: "Terminal resume output contained internal protocol text.",
+      visibleText: "这是一个会被污染的终态回复。",
+    });
+  });
+
   it("owns streaming failure ledger, persistence, and publish sequencing", async () => {
     const calls: string[] = [];
     const failed = StateSnapshotSchema.parse({ ...baseSnapshot(), status: "failed", updatedAt: 3_000 });

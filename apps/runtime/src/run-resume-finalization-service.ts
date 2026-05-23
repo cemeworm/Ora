@@ -1,5 +1,6 @@
 import type { OraEventEnvelope, StateSnapshot } from "@cemeworm/shared";
 import { assertRunCanBecomeTerminal, deriveTerminalStateAssertionFromSnapshot, TerminalStateIntegrityError } from "./harness/runtime-completion-guards.js";
+import { finalOutputContractViolation } from "./harness/runtime-output.js";
 
 interface RunResumeFinalizationServiceDeps {
   withResumeResolutionEvents: (
@@ -21,15 +22,36 @@ interface RunResumeFinalizationServiceDeps {
  */
 function downgradeToFailed(
   snapshot: StateSnapshot,
-  error: TerminalStateIntegrityError,
+  error: Pick<TerminalStateIntegrityError, "message"> & { violations?: unknown; visibleText?: string },
 ): StateSnapshot {
+  const seq = snapshot.events.length;
+  const failedEvent = {
+    id: `${snapshot.runId}:evt-${seq}`,
+    runId: snapshot.runId,
+    seq,
+    type: "run.failed" as const,
+    createdAt: snapshot.updatedAt,
+    pattern: snapshot.pattern,
+    payload: {
+      status: "failed" as const,
+      error: error.message,
+      output: {
+        text: error.message,
+        ...(error.violations !== undefined ? { violations: error.violations } : {}),
+        ...(typeof error.visibleText === "string" ? { visibleText: error.visibleText } : {}),
+      },
+    },
+  };
   return {
     ...snapshot,
     status: "failed" as const,
     error: error.message,
+    activeAgents: [],
+    events: [...snapshot.events, failedEvent],
     output: {
       text: error.message,
-      violations: error.violations,
+      ...(error.violations !== undefined ? { violations: error.violations } : {}),
+      ...(typeof error.visibleText === "string" ? { visibleText: error.visibleText } : {}),
     },
   };
 }
@@ -71,6 +93,17 @@ export class RunResumeFinalizationService {
         throw caught;
       }
     }
+    const outputViolation = finalOutputContractViolation(finalSnapshot.output);
+    if (outputViolation) {
+      finalSnapshot = downgradeToFailed(finalSnapshot, {
+        message: outputViolation.reason === "internal_protocol"
+          ? "Terminal resume output contained internal protocol text."
+          : outputViolation.reason === "recovery_fallback"
+            ? "Terminal resume output resolved to recovery fallback text."
+            : "Terminal resume output was empty after public-output filtering.",
+        visibleText: outputViolation.visibleText,
+      });
+    }
     const projected = this.projectPreparedSnapshot(finalSnapshot);
     await this.deps.persistRunWithGeneratedTitle(projected);
     return projected;
@@ -108,6 +141,17 @@ export class RunResumeFinalizationService {
       } else {
         throw caught;
       }
+    }
+    const outputViolation = finalOutputContractViolation(finalSnapshot.output);
+    if (outputViolation) {
+      finalSnapshot = downgradeToFailed(finalSnapshot, {
+        message: outputViolation.reason === "internal_protocol"
+          ? "Terminal streaming resume output contained internal protocol text."
+          : outputViolation.reason === "recovery_fallback"
+            ? "Terminal streaming resume output resolved to recovery fallback text."
+            : "Terminal streaming resume output was empty after public-output filtering.",
+        visibleText: outputViolation.visibleText,
+      });
     }
     const projected = this.projectPreparedSnapshot(finalSnapshot);
     await this.deps.persistRunWithGeneratedTitle(projected);

@@ -155,4 +155,26 @@ describe("run store streaming ledger hot path", () => {
     expect(projected.status).toBe("succeeded");
     expect(refreshSpy).toHaveBeenCalled();
   });
+
+  it("does not mark commentary deltas as first readable assistant output", () => {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "ora-run-store-commentary-latency-"));
+    const store = new LocalRunStore({ dataDir, autoStartChannels: false });
+    const base = snapshot("run-commentary-latency", "session-commentary-latency");
+
+    const next = (store as unknown as {
+      appendEvent: (
+        snapshot: StateSnapshot,
+        type: OraEventEnvelope["type"],
+        payload: unknown,
+        extra?: Partial<OraEventEnvelope>,
+      ) => StateSnapshot;
+    }).appendEvent(base, "message.delta", {
+      role: "assistant",
+      content: "我先检查工具执行状态。",
+      phase: "commentary",
+      surface: "chat_progress",
+    });
+
+    expect((next.latency?.marks ?? []).some((mark) => mark.name === "firstUserReadableAssistantTextProduced")).toBe(false);
+  });
 });

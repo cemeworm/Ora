@@ -1,4 +1,4 @@
-import { OraEventEnvelope, StateSnapshot, StateSnapshotSchema } from "@cemeworm/shared";
+import { OraEventEnvelope, resolvePublicAssistantText, StateSnapshot, StateSnapshotSchema } from "@cemeworm/shared";
 import type { ActionRecord } from "@cemeworm/shared";
 import { RuntimeSkillRegistry, RuntimeToolRegistry } from "./harness/capability-registries.js";
 import { continuationHandlerRegistry } from "./harness/approved-tool-continuation-handler.js";
@@ -20,6 +20,7 @@ import {
   currentPendingClarifications,
 } from "./run-orchestration.js";
 import { activePlanStepId, planListUpdatedPayload } from "./harness/runtime-plan-list-state.js";
+import { finalOutputContractViolation } from "./harness/runtime-output.js";
 
 const USER_RESUMED_MESSAGE = "Confirmed. Continuing.";
 
@@ -543,13 +544,39 @@ export async function completeApprovedToolContinuation(
     };
   }
 
-  const finalText = await finalTextForApprovedToolContinuation(snapshot, toolResults, deps);
+  const finalResolution = await finalTextForApprovedToolContinuation(snapshot, toolResults, deps);
+  const output = { text: finalResolution.acceptedText ?? finalResolution.rawText };
+  const outputViolation = finalOutputContractViolation(output);
+  if (outputViolation) {
+    const detail = outputViolation.reason === "internal_protocol"
+      ? "Final approved-action output contained internal protocol text."
+      : outputViolation.reason === "recovery_fallback"
+        ? "Final approved-action output resolved to recovery fallback text."
+        : "Final approved-action output was empty after public-output filtering.";
+    append("run.failed", {
+      status: "failed",
+      error: detail,
+      output: { text: detail, visibleText: outputViolation.visibleText },
+    });
+    updateContinuationStatus("failed");
+    return {
+      kind: "completed",
+      snapshot: deps.attachTraceMetadata(StateSnapshotSchema.parse({
+        ...working,
+        status: "failed",
+        error: detail,
+        activeAgents: [],
+        output: { text: detail, visibleText: outputViolation.visibleText },
+        updatedAt: deps.now(),
+      })),
+    };
+  }
+  const finalText = finalResolution.acceptedText ?? output.text;
   append("message.delta", {
     role: "assistant",
     messageId: `${snapshot.runId}:assistant:approved-file-write-resume`,
     content: finalText,
   });
-  const output = { text: finalText };
   updateContinuationStatus("completed");
 
   // Shared terminal-state integrity gate: refuse to emit run.done if any
@@ -605,7 +632,7 @@ async function finalTextForApprovedToolContinuation(
   snapshot: StateSnapshot,
   toolResults: Array<{ toolId: string; path?: unknown; sizeBytes?: unknown; content?: unknown; output?: unknown }>,
   deps: ApprovedFileWriteResumeDeps,
-): Promise<string> {
+): Promise<ReturnType<typeof resolvePublicAssistantText>> {
   const resultSummary = toolResults.map((result) => ({
     toolId: result.toolId,
     path: result.path,
@@ -645,8 +672,9 @@ async function finalTextForApprovedToolContinuation(
     tools: [],
     toolChoice: "none",
   });
-  if ((first.toolCalls?.length ?? 0) === 0 && first.text.trim()) {
-    return first.text.trim();
+  const firstResolved = resolvePublicAssistantText(first.text);
+  if ((first.toolCalls?.length ?? 0) === 0 && firstResolved.acceptedText) {
+    return firstResolved;
   }
   const retry = await invokeRunProvider(snapshot.config, {
     messages: [
@@ -666,7 +694,7 @@ async function finalTextForApprovedToolContinuation(
     tools: [],
     toolChoice: "none",
   });
-  return retry.text.trim() || "已完成批准的操作。";
+  return resolvePublicAssistantText(retry.text || firstResolved.rawText);
 }
 
 function upsertContinuationFrame(

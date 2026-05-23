@@ -122,6 +122,33 @@ describe("approved tool resume completion", () => {
     expect(resumed?.events.map((event) => event.type)).toContain("run.done");
   });
 
+  it("fails instead of succeeding when approved-tool finalization keeps emitting internal protocol text", async () => {
+    const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ora-approved-internal-protocol-"));
+    const snapshot = approvedFileWriteSnapshot(workspaceRoot);
+
+    const result = await completeApprovedToolContinuation(
+      snapshot,
+      ["run-approved:action-write"],
+      {},
+      deps({
+        buildConversationMessages: () => [{ role: "user" as const, content: "APPROVED_INTERNAL_PROTOCOL_TEST" }],
+      }),
+    );
+
+    expect(result?.kind).toBe("completed");
+    const resumed = result?.kind === "completed" ? result.snapshot : undefined;
+    expect(resumed?.status).toBe("failed");
+    expect(resumed?.error).toBe("Final approved-action output contained internal protocol text.");
+    expect(resumed?.events.map((event) => event.type)).toContain("run.failed");
+    expect(resumed?.events.map((event) => event.type)).not.toContain("run.done");
+    expect(resumed?.events.some((event) =>
+      event.type === "message.delta" &&
+      typeof event.payload === "object" &&
+      event.payload !== null &&
+      String((event.payload as { content?: unknown }).content ?? "").includes("DSML")
+    )).toBe(false);
+  });
+
   it("hands whole-mode approved-tool continuation context to the next kernel turn when plan-list work remains", async () => {
     const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ora-approved-kernel-continue-"));
     const snapshot = approvedFileWriteSnapshot(workspaceRoot, {
@@ -492,6 +519,16 @@ describe("approved tool resume completion", () => {
 });
 
 function responseForRequest(messages: Array<{ role: string; content: string }>): string {
+  if (messages.some((message) => message.content.includes("APPROVED_INTERNAL_PROTOCOL_TEST"))) {
+    return [
+      "Visible prefix",
+      "",
+      "<｜｜DSML｜｜tool_calls>",
+      '<｜｜DSML｜｜invoke name="file__write">',
+      "</｜｜DSML｜｜invoke>",
+      "</｜｜DSML｜｜tool_calls>",
+    ].join("\n");
+  }
   const sawPlanUpdateResult = messages.some((message) => message.content.includes("Workspace tool result for plan.update"));
   const sawPlanListFollowUp = messages.some((message) =>
     message.content.includes("The current plan list is not complete yet")
@@ -513,7 +550,9 @@ function responseForRequest(messages: Array<{ role: string; content: string }>):
   return "已完成批准的操作。";
 }
 
-function deps() {
+function deps(options: {
+  buildConversationMessages?: () => Array<{ role: "user"; content: string }>;
+} = {}) {
   return {
     skillRegistry: new RuntimeSkillRegistry(),
     now: () => 1_714_000_000_000,
@@ -534,7 +573,7 @@ function deps() {
       });
     },
     attachTraceMetadata: (snapshot: StateSnapshot) => snapshot,
-    buildConversationMessages: () => [{ role: "user" as const, content: "Write the approved note." }],
+    buildConversationMessages: options.buildConversationMessages ?? (() => [{ role: "user" as const, content: "Write the approved note." }]),
   };
 }
 

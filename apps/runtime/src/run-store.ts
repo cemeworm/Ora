@@ -62,6 +62,8 @@ import {
   RunEventStream,
   RunEventStreamSchema,
   RunReplayParamsSchema,
+  resolvePublicAssistantText,
+  isCommentaryDeltaPayload,
   SINGLE_AGENT_MODE_ID,
   RunForkParamsSchema,
   RunHandle,
@@ -3737,6 +3739,22 @@ export class LocalRunStore {
     }
     this.appendSnapshotBusinessFactsToLedger(snapshot);
     const content = assistantTextForRun(snapshot);
+    const outputText = snapshot.output && typeof snapshot.output === "object" && "text" in snapshot.output
+      && typeof (snapshot.output as { text?: unknown }).text === "string"
+      ? (snapshot.output as { text: string }).text
+      : typeof snapshot.output === "string"
+        ? snapshot.output
+        : undefined;
+    const resolvedOutput = resolvePublicAssistantText(outputText);
+    const sanitizedOutput = resolvedOutput.isRejected
+      ? (content ? { text: content } : undefined)
+      : snapshot.output ?? (content ? { text: content } : undefined);
+    const snapshotForLedger = resolvedOutput.isRejected
+      ? StateSnapshotSchema.parse({
+          ...snapshot,
+          output: sanitizedOutput,
+        })
+      : snapshot;
     const entry = this.appendRunLedgerEntry(snapshot, {
       id: `${snapshot.runId}:assistant`,
       type: "assistant.message",
@@ -3746,9 +3764,9 @@ export class LocalRunStore {
       payload: {
         content,
         status: snapshot.status,
-        output: snapshot.output ?? (content ? { text: content } : undefined),
+        output: sanitizedOutput,
         error: snapshot.error,
-        snapshot,
+        snapshot: snapshotForLedger,
       },
     });
     if (snapshot.config.metadata.branchRole === "candidate") {
@@ -6197,7 +6215,13 @@ function markLatencyForRunEvent(snapshot: StateSnapshot, event: OraEventEnvelope
       runLatencyMark("runtime", "firstTextDelta", at, { eventType: event.type, seq: event.seq }),
     );
   }
-  if (event.type === "message.delta" && isRecord(event.payload) && typeof event.payload.content === "string" && event.payload.content.trim()) {
+  if (
+    event.type === "message.delta" &&
+    isRecord(event.payload) &&
+    !isCommentaryDeltaPayload(event.payload) &&
+    typeof event.payload.content === "string" &&
+    event.payload.content.trim()
+  ) {
     next = appendFirstRunLatencyMark(
       next,
       runLatencyMark("runtime", "firstUserReadableAssistantTextProduced", at, { seq: event.seq }),
