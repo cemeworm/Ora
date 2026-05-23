@@ -37,6 +37,7 @@
         "modelRef": "deepseek-v4-flash",
         "causalInterventionLevel": "record_only",
         "metadata": {
+          "taskIntent": "chat",
           "evaluationBatch": "causal-freshness-regression",
           "causalRouterVersion": "v2"
         }
@@ -53,6 +54,7 @@
         "modelRef": "deepseek-v4-flash",
         "causalInterventionLevel": "enforcing",
         "metadata": {
+          "taskIntent": "chat",
           "evaluationBatch": "causal-freshness-regression",
           "causalRouterVersion": "v2",
           "causalFreshnessBlockPolicy": true

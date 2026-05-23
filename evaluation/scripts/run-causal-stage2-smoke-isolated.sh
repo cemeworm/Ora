@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 CLI="$PROJECT_ROOT/apps/runtime/dist/cli.js"
 DATASET_FILE="${DATASET_FILE:-$PROJECT_ROOT/evaluation/datasets/causal-intervention-decision-smoke-dataset.json}"
-SPEC_TEMPLATE="$PROJECT_ROOT/evaluation/specs/causal-stage2-boundary-smoke-three-way.json"
+SPEC_TEMPLATE="${SPEC_TEMPLATE:-$PROJECT_ROOT/evaluation/specs/causal-stage2-boundary-smoke-three-way.json}"
 NODE_BIN="${NODE_BIN:-node}"
 
 STORE_ROOT="${1:-/private/tmp/ora-causal-stage2-smoke-$(date +%Y%m%d-%H%M%S)}"

@@ -1,9 +1,9 @@
 {
-  "datasetId": "dataset-0003",
+  "datasetId": "dataset-0004",
   "profileId": "orchestration",
   "repetitions": 1,
   "concurrency": 1,
-  "timeoutMs": 300000,
+  "timeoutMs": 120000,
   "objective": {
     "kind": "outcome",
     "target": "run.output",
@@ -24,12 +24,14 @@
       "first_locate_success",
       "shell_explore_restraint"
     ],
-    "metadata": { "retrofitCausalDecisions": true }
+    "metadata": {
+      "retrofitCausalDecisions": true
+    }
   },
   "configs": [
     {
-      "id": "causal-record-only",
-      "label": "Record Only",
+      "id": "stage2-single-agent-router-v2-only",
+      "label": "Single Agent + Router V2 Only",
       "runConfig": {
         "pattern": "orchestrator_subagent",
         "modeSelection": "manual",
@@ -39,35 +41,55 @@
         "causalInterventionLevel": "record_only",
         "metadata": {
           "taskIntent": "chat",
-          "evaluationBatch": "causal-full-two-way",
+          "evaluationBatch": "causal-stage2-context-probe-single-agent",
           "causalRouterVersion": "v2"
         }
       }
     },
     {
-      "id": "causal-enforcing",
-      "label": "Enforcing",
+      "id": "stage2-single-agent-plus-freshness",
+      "label": "Single Agent + Freshness Boundary",
       "runConfig": {
         "pattern": "orchestrator_subagent",
         "modeSelection": "manual",
         "modeId": "single_agent",
         "providerId": "deepseek",
         "modelRef": "deepseek-v4-flash",
-        "causalInterventionLevel": "enforcing",
+        "causalInterventionLevel": "record_only",
         "metadata": {
           "taskIntent": "chat",
-          "evaluationBatch": "causal-full-two-way",
+          "evaluationBatch": "causal-stage2-context-probe-single-agent",
           "causalRouterVersion": "v2",
           "causalFreshnessBlockPolicy": true
+        }
+      }
+    },
+    {
+      "id": "stage2-single-agent-plus-both-boundaries",
+      "label": "Single Agent + Both Boundaries",
+      "runConfig": {
+        "pattern": "orchestrator_subagent",
+        "modeSelection": "manual",
+        "modeId": "single_agent",
+        "providerId": "deepseek",
+        "modelRef": "deepseek-v4-flash",
+        "causalInterventionLevel": "record_only",
+        "metadata": {
+          "taskIntent": "chat",
+          "evaluationBatch": "causal-stage2-context-probe-single-agent",
+          "causalRouterVersion": "v2",
+          "causalFreshnessBlockPolicy": true,
+          "causalContextProbePolicy": true
         }
       }
     }
   ],
   "metadata": {
     "retrofitCausalDecisions": true,
-    "description": "Two-way: record_only vs enforcing on 101 cases.",
+    "description": "Pinned single_agent context_probe smoke for stage2 boundary diagnosis. Removes modeSelection:auto drift so boundary behavior can be compared in a stable execution mode.",
     "evaluationFamily": "causal",
     "judgeRubricTemplate": "causal_outcome_v1",
-    "judgePassThreshold": 0.7
+    "judgePassThreshold": 0.7,
+    "rolloutStage": "stage2-context-probe-single-agent-diagnosis"
   }
 }
