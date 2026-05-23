@@ -1569,6 +1569,31 @@ function continuationForKernelSnapshot(params: {
   now: number;
 }): StateSnapshot["continuation"] {
   const previousFrames = params.previous?.frames ?? [];
+  if (
+    params.status === "succeeded" ||
+    params.status === "failed" ||
+    params.status === "cancelled"
+  ) {
+    const activeFrameId = params.previous?.activeFrameId;
+    if (!activeFrameId) {
+      return params.previous ?? { frames: [] };
+    }
+    return {
+      activeFrameId: undefined,
+      frames: previousFrames.map((frame) =>
+        frame.id === activeFrameId
+          ? {
+              ...frame,
+              status: params.status === "succeeded" ? "completed" as const : "failed" as const,
+              pendingActionIds: [],
+              pendingToolCallIds: [],
+              pendingClarificationIds: [],
+              updatedAt: params.now,
+            }
+          : frame
+      ),
+    };
+  }
   if (params.status !== "interrupted" || !params.reason) {
     return params.previous ?? { frames: [] };
   }

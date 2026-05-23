@@ -433,6 +433,7 @@ function parseIntentClarificationResult(text: string): IntentClarificationResult
 
 function normalizeBlockerToken(value: string): string {
   return value
+    .replace(/\s*\([^)]+\)/g, "")
     .trim()
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "_")

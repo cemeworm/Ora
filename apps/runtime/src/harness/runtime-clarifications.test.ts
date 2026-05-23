@@ -190,4 +190,34 @@ describe("runtime clarifications language handling", () => {
     expect(second).toMatch(/^step_deploy_blocker_[0-9a-f]{8}$/);
     expect(first).not.toBe(second);
   });
+
+  it("strips dynamic parenthesized ids from blocker fingerprints", () => {
+    const first = planStepBlockerFingerprint({
+      activeStep: {
+        id: "step-deploy (attempt-123)",
+        step: "Deploy build",
+        status: "in_progress",
+      },
+      clarification: {
+        question: "请提供部署 API key (req-123)。",
+        missingVariables: ["deployment_api_key (req-123)"],
+        counterfactualRiskIfSkipped: "部署会直接失败。",
+      },
+    });
+    const second = planStepBlockerFingerprint({
+      activeStep: {
+        id: "step-deploy (attempt-987)",
+        step: "Deploy build",
+        status: "in_progress",
+      },
+      clarification: {
+        question: "请提供部署 API key (req-987)。",
+        missingVariables: ["deployment_api_key (req-987)"],
+        counterfactualRiskIfSkipped: "部署会直接失败。",
+      },
+    });
+
+    expect(first).toBe("step_deploy_deployment_api_key");
+    expect(second).toBe(first);
+  });
 });
