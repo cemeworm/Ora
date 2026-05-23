@@ -251,8 +251,19 @@ export async function executeWorkspaceShell(
   assertShellWriteStaysInWorkspace(rootPath, command);
   const timeoutMs = readPositiveInt(args.timeoutMs, limits.shellTimeoutMs, limits.shellTimeoutMs);
   const login = readShellLoginArg(args);
-  const { env, shellPath } = await getShellExecutionContext();
-  const shell = readShellExecutableArg(args) ?? (process.platform === "win32" ? (process.env.COMSPEC ?? "cmd.exe") : shellPath);
+  const requestedShell = readShellExecutableArg(args);
+  const { env, shellPath } = requestedShell
+    ? {
+        env: process.platform === "win32"
+          ? process.env
+          : {
+              ...process.env,
+              SHELL: requestedShell,
+            },
+        shellPath: requestedShell,
+      }
+    : await getShellExecutionContext();
+  const shell = requestedShell ?? (process.platform === "win32" ? (process.env.COMSPEC ?? "cmd.exe") : shellPath);
   const shellArgs = buildShellArgs(shell, command, login);
   const startedAt = Date.now();
   const stdoutState = createShellOutputAccumulator();

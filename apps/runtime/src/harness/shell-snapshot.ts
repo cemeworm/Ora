@@ -71,6 +71,11 @@ export function fallbackShellSnapshot(env: NodeJS.ProcessEnv = process.env): She
 }
 
 async function loadShellSnapshot(options: { forceRefresh?: boolean } = {}): Promise<ShellSnapshot> {
+  if (process.env.VITEST === "true" || process.env.NODE_ENV === "test") {
+    const fallback = fallbackShellSnapshot();
+    cachedSnapshot = fallback;
+    return fallback;
+  }
   if (!options.forceRefresh && cachedSnapshot && !snapshotExpired(cachedSnapshot)) {
     return cachedSnapshot;
   }
