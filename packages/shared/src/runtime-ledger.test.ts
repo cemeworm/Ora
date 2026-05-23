@@ -106,7 +106,7 @@ describe("buildVisibleLedger", () => {
     expect(payload.status).toBe("succeeded");
   });
 
-  it("preserves output and error in event_batch payloads", () => {
+  it("strips output and preserves error in event_batch payloads", () => {
     const entries = [
       entry({ id: "root", type: "session.created" }),
       entry({
@@ -120,7 +120,7 @@ describe("buildVisibleLedger", () => {
     const result = buildVisibleLedger(input);
     const batch = result.entries.find((e) => e.id === "batch1");
     const payload = batch!.payload as Record<string, unknown>;
-    expect(payload.output).toEqual({ text: "result" });
+    expect(payload.output).toBeUndefined();
     expect(payload.error).toBe("something went wrong");
   });
 

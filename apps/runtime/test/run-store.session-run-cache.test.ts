@@ -1,7 +1,13 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createModeSpecFromPattern, MVP_PATTERNS } from "@cemeworm/shared";
+import {
+  buildVisibleLedger,
+  createModeSpecFromPattern,
+  MVP_PATTERNS,
+  type OraEventEnvelope,
+  type RuntimeSessionLedger,
+} from "@cemeworm/shared";
 import type { RunConfig } from "@cemeworm/shared";
 import { describe, expect, it } from "vitest";
 import { LocalRunStore } from "../src/index.js";
@@ -101,5 +107,212 @@ describe("LocalRunStore session run caches", () => {
     expect(firstSession.session.turnCount).toBe(1);
     expect(updatedSession.session.turnCount).toBe(1);
     expect(updatedSession.turns.map((turn) => turn.runId)).toEqual(["run-stable"]);
+  });
+
+  it("reuses session projection cache per ledger mode and keeps visible snapshots lightweight", () => {
+    const store = new LocalRunStore({ dataDir: freshStoreDir(), clock: () => Date.parse("2026-05-21T03:00:00.000Z") });
+    const internal = store as unknown as {
+      sessionProjectionForLedger: (
+        sessionId: string,
+        ledger: RuntimeSessionLedger,
+        leafEntryId: string | undefined,
+        mode: "visible" | "full",
+      ) => {
+        projection: { latestSnapshot?: ReturnType<typeof createRunningRunSnapshot> };
+        snapshotsByRunId: ReadonlyMap<string, ReturnType<typeof createRunningRunSnapshot>>;
+      };
+      applyLedgerToStore: (
+        sessionId: string,
+        ledger: RuntimeSessionLedger,
+        leafEntryId: string | undefined,
+        mode?: "visible" | "full",
+      ) => unknown;
+      storeRunProjection: (snapshot: ReturnType<typeof createRunningRunSnapshot>) => void;
+      runs: Map<string, ReturnType<typeof createRunningRunSnapshot>>;
+    };
+    const snapshot = {
+      ...runningSnapshot("session-cache", "run-cache", 1, Date.parse("2026-05-21T03:00:00.000Z")),
+      status: "running" as const,
+      output: { text: "Full answer" },
+      updatedAt: Date.parse("2026-05-21T03:01:00.000Z"),
+    };
+    const ledger: RuntimeSessionLedger = {
+      sessionId: "session-cache",
+      leafEntryId: "run-cache:events",
+      entries: [
+        {
+          id: "session-cache:created",
+          sessionId: "session-cache",
+          turnIndex: 0,
+          seq: 0,
+          type: "session.created",
+          createdAt: Date.parse("2026-05-21T03:00:00.000Z"),
+          payload: { title: "Cache session" },
+        },
+        {
+          id: "run-cache:user",
+          parentId: "session-cache:created",
+          sessionId: "session-cache",
+          runId: "run-cache",
+          turnIndex: 1,
+          seq: 1,
+          type: "user.message",
+          createdAt: Date.parse("2026-05-21T03:00:01.000Z"),
+          payload: { content: "Prompt for run-cache" },
+        },
+        {
+          id: "run-cache:started",
+          parentId: "run-cache:user",
+          sessionId: "session-cache",
+          runId: "run-cache",
+          turnIndex: 1,
+          seq: 2,
+          type: "run.started",
+          createdAt: Date.parse("2026-05-21T03:00:02.000Z"),
+          payload: {
+            input: snapshot.input,
+            config: snapshot.config,
+            status: "running",
+          },
+        },
+        {
+          id: "run-cache:events",
+          parentId: "run-cache:started",
+          sessionId: "session-cache",
+          runId: "run-cache",
+          turnIndex: 1,
+          seq: 3,
+          type: "runtime.event_batch",
+          createdAt: Date.parse("2026-05-21T03:00:30.000Z"),
+          payload: {
+            events: [{
+              id: "run-cache:event-1",
+              runId: "run-cache",
+              seq: 0,
+              type: "agent.message",
+              createdAt: Date.parse("2026-05-21T03:00:30.000Z"),
+              pattern: "orchestrator_subagent",
+              agentId: "solo_agent",
+              nodeId: "solo_agent",
+              payload: { content: "intermediate" },
+            }],
+            eventCount: 1,
+            status: "running",
+            output: { text: "intermediate" },
+          },
+        },
+        {
+          id: "run-cache:assistant",
+          parentId: "run-cache:events",
+          sessionId: "session-cache",
+          runId: "run-cache",
+          turnIndex: 1,
+          seq: 4,
+          type: "assistant.message",
+          createdAt: snapshot.updatedAt,
+          payload: {
+            content: "Full answer",
+            status: "succeeded",
+            output: { text: "Full answer" },
+            snapshot: {
+              ...snapshot,
+              status: "succeeded" as const,
+            },
+          },
+        },
+      ],
+    };
+
+    const visibleFirst = internal.sessionProjectionForLedger("session-cache", ledger, ledger.leafEntryId, "visible");
+    const visibleSecond = internal.sessionProjectionForLedger("session-cache", ledger, ledger.leafEntryId, "visible");
+    const fullProjection = internal.sessionProjectionForLedger("session-cache", ledger, ledger.leafEntryId, "full");
+    const visibleLedger = buildVisibleLedger(ledger);
+    const visibleAssistantEntry = visibleLedger.entries.find((entry) => entry.id === "run-cache:assistant");
+    const visibleEventBatchEntry = visibleLedger.entries.find((entry) => entry.id === "run-cache:events");
+    expect(visibleSecond).toBe(visibleFirst);
+    expect(fullProjection).not.toBe(visibleFirst);
+    expect(visibleAssistantEntry?.payload).toEqual({
+      content: "Full answer",
+      status: "succeeded",
+      error: undefined,
+    });
+    expect(visibleEventBatchEntry?.payload).toEqual({
+      events: [],
+      eventCount: 1,
+      status: "running",
+      error: undefined,
+    });
+    internal.storeRunProjection({
+      ...snapshot,
+      events: [{
+        id: "run-cache:event-1",
+        runId: "run-cache",
+        seq: 0,
+        type: "agent.message",
+        createdAt: Date.parse("2026-05-21T03:00:30.000Z"),
+        pattern: "orchestrator_subagent",
+        agentId: "solo_agent",
+        nodeId: "solo_agent",
+        payload: { content: "intermediate" },
+      }] as ReturnType<typeof createRunningRunSnapshot>["events"],
+      checkpoints: [] as ReturnType<typeof createRunningRunSnapshot>["checkpoints"],
+      toolResults: [] as ReturnType<typeof createRunningRunSnapshot>["toolResults"],
+    });
+    internal.applyLedgerToStore("session-cache", ledger, ledger.leafEntryId, "visible");
+
+    const visibleAfterApply = internal.sessionProjectionForLedger(
+      "session-cache",
+      ledger,
+      ledger.leafEntryId,
+      "visible",
+    ).snapshotsByRunId.get("run-cache");
+    expect(visibleAfterApply?.events).toEqual([]);
+    expect(visibleAfterApply?.checkpoints).toEqual([]);
+    expect(visibleAfterApply?.toolResults).toEqual([]);
+    expect(internal.runs.get("run-cache")?.events).toEqual([]);
+  });
+
+  it("keeps session detail latestSnapshot on the visible path after a cold reload", () => {
+    const dataDir = freshStoreDir();
+    const clock = () => Date.parse("2026-05-21T03:20:00.000Z");
+    const store = new LocalRunStore({ dataDir, clock });
+    const session = store.createSession({});
+    const createdAt = Date.parse("2026-05-21T03:20:00.000Z");
+    const terminalSnapshot = {
+      ...runningSnapshot(session.sessionId, "run-visible-latest", 1, createdAt),
+      modeId: "code_development",
+      config: {
+        ...baseConfig(),
+        modeId: "code_development",
+      },
+      status: "succeeded" as const,
+      updatedAt: Date.parse("2026-05-21T03:21:00.000Z"),
+      output: { text: "Visible latest snapshot" },
+      events: [{
+        id: "run-visible-latest:event-1",
+        runId: "run-visible-latest",
+        seq: 0,
+        type: "agent.message",
+        createdAt: Date.parse("2026-05-21T03:20:30.000Z"),
+        pattern: "orchestrator_subagent",
+        agentId: "solo_agent",
+        nodeId: "solo_agent",
+        payload: { content: "intermediate" },
+      }] satisfies OraEventEnvelope[],
+    };
+
+    store.persistExternalSnapshot(terminalSnapshot);
+
+    const reloaded = new LocalRunStore({ dataDir, clock });
+    const internal = reloaded as unknown as {
+      runs: Map<string, typeof terminalSnapshot>;
+    };
+
+    const detail = reloaded.getSession({ sessionId: session.sessionId });
+
+    expect(detail.latestSnapshot?.runId).toBe("run-visible-latest");
+    expect(detail.latestSnapshot?.status).toBe("succeeded");
+    expect(detail.latestSnapshot?.events).toEqual([]);
+    expect(internal.runs.get("run-visible-latest")?.events).toEqual([]);
   });
 });

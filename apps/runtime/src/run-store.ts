@@ -109,8 +109,11 @@ import {
   UserTaskInput,
   UserTaskInputSchema,
   agentLabelFromSnapshot,
+  buildVisibleLedger,
+  deriveProjectionRunSnapshot,
   deriveRunSnapshot,
   deriveSessionProjection,
+  type RuntimeSessionProjection,
   type RuntimeSessionEntry,
   type RuntimeSessionEntryType,
   type RuntimeSessionLedger,
@@ -370,6 +373,15 @@ interface StreamingRunOptions {
   onStream?: (stream: RunEventStream) => void;
 }
 
+type SessionLedgerProjectionMode = "visible" | "full";
+
+type CachedSessionLedgerProjection = {
+  cacheKey: string;
+  mode: SessionLedgerProjectionMode;
+  projection: RuntimeSessionProjection;
+  snapshotsByRunId: ReadonlyMap<string, StateSnapshot>;
+};
+
 export class LocalRunStore {
   private readonly backend: RuntimePersistenceBackend;
   private readonly clock: () => number;
@@ -413,13 +425,14 @@ export class LocalRunStore {
     cacheKey: string;
     entryIdsByRunId: ReadonlyMap<string, readonly string[]>;
   }>();
+  private sessionLedgerProjectionCache = new Map<string, CachedSessionLedgerProjection>();
   private allSessionIds = new Set<string>();
   private readonly maxCachedSessions: number;
   private readonly autoArchiveThresholdDays: number;
   private manifest: StoreManifest;
   private sessionLedgerRevision: string | undefined;
   private sessionLedgerLeafEntryIds = new Map<string, string | undefined>();
-  private sessionRunProjectionModes = new Map<string, "slim" | "full">();
+  private sessionRunProjectionModes = new Map<string, SessionLedgerProjectionMode>();
 
   constructor(options: LocalRunStoreOptions = {}) {
     this.maxCachedSessions = options.maxCachedSessions ?? 50;
@@ -957,7 +970,8 @@ export class LocalRunStore {
     const projectionLedger = this.backend.getSessionLedgerExcludingEvents?.(sessionId) ?? this.backend.getSessionLedger(sessionId);
     const candidateRecoveryLedger = this.backend.getSessionLedger(sessionId) ?? projectionLedger;
     const ledgerGroups = projectionLedger
-      ? deriveSessionProjection(projectionLedger).branchGroups.filter((group) => !runtimeGroupIds.has(group.branchGroupId))
+      ? this.sessionProjectionForLedger(sessionId, projectionLedger, projectionLedger.leafEntryId, "visible")
+        .projection.branchGroups.filter((group) => !runtimeGroupIds.has(group.branchGroupId))
       : [];
     return [...runtimeGroups, ...ledgerGroups].map((group) =>
       this.resolveMergedSessionBranchGroup(sessionId, group, candidateRecoveryLedger),
@@ -3615,8 +3629,14 @@ export class LocalRunStore {
     return this.runLedgerService.appendSessionLedgerEntries(sessionId, entries, options);
   }
 
-  private applyLedgerToStore(sessionId: string, ledger: RuntimeSessionLedger, leafEntryId?: string): SessionSummary {
-    const projection = deriveSessionProjection(ledger, leafEntryId ?? ledger.leafEntryId);
+  private applyLedgerToStore(
+    sessionId: string,
+    ledger: RuntimeSessionLedger,
+    leafEntryId?: string,
+    mode: SessionLedgerProjectionMode = "full",
+  ): SessionSummary {
+    const cachedProjection = this.sessionProjectionForLedger(sessionId, ledger, leafEntryId ?? ledger.leafEntryId, mode);
+    const { projection } = cachedProjection;
     this.sessions.set(sessionId, projection.session);
     this.sessionLedgerLeafEntryIds.set(sessionId, projection.leafEntryId);
     this.allSessionIds.add(sessionId);
@@ -3628,17 +3648,8 @@ export class LocalRunStore {
       }
     }
     for (const run of projection.runs) {
-      const snapshot = deriveRunSnapshot(ledger, run.runId, projection.leafEntryId);
+      const snapshot = cachedProjection.snapshotsByRunId.get(run.runId);
       if (snapshot) {
-        const cached = this.runs.get(snapshot.runId);
-        // When the ledger excludes event batches, the derived snapshot has
-        // empty events. Preserve streaming fields from the in-memory cache
-        // so consumers don't observe truncated run histories.
-        if (cached && cached.events.length > 0 && snapshot.events.length === 0) {
-          snapshot.events = cached.events;
-          snapshot.checkpoints = cached.checkpoints;
-          snapshot.toolResults = cached.toolResults;
-        }
         this.storeRunProjection(snapshot);
       }
     }
@@ -3656,13 +3667,14 @@ export class LocalRunStore {
     if (!ledger) {
       return this.getSessionOrThrow(sessionId);
     }
-    const session = this.applyLedgerToStore(sessionId, ledger, leafEntryId ?? ledger.leafEntryId);
-    this.sessionRunProjectionModes.set(sessionId, options.excludeEvents ? "slim" : "full");
+    const mode = options.excludeEvents ? "visible" : "full";
+    const session = this.applyLedgerToStore(sessionId, ledger, leafEntryId ?? ledger.leafEntryId, mode);
+    this.sessionRunProjectionModes.set(sessionId, mode);
     return session;
   }
 
   private applyLedgerSessionSummaryToStore(sessionId: string, ledger: RuntimeSessionLedger, leafEntryId?: string): SessionSummary {
-    const projection = deriveSessionProjection(ledger, leafEntryId ?? ledger.leafEntryId);
+    const { projection } = this.sessionProjectionForLedger(sessionId, ledger, leafEntryId ?? ledger.leafEntryId, "visible");
     const session = this.mergeActiveCachedSessionSummary(projection.session);
     this.sessions.set(sessionId, session);
     this.sessionLedgerLeafEntryIds.set(sessionId, projection.leafEntryId);
@@ -3713,7 +3725,7 @@ export class LocalRunStore {
     if (!this.isLedgerBackedSession(sessionId)) {
       return;
     }
-    const requestedMode = options.includeEvents ? "full" : "slim";
+    const requestedMode = options.includeEvents ? "full" : "visible";
     const currentMode = this.sessionRunProjectionModes.get(sessionId);
     if (
       !this.isSessionLedgerStale(sessionId)
@@ -3727,7 +3739,7 @@ export class LocalRunStore {
     if (!ledger) {
       return;
     }
-    this.applyLedgerToStore(sessionId, ledger, ledger.leafEntryId);
+    this.applyLedgerToStore(sessionId, ledger, ledger.leafEntryId, requestedMode);
     this.sessionRunProjectionModes.set(sessionId, requestedMode);
   }
 
@@ -3760,7 +3772,7 @@ export class LocalRunStore {
       : [];
     for (const ledger of ledgers) {
       this.applyLedgerToStore(ledger.sessionId, ledger, ledger.leafEntryId);
-      this.sessionRunProjectionModes.set(ledger.sessionId, "slim");
+      this.sessionRunProjectionModes.set(ledger.sessionId, "visible");
     }
     this.sessionLedgerRevision = revision ?? this.backend.ledgerRevision?.();
   }
@@ -3806,7 +3818,10 @@ export class LocalRunStore {
       return snapshot;
     }
     const ledger = this.backend.getSessionLedger(snapshot.sessionId);
-    const projected = ledger ? deriveRunSnapshot(ledger, snapshot.runId, leafEntryId ?? ledger.leafEntryId) : undefined;
+    const projected = ledger
+      ? this.sessionProjectionForLedger(snapshot.sessionId, ledger, leafEntryId ?? ledger.leafEntryId, "full")
+        .snapshotsByRunId.get(snapshot.runId)
+      : undefined;
     if (!projected) {
       return snapshot;
     }
@@ -3857,7 +3872,7 @@ export class LocalRunStore {
     if (cached.config.metadata.branchRole === "candidate") {
       return this.ledgerProjectedRunSnapshotFromSessionLeaf(cached.sessionId, cached.runId, ledger);
     }
-    return deriveRunSnapshot(ledger, cached.runId, ledger.leafEntryId);
+    return this.sessionProjectionForLedger(cached.sessionId, ledger, ledger.leafEntryId, "full").snapshotsByRunId.get(cached.runId);
   }
 
   private candidateLedgerLeaf(snapshot: Pick<StateSnapshot, "runId" | "sessionId">): string | undefined {
@@ -4437,6 +4452,7 @@ export class LocalRunStore {
     for (const [id] of toEvict) {
       this.sessions.delete(id);
       this.invalidateSessionRunCaches(id);
+      this.invalidateSessionProjectionCache(id);
       this.sessionCandidateLeafIndexCache.delete(id);
       this.sessionRunProjectionModes.delete(id);
       this.sessionLedgerLeafEntryIds.delete(id);
@@ -4455,6 +4471,73 @@ export class LocalRunStore {
     }
     this.sessionAllRunsCache.delete(sessionId);
     this.sessionVisibleRunsCache.delete(sessionId);
+  }
+
+  private invalidateSessionProjectionCache(sessionId: string | undefined): void {
+    if (!sessionId) {
+      return;
+    }
+    const prefix = `${sessionId}:`;
+    for (const cacheKey of [...this.sessionLedgerProjectionCache.keys()]) {
+      if (cacheKey.startsWith(prefix)) {
+        this.sessionLedgerProjectionCache.delete(cacheKey);
+      }
+    }
+  }
+
+  private sessionProjectionCacheKey(
+    sessionId: string,
+    ledger: RuntimeSessionLedger,
+    leafEntryId: string | undefined,
+    mode: SessionLedgerProjectionMode,
+  ): string {
+    return [
+      sessionId,
+      leafEntryId ?? "nil",
+      ledger.entries.length,
+      ledger.entries.at(-1)?.id ?? "nil",
+      mode,
+    ].join(":");
+  }
+
+  private sessionProjectionForLedger(
+    sessionId: string,
+    ledger: RuntimeSessionLedger,
+    leafEntryId: string | undefined,
+    mode: SessionLedgerProjectionMode,
+  ): CachedSessionLedgerProjection {
+    const cacheKey = this.sessionProjectionCacheKey(sessionId, ledger, leafEntryId, mode);
+    const cached = this.sessionLedgerProjectionCache.get(cacheKey);
+    if (cached) {
+      return cached;
+    }
+    const projectionLedger = mode === "visible" ? buildVisibleLedger(ledger) : ledger;
+    const projection = deriveSessionProjection(projectionLedger, leafEntryId ?? projectionLedger.leafEntryId);
+    const snapshotsByRunId = new Map<string, StateSnapshot>();
+    for (const run of projection.runs) {
+      const snapshot = deriveProjectionRunSnapshot(projection, run.runId);
+      if (snapshot) {
+        snapshotsByRunId.set(run.runId, snapshot);
+      }
+    }
+    const next = {
+      cacheKey,
+      mode,
+      projection,
+      snapshotsByRunId,
+    } satisfies CachedSessionLedgerProjection;
+    const prefix = `${sessionId}:`;
+    for (const existingKey of [...this.sessionLedgerProjectionCache.keys()]) {
+      if (
+        existingKey !== cacheKey &&
+        existingKey.startsWith(prefix) &&
+        existingKey.endsWith(`:${mode}`)
+      ) {
+        this.sessionLedgerProjectionCache.delete(existingKey);
+      }
+    }
+    this.sessionLedgerProjectionCache.set(cacheKey, next);
+    return next;
   }
 
   private storeRunProjection(snapshot: StateSnapshot): void {
@@ -4735,7 +4818,7 @@ export class LocalRunStore {
     if (this.isSessionLedgerStale(sessionId)) {
       const ledger = this.backend.getSessionLedger(sessionId);
       if (ledger) {
-        const projection = deriveSessionProjection(ledger);
+        const projection = this.sessionProjectionForLedger(sessionId, ledger, ledger.leafEntryId, "full").projection;
         const handoff = [...projection.acceptedPlanHandoffs]
           .reverse()
           .find((candidate) =>
@@ -4794,7 +4877,7 @@ export class LocalRunStore {
     if (!ledger) {
       return;
     }
-    const projection = deriveSessionProjection(ledger);
+    const projection = this.sessionProjectionForLedger(sessionId, ledger, ledger.leafEntryId, "full").projection;
     const handoff = projection.acceptedPlanHandoffs.find((candidate) =>
       candidate.decisionId === decisionId &&
       candidate.sourceRunId === sourceRunId &&
@@ -5008,7 +5091,8 @@ export class LocalRunStore {
     if (!ledger) {
       return undefined;
     }
-    const projection = deriveSessionProjection(ledger);
+    const cachedProjection = this.sessionProjectionForLedger(sessionId, ledger, ledger.leafEntryId, "full");
+    const { projection } = cachedProjection;
     const contextState = normalizeContextState(projection.contextState);
     const messages: ModelMessage[] = contextMessages(contextState);
     for (const run of projection.runs) {
@@ -5018,7 +5102,7 @@ export class LocalRunStore {
       if (run.turnIndex <= contextState.compactedThroughTurnIndex) {
         continue;
       }
-      const snapshot = deriveRunSnapshot(ledger, run.runId, projection.leafEntryId);
+      const snapshot = cachedProjection.snapshotsByRunId.get(run.runId);
       if (!snapshot) {
         continue;
       }
@@ -5057,7 +5141,7 @@ export class LocalRunStore {
     }
     const ledger = this.backend.getSessionLedger(sessionId);
     if (ledger) {
-      return deriveSessionProjection(ledger).contextState;
+      return this.sessionProjectionForLedger(sessionId, ledger, ledger.leafEntryId, "full").projection.contextState;
     }
     return this.sessions.get(sessionId)?.contextState;
   }

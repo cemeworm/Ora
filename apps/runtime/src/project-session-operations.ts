@@ -224,10 +224,11 @@ export function getSession(params: unknown, deps: ProjectSessionOperationDeps): 
   const session = sessionWithLatestAttention(deps.getSessionOrThrow(parsed.sessionId), deps);
   const sessionRuns = deps.runsForSession(parsed.sessionId);
   const turns: SessionTurn[] = sessionRuns.map((run) => toSessionTurn(attachTraceMetadata(run)));
+  const latestRun = sessionRuns.at(-1);
   const latestSnapshot = parsed.includeLatestSnapshot === false
     ? undefined
-    : turns.length > 0
-    ? attachTraceMetadata(deps.getRunOrThrow(turns.at(-1)!.runId))
+    : latestRun
+    ? attachTraceMetadata(latestRun)
     : undefined;
   const isTerminal = latestSnapshot?.status && latestSnapshot.status !== "queued" && latestSnapshot.status !== "running";
   return SessionDetailSchema.parse({

@@ -349,9 +349,9 @@ export function runtimeSessionEntryPath(
 }
 
 /**
- * Build a ledger with reduced payload: keep all entries but strip the heavy
- * `events` array from runtime.event_batch payloads, preserving structural
- * fields (status, output, error) and parent chains as-is.
+ * Build a ledger with reduced payload for chat-first reads: keep all entries
+ * and parent chains intact, but strip heavy payload surfaces that are not
+ * required for visible session detail rendering.
  */
 export function buildVisibleLedger(ledger: RuntimeSessionLedger): RuntimeSessionLedger {
   const parsed = RuntimeSessionLedgerSchema.parse(ledger);
@@ -360,20 +360,30 @@ export function buildVisibleLedger(ledger: RuntimeSessionLedger): RuntimeSession
   }
 
   const slimmed = parsed.entries.map((entry) => {
-    if (entry.type !== "runtime.event_batch") {
-      return entry;
+    if (entry.type === "runtime.event_batch") {
+      const payload = entry.payload as Record<string, unknown>;
+      return {
+        ...entry,
+        payload: {
+          events: [],
+          eventCount: payload.eventCount,
+          status: payload.status,
+          error: payload.error,
+        },
+      };
     }
-    const payload = entry.payload as Record<string, unknown>;
-    return {
-      ...entry,
-      payload: {
-        events: [],
-        eventCount: payload.eventCount,
-        status: payload.status,
-        output: payload.output,
-        error: payload.error,
-      },
-    };
+    if (entry.type === "assistant.message") {
+      const payload = entry.payload as Record<string, unknown>;
+      return {
+        ...entry,
+        payload: {
+          content: payload.content,
+          status: payload.status,
+          error: payload.error,
+        },
+      };
+    }
+    return entry;
   });
 
   return RuntimeSessionLedgerSchema.parse({
@@ -480,6 +490,14 @@ export function deriveRunProjection(
   return deriveSessionProjection(ledger, leafEntryId).runs.find((run) => run.runId === runId);
 }
 
+export function deriveProjectionRunSnapshot(
+  projection: RuntimeSessionProjection,
+  runId: string,
+): StateSnapshot | undefined {
+  const run = projection.runs.find((candidate) => candidate.runId === runId);
+  return run ? runtimeRunProjectionToSnapshot(run, projection.contextState) : undefined;
+}
+
 export function deriveRunSnapshot(
   ledger: RuntimeSessionLedger,
   runId: string,
@@ -487,8 +505,7 @@ export function deriveRunSnapshot(
   projection?: RuntimeSessionProjection,
 ): StateSnapshot | undefined {
   const proj = projection ?? deriveSessionProjection(ledger, leafEntryId ?? ledger.leafEntryId);
-  const run = proj.runs.find((candidate) => candidate.runId === runId);
-  return run ? runtimeRunProjectionToSnapshot(run, proj.contextState) : undefined;
+  return deriveProjectionRunSnapshot(proj, runId);
 }
 
 export function deriveLedgerRunAttention(run: Pick<RuntimeRunProjection, "runId" | "status" | "gates" | "error" | "events">): RunAttention {
