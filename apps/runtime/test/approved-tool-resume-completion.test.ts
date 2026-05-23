@@ -69,6 +69,35 @@ describe("approved tool resume completion", () => {
     });
   });
 
+  it("preserves context instead of hard-failing when all approved tools fail", async () => {
+    const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ora-approved-all-fail-"));
+    const snapshot = approvedFileWriteSnapshot(workspaceRoot, {
+      actionPath: "",
+    });
+
+    const result = await completeApprovedToolContinuation(
+      snapshot,
+      ["run-approved:action-write"],
+      {},
+      deps(),
+    );
+
+    expect(result?.kind).toBe("continue");
+    const resumed = result?.kind === "continue" ? result.snapshot : undefined;
+    expect(resumed?.status).toBe("running");
+    expect(resumed?.events.map((event) => event.type)).toContain("task.progress");
+    expect(resumed?.events.map((event) => event.type)).not.toContain("run.failed");
+    expect(resumed?.events.map((event) => event.type)).not.toContain("run.done");
+    expect(resumed?.conversation.at(-1)?.content).toContain("The approved tool replay failed");
+    expect(resumed?.conversation.at(-1)?.content).toContain("All 1 approved tool(s) failed");
+    expect(resumed?.toolCalls.find((call) => call.actionId === "run-approved:action-write")).toMatchObject({
+      status: "failed",
+    });
+    expect(resumed?.actions.find((action) => action.id === "run-approved:action-write")).toMatchObject({
+      status: "failed",
+    });
+  });
+
   it("completes interrupted mode progress before approved-tool direct finalization", async () => {
     const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ora-approved-mode-progress-"));
     const snapshot = approvedFileWriteSnapshot(workspaceRoot, {
@@ -93,7 +122,7 @@ describe("approved tool resume completion", () => {
     expect(resumed?.events.map((event) => event.type)).toContain("run.done");
   });
 
-  it("continues through the kernel after approved tool execution when plan-list work remains", async () => {
+  it("hands whole-mode approved-tool continuation context to the next kernel turn when plan-list work remains", async () => {
     const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ora-approved-kernel-continue-"));
     const snapshot = approvedFileWriteSnapshot(workspaceRoot, {
       planList: [{ step: "Verify the approved change", status: "in_progress" }],
@@ -111,42 +140,27 @@ describe("approved tool resume completion", () => {
     if (result?.kind !== "continue") {
       throw new Error("Expected approved tool continuation to require kernel continuation.");
     }
-
-    const modeSpec = getModePreset(SINGLE_AGENT_MODE_ID)!;
-    const definition = modeSpecToPatternDefinition(modeSpec);
-    const { snapshot: resumed } = await executeRuntimeKernel(
-      snapshot.runId,
-      result.snapshot.input,
-      result.snapshot.config,
-      {
-        modeSpec,
-        definition,
-        skillRegistry: new RuntimeSkillRegistry(),
-        conversationMessages: runtimeConversationToModelMessages(result.snapshot.conversation),
-        resumeState: result.snapshot,
-      },
-    );
-
-    expect(resumed.status).toBe("succeeded");
-    expect(resumed.planList).toEqual([
-      {
-        id: "plan-step-1-verify-the-approved-change",
-        step: "Verify the approved change",
-        status: "completed",
-      },
-    ]);
-    expect(resumed.toolCalls.find((call) => call.id === "run-approved:tool-call-write")).toMatchObject({
-      planStepId: "plan-step-1-verify-the-approved-change",
-    });
-    expect(resumed.toolCalls.find((call) => call.id === "run-approved:tool-call-write")).toMatchObject({
+    const handoffMessages = runtimeConversationToModelMessages(result.snapshot.conversation);
+    expect(handoffMessages).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        role: "tool",
+        toolName: "file.write",
+      }),
+      expect.objectContaining({
+        role: "user",
+        content: expect.stringContaining("The current plan list is not complete yet"),
+      }),
+    ]));
+    expect(handoffMessages.some((message) =>
+      message.role === "user" &&
+      typeof message.content === "string" &&
+      message.content.includes("Unfinished steps:")
+    )).toBe(true);
+    expect(result.snapshot.toolCalls.find((call) => call.id === "run-approved:tool-call-write")).toMatchObject({
       status: "succeeded",
       actionId: "run-approved:action-write",
       toolId: "file.write",
     });
-    expect(resumed.toolCalls.filter((call) => call.id === "run-approved:tool-call-write")).toHaveLength(1);
-    expect(resumed.events.map((event) => event.type)).toContain("plan_list.updated");
-    expect(resumed.events.map((event) => event.type)).toContain("run.done");
-    expect(resumed.events.map((event) => event.type)).not.toContain("run.failed");
   });
 
   it("continues an agent-team approved tool from the paused frame owner when plan-list work remains", async () => {
@@ -187,7 +201,7 @@ describe("approved tool resume completion", () => {
       },
     );
     const agentStartedEvents = resumed.events.filter((event) => event.type === "agent.started");
-    const frame = resumed.continuation.frames.find((item) => item.id === resumed.continuation.activeFrameId);
+    const frame = resumed.continuation.frames.find((item) => item.id === "run-approved:continuation:0");
 
     expect(resumed.status).toBe("succeeded");
     expect(resumed.planList).toEqual([
@@ -414,7 +428,7 @@ describe("approved tool resume completion", () => {
       },
     );
     const agentStartedEvents = resumed.events.filter((event) => event.type === "agent.started");
-    const frame = resumed.continuation.frames.find((item) => item.id === resumed.continuation.activeFrameId);
+    const frame = resumed.continuation.frames.find((item) => item.id === "run-approved:continuation:0");
 
     expect(resumed.status).toBe("succeeded");
     expect(agentStartedEvents).toEqual([
@@ -478,10 +492,15 @@ describe("approved tool resume completion", () => {
 });
 
 function responseForRequest(messages: Array<{ role: string; content: string }>): string {
-  if (messages.some((message) => message.content.includes("Workspace tool result for plan.update"))) {
+  const sawPlanUpdateResult = messages.some((message) => message.content.includes("Workspace tool result for plan.update"));
+  const sawPlanListFollowUp = messages.some((message) =>
+    message.content.includes("The current plan list is not complete yet")
+    || message.content.includes("Unfinished steps:")
+  );
+  if (sawPlanUpdateResult) {
     return "All approved work is complete.";
   }
-  if (messages.some((message) => message.content.includes("The current plan list is not complete yet"))) {
+  if (sawPlanListFollowUp) {
     return JSON.stringify({
       tool: "plan.update",
       args: {
@@ -530,6 +549,7 @@ function approvedFileWriteSnapshot(
     planStatus?: StateSnapshot["plan"][number]["status"];
     todoStatus?: StateSnapshot["todos"][number]["status"];
     toolIds?: string[];
+    actionPath?: string;
   } = {},
 ): StateSnapshot {
   const runId = "run-approved";
@@ -596,7 +616,7 @@ function approvedFileWriteSnapshot(
       type: "file.write",
       riskLevel: "high",
       status: "approval_required",
-      input: { path: "notes/result.md", content: "approved\n" },
+      input: { path: options.actionPath ?? "notes/result.md", content: "approved\n" },
       artifactIds: [],
       agentId: options.agentId ?? "solo_agent",
       planItemId: `${runId}:respond`,
@@ -605,7 +625,7 @@ function approvedFileWriteSnapshot(
       id: "run-approved:tool-call-write",
       runId,
       toolId: "file.write",
-      args: { path: "notes/result.md", content: "approved\n" },
+      args: { path: options.actionPath ?? "notes/result.md", content: "approved\n" },
       source: "provider_native",
       status: "approval_required",
       actionId: "run-approved:action-write",

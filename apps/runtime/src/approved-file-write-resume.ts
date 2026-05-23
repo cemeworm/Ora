@@ -84,7 +84,14 @@ export async function completeApprovedToolContinuation(
   if (approvedTools.length === 0) {
     return undefined;
   }
-  const toolResults: Array<{ toolId: string; path?: unknown; sizeBytes?: unknown; content?: unknown; output?: unknown }> = [];
+  const toolResults: Array<{
+    toolId: string;
+    path?: unknown;
+    sizeBytes?: unknown;
+    content?: unknown;
+    output?: unknown;
+    failed: boolean;
+  }> = [];
 
   const executor = new RuntimeToolExecutor({
     workspace: snapshot.input.context?.projectWorkspace,
@@ -183,6 +190,49 @@ export async function completeApprovedToolContinuation(
       ),
     });
   };
+  const continueWithGuardResult = (guardResult: ContinueGuardResult): ApprovedToolContinuationResult => {
+    append("task.progress", {
+      kind: "chat_progress",
+      source: "runtime_status",
+      trigger: guardResult.progressTrigger,
+      title: "Runtime",
+      summary: guardResult.progressSummary,
+      audience: "internal",
+      basedOnSeq: Math.max(0, working.events.length - 1),
+    });
+    const toolResultSummary = toolResults.length > 0
+      ? [
+          "",
+          "Just executed (results already applied):",
+          ...toolResults.map((r, i) =>
+            `  ${i + 1}. ${r.toolId} — ${
+              r.output !== undefined
+                ? typeof r.output === "string"
+                  ? r.output.slice(0, 400)
+                  : JSON.stringify(r.output).slice(0, 400)
+                : "ok"
+            }`
+          ),
+        ].join("\n")
+      : "";
+    working = StateSnapshotSchema.parse({
+      ...working,
+      conversation: [
+        ...working.conversation,
+        {
+          role: "user",
+          content: guardResult.followUpContent + toolResultSummary,
+          createdAt: deps.now(),
+        },
+      ],
+      updatedAt: deps.now(),
+    });
+    return {
+      kind: "continue",
+      snapshot: deps.attachTraceMetadata(working),
+      guardResult,
+    };
+  };
 
   append("run.resumed", {
     reason: params.reason ?? USER_RESUMED_MESSAGE,
@@ -253,6 +303,7 @@ export async function completeApprovedToolContinuation(
         sizeBytes: (output as Record<string, unknown>)?.sizeBytes,
         content: args.content,
         output,
+        failed: false,
       });
       const resultText = JSON.stringify(output, null, 2);
       const succeeded = {
@@ -382,6 +433,7 @@ export async function completeApprovedToolContinuation(
         toolId: action.type,
         path: (action.input as Record<string, unknown>)?.path,
         output: detail,
+        failed: true,
       });
       append("action.updated", { actionId: action.id, status: "failed", record: failed });
       // Do NOT emit run.failed here — instead fall through to the guard
@@ -395,22 +447,24 @@ export async function completeApprovedToolContinuation(
   // After all approved tools have been attempted, enforce a hard failure
   // cap: if ALL of them failed, refuse to continue and let the run terminate
   // with an actionable diagnostic so the user can intervene.
-  const succeededTools = toolResults.filter((r) => r.toolId !== undefined && !String(r.output ?? "").includes("Error"));
+  const succeededTools = toolResults.filter((r) => !r.failed);
   if (toolResults.length > 0 && succeededTools.length === 0) {
     const allFailures = toolResults.map((r) => `${r.toolId}: ${String(r.output).slice(0, 300)}`).join(" | ");
     const detail = `All ${toolResults.length} approved tool(s) failed: ${allFailures}`;
-    append("run.failed", { status: "failed", error: detail });
-    updateContinuationStatus("failed");
-    return {
-      kind: "completed",
-      snapshot: deps.attachTraceMetadata(StateSnapshotSchema.parse({
-        ...working,
-        status: "failed",
-        error: detail,
-        activeAgents: [],
-        updatedAt: deps.now(),
-      })),
-    };
+    updateContinuationStatus("awaiting_model");
+    return continueWithGuardResult({
+      allowComplete: false,
+      reason: "approved_tools_failed",
+      progressTrigger: "approved_tools.failed",
+      progressSummary: "Approved tool replay failed; preserving context for repair.",
+      detail,
+      followUpReason: "approved_tools_failed",
+      followUpContent: [
+        "The approved tool replay failed, so do not provide a final answer yet.",
+        "Use the failure details below to repair the approach, request clarification if user input is required, or choose a safer next action.",
+        `Failure summary: ${detail}`,
+      ].join("\n"),
+    });
   }
 
   function completeInterruptedModeProgress(): void {
@@ -463,47 +517,7 @@ export async function completeApprovedToolContinuation(
     toolCalls: working.toolCalls,
   });
   if (!guardResult.allowComplete) {
-    append("task.progress", {
-      kind: "chat_progress",
-      source: "runtime_status",
-      trigger: guardResult.progressTrigger,
-      title: "Runtime",
-      summary: guardResult.progressSummary,
-      audience: "internal",
-      basedOnSeq: Math.max(0, working.events.length - 1),
-    });
-    const toolResultSummary = toolResults.length > 0
-      ? [
-          "",
-          "Just executed (results already applied):",
-          ...toolResults.map((r, i) =>
-            `  ${i + 1}. ${r.toolId} — ${
-              r.output !== undefined
-                ? typeof r.output === "string"
-                  ? r.output.slice(0, 400)
-                  : JSON.stringify(r.output).slice(0, 400)
-                : "ok"
-            }`
-          ),
-        ].join("\n")
-      : "";
-    working = StateSnapshotSchema.parse({
-      ...working,
-      conversation: [
-        ...working.conversation,
-        {
-          role: "user",
-          content: guardResult.followUpContent + toolResultSummary,
-          createdAt: deps.now(),
-        },
-      ],
-      updatedAt: deps.now(),
-    });
-    return {
-      kind: "continue",
-      snapshot: deps.attachTraceMetadata(working),
-      guardResult,
-    };
+    return continueWithGuardResult(guardResult);
   }
 
   completeInterruptedModeProgress();
