@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ORA_ROOT_AGENT_ID, type OraToolCallEnvelope } from "@cemeworm/shared";
+import { ORA_ROOT_AGENT_ID, SINGLE_AGENT_MODE_ID, type OraToolCallEnvelope } from "@cemeworm/shared";
 import {
   shouldBlockFinalForFreshnessPolicy,
   shouldBlockToolForContextProbePolicy,
@@ -175,6 +175,52 @@ describe("node runtime loop policy helpers", () => {
       proposedToolId: "shell.exec",
       recommendedAction: "read_context",
       routerVersion: "v2",
+    })).toBe(false);
+  });
+
+  it("blocks repo.explore escalation in single_agent even after read-context evidence exists", () => {
+    expect(shouldBlockToolForContextProbePolicy({
+      enabled: true,
+      prompt: "帮我 review apps/runtime/src/harness/causal-policy-router.ts 里 read_context 和 search_web 的路由逻辑",
+      toolCalls: [{
+        id: "tool-read-1",
+        runId: "run-1",
+        toolId: "file.read",
+        agentId: ORA_ROOT_AGENT_ID,
+        nodeId: ORA_ROOT_AGENT_ID,
+        args: {},
+        source: "provider_native",
+        status: "succeeded",
+        requestedAt: 1,
+        updatedAt: 2,
+      }],
+      proposedToolId: "repo.explore",
+      recommendedAction: "read_context",
+      routerVersion: "v2",
+      modeId: SINGLE_AGENT_MODE_ID,
+    })).toBe(true);
+  });
+
+  it("does not block repo.explore escalation outside single_agent once read-context evidence exists", () => {
+    expect(shouldBlockToolForContextProbePolicy({
+      enabled: true,
+      prompt: "帮我 review apps/runtime/src/harness/causal-policy-router.ts 里 read_context 和 search_web 的路由逻辑",
+      toolCalls: [{
+        id: "tool-read-1",
+        runId: "run-1",
+        toolId: "file.read",
+        agentId: ORA_ROOT_AGENT_ID,
+        nodeId: ORA_ROOT_AGENT_ID,
+        args: {},
+        source: "provider_native",
+        status: "succeeded",
+        requestedAt: 1,
+        updatedAt: 2,
+      }],
+      proposedToolId: "repo.explore",
+      recommendedAction: "read_context",
+      routerVersion: "v2",
+      modeId: "review_critique",
     })).toBe(false);
   });
 

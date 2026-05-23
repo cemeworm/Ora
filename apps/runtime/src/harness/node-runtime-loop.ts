@@ -55,6 +55,7 @@ import {
   isReadContextTool,
   isSearchTool,
   ORA_ROOT_AGENT_ID,
+  SINGLE_AGENT_MODE_ID,
 } from "@cemeworm/shared";
 import {
   extractCausalTaskState as defaultExtractCausalTaskState,
@@ -135,12 +136,26 @@ export function shouldBlockToolForContextProbePolicy(params: {
   proposedToolId: string;
   recommendedAction: string;
   routerVersion: "v1" | "v2";
+  modeId?: string;
+  sourceModeId?: string;
 }): boolean {
   if (!params.enabled || params.routerVersion !== "v2") return false;
   if (params.recommendedAction !== "read_context") return false;
+  if (shouldBlockRepoExploreUpgradeForSingleAgent(params)) return true;
   if (isReadContextTool(params.proposedToolId)) return false;
   if (hasReadContextEvidence(params.toolCalls)) return false;
   return true;
+}
+
+function shouldBlockRepoExploreUpgradeForSingleAgent(params: {
+  proposedToolId: string;
+  recommendedAction: string;
+  modeId?: string;
+  sourceModeId?: string;
+}): boolean {
+  if (params.recommendedAction !== "read_context") return false;
+  if (params.proposedToolId !== "repo.explore") return false;
+  return params.modeId === SINGLE_AGENT_MODE_ID || params.sourceModeId === SINGLE_AGENT_MODE_ID;
 }
 
 function hasCausalFollowUpThisTurn(
@@ -166,6 +181,18 @@ export function hasReadContextEvidence(toolCalls: readonly OraToolCallEnvelope[]
     isReadContextTool(call.toolId) &&
     (call.status === "proposed" || call.status === "running" || call.status === "succeeded" || call.status === "repaired")
   );
+}
+
+function buildContextProbePolicyFollowUp(params: {
+  proposedToolId: string;
+  modeId?: string;
+  sourceModeId?: string;
+}): string {
+  const singleAgentMode = params.modeId === SINGLE_AGENT_MODE_ID || params.sourceModeId === SINGLE_AGENT_MODE_ID;
+  if (singleAgentMode && params.proposedToolId === "repo.explore") {
+    return "[Context Probe Policy] The request already points to a concrete artifact or repository context. In single-agent mode, inspect that context with file.read/file.grep/file.glob/file.list before escalating to repo.explore, using other tools, or answering.";
+  }
+  return "[Context Probe Policy] The request already points to a concrete artifact or repository context. Read that context first before using other tools or answering.";
 }
 
 const NODE_RUNTIME_HARD_TIMEOUT_MULTIPLIER = 6;
@@ -1648,6 +1675,8 @@ export async function runNodeRuntimeLoop(
       proposedToolId: toolCall.tool,
       recommendedAction: policyResult.action,
       routerVersion,
+      modeId: config.modeId,
+      sourceModeId: config.effectiveStrategy?.sourceModeId,
     })) {
       emit("causal.decision.rejected", {
         toolId: toolCall.tool,
@@ -1679,7 +1708,11 @@ export async function runNodeRuntimeLoop(
         { role: "assistant", content: response.text },
         {
           role: "user",
-          content: "[Context Probe Policy] The request already points to a concrete artifact or repository context. Read that context first before using other tools or answering.",
+          content: buildContextProbePolicyFollowUp({
+            proposedToolId: toolCall.tool,
+            modeId: config.modeId,
+            sourceModeId: config.effectiveStrategy?.sourceModeId,
+          }),
         },
       ];
       response = await invokeFollowUpModel({
