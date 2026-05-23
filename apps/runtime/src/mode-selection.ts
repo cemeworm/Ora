@@ -33,7 +33,7 @@ import {
 } from "./memory-observability.js";
 import { RuntimeSkillRegistry } from "./harness/capability-registries.js";
 import { LongTermMemoryManager, type MemoryModelInvoker } from "./memory.js";
-import { admitWithProvider } from "./memory-admission.js";
+import { admitWithProvider, emptyProviderFallbackDecision } from "./memory-admission.js";
 import { ModeSpecFileStore } from "./modes.js";
 import { invokeRunProvider, type ModelMessage } from "./providers/index.js";
 import {
@@ -56,6 +56,7 @@ const AutoModeRouterResponseSchema = z.object({
 const DelegationIntentClassifierResponseSchema = z.object({
   preference: DelegationIntentPreferenceSchema,
   requestedByUser: z.boolean(),
+  requestedModeId: z.string().min(1).optional(),
   confidence: z.number().min(0).max(1),
   reason: z.string().min(1),
 });
@@ -84,7 +85,7 @@ interface ExplicitTurnSignal {
     requestedModeId: string;
     requestedByUser: true;
     reason: string;
-    source: "rule_based";
+    source: "structured_input" | "classifier";
   };
 }
 
@@ -124,17 +125,16 @@ export async function resolveModeSelection(
   fullConfig: RunConfig;
 }> {
   const parsed = RunConfigSchema.parse(config ?? {});
-  const explicitTurnSignal = input
-    ? resolveExplicitTurnSignal(input, session, deps)
+  const explicitTurnSignal = input ? resolveStructuredTurnSignal(input) : undefined;
+  const delegationIntentMetadata = input
+    ? await resolveDelegationIntentMetadata(parsed, input, session, deps, explicitTurnSignal)
     : undefined;
-  const [autoRoute, delegationIntentMetadata] = await Promise.all([
-    parsed.modeSelection === "auto" && input
-      ? routeAutoMode(parsed, input, session, deps, explicitTurnSignal)
-      : Promise.resolve(undefined),
-    input
-      ? resolveDelegationIntentMetadata(parsed, input, session, deps, explicitTurnSignal)
-      : Promise.resolve(undefined),
-  ]);
+  const requestedModeRequest =
+    explicitTurnSignal?.modeRequest
+    ?? readModeRequestMetadata(delegationIntentMetadata);
+  const autoRoute = parsed.modeSelection === "auto" && input
+    ? await routeAutoMode(parsed, input, session, deps, requestedModeRequest)
+    : undefined;
   const effectiveMetadata = {
     ...resolveAutoTaskIntentMetadata(parsed.metadata, autoRoute),
     ...explicitTurnSignalToMetadata(explicitTurnSignal),
@@ -554,24 +554,27 @@ async function buildActiveMemoryContextForPolicy(
   const candidates = retrieveActiveMemoryCandidates(request);
   const invokeModel = buildMemoryAdmissionInvoker(config, policy);
   if (!invokeModel) {
-    if (policy.admissionMode === "provider_fallback") {
-      return buildActiveMemoryContext(request);
-    }
     return finalizeActiveMemoryContext({
-      decision: {
-        status: "NONE",
-        mode: policy.admissionMode,
-        reason: "Provider admission was requested, but no eligible provider was configured.",
-        candidateIds: candidates.map((candidate) => candidate.id),
-        selectedIds: [],
-        rejectedIds: candidates.map((candidate) => candidate.id),
-        budget: {
-          maxCandidates: request.maxCandidates ?? Math.max(candidates.length, 1),
-          maxChars: request.maxChars ?? 1800,
-          renderedChars: 0,
-        },
-        warnings: ["Provider-backed memory admission is unavailable."],
-      },
+      decision: policy.admissionMode === "provider_fallback"
+        ? emptyProviderFallbackDecision(
+            candidates,
+            { maxSummaryChars: policy.admissionMaxSummaryChars },
+            "Provider admission was requested, but no eligible provider was configured.",
+          )
+        : {
+            status: "NONE",
+            mode: policy.admissionMode,
+            reason: "Provider admission was requested, but no eligible provider was configured.",
+            candidateIds: candidates.map((candidate) => candidate.id),
+            selectedIds: [],
+            rejectedIds: candidates.map((candidate) => candidate.id),
+            budget: {
+              maxCandidates: request.maxCandidates ?? Math.max(candidates.length, 1),
+              maxChars: request.maxChars ?? 1800,
+              renderedChars: 0,
+            },
+            warnings: ["Provider-backed memory admission is unavailable."],
+          },
       cards: [],
     }, request.maxChars);
   }
@@ -639,7 +642,7 @@ async function routeAutoMode(
   input: UserTaskInput,
   session: SessionSummary | undefined,
   deps: ModeSelectionDeps,
-  explicitTurnSignal?: ExplicitTurnSignal,
+  requestedModeRequest?: ExplicitTurnSignal["modeRequest"],
 ): Promise<{ modeId: string; taskIntent?: TaskIntent; metadata: Record<string, unknown> }> {
   const candidates = deps.modeStore.list()
     .filter((mode) => mode.visibility !== "internal")
@@ -675,18 +678,18 @@ async function routeAutoMode(
     return fallback("No modes were available to route.");
   }
 
-  const requestedModeId = explicitTurnSignal?.modeRequest?.requestedModeId;
+  const requestedModeId = requestedModeRequest?.requestedModeId;
   if (requestedModeId && candidateIds.has(requestedModeId)) {
     return {
       modeId: requestedModeId,
       metadata: {
         selectedModeId: requestedModeId,
         confidence: 1,
-        reason: explicitTurnSignal?.modeRequest?.reason ?? `Explicit mode request for ${requestedModeId}.`,
+        reason: requestedModeRequest.reason ?? `Explicit mode request for ${requestedModeId}.`,
         status: "selected",
         entryAgentId: ORA_ROOT_AGENT_ID,
-        handoffSummary: explicitTurnSignal?.modeRequest?.reason ?? `Explicit mode request for ${requestedModeId}.`,
-        selectionSource: "rule_based_mode_request",
+        handoffSummary: requestedModeRequest.reason ?? `Explicit mode request for ${requestedModeId}.`,
+        selectionSource: `${requestedModeRequest.source}_mode_request`,
       },
     };
   }
@@ -788,14 +791,20 @@ async function resolveDelegationIntentMetadata(
     return undefined;
   }
   const recentMessages = resolveRecentMessages(input, session, deps);
+  const availableModeIds = deps.modeStore.list()
+    .filter((mode) => mode.visibility !== "internal")
+    .map((mode) => mode.id);
+  const availableModeIdSet = new Set(availableModeIds);
   let rawResponseText = "";
   try {
     const response = await invokeRunProvider(resolveToolModelRunConfig(config), {
       system: [
         "You are Ora's delegation intent classifier.",
         "Classify only the user's delegation preference for this turn.",
-        "Return only compact JSON with keys preference, requestedByUser, confidence, and reason.",
+        "Return only compact JSON with keys preference, requestedByUser, requestedModeId, confidence, and reason.",
         "preference must be one of none, allow, prefer.",
+        "requestedModeId is optional. Set it only when the user explicitly requested a specific mode by name.",
+        "If requestedModeId is present, it must match one of availableModeIds exactly.",
         "Use prefer only when the user explicitly requests team collaboration, sub-agent coordination, splitting work, or parallel work.",
         "Use allow only when the user explicitly permits sub-agent help but does not require it.",
         "Use none when the user explicitly forbids delegation or when no delegation preference is expressed.",
@@ -810,6 +819,7 @@ async function resolveDelegationIntentMetadata(
         task: input.prompt,
         projectId: input.projectId,
         recentMessages,
+        availableModeIds,
       }),
       temperature: 0,
       maxTokens: DELEGATION_CLASSIFIER_MAX_TOKENS,
@@ -819,6 +829,9 @@ async function resolveDelegationIntentMetadata(
     const parsed = normalizeDelegationIntentClassifierResponse(
       parseDelegationIntentClassifierResponse(response.text),
     );
+    if (parsed.requestedModeId && !availableModeIdSet.has(parsed.requestedModeId)) {
+      throw new Error(`Delegation classifier returned unknown requestedModeId '${parsed.requestedModeId}'.`);
+    }
     return {
       delegationIntent: DelegationIntentSchema.parse({
         requestedByUser: parsed.requestedByUser,
@@ -826,10 +839,21 @@ async function resolveDelegationIntentMetadata(
         reason: parsed.reason,
         source: "classifier",
       }),
+      ...(parsed.requestedModeId
+        ? {
+            modeRequest: {
+              requestedModeId: parsed.requestedModeId,
+              requestedByUser: true,
+              reason: parsed.reason,
+              source: "classifier" as const,
+            },
+          }
+        : {}),
       delegationClassifier: {
         status: "selected",
         requestedByUser: parsed.requestedByUser,
         preference: parsed.preference,
+        ...(parsed.requestedModeId ? { requestedModeId: parsed.requestedModeId } : {}),
         confidence: parsed.confidence,
         reason: parsed.reason,
       },
@@ -858,7 +882,7 @@ function explicitTurnSignalToMetadata(
   if (signal.delegationIntent) {
     metadata.delegationIntent = DelegationIntentSchema.parse(signal.delegationIntent);
     metadata.delegationClassifier = {
-      status: "rule_based",
+      status: "structured_input",
       requestedByUser: signal.delegationIntent.requestedByUser,
       preference: signal.delegationIntent.preference,
       confidence: 1,
@@ -876,69 +900,34 @@ function explicitTurnSignalToMetadata(
   return Object.keys(metadata).length > 0 ? metadata : undefined;
 }
 
-function resolveExplicitTurnSignal(
+function resolveStructuredTurnSignal(
   input: UserTaskInput,
-  session: SessionSummary | undefined,
-  deps: ModeSelectionDeps,
 ): ExplicitTurnSignal | undefined {
-  const recentMessages = resolveRecentMessages(input, session, deps)
-    .map((message) => message.content)
-    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
-    .slice(-3);
-  const haystack = [input.prompt, ...recentMessages].join("\n");
-
-  if (/(不要开子智能体|不要委派|不要分工|你自己回答|不要用\s*agent\.spawn|do not delegate|don't delegate|answer it yourself)/i.test(haystack)) {
-    return {
-      delegationIntent: {
-        requestedByUser: true,
-        preference: "none",
-        reason: "The user explicitly asked to avoid delegation for this turn.",
-        source: "explicit_no_delegation",
-      },
-    };
+  const rawDelegationIntent = input.context?.delegationIntent;
+  const parsedDelegationIntent = DelegationIntentSchema.safeParse(rawDelegationIntent);
+  const rawModeRequest = input.context?.modeRequest;
+  const modeRequest = readModeRequestMetadata(
+    rawModeRequest && typeof rawModeRequest === "object"
+      ? { modeRequest: rawModeRequest }
+      : undefined,
+    "structured_input",
+  );
+  const delegationIntent = parsedDelegationIntent.success
+    ? parsedDelegationIntent.data
+    : modeRequest?.requestedModeId === "agent_teams"
+      ? DelegationIntentSchema.parse({
+          requestedByUser: true,
+          preference: "prefer",
+          reason: modeRequest.reason,
+        })
+      : undefined;
+  if (!delegationIntent && !modeRequest) {
+    return undefined;
   }
-
-  const explicitAgentTeamsRequest =
-    /(agent\s*teams?|agent team(?:\s*的)?(?:模式|方式)?|通过\s*agent team|智能体团队|团队模式|用团队协作)/i.test(haystack);
-  const explicitTeamCollaboration =
-    explicitAgentTeamsRequest
-    || /(子智能体协作|子智能体分工|并行协作|多个\s*agents|多智能体协作|分工处理|parallel work|sub-?agent coordination|team-style collaboration)/i.test(haystack);
-
-  if (explicitTeamCollaboration) {
-    return {
-      delegationIntent: {
-        requestedByUser: true,
-        preference: "prefer",
-        reason: explicitAgentTeamsRequest
-          ? "The user explicitly requested Agent Teams style collaboration."
-          : "The user explicitly requested team-style collaboration for this turn.",
-        source: "explicit_team_collab",
-      },
-      ...(explicitAgentTeamsRequest
-        ? {
-            modeRequest: {
-              requestedModeId: "agent_teams",
-              requestedByUser: true as const,
-              reason: "The user explicitly requested Agent Teams mode for this turn.",
-              source: "rule_based" as const,
-            },
-          }
-        : {}),
-    };
-  }
-
-  if (/(可以(让|开)?子智能体|可以委派|可以分工|sub-?agents? (are )?allowed|you may delegate)/i.test(haystack)) {
-    return {
-      delegationIntent: {
-        requestedByUser: true,
-        preference: "allow",
-        reason: "The user explicitly allowed delegation for this turn.",
-        source: "explicit_subagent_request",
-      },
-    };
-  }
-
-  return undefined;
+  return {
+    ...(delegationIntent ? { delegationIntent } : {}),
+    ...(modeRequest ? { modeRequest } : {}),
+  };
 }
 
 function normalizeDelegationIntentClassifierResponse(
@@ -949,7 +938,41 @@ function normalizeDelegationIntentClassifierResponse(
       `Delegation classifier returned preference '${response.preference}' without explicit user intent.`,
     );
   }
+  if (response.requestedModeId && !response.requestedByUser) {
+    throw new Error("Delegation classifier returned requestedModeId without explicit user intent.");
+  }
+  if (response.requestedModeId && response.preference === "none") {
+    throw new Error("Delegation classifier returned requestedModeId with preference none.");
+  }
   return response;
+}
+
+function readModeRequestMetadata(
+  metadata: Record<string, unknown> | undefined,
+  sourceOverride?: NonNullable<ExplicitTurnSignal["modeRequest"]>["source"],
+): ExplicitTurnSignal["modeRequest"] | undefined {
+  if (!metadata || typeof metadata !== "object") {
+    return undefined;
+  }
+  const raw = metadata.modeRequest;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return undefined;
+  }
+  const requestedModeId = (raw as Record<string, unknown>).requestedModeId;
+  if (typeof requestedModeId !== "string" || requestedModeId.trim().length === 0) {
+    return undefined;
+  }
+  const reason = (raw as Record<string, unknown>).reason;
+  const rawSource = (raw as Record<string, unknown>).source;
+  return {
+    requestedModeId: requestedModeId.trim(),
+    requestedByUser: true,
+    reason: typeof reason === "string" && reason.trim().length > 0
+      ? reason.trim()
+      : `Explicit mode request for ${requestedModeId.trim()}.`,
+    source: sourceOverride
+      ?? (rawSource === "classifier" || rawSource === "structured_input" ? rawSource : "classifier"),
+  };
 }
 
 function resolveRecentMessages(

@@ -57,10 +57,6 @@ import {
   ORA_ROOT_AGENT_ID,
 } from "@cemeworm/shared";
 import {
-  promptHasArtifactHandleSignal,
-  promptNeedsFreshnessKeywordFallback,
-} from "./causal-policy-router.js";
-import {
   extractCausalTaskState as defaultExtractCausalTaskState,
   hasPrimaryCausalDecisionInPhase,
   latestCausalTaskState,
@@ -114,9 +110,7 @@ export function shouldBlockFinalForFreshnessPolicy(params: {
   routerVersion: "v1" | "v2";
 }): boolean {
   if (!params.enabled || params.routerVersion !== "v2") return false;
-  if (params.currentTaskState?.needsFreshnessEvidence === false) return false;
-  if (params.currentTaskState?.needsFreshnessEvidence !== true &&
-      !promptNeedsFreshnessKeywordFallback(params.prompt.toLowerCase())) return false;
+  if (params.currentTaskState?.needsFreshnessEvidence !== true) return false;
   if (hasSucceededSearchEvidence(params.toolCalls)) return false;
   const policyResult = routeIntervention({
     surfaceRequest: params.prompt,
@@ -144,7 +138,6 @@ export function shouldBlockToolForContextProbePolicy(params: {
 }): boolean {
   if (!params.enabled || params.routerVersion !== "v2") return false;
   if (params.recommendedAction !== "read_context") return false;
-  if (!promptHasArtifactHandleSignal(params.prompt.toLowerCase())) return false;
   if (isReadContextTool(params.proposedToolId)) return false;
   if (hasReadContextEvidence(params.toolCalls)) return false;
   return true;

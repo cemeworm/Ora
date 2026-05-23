@@ -147,10 +147,17 @@ describe("parseCodeDevelopmentDebugResolution", () => {
     });
   });
 
-  it("treats explicit no-debug-needed text as clear", () => {
-    expect(parseCodeDevelopmentDebugResolution("No further debugging is needed.")).toMatchObject({
+  it("parses explicit debug status markers", () => {
+    expect(parseCodeDevelopmentDebugResolution("Status: clear\n- No further debugging is needed.")).toMatchObject({
       status: "clear",
-      source: "heuristic",
+      source: "marker",
+    });
+  });
+
+  it("blocks free-text debug output without structured status", () => {
+    expect(parseCodeDevelopmentDebugResolution("No further debugging is needed.")).toMatchObject({
+      status: "blocked",
+      source: "missing",
     });
   });
 });

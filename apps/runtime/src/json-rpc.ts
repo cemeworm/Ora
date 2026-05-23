@@ -351,10 +351,9 @@ export function createRuntimeMethodHandler(
       case "evaluation.blueprints.planTurn":
         return store.planEvaluationBlueprintTurn(request.params);
       case "evaluation.runs.start":
-        return store.startEvaluationRun(request.params, async ({ input, config }) => {
-          const handle = await store.startRun({ input, config });
-          return store.getRunState({ runId: handle.runId });
-        });
+        return store.startEvaluationRun(request.params, ({ input, config, signal, onStarted }) =>
+          store.executeEvaluationRunWithLifecycle({ input, config, signal, onStarted })
+        );
       case "evaluation.runs.list":
         return store.listEvaluationRuns(request.params);
       case "evaluation.runs.get":

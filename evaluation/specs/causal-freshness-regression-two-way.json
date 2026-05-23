@@ -30,7 +30,9 @@
       "id": "freshness-record-only",
       "label": "Record Only",
       "runConfig": {
-        "pattern": "solo_agent",
+        "pattern": "orchestrator_subagent",
+        "modeSelection": "manual",
+        "modeId": "single_agent",
         "providerId": "deepseek",
         "modelRef": "deepseek-v4-flash",
         "causalInterventionLevel": "record_only",
@@ -44,7 +46,9 @@
       "id": "freshness-enforcing",
       "label": "Enforcing (LLM-based extraction)",
       "runConfig": {
-        "pattern": "solo_agent",
+        "pattern": "orchestrator_subagent",
+        "modeSelection": "manual",
+        "modeId": "single_agent",
         "providerId": "deepseek",
         "modelRef": "deepseek-v4-flash",
         "causalInterventionLevel": "enforcing",

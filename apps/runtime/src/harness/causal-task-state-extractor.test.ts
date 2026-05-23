@@ -67,7 +67,7 @@ function causalEvent(payloadOverrides: Record<string, unknown> = {}): OraEventEn
 }
 
 describe("causal task-state extractor", () => {
-  it("falls back to heuristics when no provider output is available", async () => {
+  it("falls back to runtime signals when no provider output is available", async () => {
     const state = await extractCausalTaskState({
       prompt: "请先搜索最新资料",
       config: mockConfig(),
@@ -78,7 +78,7 @@ describe("causal task-state extractor", () => {
 
     expect(state.surfaceRequest).toBe("请先搜索最新资料");
     expect(state.keyUncertainties).toContain("事实信息缺失");
-    expect(state.selectedLatentGoal?.length ?? 0).toBeGreaterThan(0);
+    expect(state.selectedLatentGoal ?? "").toBe("");
   });
 
   it("merges structured LLM output into the task state", async () => {
@@ -110,7 +110,7 @@ describe("causal task-state extractor", () => {
     expect(state.confidence).toBe(0.81);
   });
 
-  it("falls back to heuristic state when provider JSON is invalid", async () => {
+  it("falls back to non-semantic state when provider JSON is invalid", async () => {
     const state = await extractCausalTaskState({
       prompt: "这个问题需要先确认范围",
       config: mockConfig(),
@@ -125,12 +125,12 @@ describe("causal task-state extractor", () => {
       } as never),
     });
 
-    expect(state.selectedLatentGoal?.length ?? 0).toBeGreaterThan(0);
+    expect(state.selectedLatentGoal ?? "").toBe("");
     expect(state.counterfactualRiskIfSkipped).toBe("可能答错对象");
     expect(state.keyUncertainties).toContain("用户目标不明确");
   });
 
-  it("produces a non-empty heuristic latent goal for context-heavy prompts", async () => {
+  it("does not infer latent goals from prompt text without provider output", async () => {
     const state = await extractCausalTaskState({
       prompt: "帮我review这个PR",
       config: mockConfig(),
@@ -138,8 +138,8 @@ describe("causal task-state extractor", () => {
       allowLlmExtraction: false,
     });
 
-    expect(state.selectedLatentGoal).toBe("基于现有上下文完成审查并给出结论");
-    expect(state.latentGoalHypotheses).toContain("基于现有上下文完成审查并给出结论");
+    expect(state.selectedLatentGoal ?? "").toBe("");
+    expect(state.latentGoalHypotheses ?? []).toEqual([]);
   });
 
   it("passes needsFreshnessEvidence=true from LLM extraction through merge", async () => {

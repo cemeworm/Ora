@@ -100,7 +100,7 @@ function recommendAction(input: PolicyRouterInput): RecommendResult {
   let action: InterventionAction;
   if (actionRisk >= 0.7) action = "request_approval";
   else if (preferReadContext) action = "read_context";
-  else if (preferSearchWeb || (factUncertainty >= 0.5 && !isSearchTool(input.proposedToolId ?? ""))) action = "search_web";
+  else if (preferSearchWeb) action = "search_web";
   else if (input.hasUnresolvedPlanItems && !input.proposedToolId) action = "plan";
   else if (contextUncertainty >= 0.5 && input.proposedToolId) action = "read_context";
   else if (goalUncertainty >= 0.7) action = "clarify";
@@ -112,155 +112,14 @@ function recommendAction(input: PolicyRouterInput): RecommendResult {
 }
 
 function shouldPreferReadContext(input: PolicyRouterInput): boolean {
-  const text = normalizeSignalText(input.surfaceRequest);
-  if (!text) return false;
-  if (needsFreshnessEvidence(input)) return false;
-  if (promptNeedsUserClarificationOnly(text)) return false;
+  if (input.taskState?.needsFreshnessEvidence === true) return false;
   if (input.proposedToolId && isReadContextTool(input.proposedToolId)) return true;
-  return promptHasArtifactHandleSignal(text);
+  if (input.taskState?.chosenIntervention === "read_context") return true;
+  return input.taskState?.candidateInterventions?.includes("read_context") === true;
 }
 
 function shouldPreferSearchWeb(input: PolicyRouterInput): boolean {
-  const text = normalizeSignalText(input.surfaceRequest);
-  if (!text) return false;
-  if (promptNeedsUserClarificationOnly(text)) return false;
-  return needsFreshnessEvidence(input) && !isSearchTool(input.proposedToolId ?? "");
-}
-
-function normalizeSignalText(value: string): string {
-  return value.trim().toLowerCase();
-}
-
-export function promptHasArtifactHandleSignal(text: string): boolean {
-  const fileHandlePattern =
-    /\b[\w./-]+\.(ts|tsx|js|jsx|json|md|sql|py|yaml|yml|csv|txt|log|sh)\b/i;
-  if (fileHandlePattern.test(text)) return true;
-  const signals = [
-    "这个pr",
-    "review这个pr",
-    "review pr",
-    "pull request",
-    "diff",
-    "日志",
-    "log",
-    "trace",
-    "报表",
-    "数据",
-    "dataset",
-    "文档",
-    "方案",
-    "这段代码",
-    "这个函数",
-    "这个循环",
-    "现有代码",
-    "auth.ts",
-  ];
-  return signals.some((signal) => text.includes(signal));
-}
-
-function needsFreshnessEvidence(input: PolicyRouterInput): boolean {
-  if (input.taskState?.needsFreshnessEvidence === true) return true;
-  if (input.taskState?.needsFreshnessEvidence === false) return false;
-  return promptNeedsFreshnessKeywordFallback(input.surfaceRequest);
-}
-
-/**
- * Keyword-based freshness fallback — only used when the LLM extraction did not
- * produce an explicit needsFreshnessEvidence signal (i.e. undefined).
- */
-export function promptNeedsFreshnessKeywordFallback(text: string): boolean {
-  if (text.includes("天气")) return false;
-  if (promptHasArtifactHandleSignal(text)) return false;
-  if (promptLooksLikeImplementationOrReviewTask(text)) return false;
-  const freshnessSignals = [
-    "最新",
-    "当前",
-    "截至",
-    "现在",
-    "today",
-    "latest",
-    "current",
-    "as of",
-    "release",
-    "版本",
-    "新特性",
-    "支持情况",
-    "兼容性",
-  ];
-  const topicSignals = [
-    "react",
-    "vue",
-    "browser",
-    "浏览器",
-    "webassembly",
-    "wasm",
-    "support",
-    "feature",
-    "特性",
-    "版本",
-    "api",
-  ];
-  const informationIntentSignals = [
-    "有哪些",
-    "是什么",
-    "支持情况",
-    "兼容性",
-    "发布说明",
-    "更新内容",
-    "有什么变化",
-    "区别",
-    "介绍",
-    "说明",
-    "what's new",
-    "what is new",
-    "new features",
-    "release notes",
-    "support status",
-    "compatibility",
-    "features",
-  ];
-  return freshnessSignals.some((signal) => text.includes(signal)) &&
-    topicSignals.some((signal) => text.includes(signal)) &&
-    informationIntentSignals.some((signal) => text.includes(signal));
-}
-
-function promptLooksLikeImplementationOrReviewTask(text: string): boolean {
-  const signals = [
-    "帮我 review",
-    "帮我review",
-    "review ",
-    "评审",
-    "改造",
-    "实现",
-    "修复",
-    "重构",
-    "排查",
-    "调试",
-    "写一个函数",
-    "写代码",
-    "升级计划",
-    "迁移",
-    "接入",
-    "重写",
-    "optimize",
-    "implement",
-    "refactor",
-    "fix ",
-    "debug",
-    "migrate",
-    "upgrade plan",
-  ];
-  return signals.some((signal) => text.includes(signal));
-}
-
-export function promptNeedsUserClarificationOnly(text: string): boolean {
-  const signals = [
-    "创业还是继续打工",
-    "should i",
-    "我该不该",
-    "帮我生成一份性能测试报告",
-  ];
-  return signals.some((signal) => text.includes(signal));
+  return input.taskState?.needsFreshnessEvidence === true && !isSearchTool(input.proposedToolId ?? "");
 }
 
 function buildKeyUncertaintiesFromPolicy(
@@ -335,6 +194,7 @@ export function routeIntervention(input: PolicyRouterInput): PolicyRouterOutput 
     expectedOutcomeLift: input.taskState?.expectedOutcomeLift ?? "",
     confidence,
     stopCondition: input.taskState?.stopCondition ?? "",
+    needsFreshnessEvidence: input.taskState?.needsFreshnessEvidence,
   };
 
   const alternativeInterventions = computeAlternativeInterventions(action, input);

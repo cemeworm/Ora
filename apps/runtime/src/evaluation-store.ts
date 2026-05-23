@@ -174,7 +174,24 @@ type EvaluationWorkspaceFixtureRuntime = {
   manifest: EvaluationWorkspaceFixtureManifest;
 };
 
-type RunExecutor = (params: { input: UserTaskInput; config: Partial<RunConfig> }) => Promise<StateSnapshot>;
+type RunExecutor = (params: {
+  input: UserTaskInput;
+  config: Partial<RunConfig>;
+  signal?: AbortSignal;
+  onStarted?: (handle: RunHandle) => void;
+}) => Promise<StateSnapshot>;
+
+class EvaluationAttemptTimeoutError extends Error {
+  constructor(
+    message: string,
+    readonly underlyingRunId?: string,
+    readonly runtimeMs?: number,
+  ) {
+    super(message);
+    this.name = "EvaluationAttemptTimeoutError";
+  }
+}
+
 type FeedbackCurator = (params: {
   feedbackId: string;
   feedbackText: string;
@@ -1162,6 +1179,9 @@ export class LocalEvaluationStore {
   ): Promise<{ attempt: EvaluationAttempt; annotationTasks: Array<Partial<EvaluationAnnotationTask>> }> {
     const attemptStartedAt = this.now();
     const timeoutMs = spec.timeoutMs ?? resolveDefaultTimeoutMs(dataset);
+    const abortController = new AbortController();
+    let startedHandle: RunHandle | undefined;
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
 
     const formatConstraint = config.runConfig.metadata?.formatConstraint;
     const prompt = typeof formatConstraint === "string" && formatConstraint.trim()
@@ -1213,16 +1233,30 @@ export class LocalEvaluationStore {
           evaluationProfileId: spec.profileId,
         },
       },
+      signal: abortController.signal,
+      onStarted: (handle) => {
+        startedHandle = handle;
+      },
     });
 
     let snapshot: StateSnapshot;
-    if (timeoutMs > 0) {
-      const timeoutPromise = new Promise<StateSnapshot>((_, reject) =>
-        setTimeout(() => reject(new Error(`Attempt timed out after ${timeoutMs}ms`)), timeoutMs)
-      );
-      snapshot = await Promise.race([runPromise, timeoutPromise]);
-    } else {
-      snapshot = await runPromise;
+    try {
+      if (timeoutMs > 0) {
+        const timeoutPromise = new Promise<StateSnapshot>((_, reject) => {
+          timeoutHandle = setTimeout(() => {
+            const timeoutMessage = `Attempt timed out after ${timeoutMs}ms`;
+            reject(new EvaluationAttemptTimeoutError(timeoutMessage, startedHandle?.runId, timeoutMs));
+            abortController.abort(new Error(timeoutMessage));
+          }, timeoutMs);
+        });
+        snapshot = await Promise.race([runPromise, timeoutPromise]);
+      } else {
+        snapshot = await runPromise;
+      }
+    } finally {
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
     }
 
     const runtimeMs = Math.max(0, snapshot.updatedAt - (snapshot.events[0]?.createdAt ?? attemptStartedAt));
@@ -1297,6 +1331,10 @@ export class LocalEvaluationStore {
     const isTimeout = errorMessage.includes("timed out");
     const status: EvaluationAttempt["status"] = isTimeout ? "timeout" : "failed";
     const failureTag = isTimeout ? "attempt_timeout" : "execution_error";
+    const underlyingRunId = error instanceof EvaluationAttemptTimeoutError ? error.underlyingRunId : undefined;
+    const runtimeMs = error instanceof EvaluationAttemptTimeoutError && typeof error.runtimeMs === "number"
+      ? error.runtimeMs
+      : 0;
 
     return EvaluationAttemptSchema.parse({
       id: `${evaluationRunId}:attempt:${config.id}:${evaluationCase.id}:r${repetition}`,
@@ -1305,6 +1343,7 @@ export class LocalEvaluationStore {
       configId: config.id,
       repetition,
       status,
+      underlyingRunId,
       error: errorMessage,
       score: {
         outcomeScore: 0,
@@ -1320,7 +1359,7 @@ export class LocalEvaluationStore {
       observations: {
         evidence: this.buildAttemptEvidence(evaluationCase, config, repetition, {} as StateSnapshot, 0),
       },
-      runtimeMs: 0,
+      runtimeMs,
       costUsd: 0,
       startedAt: now,
       updatedAt: now,
@@ -4151,20 +4190,16 @@ function taskSuccessRateMetric(evaluationCase: EvaluationCase, observations: Eva
   const expected = structuredExpected(evaluationCase) as Record<string, unknown> | undefined;
   const successCriteria = String(expected?.successCriteria ?? "");
   if (!successCriteria) {
-    return EvaluationMetricScoreSchema.parse({
-      metricId: "task_success_rate",
+    return observationalProxyMetricScore("task_success_rate", {
       score: 0.5,
-      passed: false,
       rationale: "No successCriteria was provided in the evaluation case.",
       failureTags: ["missing_oracle"],
     });
   }
   const outputText = String(getObservationPath(observations, "run.outputText") ?? "").toLowerCase();
   if (!outputText.trim()) {
-    return EvaluationMetricScoreSchema.parse({
-      metricId: "task_success_rate",
+    return observationalProxyMetricScore("task_success_rate", {
       score: 0,
-      passed: false,
       rationale: "Agent produced no output text.",
       failureTags: ["empty_output", "poor_outcome_quality"],
     });
@@ -4175,15 +4210,10 @@ function taskSuccessRateMetric(evaluationCase: EvaluationCase, observations: Eva
   const score = indicators.length > 0
     ? Math.min(1, matchedCount / indicators.length + 0.2)
     : heuristicSuccessScore(criteriaLower, outputText);
-  const passed = score >= 0.6;
-  return EvaluationMetricScoreSchema.parse({
-    metricId: "task_success_rate",
-    score: roundScore(score),
-    passed,
-    rationale: passed
-      ? `Output matches success criteria (${matchedCount}/${indicators.length} indicators).`
-      : `Output does not clearly satisfy success criteria (${matchedCount}/${indicators.length} indicators).`,
-    failureTags: passed ? [] : ["task_not_successful", "poor_outcome_quality"],
+  return observationalProxyMetricScore("task_success_rate", {
+    score,
+    rationale: `Heuristic proxy estimated success criteria coverage (${matchedCount}/${indicators.length} indicators).`,
+    failureTags: score >= 0.6 ? [] : ["task_not_successful", "poor_outcome_quality"],
     details: { successCriteria, matchedIndicators: matchedCount, totalIndicators: indicators.length },
   });
 }
@@ -4246,33 +4276,47 @@ function llmJudgeScoreMetric(evaluationCase: EvaluationCase, observations: Evalu
   const outputText = String(getObservationPath(observations, "run.outputText") ?? "");
   const prompt = evaluationCase.input.prompt;
   if (!outputText.trim()) {
-    return EvaluationMetricScoreSchema.parse({
-      metricId: "llm_judge_score",
+    return observationalProxyMetricScore("llm_judge_score", {
       score: 0,
-      passed: false,
       rationale: "Agent produced no output text.",
       failureTags: ["empty_output", "poor_outcome_quality"],
-      details: { source: "heuristic_proxy" },
     });
   }
   const lengthScore = Math.min(1, outputText.length / 200);
   const relevanceScore = textSimilarity(prompt, outputText);
   const structureScore = outputText.includes("\n") ? 0.8 : 0.5;
   const score = lengthScore * 0.2 + relevanceScore * 0.5 + structureScore * 0.3;
-  const passed = score >= 0.6;
-  return EvaluationMetricScoreSchema.parse({
-    metricId: "llm_judge_score",
-    score: roundScore(Math.min(1, score)),
-    passed,
-    rationale: passed
-      ? "Output quality is acceptable based on heuristic proxy evaluation."
-      : "Output quality is below threshold based on heuristic proxy evaluation.",
-    failureTags: passed ? [] : ["low_output_quality", "poor_outcome_quality"],
+  return observationalProxyMetricScore("llm_judge_score", {
+    score: Math.min(1, score),
+    rationale: "Output quality estimate is based on heuristic proxy evaluation only.",
+    failureTags: score >= 0.6 ? [] : ["low_output_quality", "poor_outcome_quality"],
     details: {
-      source: "heuristic_proxy",
       lengthScore: roundScore(lengthScore),
       relevanceScore: roundScore(relevanceScore),
       structureScore: roundScore(structureScore),
+    },
+  });
+}
+
+function observationalProxyMetricScore(
+  metricId: "task_success_rate" | "llm_judge_score",
+  args: {
+    score: number;
+    rationale: string;
+    failureTags: string[];
+    details?: Record<string, unknown>;
+  },
+): EvaluationMetricScore {
+  return EvaluationMetricScoreSchema.parse({
+    metricId,
+    score: roundScore(args.score),
+    passed: false,
+    rationale: args.rationale,
+    failureTags: [...new Set([...args.failureTags, "heuristic_proxy_non_authoritative"])],
+    details: {
+      source: "heuristic_proxy",
+      authoritative: false,
+      ...(args.details ?? {}),
     },
   });
 }

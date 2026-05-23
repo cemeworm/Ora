@@ -20,6 +20,8 @@ const RUNTIME_LOCAL_SMOKE_PROVIDER: ProviderConfig = {
   label: "Local Smoke",
   modelId: "local/smoke-model",
   enabled: true,
+  capabilities: ["chat"],
+  dropParams: [],
   headers: {},
 };
 

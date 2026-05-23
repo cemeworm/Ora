@@ -2,7 +2,7 @@
 
 本文描述当前 Ora runtime loop 的主结构：Task Flow 兼容层、run 外层生命周期、continuation dispatcher、mode 编排层、单个 node 内部的 model-tool loop，以及 plan list、gate、streaming finalization 如何进入持久 projection。
 
-> **最近更新 (2026-05-21)**：`mode_stage` 现已具备显式 capability contract 与 preflight/block 诊断；`single_agent + implement` root 走 `single_agent_implement`；`deep_research` staged path 已收敛到结构化 bag、pure-review verify 和 accepted-artifact-only synthesis；`code_development` 补齐结构化 stage contract 与交付 gate 语义。
+> **最近更新 (2026-05-23)**：`mode_stage` 现已具备显式 capability contract 与 preflight/block 诊断；`single_agent + implement` root 走 `single_agent_implement`；`deep_research` staged path 已收敛到结构化 bag、pure-review verify 和 accepted-artifact-only synthesis；`code_development` 补齐结构化 stage contract 与交付 gate 语义；channel 自然语言消息不再触发本地 project auto-bind；review/debug gate 已移除 free-text heuristic verdict。
 
 ## 阅读地图
 
@@ -123,6 +123,15 @@ flowchart TD
 ```
 
 这一层的重点是所有 flow 概念都先映射到现有 run 基础设施。`FlowRun` 是当前 `StateSnapshot` 和 run projection 的编排视角，`FlowGate` 来自现有 clarification、approval、plan decision 和 cancellation projection。Session 仍然是用户看到的对话容器，flow/run 是持久执行身份。
+
+### 0.2 Channel project binding boundary
+
+从 2026-05-23 起，channel 输入侧对 project binding 做了更窄的边界约束：
+
+- 自然语言消息不再触发本地 project discovery，也不会因为命中目录名/关键词而自动绑定项目。
+- 显式 `/project <query>` 仍允许走本地 lexical candidate recall，但 recall 只产出候选列表，不直接成为绑定真相。
+- 数字选择（如 `1`）和显式否定（如 `不对`）仍保留，属于 parse/bind 兼容流，不属于语义意图推断。
+- 普通消息只会复用当前 session 已绑定 project；如果没有绑定，就按无项目上下文继续，不偷偷做自然语言侧推断。
 
 ## 1. 外层 run lifecycle
 
@@ -579,6 +588,12 @@ orchestrator 负责计划和协调，实际代码修改必须落到 builder 阶�
 - `handoff` 只在 review/debug/DONE gate 都满足时产出正常移交，消费 `todoScanResult`、`doneGate`、`verificationSummary`
 
 这仍然复用 `orchestrator_subagent` driver，但交接真相已经从“上一阶段自由文本说了什么”收口到结构化 bag 契约。
+
+当前 review/debug gate 的兼容边界也已显式收紧：
+
+- 首选真相源是结构化 JSON stage output。
+- 显式 `Verdict: PASS | NEEDS_FIX | BLOCKED` 与 `Status: CLEAR | NEEDS_FIX | BLOCKED` 仍可作为 contract compat marker。
+- 纯自由文本如 `Looks good`、`No further debugging is needed` 不再被当作 verdict/status 真相；缺少结构化契约或显式 marker 时，runtime 默认 fail-closed。
 
 ### Deep Research staged contract
 

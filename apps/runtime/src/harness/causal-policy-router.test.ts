@@ -225,7 +225,7 @@ describe("causal policy router", () => {
       expect(result.action).toBe("answer_directly");
     });
 
-    it("recommends search_web when fact uncertainty is high and not already searching", () => {
+    it("records fact uncertainty without auto-searching when no structured freshness signal exists", () => {
       const result = routeIntervention({
         surfaceRequest: "最新的React 19有哪些新特性",
         taskState: undefined,
@@ -238,11 +238,11 @@ describe("causal policy router", () => {
         hasUnresolvedPlanItems: false,
         modelResponseText: "React 19 probably includes server components by default, and I think it might have improved hydration. The new features should be something like...",
       });
-      expect(result.action).toBe("search_web");
+      expect(result.action).toBe("clarify");
       expect(result.policyDecision.factUncertainty).toBeGreaterThanOrEqual(0.35);
     });
 
-    it("recommends search_web in router v2 for freshness-sensitive prompts before the model guesses", () => {
+    it("does not auto-search in router v2 without structured freshness evidence", () => {
       const result = routeIntervention({
         surfaceRequest: "React 19 有哪些新特性",
         taskState: undefined,
@@ -257,7 +257,7 @@ describe("causal policy router", () => {
         routerVersion: "v2",
       });
 
-      expect(result.action).toBe("search_web");
+      expect(result.action).toBe("clarify");
     });
 
     it("keeps router v1 rollback available for freshness-sensitive prompts", () => {
@@ -278,10 +278,15 @@ describe("causal policy router", () => {
       expect(result.action).not.toBe("search_web");
     });
 
-    it("does not let freshness signals override explicit artifact review prompts in router v2", () => {
+    it("recommends read_context in router v2 when structured task state already requests context", () => {
       const result = routeIntervention({
         surfaceRequest: "帮我 review apps/runtime/src/harness/causal-policy-router.ts，顺便看看 React 19 新特性会不会影响这里的逻辑",
-        taskState: undefined,
+        taskState: {
+          surfaceRequest: "帮我 review apps/runtime/src/harness/causal-policy-router.ts，顺便看看 React 19 新特性会不会影响这里的逻辑",
+          selectedLatentGoal: "先阅读目标文件并确认上下文",
+          candidateInterventions: ["read_context", "use_tool"],
+          confidence: 0.76,
+        },
         proposedToolId: undefined,
         proposedToolRisk: "low",
         toolCallCount: 0,
@@ -296,10 +301,14 @@ describe("causal policy router", () => {
       expect(result.action).toBe("read_context");
     });
 
-    it("does not treat implementation-oriented freshness prompts as search_web in router v2", () => {
+    it("does not treat freshness-themed prompts as search_web when the task state omits freshness evidence", () => {
       const result = routeIntervention({
         surfaceRequest: "请基于 React 19 新特性改造 src/auth.ts",
-        taskState: undefined,
+        taskState: {
+          surfaceRequest: "请基于 React 19 新特性改造 src/auth.ts",
+          selectedLatentGoal: "修改现有认证逻辑",
+          confidence: 0.82,
+        },
         proposedToolId: undefined,
         proposedToolRisk: "low",
         toolCallCount: 0,
@@ -311,7 +320,7 @@ describe("causal policy router", () => {
         routerVersion: "v2",
       });
 
-      expect(result.action).toBe("read_context");
+      expect(result.action).not.toBe("search_web");
     });
 
     it("prioritizes LLM needsFreshnessEvidence=true over keyword absence in router v2", () => {
@@ -336,11 +345,13 @@ describe("causal policy router", () => {
       expect(result.action).toBe("search_web");
     });
 
-    it("lets LLM needsFreshnessEvidence=false override keyword match in router v2", () => {
+    it("lets LLM needsFreshnessEvidence=false override freshness-themed prompts in router v2", () => {
       const result = routeIntervention({
         surfaceRequest: "React 19 有哪些新特性",
         taskState: {
           surfaceRequest: "React 19 有哪些新特性",
+          selectedLatentGoal: "基于已有上下文回答用户问题",
+          confidence: 0.82,
           needsFreshnessEvidence: false,
         },
         proposedToolId: undefined,
@@ -354,16 +365,16 @@ describe("causal policy router", () => {
         routerVersion: "v2",
       });
 
-      // LLM explicitly says NOT freshness-sensitive; keyword match is overridden
       expect(result.action).not.toBe("search_web");
     });
 
-    it("falls back to keywords when needsFreshnessEvidence is undefined in router v2", () => {
+    it("does not fall back to prompt keywords when needsFreshnessEvidence is undefined in router v2", () => {
       const result = routeIntervention({
         surfaceRequest: "React 19 有哪些新特性",
         taskState: {
           surfaceRequest: "React 19 有哪些新特性",
-          // needsFreshnessEvidence intentionally omitted (undefined)
+          selectedLatentGoal: "判断用户是否需要最新信息",
+          confidence: 0.41,
         },
         proposedToolId: undefined,
         proposedToolRisk: "low",
@@ -376,8 +387,7 @@ describe("causal policy router", () => {
         routerVersion: "v2",
       });
 
-      // No LLM signal → keyword fallback should still work
-      expect(result.action).toBe("search_web");
+      expect(result.action).not.toBe("search_web");
     });
 
     it("recommends read_context when task needs file reading before tool execution", () => {
@@ -397,10 +407,15 @@ describe("causal policy router", () => {
       expect(result.action).toBe("read_context");
     });
 
-    it("recommends read_context in router v2 when the prompt already points to a concrete artifact", () => {
+    it("recommends read_context in router v2 when structured task state points to context-first execution", () => {
       const result = routeIntervention({
         surfaceRequest: "帮我写一个函数处理用户登录，现有 auth.ts 里已经有相关逻辑",
-        taskState: undefined,
+        taskState: {
+          surfaceRequest: "帮我写一个函数处理用户登录，现有 auth.ts 里已经有相关逻辑",
+          selectedLatentGoal: "复用现有认证实现完成改造",
+          candidateInterventions: ["read_context", "use_tool"],
+          confidence: 0.78,
+        },
         proposedToolId: undefined,
         proposedToolRisk: "low",
         toolCallCount: 0,

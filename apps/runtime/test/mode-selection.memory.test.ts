@@ -98,7 +98,7 @@ describe("withMemoryPrompt provider admission", () => {
     expect(String(result.metadata.memoryPromptOverlay)).toContain("QC");
   });
 
-  it("falls back to deterministic admission when provider_fallback is enabled and provider admission fails", async () => {
+  it("keeps provider_fallback observational-only when provider admission fails", async () => {
     const memory = new LongTermMemoryManager(new FileLongTermMemoryStore(tempDir));
     memory.saveProfile(LongTermMemoryProfileSchema.parse({
       lastUpdated: "2026-05-18T00:00:00.000Z",
@@ -142,7 +142,8 @@ describe("withMemoryPrompt provider admission", () => {
     expect(activeMemory.decision?.mode).toBe("provider_fallback");
     expect(activeMemory.decision?.status).toBe("NONE");
     expect(activeMemory.decision?.selectedIds).toEqual([]);
-    expect(String(activeMemory.decision?.reason)).toContain("fell back to deterministic");
+    expect(String(activeMemory.decision?.reason)).toContain("no memory cards were admitted");
+    expect(result.metadata.memoryPromptOverlay).toBeUndefined();
   });
 
   it("injects scenario candidates into active memory and exposes observability metadata", async () => {

@@ -38,7 +38,7 @@
 
 ## 1. 系统总览
 
-> **最近更新 (2026-05-16)**：混合语义检索（embedding + FTS5）、CAS 并发控制（`_version` 单调版本号）、Dreaming 全链路接入、Section summaries 质量门控、Memory 损坏保护、Provider 更新降级、2-gram Jaccard 语义去重、组合淘汰评分。
+> **最近更新 (2026-05-23)**：混合语义检索（embedding + FTS5）、CAS 并发控制（`_version` 单调版本号）、Dreaming 全链路接入、Section summaries 质量门控、Memory 损坏保护、Provider 更新降级、2-gram Jaccard 语义去重、组合淘汰评分；provider admission fallback 已收紧为 observational-only；wiki 本地冲突启发式已下放为 open question，而非直接 contradiction verdict。
 
 Ora 的 memory 系统由长期事实层、任务压缩层、场景聚合层、注入层、知识演化层和溯源观测层组成：
 
@@ -64,7 +64,7 @@ flowchart TD
 
     subgraph 治理
         POLICY["ModeMemoryPolicy<br/>enabled / updater / admission"]
-        ADMISSION["Memory Admission<br/>deterministic | provider"]
+        ADMISSION["Memory Admission<br/>deterministic | provider | provider_fallback(observational)"]
     end
 
     subgraph 消费
@@ -100,7 +100,7 @@ flowchart TD
 | **Scenario Memory** | 将多个 facts / signals 聚合成可检索的场景块，作为 facts 与 wiki 之间的中层 | `memory-scenarios.json` |
 | **Active Memory** | 每次 run 前检索相关记忆，评分择优，渲染为 `<ora_active_memory>` 注入系统 prompt | 衍生自 Long-Term Memory |
 | **Memory Journal** | 短期信号存储（memory_intent、correction 等），为 dreaming 提供原材料 | `memory-journal.jsonl` |
-| **Memory Wiki** | 从 Long-Term Memory 编译结构化知识页面（claims、contradictions、open questions） | wiki 目录下的 JSON 文件 |
+| **Memory Wiki** | 从 Long-Term Memory 编译结构化知识页面（claims、既有 contradictions、open questions）；本地启发式只负责产出 review question，不直接新增 contradiction verdict | wiki 目录下的 JSON 文件 |
 | **Memory Dreaming** | 对 journal 信号进行三阶段聚类，产出晋升预览（推荐晋升/保持/矛盾候补） | 衍生自 Journal |
 
 **关键数据流：**
@@ -188,7 +188,7 @@ ActiveMemoryCard {
 // Admission 决策
 ActiveMemoryAdmissionDecision {
   status: "USE" | "NONE"
-  mode: "deterministic" | "provider" | "provider_fallback"
+  mode: "deterministic" | "provider" | "provider_fallback" // provider_fallback 仅保留 observational provenance，不自动选卡
   reason: string
   candidateIds / selectedIds / rejectedIds
   budget: { maxCandidates, maxChars, renderedChars }
@@ -251,7 +251,7 @@ Memory 的所有行为都由 `ModeMemoryPolicy` 控制，policy 绑定在 ModeSp
 ModeMemoryPolicy {
   // === 更新控制 ===
   enabled: boolean                  // 总开关（还需 runtimeAtoms 包含 long_term_memory）
-  updater: "provider" | "heuristic" // 更新方式：Provider 模型驱动 或 规则匹配
+  updater: "provider" | "heuristic" // 更新方式：Provider 模型驱动 或 本地提取 fallback；本地规则不是 contradiction/admission oracle
   debounceMs: number                // 更新防抖，避免短期内重复更新
   factConfidenceThreshold: 0.7      // fact 最低置信度门槛
   maxFacts: 120                     // 最大事实数
@@ -362,7 +362,7 @@ Memory cards:
 
 ## 5. Memory Admission：准入门控
 
-Admission 有两条路径：确定性（deterministic）和 Provider 驱动。
+Admission 有两条主路径：本地确定性筛选（deterministic）和 Provider 驱动。`provider_fallback` 不再意味着“失败后继续 deterministic 选卡”，而是保留候选可观测性但不产生 admitted cards。
 
 ### 5.1 确定性 Admission（`active-memory.ts:147`）
 
@@ -387,9 +387,9 @@ Admission 有两条路径：确定性（deterministic）和 Provider 驱动。
 3. 解析 Provider 返回的 JSON:
    { selectedIds, reason, rejectedIds, uncertainty, result: "USE|NONE" }
 
-4. 如果 Provider 返回失败或超时:
-   - provider_fallback: 降级到确定性 admission
-   - provider（无 fallback）: 同样降级，标记 mode="provider_fallback"
+4. 如果 Provider 返回失败、不可用或超时:
+   - provider_fallback: 返回 `status: "NONE"`、`mode: "provider_fallback"`，保留 `candidateIds` / warnings，`selectedIds = []`
+   - provider（无 fallback）: 同样不再本地 deterministic 选卡；只记录 provider 不可用并返回空 admission
 ```
 
 Provider 返回的 uncertainty > 0.6 时会发出 warning。
@@ -398,9 +398,9 @@ Provider 返回的 uncertainty > 0.6 时会发出 warning。
 
 | 场景 | 推荐模式 |
 | --- | --- |
-| 候选数量少、query 明确 | deterministic — 关键词匹配足够 |
+| 候选数量少、query 明确 | deterministic — 本地评分门槛足够，且本轮允许直接选卡 |
 | 候选数量多、需要语义理解 | provider — 模型判断相关性更准 |
-| 需要保证可用性、允许降级 | provider_fallback — 兼顾质量与可用性 |
+| 需要保证可用性、允许降级 | provider_fallback — 兼顾质量与可用性，但 provider 失败时只保留 observational candidate recall |
 
 ## 6. Memory Updates：从 run 到长期事实
 
@@ -427,6 +427,8 @@ Memory 更新是 run 结束后的异步过程，将对话中提取的事实沉�
    - goal:        记忆意图 + goal/plan/目标/计划 等
    - preference:  记忆意图 + prefer/偏好/默认 等
    - context:     其他记忆意图（兜底）
+
+这条 heuristic 路径的职责是“提取候选更新信号”，不是为后续链路提供 contradiction/admission/final-judgment 真相。换句话说，本地规则可以做 parse / classify / summarize，但不应越权做 durable semantic verdict。
 
 3. 过滤:
    - 去临时内容（file upload / 上传文件 / 临时 / 这次会话）
@@ -508,13 +510,14 @@ Memory 更新是 run 结束后的异步过程，将对话中提取的事实沉�
    - 合并相同 statement 的 claim（取最高 confidence，合并 source）
    - 为每个新 fact 创建 claim
 
-2. 检测矛盾（detectContradictions）:
-   - 扫描 always/never、do/don't、should/should not、is/is not、prefer/avoid 对立
-   - 检测相同话题包含 correction 标记的 claim 对
+2. 生成 contradiction review questions:
+   - 本地启发式仅做 candidate pair preselection
+   - 产物写入 `openQuestions`，提示后续 review / provider judge
+   - 不直接新增新的 durable contradiction verdict
 
-3. 保留已有 openQuestions
+3. 保留已有 contradictions 与 openQuestions
 
-4. 生成 digest（top 5 claims + 矛盾计数 + 问题计数）
+4. 生成 digest（top 5 claims + 既有矛盾计数 + 问题计数）
 ```
 
 **页面类型**：`user`（用户级 memory profile 编译）和 `project`（项目级编译）。
@@ -542,11 +545,13 @@ Deep Phase（深度）
           + confidenceWeight    × 平均置信度分
           + multiDayWeight      × 跨天加分
           + conceptualRichnessWeight × 信号类型丰富度分
-  → 分类为 recommendPromote / recommendHold / recommendContradicted
+  → 分类为 recommendPromote / recommendHold
   → 产出 PromotionPreview（预览，不自动应用）
 ```
 
 **从预览到事实**：`factsFromPromotionPreview` 将 `recommendPromote` 候补转为 `LongTermMemoryFact`（confidence 略做增量 +0.05）。
+
+当前 dreaming 的本地冲突启发式也不再把候补直接升级为 `recommendContradicted`。如果发现潜在冲突，它更适合作为 review signal 或 open question，而不是 durable semantic verdict。
 
 **Dreaming 全链路接入**（新增）：Dreaming 调度器（`memory-dreaming-scheduler.ts`）作为 `RunStore` 独立组件运行，按配置节律自动触发三阶段分析（`setInterval` 60s 检查，触发条件：signalCount ≥ 50 或距上次 ≥ 24h）。Journal 写入路径已打通的 dreaming 晋升管道——promotion 候选通过 ledged journal 写入后，在后续 run 中进入 active memory 候选池。
 

@@ -286,7 +286,7 @@ export function extendActiveMemorySummary(
     ...trace,
     // Flattened for easy UI rendering
     summaryLine: trace.mode === "provider_fallback"
-      ? `Provider fallback → deterministic (${trace.selectedCount} selected)`
+      ? `Provider fallback → observational only (${trace.selectedCount} selected)`
       : trace.mode === "provider"
         ? `Provider selected ${trace.selectedCount} cards from ${trace.candidateCount} candidates`
         : `Deterministic: ${trace.selectedCount} selected, ${trace.rejectedCount} rejected`,

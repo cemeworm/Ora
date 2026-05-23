@@ -261,7 +261,7 @@ describe("Memory Evaluation Harness", () => {
 
   // Scenario 5: Contradiction Handling
   describe("Scenario 5: Contradiction Handling", () => {
-    it("wiki: detects contradictions between opposing claims", () => {
+    it("wiki: records contradiction review questions for opposing claims", () => {
       const wiki = new MemoryWikiStore(tmpDir);
       const profile = buildEvalProfile([
         { id: "fact_npm", content: "User always prefers npm for package management.", category: "preference", confidence: 0.85 },
@@ -269,10 +269,11 @@ describe("Memory Evaluation Harness", () => {
       ]);
 
       const page = wiki.compileFromProfile(profile, "user");
-      expect(page.contradictions.length).toBeGreaterThan(0);
+      expect(page.contradictions).toHaveLength(0);
+      expect(page.openQuestions.length).toBeGreaterThan(0);
     });
 
-    it("dreaming: contradicted candidates stay in review", () => {
+    it("dreaming: potential contradiction candidates stay in review without auto-verdict", () => {
       const journal = new ShortTermMemoryJournal(tmpDir);
       journal.append({ runId: "r1", sessionId: "s1", type: "memory_intent", content: "User prefers npm for package management.", category: "preference", confidence: 0.8 });
       journal.append({ runId: "r1", sessionId: "s1", type: "memory_intent", content: "User prefers npm for package management.", category: "preference", confidence: 0.8 });
@@ -281,9 +282,8 @@ describe("Memory Evaluation Harness", () => {
       const dreaming = new MemoryDreamingService(journal, undefined, 0.5);
       const preview = dreaming.deepPhase();
 
-      // Contradicted candidates should be flagged
-      const allFlagged = [...preview.recommendContradicted, ...preview.recommendPromote];
-      expect(allFlagged.length).toBeGreaterThan(0);
+      expect(preview.recommendContradicted).toHaveLength(0);
+      expect(preview.recommendHold.length + preview.recommendPromote.length).toBeGreaterThan(0);
     });
   });
 

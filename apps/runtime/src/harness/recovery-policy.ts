@@ -5,6 +5,8 @@ import {
   type RecoveryErrorType,
   type RecoveryRule,
 } from "@cemeworm/shared";
+import { ProviderCircuitOpenError } from "../providers/provider-health.js";
+import { ProviderFetchError } from "../providers/provider-utils.js";
 import { isSpawnContractViolationError } from "./runtime-interrupts.js";
 
 export interface RecoveryIncident {
@@ -163,13 +165,16 @@ export function classifyRecoveryError(error: unknown, context: {
     context.surface === "transport" ||
     context.surface === "sidecar"
   ) {
-    if (matchesAny(lowered, ["no project folder", "eacces", "eperm", "permission denied"])) {
+    const structuredProviderType = classifyStructuredProviderError(error);
+    if (structuredProviderType) {
+      errorType = structuredProviderType;
+    } else if (matchesAny(lowered, ["no project folder", "eacces", "eperm", "permission denied"])) {
       errorType = "env_unavailable";
     } else if (matchesAny(lowered, ["quota", "billing", "credit", "payment"])) {
       errorType = "provider_quota";
-    } else if (matchesAny(lowered, ["unknown provider"])) {
+    } else if (matchesAny(lowered, ["unknown provider", "requires a baseurl", "invalid url"])) {
       errorType = "provider_config_error";
-    } else if (matchesAny(lowered, ["api key", "authentication", "unauthorized", "forbidden", "access denied", "permission", "requires a baseurl"])) {
+    } else if (matchesAny(lowered, ["api key", "authentication", "unauthorized", "forbidden", "access denied"])) {
       errorType = "provider_auth";
     } else if (matchesAny(lowered, ["invalid_request_error", "reasoning_content", "bad request"])) {
       errorType = "model_output_invalid";
@@ -181,9 +186,10 @@ export function classifyRecoveryError(error: unknown, context: {
       errorType = "provider_transient";
     }
   } else if (context.surface === "tool") {
+    const code = classifyCode(errorCode(error));
     if (isToolPolicyDenied(lowered)) {
       errorType = "tool_policy_denied";
-    } else if (isToolEnvironmentUnavailable(lowered)) {
+    } else if (code === "env_unavailable" || isToolEnvironmentUnavailable(lowered)) {
       errorType = "env_unavailable";
     } else {
       errorType = "tool_error";
@@ -262,6 +268,79 @@ function isToolEnvironmentUnavailable(lowered: string): boolean {
     "missing runtime-sidecar assets",
     "missing frontend assets",
   ]);
+}
+
+function classifyStructuredProviderError(error: unknown): RecoveryErrorType | undefined {
+  if (isProviderCircuitOpenError(error)) {
+    return "provider_busy";
+  }
+  return classifyCode(errorCode(error));
+}
+
+function classifyCode(code: string | undefined): RecoveryErrorType | undefined {
+  if (!code) {
+    return undefined;
+  }
+  const normalized = code.trim().toUpperCase();
+  if (!normalized) {
+    return undefined;
+  }
+  if (normalized === "401" || normalized === "403") {
+    return "provider_auth";
+  }
+  if (normalized === "402") {
+    return "provider_quota";
+  }
+  if (normalized === "408" || normalized === "409" || normalized === "425" || normalized === "429"
+    || normalized === "500" || normalized === "502" || normalized === "503" || normalized === "504") {
+    return normalized === "429" ? "provider_busy" : "provider_transient";
+  }
+  if (normalized === "EACCES" || normalized === "EPERM" || normalized === "ENOENT") {
+    return "env_unavailable";
+  }
+  if (normalized === "ERR_INVALID_URL" || normalized === "ERR_INVALID_ARG_TYPE" || normalized === "ERR_INVALID_ARG_VALUE") {
+    return "provider_config_error";
+  }
+  if (
+    normalized === "ECONNRESET"
+    || normalized === "ETIMEDOUT"
+    || normalized === "ECONNREFUSED"
+    || normalized === "EHOSTUNREACH"
+    || normalized === "ENETUNREACH"
+    || normalized === "EAI_AGAIN"
+    || normalized === "ENOTFOUND"
+    || normalized === "ABORT_ERR"
+    || normalized === "UND_ERR_CONNECT_TIMEOUT"
+    || normalized === "UND_ERR_HEADERS_TIMEOUT"
+    || normalized === "UND_ERR_BODY_TIMEOUT"
+  ) {
+    return "provider_transient";
+  }
+  return undefined;
+}
+
+function isProviderCircuitOpenError(error: unknown): error is ProviderCircuitOpenError {
+  return error instanceof ProviderCircuitOpenError
+    || (typeof error === "object" && error !== null
+      && (error as { name?: unknown }).name === "ProviderCircuitOpenError"
+      && typeof (error as { providerId?: unknown }).providerId === "string");
+}
+
+function errorCode(error: unknown): string | undefined {
+  if (!error || typeof error !== "object") {
+    return undefined;
+  }
+  const direct = (error as { code?: unknown }).code;
+  if (typeof direct === "string" && direct.trim()) {
+    return direct.trim();
+  }
+  const nestedCause = error instanceof ProviderFetchError
+    ? error.cause
+    : (error as { cause?: unknown }).cause;
+  if (nestedCause) {
+    return errorCode(nestedCause);
+  }
+  return undefined;
 }
 
 function recoveryAttemptKey(incident: RecoveryIncident) {

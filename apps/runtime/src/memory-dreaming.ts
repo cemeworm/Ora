@@ -90,10 +90,10 @@ export class MemoryDreamingService {
 
     for (const candidate of scored) {
       const score = this.computePromotionScore(candidate);
-      const isContradicted = this.hasContradictions(candidate);
+      const hasPotentialContradiction = this.hasPotentialContradiction(candidate);
 
-      if (isContradicted) {
-        recommendContradicted.push({ ...candidate, recencyScore: score });
+      if (hasPotentialContradiction) {
+        recommendHold.push({ ...candidate, recencyScore: score });
       } else if (score >= this.threshold) {
         recommendPromote.push({ ...candidate, recencyScore: score });
       } else {
@@ -165,7 +165,7 @@ export class MemoryDreamingService {
     return span >= MULTI_DAY_MS;
   }
 
-  private hasContradictions(candidate: DreamingCandidate): boolean {
+  private hasPotentialContradiction(candidate: DreamingCandidate): boolean {
     // Check if signals contain contradictory corrections
     const corrections = candidate.signals.filter((s) => s.type === "correction");
     const preferences = candidate.signals.filter((s) => s.type === "memory_intent" && s.category === "preference");

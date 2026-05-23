@@ -119,7 +119,7 @@ describe("admitWithProvider", () => {
     expect(result.cards).toHaveLength(0);
   });
 
-  it("falls back to deterministic when provider errors", async () => {
+  it("keeps provider fallback observational-only when provider errors", async () => {
     const candidates = [
       makeCandidate({ id: "fact_pnpm", content: "User prefers pnpm over npm.", category: "preference" }),
     ];
@@ -137,9 +137,12 @@ describe("admitWithProvider", () => {
 
     expect(result.providerUsed).toBe(false);
     expect(result.decision.mode).toBe("provider_fallback");
+    expect(result.decision.status).toBe("NONE");
+    expect(result.cards).toHaveLength(0);
+    expect(result.decision.selectedIds).toEqual([]);
   });
 
-  it("falls back when provider times out", async () => {
+  it("keeps provider fallback observational-only when provider times out", async () => {
     const candidates = [
       makeCandidate({ id: "fact_slow", content: "User prefers slow responses.", category: "preference" }),
     ];
@@ -168,6 +171,8 @@ describe("admitWithProvider", () => {
 
     expect(result.providerUsed).toBe(false);
     expect(result.decision.mode).toBe("provider_fallback");
+    expect(result.decision.status).toBe("NONE");
+    expect(result.cards).toHaveLength(0);
   });
 
   it("returns empty immediately for no candidates", async () => {

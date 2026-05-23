@@ -64,17 +64,19 @@ describe("MemoryWikiStore", () => {
     expect(page.sourceRunIds).toContain("run_fact_a");
   });
 
-  it("detects contradictions between opposing claims", () => {
+  it("records contradiction review questions instead of auto-marking opposing claims as contradictions", () => {
     const profile = testProfile([
       { id: "fact_1", content: "User always prefers dark theme.", category: "preference", confidence: 0.85 },
       { id: "fact_2", content: "User never wants dark theme for code review.", category: "preference", confidence: 0.8 },
     ]);
 
     const page = wiki.compileFromProfile(profile, "user");
-    expect(page.contradictions.length).toBeGreaterThan(0);
+    expect(page.contradictions).toHaveLength(0);
+    expect(page.openQuestions.length).toBeGreaterThan(0);
+    expect(page.openQuestions[0]?.question).toContain("contradict");
   });
 
-  it("preserves existing contradictions across recompilation", () => {
+  it("preserves contradiction review questions across recompilation", () => {
     const profile = testProfile([
       { id: "fact_1", content: "User always prefers dark theme.", category: "preference", confidence: 0.85 },
       { id: "fact_2", content: "User never wants dark theme.", category: "preference", confidence: 0.8 },
@@ -83,8 +85,29 @@ describe("MemoryWikiStore", () => {
     wiki.compileFromProfile(profile, "user");
     const page2 = wiki.compileFromProfile(profile, "user");
 
-    // Contradiction should persist
-    expect(page2.contradictions.length).toBeGreaterThan(0);
+    expect(page2.openQuestions.length).toBeGreaterThan(0);
+  });
+
+  it("caps contradiction review question generation for dense conflicting claims", () => {
+    const facts = [
+      ...Array.from({ length: 8 }, (_, index) => ({
+        id: `fact_always_${index + 1}`,
+        content: `User always prefers topic ${index + 1} for deep work.`,
+        category: "preference",
+        confidence: 0.99 - index * 0.01,
+      })),
+      ...Array.from({ length: 8 }, (_, index) => ({
+        id: `fact_never_${index + 1}`,
+        content: `User never prefers topic ${index + 1} for deep work.`,
+        category: "preference",
+        confidence: 0.91 - index * 0.01,
+      })),
+    ];
+
+    const page = wiki.compileFromProfile(testProfile(facts), "user");
+
+    expect(page.contradictions).toHaveLength(0);
+    expect(page.openQuestions).toHaveLength(12);
   });
 
   it("searches wiki pages by keyword", () => {

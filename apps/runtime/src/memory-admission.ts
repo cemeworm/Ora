@@ -5,7 +5,6 @@ import type {
   ActiveMemoryContext,
   ActiveMemoryAdmissionDecision,
 } from "@cemeworm/shared";
-import { admitActiveMemoryCandidates } from "./active-memory.js";
 import type { MemoryModelInvoker } from "./memory.js";
 
 // === Provider Admission Types ===
@@ -132,10 +131,22 @@ export async function admitWithProvider(
   const start = Date.now();
 
   if (candidates.length === 0) {
-    const deterministic = admitActiveMemoryCandidates([]);
     return {
       cards: [],
-      decision: deterministic.decision,
+      decision: {
+        status: "NONE",
+        mode: "provider_fallback",
+        reason: "No long-term memory candidates were available.",
+        candidateIds: [],
+        selectedIds: [],
+        rejectedIds: [],
+        budget: {
+          maxCandidates: 1,
+          maxChars: request.maxSummaryChars,
+          renderedChars: 0,
+        },
+        warnings: [],
+      },
       providerUsed: false,
       elapsedMs: Date.now() - start,
     };
@@ -193,20 +204,36 @@ export async function admitWithProvider(
       elapsedMs,
     };
   } catch {
-    // Fallback to deterministic admission
-    // Note: timeout failures do NOT update EWMA to avoid polluting the estimate
-    const deterministic = admitActiveMemoryCandidates(candidates);
+    // Provider failure must not promote lexical overlap into authoritative admission.
+    // Keep the candidate list observable, but admit no cards.
     return {
-      cards: deterministic.cards,
-      decision: {
-        ...deterministic.decision,
-        mode: "provider_fallback",
-        reason: `Provider admission failed, fell back to deterministic. ${deterministic.decision.reason}`,
-      },
+      cards: [],
+      decision: emptyProviderFallbackDecision(candidates, request, "Provider admission failed; no memory cards were admitted."),
       providerUsed: false,
       elapsedMs: Date.now() - start,
     };
   }
+}
+
+export function emptyProviderFallbackDecision(
+  candidates: ActiveMemoryCandidate[],
+  request: Pick<ProviderAdmissionRequest, "maxSummaryChars">,
+  reason: string,
+): ActiveMemoryAdmissionDecision {
+  return {
+    status: "NONE",
+    mode: "provider_fallback",
+    reason,
+    candidateIds: candidates.map((candidate) => candidate.id),
+    selectedIds: [],
+    rejectedIds: candidates.map((candidate) => candidate.id),
+    budget: {
+      maxCandidates: candidates.length > 0 ? candidates.length : 1,
+      maxChars: request.maxSummaryChars,
+      renderedChars: 0,
+    },
+    warnings: ["Provider-backed memory admission is unavailable; candidate recall remains observational only."],
+  };
 }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {

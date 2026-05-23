@@ -22,12 +22,12 @@ function searchToolCall(status: OraToolCallEnvelope["status"]): OraToolCallEnvel
 }
 
 describe("node runtime loop policy helpers", () => {
-  it("blocks stale final answers for freshness-sensitive prompts when no search evidence exists", () => {
+  it("blocks stale final answers only when structured freshness evidence requires search", () => {
     expect(shouldBlockFinalForFreshnessPolicy({
       enabled: true,
       prompt: "React 19 有哪些新特性",
       toolCalls: [],
-      currentTaskState: undefined,
+      currentTaskState: { needsFreshnessEvidence: true },
       toolCallCount: 0,
       clarificationCount: 0,
       hasUnresolvedPlanItems: false,
@@ -41,7 +41,7 @@ describe("node runtime loop policy helpers", () => {
       enabled: true,
       prompt: "React 19 有哪些新特性",
       toolCalls: [searchToolCall("succeeded")],
-      currentTaskState: undefined,
+      currentTaskState: { needsFreshnessEvidence: true },
       toolCallCount: 1,
       clarificationCount: 0,
       hasUnresolvedPlanItems: false,
@@ -64,7 +64,7 @@ describe("node runtime loop policy helpers", () => {
     })).toBe(false);
   });
 
-  it("does not block implementation-oriented prompts even if they mention freshness-sensitive topics", () => {
+  it("does not block when freshness evidence is missing even if the prompt looks freshness-sensitive", () => {
     expect(shouldBlockFinalForFreshnessPolicy({
       enabled: true,
       prompt: "请基于 React 19 新特性改造 src/auth.ts",
@@ -78,7 +78,7 @@ describe("node runtime loop policy helpers", () => {
     })).toBe(false);
   });
 
-  it("does not block explicit artifact review prompts that mention freshness-sensitive topics", () => {
+  it("does not block explicit artifact review prompts without structured freshness evidence", () => {
     expect(shouldBlockFinalForFreshnessPolicy({
       enabled: true,
       prompt: "帮我 review apps/runtime/src/harness/causal-policy-router.ts，顺便看看 React 19 新特性会不会影响这里的逻辑",
@@ -120,7 +120,7 @@ describe("node runtime loop policy helpers", () => {
     })).toBe(true);
   });
 
-  it("falls back to keywords when needsFreshnessEvidence is undefined", () => {
+  it("does not fall back to prompt keywords when needsFreshnessEvidence is undefined", () => {
     expect(shouldBlockFinalForFreshnessPolicy({
       enabled: true,
       prompt: "React 19 有哪些新特性",
@@ -131,7 +131,7 @@ describe("node runtime loop policy helpers", () => {
       hasUnresolvedPlanItems: false,
       responseText: "React 19 有很多新特性。",
       routerVersion: "v2",
-    })).toBe(true);
+    })).toBe(false);
   });
 
   it("blocks non-read tools when context probe policy requires reading the referenced artifact first", () => {
@@ -244,7 +244,7 @@ describe("node runtime loop policy helpers", () => {
     })).toBe(false);
   });
 
-  it("does not block prompts without artifact handle signals", () => {
+  it("blocks non-read tools whenever the structured policy already recommends read_context", () => {
     expect(shouldBlockToolForContextProbePolicy({
       enabled: true,
       prompt: "如何优化React性能？",
@@ -252,7 +252,7 @@ describe("node runtime loop policy helpers", () => {
       proposedToolId: "web.search",
       recommendedAction: "read_context",
       routerVersion: "v2",
-    })).toBe(false);
+    })).toBe(true);
   });
 
   it("does not block when read-context evidence already exists as proposed", () => {

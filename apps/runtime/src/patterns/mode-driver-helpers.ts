@@ -389,20 +389,9 @@ export function parseAgentTeamReviewVerdict(output: unknown): AgentTeamReviewVer
     }
   }
 
-  if (/(needs[_\-\s]?fix|needs[_\-\s]?revision|needs[_\-\s]?rework|changes[_\-\s]?requested|需返工|不通过|阻塞|失败)/i.test(text)) {
-    const verdict = /(阻塞|blocked)/i.test(text) ? "blocked" : "needs_fix";
-    const reworkNodeIds = parseReworkLine(text);
-    const acceptedArtifactIds = parseAcceptedLine(text);
-    return { verdict, issues: extractIssuesFromText(text), source: "heuristic", reworkNodeIds, acceptedArtifactIds };
-  }
-
-  if (/(^|\n)\s*(pass|approved|通过)\b/i.test(text)) {
-    return { verdict: "pass", issues: [], source: "heuristic" };
-  }
-
   return {
     verdict: "blocked",
-    issues: ["Reviewer verdict missing. Expected `Verdict: PASS | NEEDS_FIX | BLOCKED`."],
+    issues: ["Reviewer verdict missing. Expected structured JSON or `Verdict: PASS | NEEDS_FIX | BLOCKED`."],
     source: "missing",
   };
 }
@@ -474,37 +463,10 @@ export function parseCodeDevelopmentDebugResolution(output: unknown): CodeDevelo
     }
   }
 
-  if (/(no further debugging is needed|no additional fix path is required|无需调试|无需进一步调试|no remaining issue|已解决)/i.test(text)) {
-    return {
-      status: "clear",
-      source: "heuristic",
-      rootCauses: [],
-    };
-  }
-
-  if (/(blocked|阻塞|卡住)/i.test(text)) {
-    return {
-      status: "blocked",
-      source: "heuristic",
-      rootCauses: extractIssuesFromText(text),
-    };
-  }
-
-  if (/(needs[_\-\s]?fix|needs[_\-\s]?rework|rework|需返工|需修复|根本原因|最小修复路径)/i.test(text)) {
-    const reworkNodeIds = parseReworkLine(text)
-      ?.filter((nodeId): nodeId is "build" | "review" => nodeId === "build" || nodeId === "review");
-    return {
-      status: "needs_fix",
-      source: "heuristic",
-      rootCauses: extractIssuesFromText(text),
-      requiredReworkNodeIds: reworkNodeIds?.length ? reworkNodeIds : ["build"],
-    };
-  }
-
   return {
-    status: "clear",
-    source: "heuristic",
-    rootCauses: [],
+    status: "blocked",
+    source: "missing",
+    rootCauses: ["Debugger resolution missing. Expected structured JSON or `Status: CLEAR | NEEDS_FIX | BLOCKED`."],
   };
 }
 

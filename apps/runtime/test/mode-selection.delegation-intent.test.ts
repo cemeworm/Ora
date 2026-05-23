@@ -34,16 +34,21 @@ describe("resolveModeSelection delegation intent", () => {
     }
   });
 
-  it("keeps single_agent mode but derives a degraded collaboration requirement for explicit Agent Teams requests", async () => {
+  it("keeps single_agent mode but derives a degraded collaboration requirement for structured Agent Teams requests", async () => {
     globalThis.fetch = (() => {
-      throw new Error("Explicit Agent Teams requests should be handled without provider classification.");
+      throw new Error("Structured Agent Teams requests should be handled without provider classification.");
     }) as typeof fetch;
 
     const { modeSpec, fullConfig } = await resolveModeSelection(
       baseConfig(),
       {
-        prompt: "你通过 Agent team 的方式帮我研究一下 minimax 这家公司的近况",
-        context: {},
+        prompt: "帮我研究一下 minimax 这家公司的近况",
+        context: {
+          modeRequest: {
+            requestedModeId: "agent_teams",
+            reason: "The user selected Agent Teams explicitly in structured turn context.",
+          },
+        },
         createdAt: Date.now(),
       },
       undefined,
@@ -55,14 +60,13 @@ describe("resolveModeSelection delegation intent", () => {
     expect(fullConfig.metadata.delegationIntent).toMatchObject({
       requestedByUser: true,
       preference: "prefer",
-      source: "explicit_team_collab",
     });
     expect(fullConfig.metadata.modeRequest).toMatchObject({
       requestedModeId: "agent_teams",
-      source: "rule_based",
+      source: "structured_input",
     });
     expect(fullConfig.metadata.delegationClassifier).toMatchObject({
-      status: "rule_based",
+      status: "structured_input",
       preference: "prefer",
       confidence: 1,
     });
@@ -101,10 +105,13 @@ describe("resolveModeSelection delegation intent", () => {
     expect(fullConfig.toolIds).not.toContain("skills.create");
   });
 
-  it("records rule-based none intent when the user explicitly asks to avoid sub-agents", async () => {
-    globalThis.fetch = (() => {
-      throw new Error("Explicit no-delegation requests should be handled without provider classification.");
-    }) as typeof fetch;
+  it("records classifier none intent when the user explicitly asks to avoid sub-agents", async () => {
+    globalThis.fetch = mockClassifierFetch(JSON.stringify({
+      requestedByUser: true,
+      preference: "none",
+      confidence: 0.97,
+      reason: "The user explicitly asked the root agent not to delegate.",
+    }));
 
     const { fullConfig } = await resolveModeSelection(
       baseConfig(),
@@ -120,12 +127,12 @@ describe("resolveModeSelection delegation intent", () => {
     expect(fullConfig.metadata.delegationIntent).toMatchObject({
       requestedByUser: true,
       preference: "none",
-      source: "explicit_no_delegation",
+      source: "classifier",
     });
     expect(fullConfig.metadata.delegationClassifier).toMatchObject({
-      status: "rule_based",
+      status: "selected",
       preference: "none",
-      confidence: 1,
+      confidence: 0.97,
     });
   });
 
@@ -179,7 +186,7 @@ describe("resolveModeSelection delegation intent", () => {
     );
   });
 
-  it("routes auto mode directly to agent_teams for explicit Agent Teams requests", async () => {
+  it("routes auto mode directly to agent_teams when the classifier returns a structured mode request", async () => {
     let routerPrompt: { recentMessages?: Array<{ role: string; content: string }> } | undefined;
     let delegationPrompt: { recentMessages?: Array<{ role: string; content: string }> } | undefined;
     globalThis.fetch = (async (_input, init) => {
@@ -208,8 +215,9 @@ describe("resolveModeSelection delegation intent", () => {
           choices: [{ message: { role: "assistant", content: JSON.stringify({
             requestedByUser: true,
             preference: "prefer",
+            requestedModeId: "agent_teams",
             confidence: 0.89,
-            reason: "The user explicitly asked for coordinated team work.",
+            reason: "The user explicitly requested Agent Teams for this turn.",
           }) } }],
         }), { status: 200, headers: { "content-type": "application/json" } });
       }
@@ -283,7 +291,11 @@ describe("resolveModeSelection delegation intent", () => {
     expect(fullConfig.metadata.delegationIntent).toMatchObject({
       requestedByUser: true,
       preference: "prefer",
-      source: "explicit_team_collab",
+      source: "classifier",
+    });
+    expect(fullConfig.metadata.modeRequest).toMatchObject({
+      requestedModeId: "agent_teams",
+      source: "classifier",
     });
     expect(fullConfig.effectiveStrategy).toMatchObject({
       sourceModeId: "agent_teams",
@@ -294,7 +306,9 @@ describe("resolveModeSelection delegation intent", () => {
       requestedModeId: "agent_teams",
     });
     expect(routerPrompt).toBeUndefined();
-    expect(delegationPrompt).toBeUndefined();
+    expect(delegationPrompt).toMatchObject({
+      availableModeIds: expect.arrayContaining(["agent_teams", SINGLE_AGENT_MODE_ID]),
+    });
   });
 
   it("leaves metadata.taskIntent unset when auto router does not return taskIntent", async () => {

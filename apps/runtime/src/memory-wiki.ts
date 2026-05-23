@@ -10,6 +10,9 @@ import {
   type LongTermMemoryProfile,
 } from "@cemeworm/shared";
 
+const MAX_CONTRADICTION_REVIEW_CLAIMS = 24;
+const MAX_NEW_CONTRADICTION_REVIEW_QUESTIONS = 12;
+
 function hashId(value: string): string {
   let hash = 2166136261;
   for (let index = 0; index < value.length; index += 1) {
@@ -82,8 +85,13 @@ export class MemoryWikiStore {
     const existing = this.getPage(pageId);
 
     const claims = compileClaims(profile, existing?.claims ?? []);
-    const contradictions = detectContradictions(claims, existing?.contradictions ?? []);
-    const openQuestions = existing?.openQuestions ?? [];
+    const contradictions = existing?.contradictions ?? [];
+    const openQuestions = buildContradictionReviewQuestions(
+      claims,
+      contradictions,
+      existing?.openQuestions ?? [],
+      now,
+    );
 
     const digest = buildDigest(claims, contradictions, openQuestions);
 
@@ -195,32 +203,54 @@ function compileClaims(profile: LongTermMemoryProfile, existingClaims: WikiClaim
   return claims;
 }
 
-function detectContradictions(claims: WikiClaim[], existingContradictions: WikiContradiction[]): WikiContradiction[] {
-  const results = [...existingContradictions];
-  const existingPairs = new Set(results.map((c) => `${c.claimAId}:${c.claimBId}`));
-
-  for (let i = 0; i < claims.length; i++) {
-    for (let j = i + 1; j < claims.length; j++) {
-      const claimA = claims[i]!;
-      const claimB = claims[j]!;
+function buildContradictionReviewQuestions(
+  claims: WikiClaim[],
+  contradictions: WikiContradiction[],
+  existingOpenQuestions: WikiOpenQuestion[],
+  now: string,
+): WikiOpenQuestion[] {
+  const results = [...existingOpenQuestions];
+  const candidateClaims = [...claims]
+    .sort((a, b) => b.confidence - a.confidence)
+    .slice(0, MAX_CONTRADICTION_REVIEW_CLAIMS);
+  const existingContradictionPairs = new Set(contradictions.flatMap((item) => [
+    `${item.claimAId}:${item.claimBId}`,
+    `${item.claimBId}:${item.claimAId}`,
+  ]));
+  const existingQuestionIds = new Set(results.map((item) => item.id));
+  let addedQuestions = 0;
+  for (let i = 0; i < candidateClaims.length; i++) {
+    for (let j = i + 1; j < candidateClaims.length; j++) {
+      if (addedQuestions >= MAX_NEW_CONTRADICTION_REVIEW_QUESTIONS) {
+        return results;
+      }
+      const claimA = candidateClaims[i]!;
+      const claimB = candidateClaims[j]!;
       const pairKey = `${claimA.id}:${claimB.id}`;
-      const reverseKey = `${claimB.id}:${claimA.id}`;
-
-      if (existingPairs.has(pairKey) || existingPairs.has(reverseKey)) continue;
-      if (!isContradictory(claimA.statement, claimB.statement)) continue;
-
-      existingPairs.add(pairKey);
+      if (existingContradictionPairs.has(pairKey) || existingContradictionPairs.has(`${claimB.id}:${claimA.id}`)) {
+        continue;
+      }
+      if (!isPotentialContradictionPair(claimA.statement, claimB.statement)) {
+        continue;
+      }
+      const questionId = `possible_contradiction_${hashId(pairKey)}`;
+      if (existingQuestionIds.has(questionId)) {
+        continue;
+      }
+      existingQuestionIds.add(questionId);
       results.push({
-        claimAId: claimA.id,
-        claimBId: claimB.id,
-        description: `"${claimA.statement.slice(0, 100)}" vs "${claimB.statement.slice(0, 100)}"`,
+        id: questionId,
+        question: "Review whether two memory claims contradict each other before promoting either as durable truth.",
+        context: `"${claimA.statement.slice(0, 100)}" vs "${claimB.statement.slice(0, 100)}"`,
+        createdAt: now,
       });
+      addedQuestions += 1;
     }
   }
   return results;
 }
 
-function isContradictory(a: string, b: string): boolean {
+function isPotentialContradictionPair(a: string, b: string): boolean {
   const lowerA = a.toLowerCase();
   const lowerB = b.toLowerCase();
 

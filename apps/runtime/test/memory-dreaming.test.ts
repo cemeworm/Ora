@@ -61,15 +61,15 @@ describe("MemoryDreamingService", () => {
     expect(preview.recommendPromote[0]?.signalCount).toBeGreaterThanOrEqual(3);
   });
 
-  it("flags contradicted candidates separately from promoted", () => {
+  it("keeps potential contradiction candidates in hold instead of auto-marking them as contradicted", () => {
     journal.append({ runId: "r1", sessionId: "s1", type: "memory_intent", content: "User prefers npm for package management.", category: "preference", confidence: 0.8 });
     journal.append({ runId: "r2", sessionId: "s1", type: "memory_intent", content: "User prefers npm for package management.", category: "preference", confidence: 0.8 });
     journal.append({ runId: "r3", sessionId: "s2", type: "correction", content: "User corrected: prefer pnpm over npm for package management.", category: "correction", confidence: 0.95 });
 
     const preview = dreaming.deepPhase();
 
-    // The correction should be detected
-    expect(preview.recommendContradicted.length).toBeGreaterThanOrEqual(0);
+    expect(preview.recommendContradicted).toHaveLength(0);
+    expect(preview.recommendHold.length).toBeGreaterThan(0);
   });
 
   it("produces stable and reproducible preview", () => {

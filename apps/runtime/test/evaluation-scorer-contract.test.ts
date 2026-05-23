@@ -180,6 +180,14 @@ describe.sequential("evaluation scorer contract", () => {
         score: 0.92,
         passed: true,
       });
+      expect(detail.attempts[0]?.metricScores.find((metric) => metric.metricId === "task_success_rate")).toMatchObject({
+        passed: false,
+        details: expect.objectContaining({
+          source: "heuristic_proxy",
+          authoritative: false,
+        }),
+        failureTags: expect.arrayContaining(["heuristic_proxy_non_authoritative"]),
+      });
       expect(detail.attempts[0]?.metricScores.find((metric) => metric.metricId === "llm_judge_score")).toMatchObject({
         score: 0.92,
         passed: true,
@@ -339,11 +347,13 @@ describe.sequential("evaluation scorer contract", () => {
         details: expect.objectContaining({ judgeMetricSource: "auto_llm_judge" }),
       });
       expect(detail.attempts[0]?.metricScores.find((metric) => metric.metricId === "llm_judge_score")).toMatchObject({
+        passed: false,
         details: expect.objectContaining({
           source: "heuristic_proxy",
+          authoritative: false,
           judgeFallback: "llm_judge_failed",
         }),
-        failureTags: expect.arrayContaining(["judge_failed"]),
+        failureTags: expect.arrayContaining(["judge_failed", "heuristic_proxy_non_authoritative"]),
       });
     } finally {
       globalThis.fetch = previousFetch;

@@ -143,4 +143,57 @@ describe("evaluation store dual reporting", () => {
     expect(markdown).toContain("Legacy Oracle Result");
     expect(markdown).toContain("Value Aligned Result");
   });
+
+  it("preserves run trace ids for timed out attempts and aborts the executor", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ora-eval-timeout-trace-"));
+    tempDirs.push(dir);
+    const store = new LocalEvaluationStore(dir);
+    const datasetDetail = store.importDataset({
+      name: "Timeout Trace Dataset",
+      content: JSON.stringify([{
+        id: "case-timeout-trace",
+        input: { prompt: "慢一点，但要有 trace。", context: {} },
+        expected: { text: "done" },
+        metadata: {},
+      }]),
+      sourceFormat: "json",
+    });
+
+    let aborted = false;
+    const runDetail = await store.startRun({
+      datasetId: datasetDetail.dataset.id,
+      profileId: "outcome",
+      configs: [{ id: "record", label: "Record", runConfig: { pattern: "solo_agent" } }],
+      repetitions: 1,
+      concurrency: 1,
+      timeoutMs: 20,
+    }, ({ input, signal, onStarted }) => {
+      onStarted?.({
+        runId: "run-timeout-trace-1",
+        sessionId: "session-timeout-trace-1",
+        turnIndex: 1,
+        status: "running",
+        pattern: "solo_agent",
+        startedAt: Date.now(),
+      });
+      return new Promise<StateSnapshot>((resolve) => {
+        signal?.addEventListener("abort", () => {
+          aborted = true;
+          resolve({
+            ...makeSnapshot(input.prompt, "cancelled-after-timeout"),
+            runId: "run-timeout-trace-1",
+            sessionId: "session-timeout-trace-1",
+            status: "cancelled",
+          });
+        }, { once: true });
+      });
+    });
+
+    expect(aborted).toBe(true);
+    expect(runDetail.run.failedAttempts).toBe(1);
+    expect(runDetail.attempts[0]?.status).toBe("timeout");
+    expect(runDetail.attempts[0]?.underlyingRunId).toBe("run-timeout-trace-1");
+    expect(runDetail.attempts[0]?.runtimeMs).toBe(20);
+    expect(runDetail.run.caseResults[0]?.traceRunIds).toEqual(["run-timeout-trace-1"]);
+  });
 });

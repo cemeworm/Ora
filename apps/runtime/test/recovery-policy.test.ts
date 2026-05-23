@@ -1,8 +1,48 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_MODE_RECOVERY_POLICY, getModePreset } from "@cemeworm/shared";
+import { ProviderCircuitOpenError } from "../src/providers/provider-health.js";
+import { ProviderFetchError } from "../src/providers/provider-utils.js";
 import { classifyRecoveryError, RecoveryCoordinator } from "../src/harness/recovery-policy.js";
 
 describe("recovery policy classification", () => {
+  it("prefers structured provider error codes before compat message buckets", () => {
+    const providerContext = {
+      providerId: "deepseek",
+      providerType: "openai_compatible",
+      modelId: "deepseek-chat",
+      operation: "chat_completions.completion",
+      endpoint: "https://api.deepseek.com/v1/chat/completions",
+    } as const;
+
+    expect(classifyRecoveryError(
+      new ProviderFetchError(providerContext, Object.assign(new Error("socket hang up"), { code: "ECONNRESET" })),
+      { surface: "provider", nodeId: "solo_agent", agentId: "solo_agent" },
+    )).toMatchObject({ errorType: "provider_transient" });
+
+    expect(classifyRecoveryError(
+      new ProviderFetchError(providerContext, Object.assign(new Error("permission denied"), { code: "EACCES" })),
+      { surface: "provider", nodeId: "solo_agent", agentId: "solo_agent" },
+    )).toMatchObject({ errorType: "env_unavailable" });
+
+    expect(classifyRecoveryError(
+      new ProviderFetchError(providerContext, Object.assign(new Error("bad base url"), { code: "ERR_INVALID_URL" })),
+      { surface: "provider", nodeId: "solo_agent", agentId: "solo_agent" },
+    )).toMatchObject({ errorType: "provider_config_error" });
+  });
+
+  it("classifies circuit-open provider errors as busy without relying on message parsing", () => {
+    const incident = classifyRecoveryError(
+      new ProviderCircuitOpenError("deepseek", 5000, "503 temporarily unavailable"),
+      { surface: "provider", nodeId: "solo_agent", agentId: "solo_agent" },
+    );
+
+    expect(incident).toMatchObject({
+      errorType: "provider_busy",
+      nodeId: "solo_agent",
+      agentId: "solo_agent",
+    });
+  });
+
   it("does not retry OpenAI-compatible request-shape errors as transient provider failures", () => {
     const incident = classifyRecoveryError(
       new Error("OpenAI-compatible provider deepseek failed with 400: {\"error\":{\"message\":\"The `reasoning_content` in the thinking mode must be passed back to the API.\",\"type\":\"invalid_request_error\"}}"),
@@ -36,6 +76,20 @@ describe("recovery policy classification", () => {
       new Error("Remote tool response is missing field 'items'."),
       { surface: "tool", nodeId: "orchestrator", agentId: "orchestrator", toolId: "mcp.call" },
     )).toMatchObject({ errorType: "tool_error" });
+
+    expect(classifyRecoveryError(
+      new Error("spawn failed", { cause: Object.assign(new Error("permission denied"), { code: "EACCES" }) }),
+      { surface: "tool", nodeId: "orchestrator", agentId: "orchestrator", toolId: "shell.exec" },
+    )).toMatchObject({ errorType: "env_unavailable" });
+  });
+
+  it("keeps compat provider fallback narrow enough to avoid generic permission misclassification", () => {
+    const incident = classifyRecoveryError(
+      new Error("Provider permission prompt is still pending user action."),
+      { surface: "provider", nodeId: "solo_agent", agentId: "solo_agent" },
+    );
+
+    expect(incident).toMatchObject({ errorType: "provider_transient" });
   });
 
   it("keeps real tool execution failures eligible for fallback artifacts", () => {

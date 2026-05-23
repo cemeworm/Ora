@@ -42,7 +42,7 @@
       "runConfig": {
         "pattern": "orchestrator_subagent",
         "modeSelection": "manual",
-        "modeId": "orchestrator_subagent",
+        "modeId": "dynamic_orchestrator",
         "providerId": "deepseek",
         "modelRef": "deepseek-v4-flash",
         "causalInterventionLevel": "record_only",
@@ -59,7 +59,7 @@
       "runConfig": {
         "pattern": "orchestrator_subagent",
         "modeSelection": "manual",
-        "modeId": "orchestrator_subagent",
+        "modeId": "dynamic_orchestrator",
         "providerId": "deepseek",
         "modelRef": "deepseek-v4-flash",
         "causalInterventionLevel": "record_only",
