@@ -40,6 +40,7 @@ writeFileSync(path.join(langfuseStageRoot, ".keep"), "\n");
 
 copyFileSync(nodeSource, stagedNodePath);
 chmodSync(stagedNodePath, 0o755);
+warmStagedNodeBinary();
 
 run(
   resolveEsbuildBinary(),
@@ -170,14 +171,28 @@ async function verifyPackagedSidecar() {
   const smokeDbPath = path.join(os.tmpdir(), `ora-runtime-sidecar-smoke-${process.pid}.db`);
   const SMOKE_TIMEOUT_MS = 15_000;
   try {
-    const output = await runSidecarSmokeWithTimeout(stagedNodePath, [bundledRuntimePath], {
+    // Keep the packaging smoke path lightweight: bootstrap enumerates the full
+    // runtime surface (skills, packages, providers, etc.) and can take much
+    // longer on the bundled single-file sidecar than the liveness check needs.
+    const output = await runSidecarSmokeWithTimeout(
+      stagedNodePath,
+      [bundledRuntimePath],
+      { jsonrpc: "2.0", id: 1, method: "runtime.health" },
+      {
       cwd: stageAppDir,
       env: { ...process.env, ORA_RUNTIME_STORE_DIR: smokeDbPath },
       timeoutMs: SMOKE_TIMEOUT_MS,
-    });
+      }
+    );
     const response = JSON.parse(output.trim());
-    if (response.jsonrpc !== "2.0" || response.id !== 1 || !response.result) {
-      throw new Error(`Unexpected runtime.bootstrap smoke response: ${output.trim()}`);
+    if (
+      response.jsonrpc !== "2.0" ||
+      response.id !== 1 ||
+      !response.result ||
+      response.result.ok !== true ||
+      response.result.service !== "ora-runtime"
+    ) {
+      throw new Error(`Unexpected runtime.health smoke response: ${output.trim()}`);
     }
   } finally {
     rmSync(smokeDbPath, { force: true });
@@ -186,9 +201,18 @@ async function verifyPackagedSidecar() {
   }
 }
 
-function runSidecarSmokeWithTimeout(command, args, options) {
+function warmStagedNodeBinary() {
+  // Newly copied Node binaries can incur a large one-time launch cost on macOS.
+  // Warm it once outside the smoke budget so the actual liveness probe stays stable.
+  execFileSync(stagedNodePath, ["-v"], {
+    cwd: repoRoot,
+    stdio: "ignore",
+  });
+}
+
+function runSidecarSmokeWithTimeout(command, args, requestPayload, options) {
   const { timeoutMs, ...spawnOptions } = options;
-  const request = `${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "runtime.bootstrap" })}\n`;
+  const request = `${JSON.stringify(requestPayload)}\n`;
 
   const child = spawn(command, args, {
     ...spawnOptions,
