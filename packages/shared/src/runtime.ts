@@ -1755,6 +1755,120 @@ export interface GateProjectionOptions {
   includeRawPending?: boolean;
 }
 
+export const AcceptedPlanResumePhaseSchema = z.enum([
+  "none",
+  "pending_decision",
+  "accepted_resuming",
+  "resumed_running",
+  "resume_terminal",
+]);
+export type AcceptedPlanResumePhase = z.infer<typeof AcceptedPlanResumePhaseSchema>;
+
+export interface AcceptedPlanResumeProjection {
+  phase: AcceptedPlanResumePhase;
+  sameRun: boolean;
+  decisionId?: string;
+  hasResumeStartEvidence: boolean;
+  hasTerminalEvidence: boolean;
+  blocksHydrationTerminalFallback: boolean;
+  evidence:
+    | "none"
+    | "pending_gate"
+    | "local_accept"
+    | "accepted_projection"
+    | "run_resumed_event"
+    | "running_snapshot"
+    | "terminal_event";
+}
+
+export function deriveAcceptedPlanResumeProjection(params: {
+  snapshot?: Pick<StateSnapshot, "runId" | "status" | "events" | "attention" | "planDecisions">;
+  currentRunId?: string;
+  pendingDecision?: { decisionId: string; status: "accepted" | "declined" } | undefined;
+  acceptedDecisionId?: string;
+}): AcceptedPlanResumeProjection {
+  const snapshot = params.snapshot;
+  const pendingDecision = params.pendingDecision;
+  const acceptedDecisionId = params.acceptedDecisionId;
+  const sameRun = Boolean(snapshot?.runId && params.currentRunId && snapshot.runId === params.currentRunId);
+  const pendingPlanDecision = snapshot?.planDecisions?.find((decision) => decision.status === "pending");
+  if (pendingPlanDecision) {
+    return {
+      phase: "pending_decision",
+      sameRun,
+      decisionId: pendingPlanDecision.id,
+      hasResumeStartEvidence: false,
+      hasTerminalEvidence: false,
+      blocksHydrationTerminalFallback: false,
+      evidence: "pending_gate",
+    };
+  }
+
+  const acceptedDecision = snapshot?.planDecisions?.find((decision) => decision.status === "accepted");
+  const matchedAcceptedDecisionId = pendingDecision?.status === "accepted"
+    ? pendingDecision.decisionId
+    : acceptedDecisionId;
+  const acceptedDecisionMatches = Boolean(
+    matchedAcceptedDecisionId &&
+    acceptedDecision &&
+    acceptedDecision.id === matchedAcceptedDecisionId,
+  );
+  const resumeStartFromEvents = Boolean(snapshot?.events?.some((event) => event.type === "run.resumed"));
+  const runningFromSnapshot = snapshot?.status === "running" || snapshot?.status === "queued";
+  const hasResumeStartEvidence = resumeStartFromEvents || Boolean(runningFromSnapshot);
+  const hasTerminalEventEvidence = Boolean(snapshot?.events?.some((event) =>
+    event.type === "run.done" ||
+    event.type === "run.failed" ||
+    event.type === "run.cancelled" ||
+    event.type === "recovery.exhausted"));
+  const terminalFromStatus = Boolean(snapshot && (snapshot.status === "succeeded" || snapshot.status === "failed" || snapshot.status === "cancelled"));
+  const hasTerminalEvidence = hasTerminalEventEvidence || terminalFromStatus;
+
+  if (acceptedDecisionMatches && sameRun) {
+    if (hasResumeStartEvidence && !hasTerminalEvidence) {
+      return {
+        phase: "resumed_running",
+        sameRun,
+        decisionId: matchedAcceptedDecisionId,
+        hasResumeStartEvidence: true,
+        hasTerminalEvidence: false,
+        blocksHydrationTerminalFallback: false,
+        evidence: resumeStartFromEvents ? "run_resumed_event" : "running_snapshot",
+      };
+    }
+    if (hasTerminalEvidence && hasResumeStartEvidence) {
+      return {
+        phase: "resume_terminal",
+        sameRun,
+        decisionId: matchedAcceptedDecisionId,
+        hasResumeStartEvidence: true,
+        hasTerminalEvidence: true,
+        blocksHydrationTerminalFallback: false,
+        evidence: "terminal_event",
+      };
+    }
+    return {
+      phase: "accepted_resuming",
+      sameRun,
+      decisionId: matchedAcceptedDecisionId,
+      hasResumeStartEvidence,
+      hasTerminalEvidence,
+      blocksHydrationTerminalFallback: true,
+      evidence: pendingDecision?.status === "accepted" ? "local_accept" : "accepted_projection",
+    };
+  }
+
+  return {
+    phase: "none",
+    sameRun,
+    decisionId: matchedAcceptedDecisionId,
+    hasResumeStartEvidence,
+    hasTerminalEvidence,
+    blocksHydrationTerminalFallback: false,
+    evidence: "none",
+  };
+}
+
 export function deriveSnapshotGateProjection(snapshot: StateSnapshot, options: GateProjectionOptions = {}): GateProjection | undefined {
   const attention = snapshot.attention;
   if (attention?.kind === "needs_clarification") {

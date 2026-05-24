@@ -16,6 +16,7 @@ export * from "./runtime-ledger.js";
 export * from "./runtime-timeline.js";
 export * from "./assistantOutputContract.js";
 export * from "./assistantTextProjection.js";
+export * from "./sessionForkProjection.js";
 export * from "./diagnostics.js";
 export * from "./comparison.js";
 export * from "./evaluation.js";
