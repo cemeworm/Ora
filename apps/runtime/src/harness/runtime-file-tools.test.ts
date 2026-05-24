@@ -465,4 +465,22 @@ describe("runtime file tools", () => {
       },
     });
   });
+
+  it("normalizes workspace-absolute file.read paths into workspace-relative reads", async () => {
+    const rootPath = tempWorkspace();
+    const absoluteFilePath = path.join(rootPath, "README.md");
+    fs.writeFileSync(absoluteFilePath, "absolute path read\n", "utf8");
+
+    const result = await executor(rootPath).executeWithMetadata({
+      tool: "file.read",
+      args: {
+        path: absoluteFilePath,
+      },
+    });
+
+    expect(result.output).toMatchObject({
+      path: "README.md",
+      content: "absolute path read\n",
+    });
+  });
 });
