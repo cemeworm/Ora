@@ -2098,6 +2098,146 @@ describe("desktop session view model", () => {
     expect(assistant?.content).not.toContain("<proposed_plan>");
   });
 
+  it("suppresses invalid multiple proposed_plan blocks from assistant body and plan card surfaces", () => {
+    const createdAt = 1_714_000_000_000;
+    const plan = [
+      "<proposed_plan>",
+      "## Runtime 计划",
+      "## 背景",
+      "说明上下文",
+      "## 实施步骤",
+      "1. 调整 shared helper。",
+      "2. 增加回归测试。",
+      "## 验证方式",
+      "- 运行测试",
+      "</proposed_plan>",
+    ].join("\n");
+    const output = `前置说明\n${plan}\n---\n${plan}\n结尾说明`;
+    const snapshot = {
+      runId: "run-invalid-multi-plan",
+      sessionId: "session-invalid-multi-plan",
+      turnIndex: 1,
+      status: "succeeded",
+      pattern: "orchestrator_subagent",
+      modeId: SINGLE_AGENT_MODE_ID,
+      input: { prompt: "给出方案", createdAt, context: {} },
+      config: {
+        modeId: SINGLE_AGENT_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["solo_agent"],
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: { taskIntent: "plan" },
+        deterministicSeed: "view-model-invalid-multi-plan",
+        skillIds: [],
+        toolIds: [],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      planList: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [{
+        id: "run-invalid-multi-plan:evt-0",
+        runId: "run-invalid-multi-plan",
+        seq: 0,
+        type: "message.delta",
+        createdAt,
+        pattern: "orchestrator_subagent",
+        payload: { role: "assistant", content: output },
+      }],
+      agentMessages: [],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 0, completed: 1, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      output: { text: output },
+      updatedAt: createdAt,
+    } as unknown as OraStateSnapshot;
+
+    const presented = derivePresentedAssistantTurnFromSnapshot(snapshot);
+
+    expect(presented.turn.hasProposedPlan).toBe(false);
+    expect(presented.turn.planContent).toBeUndefined();
+    expect(presented.content).not.toContain("<proposed_plan>");
+    expect(presented.content).not.toContain("## Runtime 计划");
+  });
+
+  it("suppresses stray proposed_plan closing tags from assistant body surfaces", () => {
+    const createdAt = 1_714_000_000_000;
+    const output = "前置说明\n</proposed_plan>\n结尾说明";
+    const snapshot = {
+      runId: "run-invalid-stray-close-plan",
+      sessionId: "session-invalid-stray-close-plan",
+      turnIndex: 1,
+      status: "succeeded",
+      pattern: "orchestrator_subagent",
+      modeId: SINGLE_AGENT_MODE_ID,
+      input: { prompt: "给出方案", createdAt, context: {} },
+      config: {
+        modeId: SINGLE_AGENT_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["solo_agent"],
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: { taskIntent: "plan" },
+        deterministicSeed: "view-model-invalid-stray-close-plan",
+        skillIds: [],
+        toolIds: [],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      planList: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [{
+        id: "run-invalid-stray-close-plan:evt-0",
+        runId: "run-invalid-stray-close-plan",
+        seq: 0,
+        type: "message.delta",
+        createdAt,
+        pattern: "orchestrator_subagent",
+        payload: { role: "assistant", content: output },
+      }],
+      agentMessages: [],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 0, completed: 1, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      output: { text: output },
+      updatedAt: createdAt,
+    } as unknown as OraStateSnapshot;
+
+    const presented = derivePresentedAssistantTurnFromSnapshot(snapshot);
+
+    expect(presented.turn.hasProposedPlan).toBe(false);
+    expect(presented.turn.planContent).toBeUndefined();
+    expect(presented.content).toBe("前置说明\n\n结尾说明");
+    expect(presented.content).not.toContain("</proposed_plan>");
+  });
+
   it("derives a streaming proposed plan from long deltas", () => {
     const createdAt = 1_714_000_000_000;
     const runId = "run-long-streaming-plan";

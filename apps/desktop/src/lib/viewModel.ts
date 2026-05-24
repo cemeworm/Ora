@@ -2806,7 +2806,8 @@ function outputTextFromSnapshot(
   if (typeof snapshot.output === "string" && snapshot.output.trim()) {
     const output = snapshot.output.trim();
     const resolved = resolvePublicAssistantText(output);
-    return resolved.isRejected ? undefined : output;
+    const parsed = parseProposedPlan(output);
+    return resolved.isRejected || parsed.status === "invalid" ? undefined : output;
   }
   if (
     isRecord(snapshot.output) &&
@@ -2815,7 +2816,8 @@ function outputTextFromSnapshot(
   ) {
     const output = snapshot.output.text.trim();
     const resolved = resolvePublicAssistantText(output);
-    return resolved.isRejected ? undefined : output;
+    const parsed = parseProposedPlan(output);
+    return resolved.isRejected || parsed.status === "invalid" ? undefined : output;
   }
   return undefined;
 }

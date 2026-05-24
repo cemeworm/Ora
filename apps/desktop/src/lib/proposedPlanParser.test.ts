@@ -64,6 +64,7 @@ describe("parseProposedPlan", () => {
 
   it("returns false when the plan content is too short", () => {
     const result = parseProposedPlan(`<proposed_plan>\n  \n</proposed_plan>`);
+    expect(result.status).toBe("invalid");
     expect(result.hasCompletePlan).toBe(false);
   });
 
@@ -99,5 +100,24 @@ describe("parseProposedPlan", () => {
 
     expect(second).toBe(first);
     expect(second.planContent).toContain("计划标题");
+  });
+
+  it("treats multiple complete proposed plans as invalid and strips them from display text", () => {
+    const result = parseProposedPlan(`前置说明\n${PLAN}\n---\n${PLAN}\n结尾说明`);
+    expect(result.status).toBe("invalid");
+    expect(result.hasCompletePlan).toBe(false);
+    expect(result.planContent).toBe("");
+    expect(result.displayText).toContain("前置说明");
+    expect(result.displayText).toContain("结尾说明");
+    expect(result.displayText).not.toContain("<proposed_plan>");
+  });
+
+  it("treats a stray closing tag as invalid and strips it from display text", () => {
+    const result = parseProposedPlan("前置说明\n</proposed_plan>\n结尾说明");
+    expect(result.status).toBe("invalid");
+    expect(result.hasStartedPlan).toBe(true);
+    expect(result.hasCompletePlan).toBe(false);
+    expect(result.planContent).toBe("");
+    expect(result.displayText).toBe("前置说明\n\n结尾说明");
   });
 });

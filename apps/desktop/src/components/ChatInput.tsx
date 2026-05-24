@@ -1527,6 +1527,20 @@ export function ChatInput({
     return true;
   }
 
+  function confirmSkillPickerSelection() {
+    if (
+      hiddenSkillCount > 0 &&
+      skillPickerIndex === visibleSkillOptions.length
+    ) {
+      setSkillListExpanded(true);
+      setSkillPickerIndex(0);
+      return;
+    }
+    if (visibleSkillOptions[skillPickerIndex]) {
+      selectSkill(visibleSkillOptions[skillPickerIndex]);
+    }
+  }
+
   function handleKeyDown(e: KeyboardEvent<HTMLDivElement>) {
     markPendingInputFromKeyDown(e);
     if (isComposingRef.current || e.nativeEvent.isComposing) {
@@ -1534,10 +1548,12 @@ export function ChatInput({
     }
     if (e.key === "Tab" && !e.shiftKey) {
       e.preventDefault();
+      if (openPicker === "skills") {
+        confirmSkillPickerSelection();
+      }
       return;
     }
     if (e.key === "Tab" && e.shiftKey) {
-      e.preventDefault();
       const nextIntent: TaskIntent =
         taskIntent === "chat" ? "plan"
         : taskIntent === "plan" ? "implement"
@@ -1599,17 +1615,7 @@ export function ChatInput({
     }
     if (e.key === "Enter" && openPicker === "skills") {
       e.preventDefault();
-      if (
-        hiddenSkillCount > 0 &&
-        skillPickerIndex === visibleSkillOptions.length
-      ) {
-        setSkillListExpanded(true);
-        setSkillPickerIndex(0);
-        return;
-      }
-      if (visibleSkillOptions[skillPickerIndex]) {
-        selectSkill(visibleSkillOptions[skillPickerIndex]);
-      }
+      confirmSkillPickerSelection();
       return;
     }
     if (e.key === "Enter" && e.shiftKey) {

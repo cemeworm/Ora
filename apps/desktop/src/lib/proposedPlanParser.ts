@@ -1,10 +1,9 @@
-const OPEN_TAG = "<proposed_plan>";
-const CLOSE_TAG = "</proposed_plan>";
-const MIN_PLAN_CONTENT_LENGTH = 50;
+import { inspectProposedPlanContract } from "@cemeworm/shared";
+
 const PARSE_CACHE_LIMIT = 16;
 const PARSE_CACHE_MAX_TEXT_LENGTH = 200_000;
 
-type ProposedPlanStatus = "none" | "streaming" | "complete";
+type ProposedPlanStatus = "none" | "streaming" | "complete" | "invalid";
 
 interface ProposedPlanParseResult {
   status: ProposedPlanStatus;
@@ -41,38 +40,42 @@ export function parseProposedPlan(text: string): ProposedPlanParseResult {
 }
 
 function parseProposedPlanUncached(text: string): ProposedPlanParseResult {
-  const openIndex = text.indexOf(OPEN_TAG);
-  if (openIndex === -1) {
-    return {
-      status: "none",
-      hasStartedPlan: false,
-      hasCompletePlan: false,
-      planContent: "",
-      displayText: trimBoundaryWhitespace(text),
-    };
+  const inspected = inspectProposedPlanContract(text);
+  switch (inspected.status) {
+    case "none":
+      return {
+        status: "none",
+        hasStartedPlan: false,
+        hasCompletePlan: false,
+        planContent: "",
+        displayText: inspected.displayText,
+      };
+    case "streaming_single":
+      return {
+        status: "streaming",
+        hasStartedPlan: true,
+        hasCompletePlan: false,
+        planContent: inspected.rawPlanContent ?? "",
+        displayText: inspected.displayText,
+      };
+    case "complete_single":
+      return {
+        status: "complete",
+        hasStartedPlan: true,
+        hasCompletePlan: true,
+        planContent: inspected.completePlanContent ?? "",
+        displayText: inspected.displayText,
+      };
+    case "invalid_multiple":
+    case "invalid_malformed":
+      return {
+        status: "invalid",
+        hasStartedPlan: true,
+        hasCompletePlan: false,
+        planContent: "",
+        displayText: inspected.displayText,
+      };
   }
-
-  const planStart = openIndex + OPEN_TAG.length;
-  const closeIndex = text.indexOf(CLOSE_TAG, planStart);
-  const hasClosingTag = closeIndex !== -1;
-  const rawPlanContent = hasClosingTag
-    ? text.slice(planStart, closeIndex)
-    : text.slice(planStart);
-  const planContent = trimBoundaryWhitespace(rawPlanContent);
-  const contentLength = planContent.replace(/\s/g, "").length;
-  const displayText = trimBoundaryWhitespace(
-    hasClosingTag
-      ? `${text.slice(0, openIndex)}${text.slice(closeIndex + CLOSE_TAG.length)}`
-      : text.slice(0, openIndex),
-  );
-
-  return {
-    status: hasClosingTag ? "complete" : "streaming",
-    hasStartedPlan: true,
-    hasCompletePlan: hasClosingTag && contentLength >= MIN_PLAN_CONTENT_LENGTH,
-    planContent,
-    displayText,
-  };
 }
 
 function shouldCacheParse(text: string): boolean {
