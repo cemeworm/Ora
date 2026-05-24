@@ -57,6 +57,7 @@ import {
   type RuntimeBootstrap,
   type RuntimeWorkbenchBootstrap,
   type RuntimeAcceptedPlanHandoff,
+  type AcceptedPlanResumeHandle,
   RunConfig,
   RunConfigSchema,
   RunEventStream,
@@ -1641,7 +1642,7 @@ export class LocalRunStore {
   async acceptPlanDecisionAndResume(
     params: unknown,
     options: StreamingRunOptions = {},
-  ): Promise<RunHandle> {
+  ): Promise<AcceptedPlanResumeHandle> {
     const parsed = SessionAcceptPlanDecisionAndResumeParamsSchema.parse(params);
     const snapshot = this.getRunState({ runId: parsed.runId });
     if (snapshot.sessionId !== parsed.sessionId) {
@@ -1670,7 +1671,11 @@ export class LocalRunStore {
       existingDecision.status === "accepted" &&
       (snapshot.status === "queued" || snapshot.status === "running")
     ) {
-      return toRunHandle(snapshot);
+      return {
+        ...toRunHandle(snapshot),
+        decisionId: parsed.decisionId,
+        resumePhase: snapshot.status === "running" ? "resumed_running" : "accepted_resuming",
+      };
     }
 
     if (existingDecision.status !== "accepted") {
@@ -1693,29 +1698,44 @@ export class LocalRunStore {
     while (attempt < ACCEPT_PLAN_RESUME_MAX_ATTEMPTS) {
       attempt += 1;
       try {
-        return await this.resumeStreamingRun(resumeParams, options);
+        const handle = await this.resumeStreamingRun(resumeParams, options);
+        return {
+          ...handle,
+          decisionId: parsed.decisionId,
+          resumePhase: "accepted_resuming",
+        };
       } catch (error) {
         lastError = error;
         if (!this.isRetryableAcceptPlanResumeError(error) || attempt >= ACCEPT_PLAN_RESUME_MAX_ATTEMPTS) {
-          return this.failAcceptedPlanResumeStart({
+          const failed = this.failAcceptedPlanResumeStart({
             sessionId: parsed.sessionId,
             runId: parsed.runId,
             decisionId: parsed.decisionId,
             attempt,
             error,
           });
+          return {
+            ...failed,
+            decisionId: parsed.decisionId,
+            resumePhase: "resume_terminal",
+          };
         }
         await delay(ACCEPT_PLAN_RESUME_RETRY_BASE_DELAY_MS * attempt);
       }
     }
 
-    return this.failAcceptedPlanResumeStart({
+    const failed = this.failAcceptedPlanResumeStart({
       sessionId: parsed.sessionId,
       runId: parsed.runId,
       decisionId: parsed.decisionId,
       attempt,
       error: lastError,
     });
+    return {
+      ...failed,
+      decisionId: parsed.decisionId,
+      resumePhase: "resume_terminal",
+    };
   }
 
   listRuns(params: unknown = {}): RunSummary[] {

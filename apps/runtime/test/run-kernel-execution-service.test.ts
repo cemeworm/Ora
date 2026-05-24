@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  acceptedPlanExecutionContractFromMetadata,
   RunConfigSchema,
   SINGLE_AGENT_MODE_ID,
   getModePreset,
@@ -92,6 +93,38 @@ function snapshotWithPendingPlanDecision(): StateSnapshot {
     output: "done",
     updatedAt: 1_000,
   } as unknown as StateSnapshot;
+}
+
+function snapshotWithPendingPlanDecisionAndPausedContinuation(): StateSnapshot {
+  const snapshot = snapshotWithPendingPlanDecision();
+  return {
+    ...snapshot,
+    continuation: {
+      activeFrameId: "run-plan-resume:continuation:0",
+      frames: [{
+        id: "run-plan-resume:continuation:0",
+        runId: snapshot.runId,
+        status: "paused",
+        reason: "manual_interrupt",
+        conversationCursor: 0,
+        pendingActionIds: [],
+        pendingToolCallIds: [],
+        pendingClarificationIds: [],
+        approvedActionIds: [],
+        resolvedClarificationIds: [],
+        agentId: "ora",
+        nodeId: "run",
+        nodeCheckpoint: {
+          agentId: "ora",
+          nodeId: "run",
+          conversationCursor: 0,
+          bag: {},
+        },
+        createdAt: 1_000,
+        updatedAt: 1_000,
+      }],
+    },
+  } as StateSnapshot;
 }
 
 describe("RunKernelExecutionService task memory integration", () => {
@@ -239,6 +272,25 @@ describe("RunKernelExecutionService task memory integration", () => {
     expect(service.lastResumeParams?.planDecisionResolutions).toEqual([
       { decisionId: "decision-plan", status: "accepted" },
     ]);
+  });
+
+  it("does not convert a paused continuation frame into awaiting_model for accepted-plan same-run implementation", async () => {
+    const snapshot = snapshotWithPendingPlanDecisionAndPausedContinuation();
+    const service = new CapturingRunKernelExecutionService(snapshot, "/tmp/ora-task-memory");
+
+    await service.executeKernelResumeWork({
+      snapshot,
+      clarificationPatch: {},
+      approvedActionIds: [],
+      approvedActions: [],
+      planDecisionResolutions: [{ decisionId: "decision-plan", status: "accepted" }],
+    });
+
+    expect(acceptedPlanExecutionContractFromMetadata(service.lastResumeParams?.config.metadata ?? {})).toBe(
+      "same_run_implementation",
+    );
+    expect(service.lastResumeParams?.resumeSnapshot?.continuation.activeFrameId).toBe("run-plan-resume:continuation:0");
+    expect(service.lastResumeParams?.resumeSnapshot?.continuation.frames[0]?.status).toBe("paused");
   });
 
   it("injects declined-plan revision context without switching away from plan intent", async () => {

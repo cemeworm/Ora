@@ -144,6 +144,7 @@ import {
   RuntimeWorkbenchBootstrapSchema,
   RunConfigSchema,
   RunEventStreamSchema,
+  AcceptedPlanResumeHandleSchema,
   RunForkParamsSchema,
   RunHandleSchema,
   RunReplayParamsSchema,
@@ -3012,6 +3013,24 @@ describe("Session thread contracts", () => {
       pendingActionIds: [],
       pendingToolCallIds: [],
       pendingClarificationIds: [],
+    });
+  });
+
+  it("accepts accepted-plan resume handles with explicit resume phase", () => {
+    expect(AcceptedPlanResumeHandleSchema.parse({
+      runId: "run-1",
+      sessionId: "session-1",
+      turnIndex: 1,
+      status: "running",
+      pattern: "single_agent",
+      modeId: "single_agent",
+      startedAt: 1000,
+      decisionId: "decision-1",
+      resumePhase: "accepted_resuming",
+    })).toMatchObject({
+      runId: "run-1",
+      decisionId: "decision-1",
+      resumePhase: "accepted_resuming",
     });
   });
 

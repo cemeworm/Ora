@@ -449,7 +449,7 @@ describe("desktop run actions", () => {
       expect(authority!.sourceRunId).toBe("run-plan");
     });
 
-    it("uses the attention-based plan_decision gate from active snapshot", () => {
+  it("uses the attention-based plan_decision gate from active snapshot", () => {
       const state = stateWithSession({
         runLifecycle: {
           stage: "settled",
@@ -489,6 +489,42 @@ describe("desktop run actions", () => {
       expect(authority!.decisionId).toBe("decision-attn");
       expect(authority!.sourceRunId).toBe("run-plan");
     });
+  });
+
+  it("treats accepted same-run resume authority as the plan source run even before a fresh snapshot arrives", () => {
+    const state = stateWithSession({
+      pendingPlanDecisionResolution: {
+        sessionId: "session-empty",
+        decisionId: "decision-1",
+        status: "accepted",
+        createdAt: 10,
+      },
+      runLifecycle: {
+        stage: "streaming",
+        runId: "run-plan",
+        sessionId: "session-empty",
+        prompt: "Plan the work",
+        createdAt: 1,
+        snapshot: {
+          runId: "run-plan",
+          sessionId: "session-empty",
+          status: "running",
+          input: { prompt: "Plan the work" },
+          planDecisions: [{
+            id: "decision-1",
+            runId: "run-plan",
+            sessionId: "session-empty",
+            status: "accepted",
+            createdAt: 2,
+            resolvedAt: 3,
+          }],
+          updatedAt: 3,
+        } as OraStateSnapshot,
+      },
+    });
+
+    expect(getPlanDecisionResumeRunId(state)).toBe("run-plan");
+    expect(getInteractiveRunId(state)).toBe("run-plan");
   });
 
   it("includes attached local files in run context", () => {

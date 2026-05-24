@@ -1401,14 +1401,17 @@ export function useRunActions() {
         decisionId,
         reason: USER_RESUMED_MESSAGE,
       });
-      const snapshot = await runtimeClient.getRunState(handle.runId);
-      await refreshCurrentSession(
-        snapshot,
-        snapshot.status === "failed"
-          ? snapshot.error ?? `Plan accepted, but implementation could not start on ${snapshot.runId}.`
-          : `Plan accepted and resumed on ${snapshot.runId}.`,
-      );
-      if (snapshot.status !== "failed") {
+      if (handle.resumePhase === "resume_terminal" || handle.status === "failed") {
+        const snapshot = await runtimeClient.getRunState(handle.runId);
+        await refreshCurrentSession(
+          snapshot,
+          snapshot.error ?? `Plan accepted, but implementation could not start on ${snapshot.runId}.`,
+        );
+      } else {
+        dispatch({ type: "SET_BUSY_COMMAND", command: undefined });
+        dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: `Plan accepted. Waiting for implementation to start on ${handle.runId}.` });
+      }
+      if (handle.status !== "failed" && handle.resumePhase !== "resume_terminal") {
         dispatch({ type: "SET_TASK_INTENT", taskIntent: "implement" });
       }
       return true;

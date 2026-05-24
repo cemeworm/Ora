@@ -4832,6 +4832,57 @@ describe("desktop workbench state", () => {
       expect(next.commandFeedback).toBe("Plan accepted and resumed.");
     });
 
+    it("keeps accepted-plan local resume authority when no fresh snapshot has arrived yet", () => {
+      const sessionId = "session-plan";
+      const runId = "run-plan";
+      const localRunningSnapshot = testSnapshot({
+        runId,
+        sessionId,
+        status: "running",
+        planDecisions: [{
+          id: `${runId}:plan-decision`,
+          runId,
+          sessionId,
+          status: "accepted",
+          createdAt: 1_714_000_000_000,
+          resolvedAt: 1_714_000_000_100,
+        }],
+        attention: {
+          kind: "running",
+          blocking: false,
+          sourceRunId: runId,
+          pendingActionIds: [],
+          pendingToolCallIds: [],
+          pendingClarificationIds: [],
+        },
+      });
+
+      const state = workbenchReducer({
+        ...initialWorkbenchState,
+        selectedSessionId: sessionId,
+        selectedTurnRunId: runId,
+        runLifecycle: lifecycleFromSnapshot(localRunningSnapshot),
+        pendingPlanDecisionResolution: {
+          sessionId,
+          decisionId: `${runId}:plan-decision`,
+          status: "accepted",
+          createdAt: 1_714_000_000_100,
+        },
+      }, {
+        type: "SET_COMMAND_FEEDBACK",
+        feedback: "Plan accepted. Waiting for implementation to start on run-plan.",
+      });
+
+      expect(state.pendingPlanDecisionResolution).toMatchObject({
+        sessionId,
+        decisionId: `${runId}:plan-decision`,
+        status: "accepted",
+      });
+      expect(getActiveSnapshot(state.runLifecycle)?.status).toBe("running");
+      expect(state.isLoading).toBe(true);
+      expect(state.commandFeedback).toBe("Plan accepted. Waiting for implementation to start on run-plan.");
+    });
+
     it("keeps local same-run resume authority when hydration returns an accepted settled snapshot over a running local snapshot", () => {
       const sessionId = "session-plan";
       const runId = "run-plan";

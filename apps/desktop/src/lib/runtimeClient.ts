@@ -96,6 +96,7 @@ import type {
   SelfIterationScanResult as OraSelfIterationScanResult,
   RunConfig as OraRunConfig,
   RunAttention as OraRunAttention,
+  AcceptedPlanResumeHandle as OraAcceptedPlanResumeHandle,
   RunEventStream as OraRunEventStream,
   RunHandle as OraRunHandle,
   RunSummary as OraSessionRunSummary,
@@ -228,6 +229,7 @@ export type {
   OraProjectSummary,
   OraRunConfig,
   OraRunAttention,
+  OraAcceptedPlanResumeHandle,
   OraRunEventStream,
   OraRunHandle,
   OraRuntimeMaintenanceParams,
@@ -687,8 +689,8 @@ export function createRuntimeClient() {
     async resolvePlanDecision(params: OraSessionPlanDecisionResolveParams): Promise<OraSessionDetail> {
       return call<OraSessionDetail>("sessions.resolvePlanDecision", params);
     },
-    async acceptPlanDecisionAndResume(params: OraSessionAcceptPlanDecisionAndResumeParams): Promise<OraRunHandle> {
-      return call<OraRunHandle>("sessions.acceptPlanDecisionAndResume", params);
+    async acceptPlanDecisionAndResume(params: OraSessionAcceptPlanDecisionAndResumeParams): Promise<OraAcceptedPlanResumeHandle> {
+      return call<OraAcceptedPlanResumeHandle>("sessions.acceptPlanDecisionAndResume", params);
     },
     async importEvaluationDataset(params: {
       name?: string;

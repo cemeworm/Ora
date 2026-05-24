@@ -2,7 +2,17 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { createModeSpecFromPattern, deriveRunAttention, deriveSessionProjection, RuntimeSessionLedgerSchema, RuntimeWorkbenchBootstrapSchema, SessionDetailSchema, StateSnapshotSchema } from "@cemeworm/shared";
+import {
+  createModeSpecFromPattern,
+  deriveRunAttention,
+  deriveSessionProjection,
+  getModePreset,
+  modeSpecToPatternDefinition,
+  RuntimeSessionLedgerSchema,
+  RuntimeWorkbenchBootstrapSchema,
+  SessionDetailSchema,
+  StateSnapshotSchema,
+} from "@cemeworm/shared";
 import type { RuntimeGateResolution } from "../src/runtime-gate-service.js";
 
 const capturedRequests: Array<{
@@ -1317,6 +1327,8 @@ describe("session thread runtime behavior", () => {
 
     expect(handle.runId).toBe(planned.latestSnapshot?.runId);
     expect(handle.status).toBe("running");
+    expect(handle.resumePhase).toBe("accepted_resuming");
+    expect(handle.decisionId).toBe(decision?.id);
     expect(resumeSpy).toHaveBeenCalledTimes(1);
     expect(resumeSpy).toHaveBeenCalledWith(expect.objectContaining({
       runId: planned.latestSnapshot?.runId,
@@ -1328,6 +1340,147 @@ describe("session thread runtime behavior", () => {
       id: decision?.id,
       status: "accepted",
     });
+  });
+
+  it("keeps single_agent accepted-plan resume on whole-run implementation instead of resuming a paused continuation frame", async () => {
+    titleResponses.push("Single Agent Accepted Plan Session");
+    const dir = freshStoreDir();
+    const store = new LocalRunStore({ dataDir: dir, clock });
+    const session = store.createSession();
+    const modeSpec = getModePreset("single_agent");
+    if (!modeSpec) {
+      throw new Error("single_agent preset missing");
+    }
+    const definition = modeSpecToPatternDefinition(modeSpec);
+
+    const handle = await store.startRunWithSnapshot({
+      sessionId: session.sessionId,
+      input: { prompt: "Return a proposed plan." },
+      config: {
+        modeId: "single_agent",
+        providerId: "single-agent-accepted-plan-provider",
+        modelRef: "single-agent-accepted-plan-model",
+        providerConfig: localSmokeProviderConfig("single-agent-accepted-plan-provider", "single-agent-accepted-plan-model"),
+        metadata: { taskIntent: "plan" },
+      },
+    }, async ({ runId, input, config, sessionId, turnIndex }) =>
+      StateSnapshotSchema.parse({
+        runId,
+        sessionId,
+        turnIndex,
+        status: "succeeded",
+        pattern: definition.coordinationKind,
+        modeId: modeSpec.id,
+        modeSpec,
+        input,
+        config,
+        topology: { nodes: [], edges: [] },
+        profiles: [],
+        memory: [],
+        plan: [],
+        planList: [],
+        todos: [],
+        actions: [],
+        toolCalls: [],
+        continuation: {
+          activeFrameId: `${runId}:continuation:0`,
+          frames: [{
+            id: `${runId}:continuation:0`,
+            runId,
+            status: "paused",
+            reason: "manual_interrupt",
+            conversationCursor: 0,
+            pendingActionIds: [],
+            pendingToolCallIds: [],
+            pendingClarificationIds: [],
+            approvedActionIds: [],
+            resolvedClarificationIds: [],
+            agentId: "ora",
+            nodeId: "run",
+            nodeCheckpoint: {
+              agentId: "ora",
+              nodeId: "run",
+              conversationCursor: 0,
+              bag: {},
+            },
+            createdAt: FIXED_TIME,
+            updatedAt: FIXED_TIME,
+          }],
+        },
+        conversation: [],
+        toolResults: [],
+        policyDecisions: [],
+        checkpoints: [],
+        events: [],
+        agentMessages: [],
+        childSessions: [],
+        artifacts: [],
+        activeAgents: [],
+        queueSummary: { mode: "dag", pending: 0, inProgress: 0, completed: 0, topics: [] },
+        sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+        busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+        pendingClarifications: [],
+        pendingApprovals: [],
+        planDecisions: [{
+          id: `${runId}:decision-plan`,
+          runId,
+          sessionId,
+          status: "pending",
+          planContent: "## Runtime status plan\n1. Implement the accepted plan in the same run.",
+          createdAt: FIXED_TIME,
+        }],
+        output: {
+          text: COMPLETE_PROPOSED_PLAN,
+          stoppedAfterProposedPlan: true,
+        },
+        updatedAt: FIXED_TIME,
+      })
+    );
+
+    if (!handle) {
+      throw new Error("Expected single_agent plan snapshot handle.");
+    }
+
+    const planned = StateSnapshotSchema.parse(store.getRunState({ runId: handle.runId }));
+    const decision = planned.planDecisions[0];
+    const kernelExecutionService = (store as unknown as {
+      runKernelExecutionService: {
+        executeResume: (params: {
+          resumeSnapshot?: { continuation: { frames: Array<{ status: string }> } };
+        }) => Promise<unknown>;
+      };
+    }).runKernelExecutionService;
+    let capturedResumeFrameStatus: string | undefined;
+    const executeResumeSpy = vi.spyOn(kernelExecutionService, "executeResume").mockImplementation(async (params) => {
+      capturedResumeFrameStatus = params.resumeSnapshot?.continuation.frames[0]?.status;
+      return StateSnapshotSchema.parse({
+        ...planned,
+        status: "succeeded",
+        planDecisions: planned.planDecisions.map((candidate) =>
+          candidate.id === decision?.id
+            ? {
+                ...candidate,
+                status: "accepted" as const,
+                resolvedAt: FIXED_TIME,
+              }
+            : candidate
+        ),
+        output: {
+          text: "Implemented accepted plan in single_agent.",
+        },
+        updatedAt: FIXED_TIME,
+      });
+    });
+
+    const resumedHandle = await store.acceptPlanDecisionAndResume({
+      sessionId: session.sessionId,
+      runId: handle.runId,
+      decisionId: decision?.id,
+    });
+
+    expect(resumedHandle.status).toBe("running");
+    expect(executeResumeSpy).toHaveBeenCalledTimes(1);
+    expect(capturedResumeFrameStatus).toBe("paused");
   });
 
   it("starts first accepted-plan implementation resume with same-run implement contract metadata", async () => {
@@ -1677,6 +1830,8 @@ describe("session thread runtime behavior", () => {
     const failedDetail = SessionDetailSchema.parse(store.getSession({ sessionId: session.sessionId }));
 
     expect(handle.status).toBe("failed");
+    expect(handle.resumePhase).toBe("resume_terminal");
+    expect(handle.decisionId).toBe(decision?.id);
     expect(failedState.status).toBe("failed");
     expect(failedState.planDecisions[0]?.status).toBe("accepted");
     expect(failedState.events.some((event) => event.type === "recovery.exhausted")).toBe(true);

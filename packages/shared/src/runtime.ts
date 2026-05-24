@@ -1796,6 +1796,12 @@ export const AcceptedPlanResumePhaseSchema = z.enum([
 ]);
 export type AcceptedPlanResumePhase = z.infer<typeof AcceptedPlanResumePhaseSchema>;
 
+export const AcceptedPlanResumeHandleSchema = RunHandleSchema.extend({
+  decisionId: z.string().min(1),
+  resumePhase: AcceptedPlanResumePhaseSchema,
+});
+export type AcceptedPlanResumeHandle = z.infer<typeof AcceptedPlanResumeHandleSchema>;
+
 export interface AcceptedPlanResumeProjection {
   phase: AcceptedPlanResumePhase;
   sameRun: boolean;

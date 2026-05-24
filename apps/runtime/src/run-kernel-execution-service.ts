@@ -8,7 +8,11 @@ import type {
   StateSnapshot,
   UserTaskInput,
 } from "@cemeworm/shared";
-import { modeSpecToPatternDefinition, StateSnapshotSchema } from "@cemeworm/shared";
+import {
+  acceptedPlanExecutionContractFromMetadata,
+  modeSpecToPatternDefinition,
+  StateSnapshotSchema,
+} from "@cemeworm/shared";
 import type { RuntimeSkillRegistry } from "./harness/capability-registries.js";
 import type {
   AutomationRegistryTools,
@@ -144,8 +148,9 @@ export class RunKernelExecutionService {
     const resumedInput = resumedInputWithClarifications(params.snapshot.input, params.clarificationPatch);
     const config = params.configOverride ?? params.snapshot.config;
     const resumeSnapshot = params.resumeSnapshot ??
-      suspendedFrameResumeSnapshot(params.snapshot) ??
-      params.snapshot;
+      (shouldResumeAcceptedPlanImplementationFromWholeRun(config, params.planDecisionResolutions)
+        ? params.snapshot
+        : suspendedFrameResumeSnapshot(params.snapshot) ?? params.snapshot);
     const taskMemoryStore = this.createTaskMemoryStore();
     return this.executeResume({
       runId: params.snapshot.runId,
@@ -323,6 +328,14 @@ export class RunKernelExecutionService {
       events: [...baseSnapshot.events, ...rebasedEvents],
     });
   }
+}
+
+function shouldResumeAcceptedPlanImplementationFromWholeRun(
+  config: RunConfig,
+  planDecisionResolutions: Array<{ decisionId: string; status: "accepted" | "declined" }> | undefined,
+): boolean {
+  return acceptedPlanExecutionContractFromMetadata(config.metadata) === "same_run_implementation"
+    && (planDecisionResolutions ?? []).some((resolution) => resolution.status === "accepted");
 }
 
 /** Symbolic marker for diagnostic_failure errors, so upstream
