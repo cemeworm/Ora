@@ -2409,6 +2409,172 @@ describe("Ora runtime smoke path", () => {
     }
   });
 
+  it("interrupts and resumes provider-native ambiguous file.read targets via clarification instead of failing the run", async () => {
+    const store = createTempStore();
+    const handle = createRuntimeMethodHandler(store);
+    const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ora-native-tool-clarify-read-"));
+    fs.mkdirSync(path.join(workspaceRoot, "src"), { recursive: true });
+    fs.writeFileSync(path.join(workspaceRoot, "src", "state.tsx"), "export const stateTsx = 1;\n", "utf8");
+    fs.writeFileSync(path.join(workspaceRoot, "src", "state.js"), "export const stateJs = 1;\n", "utf8");
+    const previousFetch = globalThis.fetch;
+    const previousKey = process.env.NATIVE_TOOL_AMBIGUOUS_READ_KEY;
+    process.env.NATIVE_TOOL_AMBIGUOUS_READ_KEY = "test";
+    let providerCalls = 0;
+    const providerBodies: string[] = [];
+    let ambiguousReadIssued = false;
+
+    globalThis.fetch = (async (_input, init) => {
+      providerCalls += 1;
+      const body = String(init?.body ?? "");
+      providerBodies.push(body);
+      if (!ambiguousReadIssued && body.includes("\"name\":\"file__read\"")) {
+        ambiguousReadIssued = true;
+        return new Response(JSON.stringify({
+          choices: [{
+            finish_reason: "tool_calls",
+            message: {
+              content: null,
+              tool_calls: [{
+                id: "call-read-ambiguous",
+                type: "function",
+                function: {
+                  name: "file__read",
+                  arguments: "{\"path\":\"src/state.ts\"}",
+                },
+              }],
+            },
+          }],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return new Response(JSON.stringify({
+        choices: [{
+          message: {
+            content: "已根据你的选择读取 src/state.tsx，并继续后续分析。",
+          },
+        }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    try {
+      const run = await handle({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "runs.start",
+        params: {
+          input: {
+            prompt: "读取 src/state.ts 并继续分析。",
+            context: {
+              projectWorkspace: { label: "Ambiguous Native Tool Workspace", rootPath: workspaceRoot },
+            },
+          },
+          config: {
+            modeId: "single_agent",
+            providerId: "native-tool-ambiguous-read",
+            modelRef: "native-tool-ambiguous-read-model",
+            providerConfig: {
+              id: "native-tool-ambiguous-read",
+              label: "Native Tool Ambiguous Read",
+              type: "openai_compatible",
+              modelId: "native-tool-ambiguous-read-model",
+              baseUrl: "https://native-tool-ambiguous-read.test/v1",
+              apiKeyEnv: "NATIVE_TOOL_AMBIGUOUS_READ_KEY",
+              capabilities: ["chat", "tool_use"],
+              headers: {},
+            },
+            toolIds: ["file.read"],
+            metadata: { progressNarration: true },
+          },
+        },
+      }) as { runId: string; status: string };
+
+      const blocked = StateSnapshotSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "runs.state",
+        params: { runId: run.runId },
+      }));
+
+      expect(run.status).toBe("interrupted");
+      expect(blocked.status).toBe("interrupted");
+      expect(blocked.pendingClarifications).toHaveLength(1);
+      const blockedFrame = blocked.continuation.frames.find((item) => item.id === blocked.continuation.activeFrameId);
+      expect(blocked.pendingClarifications[0]).toMatchObject({
+        question: "我找到了多个可能匹配“src/state.ts”的文件，请选择你要我读取的目标。",
+        options: [
+          { id: "candidate_1", label: "src/state.js", value: "src/state.js", description: "读取 src/state.js" },
+          { id: "candidate_2", label: "src/state.tsx", value: "src/state.tsx", description: "读取 src/state.tsx" },
+        ],
+      });
+      expect(blockedFrame).toMatchObject({
+        status: "paused",
+        reason: "clarification_required",
+        pendingActionIds: [blocked.toolCalls[0]?.actionId],
+        pendingToolCallIds: [blocked.toolCalls[0]?.id],
+        pendingClarificationIds: [blocked.pendingClarifications[0]?.id],
+      });
+      expect(blocked.events.map((event) => event.type)).toContain("clarification.required");
+      expect(blocked.events.map((event) => event.type)).not.toContain("run.failed");
+      expect(providerCalls).toBeGreaterThanOrEqual(3);
+      expect(blocked.toolCalls).toEqual([
+        expect.objectContaining({
+          providerCallId: "call-read-ambiguous",
+          toolId: "file.read",
+          source: "provider_native",
+          status: "running",
+        }),
+      ]);
+      const resumed = StateSnapshotSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: 3,
+        method: "runs.resume",
+        params: {
+          runId: run.runId,
+          patch: {
+            clarifications: {
+              [blocked.pendingClarifications[0]!.key]: "src/state.tsx",
+            },
+          },
+        },
+      }));
+
+      expect(resumed.status).toBe("succeeded");
+      expect(resumed.pendingClarifications).toEqual([]);
+      expect(resumed.events.map((event) => event.type)).toContain("clarification.resolved");
+      expect(resumed.events.map((event) => event.type)).not.toContain("run.failed");
+      const resumedFrame = resumed.continuation.frames.find((item) => item.id === blockedFrame?.id);
+      expect(resumed.toolCalls.filter((call) => call.toolId === "file.read")).toEqual([
+        expect.objectContaining({
+          providerCallId: "call-read-ambiguous",
+          toolId: "file.read",
+          source: "provider_native",
+          status: "succeeded",
+        }),
+      ]);
+      expect(resumedFrame).toMatchObject({
+        status: "completed",
+        reason: "clarification_required",
+        pendingActionIds: [],
+        pendingToolCallIds: [],
+        pendingClarificationIds: [],
+        resolvedClarificationIds: [blocked.pendingClarifications[0]?.id],
+      });
+      expect(providerBodies.some((body) =>
+        body.includes("User-supplied clarification context")
+        && body.includes("src/state.tsx")
+      )).toBe(true);
+      expect(resumed.output?.text).toContain("src/state.tsx");
+      expectNoNodeLoopTransitionDiagnostics(resumed);
+    } finally {
+      globalThis.fetch = previousFetch;
+      fs.rmSync(workspaceRoot, { recursive: true, force: true });
+      if (previousKey === undefined) {
+        delete process.env.NATIVE_TOOL_AMBIGUOUS_READ_KEY;
+      } else {
+        process.env.NATIVE_TOOL_AMBIGUOUS_READ_KEY = previousKey;
+      }
+    }
+  });
+
   it("lets the model answer normally after a useful web.fetch result in decisive mode", async () => {
     const handle = createRuntimeMethodHandler(createTempStore());
     const previousFetch = globalThis.fetch;

@@ -82,7 +82,8 @@ describe("RuntimeToolExecutor", () => {
   });
 
   it("keeps built-in runtime tool ids backed by executable definitions", () => {
-    const executor = new RuntimeToolExecutor({ toolDescriptors: MVP_TOOLS });
+    const { workspace } = createWorkspace();
+    const executor = new RuntimeToolExecutor({ workspace, toolDescriptors: MVP_TOOLS });
     const definitions = (executor as unknown as { definitions: Map<string, { execute?: unknown }> }).definitions;
 
     const missingDefinitions = IMPLEMENTED_RUNTIME_TOOL_IDS.filter((toolId) => !definitions.has(toolId));
@@ -110,7 +111,7 @@ describe("RuntimeToolExecutor", () => {
     const executeWithMetadata = source.match(/async executeWithMetadata[\s\S]*?\n  private resolveDescriptorRiskLevel/);
 
     expect(executeWithMetadata?.[0]).toContain("const definition = this.definitions.get(effectiveCall.tool)");
-    expect(executeWithMetadata?.[0]).toMatch(/await definition\.execute\(preparedArgs, this\.executionContext\(options\)\)/);
+    expect(executeWithMetadata?.[0]).toMatch(/await definition\.execute\(preparedArgs, (?:this\.executionContext\(options\)|context)\)/);
     expect(executeWithMetadata?.[0]).not.toMatch(/\bswitch\s*\(/);
     expect(executeWithMetadata?.[0]).not.toMatch(/\bcase\s+['\"`][a-zA-Z0-9_.-]+['\"`]\s*:/);
   });
@@ -743,10 +744,62 @@ describe("RuntimeToolExecutor", () => {
     const { workspace } = createWorkspace();
     const executor = new RuntimeToolExecutor({ workspace, toolDescriptors: MVP_TOOLS });
 
-    await expect(executor.execute({
+    const read = await executor.execute({
       tool: "file.read",
       args: { path: "src/missing.ts" },
-    })).rejects.toThrow("file.read target not found: src/missing.ts");
+    }) as {
+      path: string;
+      missing?: boolean;
+      candidates?: string[];
+    };
+
+    expect(read).toEqual({
+      scope: "workspace",
+      path: "src/missing.ts",
+      missing: true,
+      candidates: [],
+    });
+  });
+
+  it("autocorrects a single repo-local extension variant for file.read", async () => {
+    const { rootPath, workspace } = createWorkspace();
+    fs.writeFileSync(path.join(rootPath, "src", "state.tsx"), "export const state = 1;\n", "utf8");
+    const executor = new RuntimeToolExecutor({ workspace, toolDescriptors: MVP_TOOLS });
+
+    const read = await executor.execute({
+      tool: "file.read",
+      args: { path: "src/state.ts" },
+    }) as {
+      path: string;
+      autocorrectedFrom?: string;
+      correctionReason?: string;
+      content: string;
+    };
+
+    expect(read.path).toBe("src/state.tsx");
+    expect(read.autocorrectedFrom).toBe("src/state.ts");
+    expect(read.correctionReason).toBe("extension_variant");
+    expect(read.content).toContain("export const state");
+  });
+
+  it("does not autocorrect file.read when multiple local extension variants exist", async () => {
+    const { rootPath, workspace } = createWorkspace();
+    fs.writeFileSync(path.join(rootPath, "src", "state.tsx"), "export const stateTsx = 1;\n", "utf8");
+    fs.writeFileSync(path.join(rootPath, "src", "state.js"), "export const stateJs = 1;\n", "utf8");
+    const executor = new RuntimeToolExecutor({ workspace, toolDescriptors: MVP_TOOLS });
+
+    const read = await executor.execute({
+      tool: "file.read",
+      args: { path: "src/state.ts" },
+    }) as {
+      path: string;
+      missing?: boolean;
+      candidates?: string[];
+    };
+
+    expect(read.path).toBe("src/state.ts");
+    expect(read.missing).toBe(true);
+    expect(read.candidates).toEqual(["src/state.js", "src/state.tsx"]);
   });
 
   it("reads a file range with line offset and limit", async () => {
@@ -888,9 +941,59 @@ describe("RuntimeToolExecutor", () => {
     };
 
     expect(list).toEqual({
+      scope: "workspace",
       path: "missing-src",
       entries: [],
       missing: true,
+    });
+  });
+
+  it("reports missing file search targets as structured missing results", async () => {
+    const { workspace } = createWorkspace();
+    const executor = new RuntimeToolExecutor({ workspace, toolDescriptors: MVP_TOOLS });
+
+    const glob = await executor.execute({
+      tool: "file.glob",
+      args: { path: "missing-src", pattern: "*.ts" },
+    }) as {
+      path: string;
+      pattern: string;
+      matches: string[];
+      skipped: unknown[];
+      missing?: boolean;
+      candidates?: string[];
+    };
+    const grep = await executor.execute({
+      tool: "file.grep",
+      args: { path: "missing-src", pattern: "alpha", include: "*.ts" },
+    }) as {
+      path: string;
+      pattern: string;
+      matches: Array<{ path: string }>;
+      skipped: unknown[];
+      truncated?: boolean;
+      missing?: boolean;
+      candidates?: string[];
+    };
+
+    expect(glob).toEqual({
+      scope: "workspace",
+      path: "missing-src",
+      pattern: "*.ts",
+      matches: [],
+      skipped: [],
+      missing: true,
+      candidates: [],
+    });
+    expect(grep).toEqual({
+      scope: "workspace",
+      path: "missing-src",
+      pattern: "alpha",
+      matches: [],
+      truncated: false,
+      skipped: [],
+      missing: true,
+      candidates: [],
     });
   });
 
@@ -1714,5 +1817,79 @@ rl.on("line", (line) => {
     const readResult = await executor.execute(broader) as { exitCode: number; stdout: string };
     expect(readResult.exitCode).toBe(0);
     expect(readResult.stdout.trim()).toMatch(/^v\d+/);
+  });
+
+  it("allows reading existing external files via absolute path with workspace scope", async () => {
+    const { workspace } = createWorkspace();
+    const executor = new RuntimeToolExecutor({ workspace, toolDescriptors: MVP_TOOLS });
+
+    const externalPath = path.join(os.tmpdir(), "ora-external-read-test.txt");
+    fs.writeFileSync(externalPath, "external content for test", "utf8");
+    cleanupPaths.push(externalPath);
+
+    const read = await executor.execute({ tool: "file.read", args: { path: externalPath } }) as {
+      content: string;
+    };
+    expect(read.content).toContain("external content");
+  });
+
+  it("allows listing external directories via absolute path with workspace scope", async () => {
+    const { workspace } = createWorkspace();
+    const executor = new RuntimeToolExecutor({ workspace, toolDescriptors: MVP_TOOLS });
+
+    const externalDir = path.join(os.tmpdir(), "ora-external-list-test");
+    fs.mkdirSync(externalDir, { recursive: true });
+    fs.writeFileSync(path.join(externalDir, "file.txt"), "test", "utf8");
+    cleanupPaths.push(externalDir);
+
+    const list = await executor.execute({ tool: "file.list", args: { path: externalDir } }) as {
+      entries: Array<{ name: string }>;
+    };
+    expect(list.entries.map((e) => e.name)).toContain("file.txt");
+  });
+
+  it("rejects write operations to external absolute paths", async () => {
+    const { workspace } = createWorkspace();
+    const executor = new RuntimeToolExecutor({ workspace, toolDescriptors: MVP_TOOLS });
+
+    const externalPath = path.join(os.tmpdir(), "ora-external-write-should-fail.txt");
+    cleanupPaths.push(externalPath);
+
+    await expect(
+      executor.execute({ tool: "file.write", args: { path: externalPath, content: "test" } }),
+    ).rejects.toThrow("Workspace tool path must stay inside the project root");
+  });
+
+  it("rejects external absolute path that does not exist on disk", async () => {
+    const { workspace } = createWorkspace();
+    const executor = new RuntimeToolExecutor({ workspace, toolDescriptors: MVP_TOOLS });
+
+    await expect(
+      executor.execute({ tool: "file.read", args: { path: "/tmp/ora-definitely-does-not-exist-99999" } }),
+    ).rejects.toThrow("Workspace tool path must stay inside the project root");
+  });
+
+  it("keeps scopeLabel as project when reading workspace-internal file via absolute path", async () => {
+    const { rootPath, workspace } = createWorkspace();
+    const executor = new RuntimeToolExecutor({ workspace, toolDescriptors: MVP_TOOLS });
+
+    const absolutePath = path.resolve(rootPath, "README.md");
+    const read = await executor.execute({ tool: "file.read", args: { path: absolutePath } }) as {
+      content: string;
+    };
+    expect(read.content).toContain("Ora local agent tools");
+  });
+
+  it("rejects relative paths that escape the workspace root (regression)", async () => {
+    const { workspace } = createWorkspace();
+    const executor = new RuntimeToolExecutor({ workspace, toolDescriptors: MVP_TOOLS });
+
+    await expect(
+      executor.execute({ tool: "file.read", args: { path: "../outside.txt" } }),
+    ).rejects.toThrow("Workspace tool path must stay inside the project root");
+
+    await expect(
+      executor.execute({ tool: "file.write", args: { path: "../outside.txt", content: "test" } }),
+    ).rejects.toThrow("Workspace tool path must stay inside the project root");
   });
 });

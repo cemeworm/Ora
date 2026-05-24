@@ -4,6 +4,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { MVP_TOOLS, type HostFilesystemState } from "@cemeworm/shared";
 import { RuntimeToolExecutor } from "./runtime-tool-executor.js";
+import { ClarificationInterruptError, isClarificationInterruptError } from "./runtime-interrupts.js";
 import "./runtime-patch-tool.js";
 
 function tempWorkspace(): string {
@@ -481,6 +482,72 @@ describe("runtime file tools", () => {
     expect(result.output).toMatchObject({
       path: "README.md",
       content: "absolute path read\n",
+    });
+  });
+
+  it("raises a clarification interrupt for ambiguous workspace file.read targets when clarification context is available", async () => {
+    const rootPath = tempWorkspace();
+    fs.mkdirSync(path.join(rootPath, "src"), { recursive: true });
+    fs.writeFileSync(path.join(rootPath, "src", "state.tsx"), "export const stateTsx = 1;\n", "utf8");
+    fs.writeFileSync(path.join(rootPath, "src", "state.js"), "export const stateJs = 1;\n", "utf8");
+    const toolExecutor = executor(rootPath);
+
+    await expect(toolExecutor.executeWithMetadata({
+      tool: "file.read",
+      args: { path: "src/state.ts" },
+    }, {
+      currentNodeId: "node-file-read",
+      currentNodeLabel: "Read candidate file",
+      ensureClarification: async (params) => {
+        throw new ClarificationInterruptError({
+          id: params.id,
+          key: params.key,
+          nodeId: params.nodeId,
+          nodeLabel: params.nodeLabel,
+          question: params.question,
+          options: params.options ?? [],
+          requestedAt: 1,
+        });
+      },
+    })).rejects.toSatisfy((error: unknown) => {
+      if (!isClarificationInterruptError(error)) {
+        return false;
+      }
+      expect(error.clarification).toMatchObject({
+        nodeId: "node-file-read",
+        nodeLabel: "Read candidate file",
+        question: "我找到了多个可能匹配“src/state.ts”的文件，请选择你要我读取的目标。",
+        options: [
+          { id: "candidate_1", label: "src/state.js", value: "src/state.js", description: "读取 src/state.js" },
+          { id: "candidate_2", label: "src/state.tsx", value: "src/state.tsx", description: "读取 src/state.tsx" },
+        ],
+      });
+      expect(error.clarification.id).toMatch(/^clarification:file-read-target:[0-9a-f]{10}$/);
+      expect(error.clarification.key).toMatch(/^file_read_target_[0-9a-f]{10}$/);
+      return true;
+    });
+  });
+
+  it("resumes ambiguous workspace file.read from a clarification answer", async () => {
+    const rootPath = tempWorkspace();
+    fs.mkdirSync(path.join(rootPath, "src"), { recursive: true });
+    fs.writeFileSync(path.join(rootPath, "src", "state.tsx"), "export const stateTsx = 1;\n", "utf8");
+    fs.writeFileSync(path.join(rootPath, "src", "state.js"), "export const stateJs = 1;\n", "utf8");
+    const toolExecutor = executor(rootPath);
+
+    const result = await toolExecutor.executeWithMetadata({
+      tool: "file.read",
+      args: { path: "src/state.ts" },
+    }, {
+      currentNodeId: "node-file-read",
+      currentNodeLabel: "Read candidate file",
+      ensureClarification: async () => "src/state.tsx",
+    });
+
+    expect(result.output).toMatchObject({
+      scope: "workspace",
+      path: "src/state.tsx",
+      content: "export const stateTsx = 1;\n",
     });
   });
 });

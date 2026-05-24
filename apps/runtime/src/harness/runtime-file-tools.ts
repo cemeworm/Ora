@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 import type { RuntimeToolDefinition } from "./capability-registries.js";
 import type { ResolvedToolLimits, RuntimeFileChangeMetadata, RuntimeToolExecutionContext } from "./runtime-tool-executor.js";
 import type { RuntimeToolResultPreview } from "./runtime-tool-definition-v2.js";
@@ -32,13 +33,32 @@ type SkippedWorkspaceFile = {
   sizeBytes?: number;
 };
 
+type FileTargetCorrectionReason = "case_mismatch" | "extension_variant";
+
+type WorkspaceFileTargetCandidate = {
+  absolutePath: string;
+  displayPath: string;
+  correctionReason: FileTargetCorrectionReason;
+};
+
+type WorkspaceFileTargetResolution =
+  | { kind: "exact"; absolutePath: string; displayPath: string }
+  | { kind: "autocorrected"; absolutePath: string; displayPath: string; requestedPath: string; correctionReason: FileTargetCorrectionReason }
+  | { kind: "missing"; requestedPath: string; candidates: string[] };
+
 export function fileToolRuntimeFields(toolId: string): Partial<RuntimeToolDefinition<RuntimeToolExecutionContext>> {
   switch (toolId) {
     case "file.read":
       return {
         promptExample: "{\"tool\":\"file.read\",\"args\":{\"path\":\"relative/path.ts\"}}",
         prepareArguments: (args, context) => normalizeWorkspaceAbsoluteFileReadPath(args, context.workspace),
-        execute: (args, context) => ({ output: readLocalFile(resolveFileToolTarget({ workspace: context.workspace, hostFilesystem: context.hostFilesystem, args, capability: "read" }), args, context.limits) }),
+        execute: async (args, context) => ({
+          output: await readLocalFile(
+            resolveFileToolTarget({ workspace: context.workspace, hostFilesystem: context.hostFilesystem, args, capability: "read" }),
+            args,
+            context,
+          ),
+        }),
         resultPreview: (result) => fileReadResultPreview((result as { output: unknown }).output),
       };
     case "file.list":
@@ -99,7 +119,10 @@ function normalizeWorkspaceAbsoluteFileReadPath(
   if (!rootPath) {
     return args;
   }
-  const relative = path.relative(rootPath, requestedPath);
+  // 符号链接规范化：比较规范路径而非裸字符串
+  const canonicalRequested = canonicalizeExternalPath(requestedPath);
+  const canonicalRoot = canonicalizeExternalPath(rootPath);
+  const relative = path.relative(canonicalRoot, canonicalRequested);
   if (relative.startsWith("..") || path.isAbsolute(relative)) {
     return args;
   }
@@ -107,6 +130,14 @@ function normalizeWorkspaceAbsoluteFileReadPath(
     ...args,
     path: relativeWorkspacePath(rootPath, path.resolve(requestedPath)),
   };
+}
+
+function canonicalizeExternalPath(targetPath: string): string {
+  try {
+    return fs.existsSync(targetPath) ? fs.realpathSync.native(path.resolve(targetPath)) : path.resolve(targetPath);
+  } catch {
+    return path.resolve(targetPath);
+  }
 }
 
 function fileWriteApprovalRequest(args: Record<string, unknown>, context: { userPrompt?: string }) {
@@ -174,8 +205,32 @@ function approvalTargetLabel(args: Record<string, unknown>, zh: boolean): string
   return `"${target}" in the project`;
 }
 
-function readLocalFile(target: ResolvedFileToolTarget, args: Record<string, unknown>, limits: ResolvedToolLimits) {
-  const absolutePath = target.absolutePath;
+async function readLocalFile(
+  target: ResolvedFileToolTarget,
+  args: Record<string, unknown>,
+  context: Pick<RuntimeToolExecutionContext, "limits" | "clarificationAnswer" | "ensureClarification" | "currentNodeId" | "currentNodeLabel">,
+) {
+  const resolvedTarget = resolveWorkspaceFileTarget(target, { allowExtensionVariant: true });
+  if (resolvedTarget.kind === "missing") {
+    const clarifiedPath = await maybeResolveFileReadClarification(target, resolvedTarget, context);
+    if (clarifiedPath) {
+      return readLocalFile({
+        ...target,
+        absolutePath: clarifiedPath.absolutePath,
+        displayPath: clarifiedPath.displayPath,
+      }, {
+        ...args,
+        path: clarifiedPath.displayPath,
+      }, context);
+    }
+    return {
+      ...targetScopeOutput(target),
+      path: resolvedTarget.requestedPath,
+      missing: true,
+      candidates: resolvedTarget.candidates,
+    };
+  }
+  const absolutePath = resolvedTarget.absolutePath;
   let stat: fs.Stats;
   try {
     stat = fs.statSync(absolutePath);
@@ -188,17 +243,23 @@ function readLocalFile(target: ResolvedFileToolTarget, args: Record<string, unkn
   if (!stat.isFile()) {
     throw new Error("file.read target must be a file.");
   }
-  if (stat.size > limits.fileReadMaxBytes) {
+  if (stat.size > context.limits.fileReadMaxBytes) {
     throw new Error(`file.read target is too large (${stat.size} bytes).`);
   }
   if (isProbablyBinaryFile(absolutePath)) {
     return {
       ...targetScopeOutput(target),
-      path: target.displayPath,
+      path: resolvedTarget.displayPath,
       sizeBytes: stat.size,
       binary: true,
       content: "",
       skippedReason: "binary_file",
+      ...(resolvedTarget.kind === "autocorrected"
+        ? {
+            autocorrectedFrom: resolvedTarget.requestedPath,
+            correctionReason: resolvedTarget.correctionReason,
+          }
+        : {}),
     };
   }
   const content = fs.readFileSync(absolutePath, "utf8");
@@ -206,7 +267,7 @@ function readLocalFile(target: ResolvedFileToolTarget, args: Record<string, unkn
   if (range) {
     return {
       ...targetScopeOutput(target),
-      path: target.displayPath,
+      path: resolvedTarget.displayPath,
       sizeBytes: stat.size,
       content: range.content,
       offset: range.offset,
@@ -214,14 +275,105 @@ function readLocalFile(target: ResolvedFileToolTarget, args: Record<string, unkn
       returnedLines: range.returnedLines,
       totalLines: range.totalLines,
       truncated: range.truncated,
+      ...(resolvedTarget.kind === "autocorrected"
+        ? {
+            autocorrectedFrom: resolvedTarget.requestedPath,
+            correctionReason: resolvedTarget.correctionReason,
+          }
+        : {}),
     };
   }
   return {
     ...targetScopeOutput(target),
-    path: target.displayPath,
+    path: resolvedTarget.displayPath,
     sizeBytes: stat.size,
     content,
+    ...(resolvedTarget.kind === "autocorrected"
+      ? {
+          autocorrectedFrom: resolvedTarget.requestedPath,
+          correctionReason: resolvedTarget.correctionReason,
+        }
+      : {}),
   };
+}
+
+async function maybeResolveFileReadClarification(
+  target: ResolvedFileToolTarget,
+  resolvedTarget: Extract<WorkspaceFileTargetResolution, { kind: "missing" }>,
+  context: Pick<RuntimeToolExecutionContext, "clarificationAnswer" | "ensureClarification" | "currentNodeId" | "currentNodeLabel">,
+): Promise<{ absolutePath: string; displayPath: string } | undefined> {
+  const { ensureClarification, clarificationAnswer } = context;
+  if (!target.workspaceRoot || resolvedTarget.candidates.length < 2 || !ensureClarification) {
+    return undefined;
+  }
+  const clarification = fileReadTargetClarification(target, resolvedTarget);
+  const answered = clarificationAnswer?.(clarification.key, clarification.id);
+  const selectedPath = selectClarifiedCandidate(answered, clarification.options);
+  if (selectedPath) {
+    return {
+      absolutePath: path.join(target.workspaceRoot, selectedPath),
+      displayPath: selectedPath,
+    };
+  }
+  const resumed = await ensureClarification({
+    ...clarification,
+    nodeId: context.currentNodeId ?? "file.read",
+    nodeLabel: context.currentNodeLabel ?? "file.read",
+  });
+  const resumedPath = selectClarifiedCandidate(resumed, clarification.options);
+  if (!resumedPath) {
+    throw new Error(`file.read clarification answer did not match any candidate for ${resolvedTarget.requestedPath}.`);
+  }
+  return {
+    absolutePath: path.join(target.workspaceRoot, resumedPath),
+    displayPath: resumedPath,
+  };
+}
+
+function fileReadTargetClarification(
+  target: ResolvedFileToolTarget,
+  resolvedTarget: Extract<WorkspaceFileTargetResolution, { kind: "missing" }>,
+): {
+  id: string;
+  key: string;
+  question: string;
+  options: Array<{ id: string; label: string; value: string; description?: string }>;
+} {
+  const requestedPath = resolvedTarget.requestedPath;
+  const fingerprint = crypto
+    .createHash("sha256")
+    .update(JSON.stringify({
+      scope: target.scope,
+      requestedPath,
+      candidates: resolvedTarget.candidates,
+    }))
+    .digest("hex")
+    .slice(0, 10);
+  return {
+    id: `clarification:file-read-target:${fingerprint}`,
+    key: `file_read_target_${fingerprint}`,
+    question: `我找到了多个可能匹配“${requestedPath}”的文件，请选择你要我读取的目标。`,
+    options: resolvedTarget.candidates.slice(0, 6).map((candidate, index) => ({
+      id: `candidate_${index + 1}`,
+      label: candidate,
+      value: candidate,
+      description: `读取 ${candidate}`,
+    })),
+  };
+}
+
+function selectClarifiedCandidate(
+  answer: unknown,
+  options: Array<{ id: string; label: string; value: string }>,
+): string | undefined {
+  if (typeof answer !== "string" || answer.trim().length === 0) {
+    return undefined;
+  }
+  const normalized = answer.trim();
+  const matchedOption = options.find((option) =>
+    option.id === normalized || option.value === normalized || option.label === normalized
+  );
+  return matchedOption?.value;
 }
 
 type FileReadLineRange = {
@@ -349,8 +501,20 @@ function globLocalFiles(target: ResolvedFileToolTarget, args: Record<string, unk
   if (!pattern) {
     throw new Error("file.glob requires a non-empty pattern.");
   }
-  const basePath = target.absolutePath;
-  const scopePath = target.displayPath;
+  const resolvedTarget = resolveWorkspaceFileTarget(target, { allowExtensionVariant: true });
+  if (resolvedTarget.kind === "missing") {
+    return {
+      ...targetScopeOutput(target),
+      path: resolvedTarget.requestedPath,
+      pattern,
+      matches: [],
+      skipped: [],
+      missing: true,
+      candidates: resolvedTarget.candidates,
+    };
+  }
+  const basePath = resolvedTarget.absolutePath;
+  const scopePath = resolvedTarget.displayPath;
   const matcher = createSearchMatcher(target.anchorRootPath, basePath, pattern);
   const limit = readPositiveInt(args.limit, limits.fileListMaxEntries, limits.fileListMaxEntries);
   const explicitTarget = hasExplicitSearchTarget(target.anchorRootPath, basePath, pattern, args);
@@ -373,7 +537,19 @@ function globLocalFiles(target: ResolvedFileToolTarget, args: Record<string, unk
       }
     }
   }
-  return { ...targetScopeOutput(target), path: scopePath, pattern, matches, skipped };
+  return {
+    ...targetScopeOutput(target),
+    path: scopePath,
+    pattern,
+    matches,
+    skipped,
+    ...(resolvedTarget.kind === "autocorrected"
+      ? {
+          autocorrectedFrom: resolvedTarget.requestedPath,
+          correctionReason: resolvedTarget.correctionReason,
+        }
+      : {}),
+  };
 }
 
 function grepLocalFiles(target: ResolvedFileToolTarget, args: Record<string, unknown>, limits: ResolvedToolLimits) {
@@ -381,8 +557,21 @@ function grepLocalFiles(target: ResolvedFileToolTarget, args: Record<string, unk
   if (!pattern) {
     throw new Error("file.grep requires a non-empty pattern.");
   }
-  const basePath = target.absolutePath;
-  const scopePath = target.displayPath;
+  const resolvedTarget = resolveWorkspaceFileTarget(target, { allowExtensionVariant: true });
+  if (resolvedTarget.kind === "missing") {
+    return {
+      ...targetScopeOutput(target),
+      path: resolvedTarget.requestedPath,
+      pattern,
+      matches: [],
+      truncated: false,
+      skipped: [],
+      missing: true,
+      candidates: resolvedTarget.candidates,
+    };
+  }
+  const basePath = resolvedTarget.absolutePath;
+  const scopePath = resolvedTarget.displayPath;
   const include = typeof args.include === "string" && args.include.trim()
     ? createSearchMatcher(target.anchorRootPath, basePath, args.include)
     : undefined;
@@ -422,12 +611,38 @@ function grepLocalFiles(target: ResolvedFileToolTarget, args: Record<string, unk
       if (haystack.includes(needle)) {
         matches.push({ path: displayPathFor(target, filePath), line: index + 1, text: line });
         if (matches.length >= limit) {
-          return { ...targetScopeOutput(target), path: scopePath, pattern, matches, truncated: true, skipped };
+          return {
+            ...targetScopeOutput(target),
+            path: scopePath,
+            pattern,
+            matches,
+            truncated: true,
+            skipped,
+            ...(resolvedTarget.kind === "autocorrected"
+              ? {
+                  autocorrectedFrom: resolvedTarget.requestedPath,
+                  correctionReason: resolvedTarget.correctionReason,
+                }
+              : {}),
+          };
         }
       }
     }
   }
-  return { ...targetScopeOutput(target), path: scopePath, pattern, matches, truncated: false, skipped };
+  return {
+    ...targetScopeOutput(target),
+    path: scopePath,
+    pattern,
+    matches,
+    truncated: false,
+    skipped,
+    ...(resolvedTarget.kind === "autocorrected"
+      ? {
+          autocorrectedFrom: resolvedTarget.requestedPath,
+          correctionReason: resolvedTarget.correctionReason,
+        }
+      : {}),
+  };
 }
 
 async function writeLocalFile(target: ResolvedFileToolTarget, args: Record<string, unknown>, limits: ResolvedToolLimits) {
@@ -851,7 +1066,7 @@ interface FileReadOutput {
   path: string;
   scope?: ResolvedFileToolTarget["scope"];
   grantId?: string;
-  sizeBytes: number;
+  sizeBytes?: number;
   content?: string;
   binary?: boolean;
   skippedReason?: string;
@@ -860,6 +1075,10 @@ interface FileReadOutput {
   returnedLines?: number;
   totalLines?: number;
   truncated?: boolean;
+  missing?: boolean;
+  candidates?: string[];
+  autocorrectedFrom?: string;
+  correctionReason?: FileTargetCorrectionReason;
 }
 
 function fileReadResultPreview(output: unknown): RuntimeToolResultPreview {
@@ -868,16 +1087,45 @@ function fileReadResultPreview(output: unknown): RuntimeToolResultPreview {
     return { kind: "file.read", summary: "Read file." };
   }
   const labeledPath = previewPathLabel(o.scope, o.path);
+  if (o.missing) {
+    const candidateCount = o.candidates?.length ?? 0;
+    return {
+      kind: "file.read",
+      summary: `Path not found: ${labeledPath}${candidateCount > 0 ? ` (${candidateCount} candidates)` : ""}`,
+      detail: {
+        path: o.path,
+        scope: o.scope,
+        grantId: o.grantId,
+        missing: true,
+        candidateCount,
+        candidates: o.candidates ?? [],
+      },
+      preview: (o.candidates ?? []).slice(0, 20),
+    };
+  }
   if (o.binary) {
-    return { kind: "file.read", summary: `Binary file: ${labeledPath} (${o.sizeBytes} bytes)`, detail: { path: o.path, scope: o.scope, grantId: o.grantId, sizeBytes: o.sizeBytes, binary: true } };
+    return {
+      kind: "file.read",
+      summary: `Binary file: ${labeledPath} (${o.sizeBytes ?? 0} bytes)`,
+      detail: {
+        path: o.path,
+        scope: o.scope,
+        grantId: o.grantId,
+        sizeBytes: o.sizeBytes,
+        binary: true,
+        autocorrectedFrom: o.autocorrectedFrom,
+        correctionReason: o.correctionReason,
+      },
+    };
   }
   const lines = o.returnedLines ?? splitPreservingLineEndings(o.content ?? "").length;
   const rangeSuffix = o.offset !== undefined
     ? ` (lines ${o.offset}-${Math.max(o.offset + lines - 1, o.offset - 1)}${o.truncated ? ", partial" : ""})`
     : "";
+  const correctionPrefix = o.autocorrectedFrom ? `Corrected ${previewPathLabel(o.scope, o.autocorrectedFrom)} -> ` : "";
   return {
     kind: "file.read",
-    summary: `${labeledPath} — ${lines} lines, ${o.sizeBytes} bytes${rangeSuffix}`,
+    summary: `${correctionPrefix}${labeledPath} — ${lines} lines, ${o.sizeBytes ?? 0} bytes${rangeSuffix}`,
     detail: {
       path: o.path,
       scope: o.scope,
@@ -890,6 +1138,8 @@ function fileReadResultPreview(output: unknown): RuntimeToolResultPreview {
       returnedLines: o.returnedLines,
       totalLines: o.totalLines,
       truncated: o.truncated,
+      autocorrectedFrom: o.autocorrectedFrom,
+      correctionReason: o.correctionReason,
     },
     preview: (o.content ?? "").slice(0, 2000),
   };
@@ -924,16 +1174,47 @@ interface FileGlobOutput {
   pattern: string;
   matches?: string[];
   skipped?: unknown[];
+  missing?: boolean;
+  candidates?: string[];
+  autocorrectedFrom?: string;
+  correctionReason?: FileTargetCorrectionReason;
 }
 
 function fileGlobResultPreview(output: unknown): RuntimeToolResultPreview {
   const o = output as FileGlobOutput | undefined;
   const matches = o?.matches ?? [];
   const skipped = (o?.skipped ?? []).length;
+  if (o?.missing) {
+    const candidateCount = o.candidates?.length ?? 0;
+    return {
+      kind: "file.glob",
+      summary: `Path not found: ${previewPathLabel(o.scope, o.path ?? "?")}${candidateCount > 0 ? ` (${candidateCount} candidates)` : ""}`,
+      detail: {
+        path: o.path,
+        scope: o.scope,
+        grantId: o.grantId,
+        pattern: o.pattern,
+        missing: true,
+        candidateCount,
+        candidates: o.candidates ?? [],
+      },
+      preview: (o.candidates ?? []).slice(0, 20),
+    };
+  }
+  const correctionPrefix = o?.autocorrectedFrom ? `Corrected ${previewPathLabel(o.scope, o.autocorrectedFrom)} -> ` : "";
   return {
     kind: "file.glob",
-    summary: `${previewPathLabel(o?.scope, o?.path ?? o?.pattern ?? "?")} — ${matches.length} matches${skipped > 0 ? ` (${skipped} skipped)` : ""}`,
-    detail: { path: o?.path, scope: o?.scope, grantId: o?.grantId, pattern: o?.pattern, matchCount: matches.length, skippedCount: skipped },
+    summary: `${correctionPrefix}${previewPathLabel(o?.scope, o?.path ?? o?.pattern ?? "?")} — ${matches.length} matches${skipped > 0 ? ` (${skipped} skipped)` : ""}`,
+    detail: {
+      path: o?.path,
+      scope: o?.scope,
+      grantId: o?.grantId,
+      pattern: o?.pattern,
+      matchCount: matches.length,
+      skippedCount: skipped,
+      autocorrectedFrom: o?.autocorrectedFrom,
+      correctionReason: o?.correctionReason,
+    },
     preview: matches.slice(0, 20),
   };
 }
@@ -946,18 +1227,151 @@ interface FileGrepOutput {
   matches?: Array<{ path: string; line: number; text: string }>;
   truncated?: boolean;
   skipped?: unknown[];
+  missing?: boolean;
+  candidates?: string[];
+  autocorrectedFrom?: string;
+  correctionReason?: FileTargetCorrectionReason;
 }
 
 function fileGrepResultPreview(output: unknown): RuntimeToolResultPreview {
   const o = output as FileGrepOutput | undefined;
   const matches = o?.matches ?? [];
   const skipped = (o?.skipped ?? []).length;
+  if (o?.missing) {
+    const candidateCount = o.candidates?.length ?? 0;
+    return {
+      kind: "file.grep",
+      summary: `Path not found: ${previewPathLabel(o.scope, o.path ?? "?")}${candidateCount > 0 ? ` (${candidateCount} candidates)` : ""}`,
+      detail: {
+        path: o.path,
+        scope: o.scope,
+        grantId: o.grantId,
+        pattern: o.pattern,
+        missing: true,
+        candidateCount,
+        candidates: o.candidates ?? [],
+      },
+      preview: (o.candidates ?? []).slice(0, 20),
+    };
+  }
+  const correctionPrefix = o?.autocorrectedFrom ? `Corrected ${previewPathLabel(o.scope, o.autocorrectedFrom)} -> ` : "";
   return {
     kind: "file.grep",
-    summary: `"${o?.pattern ?? "?"}" in ${previewPathLabel(o?.scope, o?.path ?? "?")} — ${matches.length} matches${o?.truncated ? " (truncated)" : ""}${skipped > 0 ? ` (${skipped} skipped)` : ""}`,
-    detail: { path: o?.path, scope: o?.scope, grantId: o?.grantId, pattern: o?.pattern, matchCount: matches.length, truncated: o?.truncated, skippedCount: skipped },
+    summary: `"${o?.pattern ?? "?"}" in ${correctionPrefix}${previewPathLabel(o?.scope, o?.path ?? "?")} — ${matches.length} matches${o?.truncated ? " (truncated)" : ""}${skipped > 0 ? ` (${skipped} skipped)` : ""}`,
+    detail: {
+      path: o?.path,
+      scope: o?.scope,
+      grantId: o?.grantId,
+      pattern: o?.pattern,
+      matchCount: matches.length,
+      truncated: o?.truncated,
+      skippedCount: skipped,
+      autocorrectedFrom: o?.autocorrectedFrom,
+      correctionReason: o?.correctionReason,
+    },
     preview: matches.slice(0, 20),
   };
+}
+
+function resolveWorkspaceFileTarget(
+  target: ResolvedFileToolTarget,
+  options: { allowExtensionVariant: boolean },
+): WorkspaceFileTargetResolution {
+  if (!target.workspaceRoot) {
+    return {
+      kind: "exact",
+      absolutePath: target.absolutePath,
+      displayPath: target.displayPath,
+    };
+  }
+  if (fs.existsSync(target.absolutePath)) {
+    return {
+      kind: "exact",
+      absolutePath: target.absolutePath,
+      displayPath: target.displayPath,
+    };
+  }
+  const candidates = findWorkspaceFileTargetCandidates(target, options);
+  if (candidates.length === 1) {
+    return {
+      kind: "autocorrected",
+      absolutePath: candidates[0]!.absolutePath,
+      displayPath: candidates[0]!.displayPath,
+      requestedPath: target.displayPath,
+      correctionReason: candidates[0]!.correctionReason,
+    };
+  }
+  return {
+    kind: "missing",
+    requestedPath: target.displayPath,
+    candidates: candidates.map((candidate) => candidate.displayPath),
+  };
+}
+
+function findWorkspaceFileTargetCandidates(
+  target: ResolvedFileToolTarget,
+  options: { allowExtensionVariant: boolean },
+): WorkspaceFileTargetCandidate[] {
+  const parentPath = path.dirname(target.absolutePath);
+  if (!fs.existsSync(parentPath)) {
+    return [];
+  }
+  let parentStat: fs.Stats;
+  try {
+    parentStat = fs.statSync(parentPath);
+  } catch {
+    return [];
+  }
+  if (!parentStat.isDirectory()) {
+    return [];
+  }
+  const requestedBase = path.basename(target.absolutePath);
+  const requestedParsed = path.parse(requestedBase);
+  const requestedBaseLower = requestedBase.toLowerCase();
+  const requestedNameLower = requestedParsed.name.toLowerCase();
+  const requestedExtLower = requestedParsed.ext.toLowerCase();
+  const candidates: WorkspaceFileTargetCandidate[] = [];
+  const seen = new Set<string>();
+  for (const entry of fs.readdirSync(parentPath, { withFileTypes: true })) {
+    if (!entry.isFile()) {
+      continue;
+    }
+    const candidatePath = path.join(parentPath, entry.name);
+    const candidateDisplayPath = displayPathFor(target, candidatePath);
+    const candidateKey = candidateDisplayPath.toLowerCase();
+    if (seen.has(candidateKey)) {
+      continue;
+    }
+    const candidateParsed = path.parse(entry.name);
+    if (entry.name.toLowerCase() === requestedBaseLower && entry.name !== requestedBase) {
+      candidates.push({
+        absolutePath: candidatePath,
+        displayPath: candidateDisplayPath,
+        correctionReason: "case_mismatch",
+      });
+      seen.add(candidateKey);
+      continue;
+    }
+    if (
+      options.allowExtensionVariant
+      && requestedExtLower.length > 0
+      && candidateParsed.name.toLowerCase() === requestedNameLower
+      && candidateParsed.ext.toLowerCase() !== requestedExtLower
+    ) {
+      candidates.push({
+        absolutePath: candidatePath,
+        displayPath: candidateDisplayPath,
+        correctionReason: "extension_variant",
+      });
+      seen.add(candidateKey);
+    }
+  }
+  return candidates.sort((left, right) => {
+    if (left.correctionReason !== right.correctionReason) {
+      return left.correctionReason === "case_mismatch" ? -1 : 1;
+    }
+    return left.displayPath.localeCompare(right.displayPath);
+  });
 }
 
 function fileWriteResultPreview(fileChange: RuntimeFileChangeMetadata | undefined, args: Record<string, unknown>): RuntimeToolResultPreview {

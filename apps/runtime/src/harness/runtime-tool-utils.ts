@@ -220,7 +220,7 @@ export interface ResolvedFileToolTarget {
   displayPath: string;
   workspaceRoot?: string;
   anchorRootPath: string;
-  scopeLabel: "project" | "temporary_directory" | "approved_host_directory";
+  scopeLabel: "project" | "temporary_directory" | "approved_host_directory" | "external_file";
 }
 
 export function resolveFileToolTarget(params: {
@@ -232,15 +232,33 @@ export function resolveFileToolTarget(params: {
   const scope = fileAccessScopeFromArgs(params.args);
   if (scope === "workspace") {
     const rootPath = requireWorkspaceRoot(params.workspace);
-    const absolutePath = resolveWorkspacePath(rootPath, params.args.path);
-    return {
-      scope,
-      absolutePath,
-      displayPath: relativeWorkspacePath(rootPath, absolutePath),
-      workspaceRoot: rootPath,
-      anchorRootPath: rootPath,
-      scopeLabel: "project",
-    };
+    try {
+      const absolutePath = resolveWorkspacePath(rootPath, params.args.path);
+      return {
+        scope,
+        absolutePath,
+        displayPath: relativeWorkspacePath(rootPath, absolutePath),
+        workspaceRoot: rootPath,
+        anchorRootPath: rootPath,
+        scopeLabel: "project",
+      };
+    } catch (innerError) {
+      // 仅读操作 + 已存在的绝对路径 = 允许越界
+      if (isReadCapability(params.capability)) {
+        const lenientPath = resolveLenientExternalPath(params.args.path);
+        if (lenientPath) {
+          return {
+            scope,
+            absolutePath: lenientPath,
+            displayPath: lenientPath,
+            workspaceRoot: rootPath,
+            anchorRootPath: rootPath,
+            scopeLabel: "external_file",
+          };
+        }
+      }
+      throw innerError;
+    }
   }
 
   const hostState = normalizeHostFilesystemState(params.hostFilesystem);
@@ -394,6 +412,18 @@ export function parseHttpUrl(value: unknown, toolName: string): string {
     throw new Error(`${toolName} only supports http and https URLs.`);
   }
   return parsed.href;
+}
+
+function isReadCapability(capability: HostFilesystemCapability): boolean {
+  return capability === "read" || capability === "list" || capability === "search";
+}
+
+function resolveLenientExternalPath(requestedPath: unknown): string | undefined {
+  if (typeof requestedPath !== "string" || !requestedPath.trim()) return undefined;
+  if (!path.isAbsolute(requestedPath.trim())) return undefined;
+  const resolved = path.resolve(requestedPath.trim());
+  if (!fs.existsSync(resolved)) return undefined;
+  return resolved;
 }
 
 export function readPositiveInt(value: unknown, fallback: number, max: number): number {

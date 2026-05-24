@@ -1,7 +1,7 @@
 import { ActionApprovalRequestCopySchema } from "@cemeworm/shared";
 import { AgentSpawnContractSchema } from "@cemeworm/shared";
 import { resolveToolPermission } from "@cemeworm/shared";
-import type { ActionApprovalRequestCopy, ActionRiskLevel, AgentResultContract, AgentSpawnContract, AgentToolBundleId, HostFilesystemState, ModeToolLimits, PermissionProfile, RuntimeToolResultPreview, SearchProviderConfig, SkillDescriptor, SkillDetail, SkillListParams, TaskIntent, ToolDescriptor, ToolPermission } from "@cemeworm/shared";
+import type { ActionApprovalRequestCopy, ActionRiskLevel, AgentResultContract, AgentSpawnContract, AgentToolBundleId, HostFilesystemState, ModeToolLimits, PendingClarificationOption, PermissionProfile, RuntimeToolResultPreview, SearchProviderConfig, SkillDescriptor, SkillDetail, SkillListParams, TaskIntent, ToolDescriptor, ToolPermission } from "@cemeworm/shared";
 import type { PackageManager } from "../package-manager.js";
 import type { ModelToolDefinition } from "../providers/index.js";
 import type { RuntimeToolDefinition } from "./capability-registries.js";
@@ -136,6 +136,7 @@ export interface RuntimeToolExecutionResult {
 export interface RuntimeToolExecutionContext {
   currentAgentId?: string;
   currentNodeId?: string;
+  currentNodeLabel?: string;
   workspace: unknown;
   hostFilesystem?: HostFilesystemState;
   fetchImpl: typeof fetch;
@@ -181,6 +182,17 @@ export interface RuntimeToolExecutionContext {
   }) => Promise<unknown>;
   /** Enqueue a message to be delivered to an agent on its next invocation. */
   enqueueMessage?: (params: { to: string; message: string; invokingAgentId?: string }) => void;
+  /** Read a previously provided clarification answer for the current run. */
+  clarificationAnswer?: (key: string, id: string) => unknown;
+  /** Request clarification using the runtime's existing clarification gate. */
+  ensureClarification?: (params: {
+    id: string;
+    key: string;
+    nodeId: string;
+    nodeLabel: string;
+    question: string;
+    options?: PendingClarificationOption[];
+  }) => Promise<unknown>;
   /** Computer use backend manager for GUI automation tools. */
   computerBackendManager?: ComputerBackendManager;
 }
@@ -189,6 +201,9 @@ export interface RuntimeToolExecutionOptions {
   allowRisky?: boolean;
   currentAgentId?: string;
   currentNodeId?: string;
+  currentNodeLabel?: string;
+  clarificationAnswer?: RuntimeToolExecutionContext["clarificationAnswer"];
+  ensureClarification?: RuntimeToolExecutionContext["ensureClarification"];
   signal?: AbortSignal;
 }
 
@@ -654,9 +669,9 @@ export class RuntimeToolExecutor {
       "Incorrect: wrapping the JSON in explanations, greetings, or markdown outside the code block.",
       "Use the function calling / tool use protocol provided by the platform. Do not describe tool calls in prose — actually invoke them.",
       rootPath && hasHostAccess
-        ? "Workspace file tools are rooted inside the selected project folder. Host file access is also available for explicitly scoped /tmp or approved host directories granted to this run."
+        ? "Workspace file tools are rooted inside the selected project folder; absolute paths can also read files outside the project. Host file access is also available for explicitly scoped /tmp or approved host directories granted to this run."
         : rootPath
-          ? "Workspace file tools are rooted inside the selected project folder. Host file access is unavailable unless this run received explicit /tmp or approved host directory grants."
+          ? "Workspace file tools are rooted inside the selected project folder; absolute paths can also read files outside the project. Host file access is unavailable unless this run received explicit /tmp or approved host directory grants."
           : hasHostAccess
           ? "Workspace file tools require a selected project folder. Host file access is available only for explicitly scoped /tmp or approved host directories."
           : "Workspace file tools require a selected project folder. Host file access is unavailable unless the run received /tmp or approved host directory grants.",
@@ -723,10 +738,11 @@ export class RuntimeToolExecutor {
       if (!definition?.execute) {
         throw new Error(`Unsupported runtime tool: ${effectiveCall.tool}`);
       }
+      const context = this.executionContext(options);
       const preparedArgs = definition.prepareArguments
-        ? definition.prepareArguments(effectiveCall.args, this.executionContext(options))
+        ? definition.prepareArguments(effectiveCall.args, context)
         : effectiveCall.args;
-      let result = toRuntimeToolExecutionResult(await definition.execute(preparedArgs, this.executionContext(options)));
+      let result = toRuntimeToolExecutionResult(await definition.execute(preparedArgs, context));
       if (definition.resultPreview) {
         result = { ...result, resultPreview: definition.resultPreview(result, preparedArgs) };
       }
@@ -814,6 +830,7 @@ export class RuntimeToolExecutor {
     return {
       currentAgentId: options.currentAgentId,
       currentNodeId: options.currentNodeId,
+      currentNodeLabel: options.currentNodeLabel,
       workspace: this.workspace,
       hostFilesystem: this.hostFilesystem,
       fetchImpl: this.fetchImpl,
@@ -835,6 +852,8 @@ export class RuntimeToolExecutor {
       spawnAgent: this.spawnAgentCallback,
       waitForAgents: this.waitForAgentsCallback,
       enqueueMessage: this.enqueueMessageCallback,
+      clarificationAnswer: options.clarificationAnswer,
+      ensureClarification: options.ensureClarification,
       computerBackendManager: this.computerBackendManager,
     };
   }

@@ -6,6 +6,7 @@ import type { RuntimeToolExecutionContext, RuntimeToolExecutionResult } from "./
 import { continuationHandlerRegistry } from "./approved-tool-continuation-handler.js";
 
 const FILE_CONTINUABLE_TOOL_IDS = new Set<string>([
+  "file.read",
   "file.write",
   "file.patch",
   "file.apply_patch",
@@ -39,7 +40,15 @@ class FileContinuationHandler implements ApprovedToolContinuationHandler {
     });
     return executor.executeWithMetadata(
       { tool: action.type as RuntimeToolId, args },
-      { allowRisky },
+      {
+        allowRisky,
+        currentAgentId: context.currentAgentId,
+        currentNodeId: context.currentNodeId,
+        currentNodeLabel: context.currentNodeLabel,
+        clarificationAnswer: context.clarificationAnswer,
+        ensureClarification: context.ensureClarification,
+        signal: context.signal,
+      },
     );
   }
 
