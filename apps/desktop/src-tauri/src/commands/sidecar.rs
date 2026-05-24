@@ -10,6 +10,7 @@ use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -260,22 +261,34 @@ impl RuntimeSidecarManager {
 
         self.ensure_channel_daemon(app);
         let command = self.configured_command.clone()?;
-        if is_cancel_runtime_method(&request.method) {
+        let strategy = bridge_execution_strategy(&request.method);
+        if matches!(strategy, BridgeExecutionStrategy::PriorityOneShot) {
             if let Some(run_id) = request_run_id(request) {
                 self.active_streaming_children.kill_run(&run_id);
             }
         }
-        let response = if is_cancel_runtime_method(&request.method) {
-            run_process_json_rpc_internal(&command, request, None, None)
-        } else if is_streaming_runtime_method(&request.method) {
-            run_streaming_process_json_rpc_for_app(
+        let response = match strategy {
+            BridgeExecutionStrategy::PriorityOneShot => {
+                run_process_json_rpc_internal(&command, request, None, None)
+            }
+            BridgeExecutionStrategy::StreamingOneShot => run_streaming_process_json_rpc_for_app(
                 &command,
                 request,
                 app,
                 self.active_streaming_children.clone(),
-            )
-        } else {
-            self.run_persistent_process_json_rpc(&command, request, dispatch)
+            ),
+            BridgeExecutionStrategy::LatencySensitiveWhenBusy
+                if matches!(
+                    dispatch.priority,
+                    RuntimeRpcPriority::Interactive | RuntimeRpcPriority::Urgent
+                ) && self.request_bridge_is_busy() =>
+            {
+                run_process_json_rpc_internal(&command, request, None, None)
+            }
+            BridgeExecutionStrategy::LatencySensitiveWhenBusy
+            | BridgeExecutionStrategy::Persistent => {
+                self.run_persistent_process_json_rpc(&command, request, dispatch)
+            }
         };
         match response {
             Ok(response) => {
@@ -332,6 +345,14 @@ impl RuntimeSidecarManager {
                 })),
             )
         })?
+    }
+
+    fn request_bridge_is_busy(&self) -> bool {
+        self.request_bridge
+            .lock()
+            .ok()
+            .and_then(|bridge_slot| bridge_slot.as_ref().map(RequestBridgeHandle::is_busy))
+            .unwrap_or(false)
     }
 
     fn disable_process_bridge(&self) {
@@ -548,14 +569,17 @@ impl Drop for PersistentJsonRpcChild {
 #[derive(Clone)]
 struct RequestBridgeHandle {
     tx: mpsc::Sender<RequestBridgeEnvelope>,
+    pending_count: Arc<AtomicUsize>,
 }
 
 impl RequestBridgeHandle {
     fn spawn(command: RuntimeCommandSpec) -> Result<Self, RuntimeJsonRpcError> {
         let (tx, rx) = mpsc::channel::<RequestBridgeEnvelope>();
+        let pending_count = Arc::new(AtomicUsize::new(0));
+        let pending_count_for_actor = pending_count.clone();
         thread::Builder::new()
             .name("ora-runtime-request-bridge".to_string())
-            .spawn(move || run_request_bridge_actor(command, rx))
+            .spawn(move || run_request_bridge_actor(command, rx, pending_count_for_actor))
             .map_err(|error| {
                 runtime_error(
                     -32058,
@@ -563,19 +587,25 @@ impl RequestBridgeHandle {
                     Some(json!({ "error": error.to_string() })),
                 )
             })?;
-        Ok(Self { tx })
+        Ok(Self { tx, pending_count })
     }
 
     fn enqueue(&self, message: RequestBridgeMessage) -> Result<(), RuntimeJsonRpcError> {
+        self.pending_count.fetch_add(1, AtomicOrdering::SeqCst);
         self.tx
             .send(RequestBridgeEnvelope::Request(message))
             .map_err(|error| {
+                self.pending_count.fetch_sub(1, AtomicOrdering::SeqCst);
                 runtime_error(
                     -32058,
                     "Runtime sidecar request bridge enqueue failed",
                     Some(json!({ "error": error.to_string() })),
                 )
             })
+    }
+
+    fn is_busy(&self) -> bool {
+        self.pending_count.load(AtomicOrdering::SeqCst) > 0
     }
 }
 
@@ -592,6 +622,7 @@ enum RequestBridgeEnvelope {
 fn run_request_bridge_actor(
     command: RuntimeCommandSpec,
     rx: mpsc::Receiver<RequestBridgeEnvelope>,
+    pending_count: Arc<AtomicUsize>,
 ) {
     let mut child: Option<PersistentJsonRpcChild> = None;
     let mut urgent = Vec::<RequestBridgeMessage>::new();
@@ -627,10 +658,11 @@ fn run_request_bridge_actor(
         let result = request_via_persistent_child(&command, &mut child, &message.request);
         let bridge_failed = result.is_err();
         let _ = message.response_tx.send(result);
+        pending_count.fetch_sub(1, AtomicOrdering::SeqCst);
         if bridge_failed {
-            drain_request_queue_with_bridge_error(&mut urgent);
-            drain_request_queue_with_bridge_error(&mut interactive);
-            drain_request_queue_with_bridge_error(&mut background);
+            drain_request_queue_with_bridge_error(&mut urgent, &pending_count);
+            drain_request_queue_with_bridge_error(&mut interactive, &pending_count);
+            drain_request_queue_with_bridge_error(&mut background, &pending_count);
             break;
         }
     }
@@ -698,9 +730,13 @@ fn request_via_persistent_child(
     ))
 }
 
-fn drain_request_queue_with_bridge_error(queue: &mut Vec<RequestBridgeMessage>) {
+fn drain_request_queue_with_bridge_error(
+    queue: &mut Vec<RequestBridgeMessage>,
+    pending_count: &Arc<AtomicUsize>,
+) {
     let pending = std::mem::take(queue);
     for message in pending {
+        pending_count.fetch_sub(1, AtomicOrdering::SeqCst);
         let _ = message.response_tx.send(Err(runtime_error(
             -32058,
             "Runtime sidecar request bridge failed",
@@ -3724,6 +3760,31 @@ fn is_cancel_runtime_method(method: &str) -> bool {
     matches!(method, "runs.cancel" | "flows.cancel")
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BridgeExecutionStrategy {
+    Persistent,
+    StreamingOneShot,
+    PriorityOneShot,
+    LatencySensitiveWhenBusy,
+}
+
+fn bridge_execution_strategy(method: &str) -> BridgeExecutionStrategy {
+    if is_cancel_runtime_method(method) {
+        return BridgeExecutionStrategy::PriorityOneShot;
+    }
+    if is_streaming_runtime_method(method) {
+        return BridgeExecutionStrategy::StreamingOneShot;
+    }
+    if is_latency_sensitive_runtime_method(method) {
+        return BridgeExecutionStrategy::LatencySensitiveWhenBusy;
+    }
+    BridgeExecutionStrategy::Persistent
+}
+
+fn is_latency_sensitive_runtime_method(method: &str) -> bool {
+    matches!(method, "sessions.create" | "sessions.get")
+}
+
 fn run_streaming_process_json_rpc_for_app(
     command: &RuntimeCommandSpec,
     request: &RuntimeJsonRpcRequest,
@@ -6596,6 +6657,13 @@ mod tests {
         }
     }
 
+    fn urgent_dispatch() -> RuntimeRpcDispatchOptions {
+        RuntimeRpcDispatchOptions {
+            priority: RuntimeRpcPriority::Urgent,
+            tag: Some("test-urgent".to_string()),
+        }
+    }
+
     fn process_bridge_manager(
         command: RuntimeCommandSpec,
         available: bool,
@@ -7131,6 +7199,160 @@ mod tests {
         assert_eq!(manager.active_streaming_children.len(), 0);
 
         let _ = busy.join();
+        manager.cleanup_streaming_children();
+    }
+
+    #[test]
+    fn interactive_session_create_uses_one_shot_bridge_when_persistent_bridge_is_busy() {
+        let manager = Arc::new(process_bridge_manager(
+            RuntimeCommandSpec::new(
+                "sh -c busy-session-create-json-rpc",
+                "sh",
+                vec![
+                    "-c".to_string(),
+                    "read line; if printf '%s' \"$line\" | grep -q 'sessions.create'; then printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"kind\":\"interactive-create\"}}'; else sleep 2; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"kind\":\"busy-finished\"}}'; fi".to_string(),
+                ],
+                None,
+                Vec::new(),
+            ),
+            true,
+        ));
+
+        let busy_manager = manager.clone();
+        let busy = thread::spawn(move || {
+            busy_manager.try_process_json_rpc(&request("sessions.list", None), None, background_dispatch())
+        });
+        thread::sleep(Duration::from_millis(100));
+
+        let started = std::time::Instant::now();
+        let response = manager
+            .try_process_json_rpc(&request("sessions.create", None), None, interactive_dispatch())
+            .expect("interactive sessions.create should bypass the busy persistent bridge");
+
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "interactive sessions.create should not wait for the busy persistent bridge"
+        );
+        assert_eq!(response.result.unwrap()["kind"], json!("interactive-create"));
+
+        let _ = busy.join();
+        manager.cleanup_streaming_children();
+    }
+
+    #[test]
+    fn interactive_session_get_uses_one_shot_bridge_when_persistent_bridge_is_busy() {
+        let manager = Arc::new(process_bridge_manager(
+            RuntimeCommandSpec::new(
+                "sh -c busy-session-get-json-rpc",
+                "sh",
+                vec![
+                    "-c".to_string(),
+                    "read line; if printf '%s' \"$line\" | grep -q 'sessions.get'; then printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"kind\":\"interactive-get\"}}'; else sleep 2; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"kind\":\"busy-finished\"}}'; fi".to_string(),
+                ],
+                None,
+                Vec::new(),
+            ),
+            true,
+        ));
+
+        let busy_manager = manager.clone();
+        let busy = thread::spawn(move || {
+            busy_manager.try_process_json_rpc(&request("sessions.list", None), None, background_dispatch())
+        });
+        thread::sleep(Duration::from_millis(100));
+
+        let started = std::time::Instant::now();
+        let response = manager
+            .try_process_json_rpc(
+                &request("sessions.get", Some(json!({ "sessionId": "session-1" }))),
+                None,
+                urgent_dispatch(),
+            )
+            .expect("interactive sessions.get should bypass the busy persistent bridge");
+
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "interactive sessions.get should not wait for the busy persistent bridge"
+        );
+        assert_eq!(response.result.unwrap()["kind"], json!("interactive-get"));
+
+        let _ = busy.join();
+        manager.cleanup_streaming_children();
+    }
+
+    #[test]
+    fn background_session_get_stays_on_persistent_bridge_when_busy() {
+        let manager = Arc::new(process_bridge_manager(
+            RuntimeCommandSpec::new(
+                "sh -c busy-background-session-get-json-rpc",
+                "sh",
+                vec![
+                    "-c".to_string(),
+                    "read line; if printf '%s' \"$line\" | grep -q 'sessions.get'; then sleep 1; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"kind\":\"background-get\"}}'; else sleep 1; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"kind\":\"background-list\"}}'; fi".to_string(),
+                ],
+                None,
+                Vec::new(),
+            ),
+            true,
+        ));
+
+        let busy_manager = manager.clone();
+        let busy = thread::spawn(move || {
+            busy_manager.try_process_json_rpc(&request("sessions.list", None), None, background_dispatch())
+        });
+        thread::sleep(Duration::from_millis(100));
+
+        let started = std::time::Instant::now();
+        let response = manager
+            .try_process_json_rpc(
+                &request("sessions.get", Some(json!({ "sessionId": "session-1" }))),
+                None,
+                background_dispatch(),
+            )
+            .expect("background sessions.get should stay on the persistent bridge");
+
+        assert!(
+            started.elapsed() >= Duration::from_millis(1800),
+            "background sessions.get should wait behind the busy persistent bridge"
+        );
+        assert_eq!(response.result.unwrap()["kind"], json!("background-get"));
+        assert_eq!(
+            busy.join().unwrap().unwrap().result.unwrap()["kind"],
+            json!("background-list")
+        );
+
+        manager.cleanup_streaming_children();
+    }
+
+    #[test]
+    fn idle_session_get_reuses_persistent_bridge() {
+        let manager = process_bridge_manager(
+            RuntimeCommandSpec::new(
+                "sh -c idle-session-get-json-rpc",
+                "sh",
+                vec![
+                    "-c".to_string(),
+                    "while read line; do printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"kind\":\"persistent-idle\"}}'; done".to_string(),
+                ],
+                None,
+                Vec::new(),
+            ),
+            true,
+        );
+
+        assert!(!manager.request_bridge_is_busy());
+        let response = manager
+            .try_process_json_rpc(
+                &request("sessions.get", Some(json!({ "sessionId": "session-1" }))),
+                None,
+                interactive_dispatch(),
+            )
+            .expect("idle sessions.get should succeed");
+
+        assert_eq!(response.result.unwrap()["kind"], json!("persistent-idle"));
+        assert!(manager.has_request_bridge());
+        assert!(!manager.request_bridge_is_busy());
+
         manager.cleanup_streaming_children();
     }
 
