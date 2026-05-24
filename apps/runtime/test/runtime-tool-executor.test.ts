@@ -633,6 +633,21 @@ describe("RuntimeToolExecutor", () => {
     expect(prompt).toContain("Use skills.get");
   });
 
+  it("tells agents to keep repo-grounded findings evidence-bound when tool evidence is partial", () => {
+    const { workspace } = createWorkspace();
+    const executor = new RuntimeToolExecutor({ workspace, toolDescriptors: MVP_TOOLS });
+
+    const prompt = executor.systemPrompt(["file.read", "file.list", "file.grep"]) ?? "";
+
+    expect(prompt).toContain("If local tool evidence only supports repository-specific findings");
+    expect(prompt).toContain("ask a narrow clarification instead of generalizing");
+    expect(prompt).toContain("Do not treat the presence of a dependency");
+    expect(prompt).toContain("start with the highest-signal artifacts first");
+    expect(prompt).toContain("Only if those are insufficient should you add a few recent dated task journals");
+    expect(prompt).toContain("target at most 1-2 recent artifacts");
+    expect(prompt).toContain("Package manifests, release metadata, directory listings, and dependency declarations are weak clues");
+  });
+
   it("extracts XML-wrapped tool calls from provider text", () => {
     expect(extractRuntimeToolCallFromText(
       "<tool_call>\n{\"tool\":\"file.read\",\"args\":{\"path\":\"10-Wiki/项目/西芒杜项目.md\"}}\n</tool_call>",
@@ -640,6 +655,44 @@ describe("RuntimeToolExecutor", () => {
     )).toEqual({
       tool: "file.read",
       args: { path: "10-Wiki/项目/西芒杜项目.md" },
+    });
+  });
+
+  it("extracts inline JSON tool calls with nested args objects", () => {
+    expect(extractRuntimeToolCallFromText(
+      "<thinking>inspect workspace</thinking>\n{\"tool\":\"file.list\",\"args\":{\"path\":\".\"}}",
+      ["file.list"],
+    )).toEqual({
+      tool: "file.list",
+      args: { path: "." },
+    });
+  });
+
+  it("extracts nested inline JSON tool calls wrapped in tool_set text", () => {
+    expect(extractRuntimeToolCallFromText(
+      "<tool_set>\n{\"tool\":\"file.list\",\"args\":{\"path\":\".\",\"options\":{\"recursive\":false}}}\n</tool_set>",
+      ["file.list"],
+    )).toEqual({
+      tool: "file.list",
+      args: { path: ".", options: { recursive: false } },
+    });
+  });
+
+  it("extracts inline JSON tool calls that place parameters at the top level", () => {
+    expect(extractRuntimeToolCallFromText(
+      "{\"tool\":\"web.search\",\"query\":\"Deno 2.0 vs Node.js 22 comparison 2025\"}",
+      ["web.search"],
+    )).toEqual({
+      tool: "web.search",
+      args: { query: "Deno 2.0 vs Node.js 22 comparison 2025" },
+    });
+
+    expect(extractRuntimeToolCallFromText(
+      "{\"tool\":\"web.fetch\",\"url\":\"https://deno.com/blog/v2.0\"}",
+      ["web.fetch"],
+    )).toEqual({
+      tool: "web.fetch",
+      args: { url: "https://deno.com/blog/v2.0" },
     });
   });
 
@@ -684,6 +737,16 @@ describe("RuntimeToolExecutor", () => {
       expect.objectContaining({ path: "src/alpha.ts", line: 1 }),
       expect.objectContaining({ path: "src/beta.ts", line: 1 }),
     ]));
+  });
+
+  it("reports missing file.read targets as a recoverable tool error", async () => {
+    const { workspace } = createWorkspace();
+    const executor = new RuntimeToolExecutor({ workspace, toolDescriptors: MVP_TOOLS });
+
+    await expect(executor.execute({
+      tool: "file.read",
+      args: { path: "src/missing.ts" },
+    })).rejects.toThrow("file.read target not found: src/missing.ts");
   });
 
   it("reads a file range with line offset and limit", async () => {
@@ -766,6 +829,52 @@ describe("RuntimeToolExecutor", () => {
 
     expect(scopedGlob.matches.sort()).toEqual(["src/alpha.ts", "src/beta.ts"]);
     expect(scopedGrep.matches.map((match) => match.path).sort()).toEqual(["src/alpha.ts", "src/beta.ts"]);
+  });
+
+  it("matches workspace-root files for **-prefixed glob and grep includes", async () => {
+    const { rootPath, workspace } = createWorkspace();
+    fs.writeFileSync(path.join(rootPath, "package.json"), JSON.stringify({ version: "1.0.0" }, null, 2), "utf8");
+    const executor = new RuntimeToolExecutor({ workspace, toolDescriptors: MVP_TOOLS });
+
+    const glob = await executor.execute({
+      tool: "file.glob",
+      args: { pattern: "**/package.json" },
+    }) as { matches: string[] };
+    const grep = await executor.execute({
+      tool: "file.grep",
+      args: { pattern: "\"version\"", include: "**/package.json" },
+    }) as { matches: Array<{ path: string; line: number; text: string }> };
+
+    expect(glob.matches).toContain("package.json");
+    expect(grep.matches).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: "package.json" }),
+    ]));
+  });
+
+  it("supports brace expansion in file search globs", async () => {
+    const { rootPath, workspace } = createWorkspace();
+    fs.writeFileSync(path.join(rootPath, "package.json"), JSON.stringify({ version: "1.0.0" }, null, 2), "utf8");
+    fs.writeFileSync(path.join(rootPath, "src", "gamma.js"), "module.exports = {};\n", "utf8");
+    const executor = new RuntimeToolExecutor({ workspace, toolDescriptors: MVP_TOOLS });
+
+    const glob = await executor.execute({
+      tool: "file.glob",
+      args: { pattern: "**/*.{ts,js,json}" },
+    }) as { matches: string[] };
+    const grep = await executor.execute({
+      tool: "file.grep",
+      args: { pattern: "version", include: "**/*.{ts,js,json}" },
+    }) as { matches: Array<{ path: string }> };
+
+    expect(glob.matches).toEqual(expect.arrayContaining([
+      "package.json",
+      "src/alpha.ts",
+      "src/beta.ts",
+      "src/gamma.js",
+    ]));
+    expect(grep.matches).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: "package.json" }),
+    ]));
   });
 
   it("reports missing file.list targets as ordinary empty results", async () => {

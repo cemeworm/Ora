@@ -2026,6 +2026,13 @@ describe("session thread runtime behavior", () => {
       content: "First turn",
       runId: forked.turns[0]?.runId,
     });
+    expect(forked.transcript[1]).toMatchObject({
+      role: "assistant",
+      runId: forked.turns[0]?.runId,
+    });
+    expect(forked.session.status).toBe("succeeded");
+    expect(forked.turns[0]?.status).toBe("succeeded");
+    expect(forked.latestSnapshot?.status).toBe("succeeded");
 
     expect(sourceDetail.turns).toHaveLength(2);
     expect(sourceDetail.turns[0]?.runId).toBe(first.runId);
@@ -2150,6 +2157,9 @@ describe("session thread runtime behavior", () => {
     });
     expect(forkedRun.toolResults[0]?.resultToolCallId).toBe(`${forkedRun.runId}:tool-call-0`);
     expect(forkedRun.policyDecisions[0]?.actionId).toBe(`${forkedRun.runId}:action-0`);
+    expect(forkedRun.status).toBe("succeeded");
+    expect(forkedRun.actions[0]?.status).toBe("succeeded");
+    expect(forkedRun.toolCalls[0]?.status).toBe("succeeded");
   });
 
   it("persists branch created, candidate started, and dismissed facts in the session ledger", async () => {

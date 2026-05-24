@@ -135,11 +135,209 @@ export function shouldBlockFinalForFreshnessPolicy(params: {
   return policyResult.action === "search_web";
 }
 
+export function shouldBlockFinalForReadContextPolicy(params: {
+  enabled: boolean;
+  prompt: string;
+  toolCalls: readonly OraToolCallEnvelope[];
+  currentTaskState?: Partial<CausalTaskState>;
+  toolCallCount: number;
+  clarificationCount: number;
+  hasUnresolvedPlanItems: boolean;
+  responseText: string;
+  routerVersion: "v1" | "v2";
+}): boolean {
+  if (!params.enabled || params.routerVersion !== "v2") return false;
+  if (hasReadContextEvidence(params.toolCalls)) return false;
+  const policyResult = routeIntervention({
+    surfaceRequest: params.prompt,
+    taskState: params.currentTaskState,
+    proposedToolId: undefined,
+    proposedToolRisk: "low",
+    toolCallCount: params.toolCallCount,
+    clarificationCount: params.clarificationCount,
+    hasPendingApprovals: false,
+    hasPendingPlanDecisions: false,
+    hasUnresolvedPlanItems: params.hasUnresolvedPlanItems,
+    modelResponseText: params.responseText,
+    routerVersion: params.routerVersion,
+  });
+  return policyResult.action === "read_context";
+}
+
+export function shouldRepairReadContextDiagnosisWithoutEvidence(params: {
+  enabled: boolean;
+  prompt: string;
+  toolCalls: readonly OraToolCallEnvelope[];
+  currentTaskState?: Partial<CausalTaskState>;
+  toolCallCount: number;
+  clarificationCount: number;
+  hasUnresolvedPlanItems: boolean;
+  responseText: string;
+  routerVersion: "v1" | "v2";
+  readContextPolicyRepairUsed: boolean;
+}): boolean {
+  if (!params.readContextPolicyRepairUsed) return false;
+  if (!params.enabled || params.routerVersion !== "v2") return false;
+  if (!isDiagnosisReadContextPrompt(params.prompt)) return false;
+  if (hasReadContextEvidence(params.toolCalls)) return false;
+  const policyResult = routeIntervention({
+    surfaceRequest: params.prompt,
+    taskState: params.currentTaskState,
+    proposedToolId: undefined,
+    proposedToolRisk: "low",
+    toolCallCount: params.toolCallCount,
+    clarificationCount: params.clarificationCount,
+    hasPendingApprovals: false,
+    hasPendingPlanDecisions: false,
+    hasUnresolvedPlanItems: params.hasUnresolvedPlanItems,
+    modelResponseText: params.responseText,
+    routerVersion: params.routerVersion,
+  });
+  return policyResult.action === "read_context";
+}
+
+function isDiagnosisReadContextPrompt(prompt: string): boolean {
+  return /连接池|数据库|报错|错误|异常|故障|排查|诊断|日志|堆栈|连接泄漏|连接耗尽/u.test(prompt);
+}
+
+function isManifestLikePath(path: string): boolean {
+  const normalized = path.trim().toLowerCase();
+  return normalized.endsWith("package.json")
+    || normalized.endsWith("package-lock.json")
+    || normalized.endsWith("pnpm-lock.yaml")
+    || normalized.endsWith("yarn.lock")
+    || normalized.endsWith("bun.lock")
+    || normalized.endsWith("bun.lockb")
+    || normalized.endsWith("deno.json")
+    || normalized.endsWith("deno.jsonc")
+    || normalized.endsWith("tsconfig.json");
+}
+
+function grepProducedMatches(call: OraToolCallEnvelope): boolean {
+  if (call.toolId !== "file.grep") return false;
+  const output = call.result?.output;
+  if (!output || typeof output !== "object" || Array.isArray(output)) return false;
+  const matches = (output as { matches?: unknown }).matches;
+  return Array.isArray(matches) && matches.length > 0;
+}
+
+function hasManifestReadEvidence(toolCalls: readonly OraToolCallEnvelope[]): boolean {
+  return toolCalls.some((call) => {
+    if (!(call.status === "succeeded" || call.status === "repaired")) {
+      return false;
+    }
+    if (call.toolId !== "file.read") return false;
+    const path = typeof call.args?.path === "string" ? call.args.path : "";
+    return path.length > 0 && isManifestLikePath(path);
+  });
+}
+
+function readProducedDiagnosisSignal(call: OraToolCallEnvelope): boolean {
+  if (call.toolId !== "file.read") return false;
+  const output = call.result?.output;
+  if (!output || typeof output !== "object" || Array.isArray(output)) return false;
+  const content = typeof (output as { content?: unknown }).content === "string"
+    ? (output as { content: string }).content
+    : "";
+  const path = typeof call.args?.path === "string" ? call.args.path : "";
+  const haystack = `${path}\n${content}`;
+  return /\b(prisma|sequelize|typeorm|drizzle|knex|better-sqlite3|sqlite3|node:sqlite|DATABASE_URL|createPool|pg\.Pool|mysql2|postgres|mysql|sqlite|pool_size|max_connections|connection_limit|HikariCP|Druid|DataSource|SQLITE_BUSY|SQLITE_LOCKED)\b/i.test(haystack);
+}
+
+export function hasStrongReadContextDiagnosisEvidence(toolCalls: readonly OraToolCallEnvelope[]): boolean {
+  return toolCalls.some((call) => {
+    if (!(call.status === "succeeded" || call.status === "repaired")) {
+      return false;
+    }
+    if (!isReadContextTool(call.toolId)) {
+      return false;
+    }
+    if (call.toolId === "file.read") {
+      const path = typeof call.args?.path === "string" ? call.args.path : "";
+      return path.length > 0 && !isManifestLikePath(path) && readProducedDiagnosisSignal(call);
+    }
+    if (call.toolId === "file.grep") {
+      return grepProducedMatches(call);
+    }
+    return false;
+  });
+}
+
+export function hasManifestOnlyReadContextDiagnosisEvidence(toolCalls: readonly OraToolCallEnvelope[]): boolean {
+  if (!hasReadContextEvidence(toolCalls)) return false;
+  if (hasStrongReadContextDiagnosisEvidence(toolCalls)) return false;
+  return hasManifestReadEvidence(toolCalls);
+}
+
+export function shouldRepairWeakReadContextDiagnosisCompletion(params: {
+  enabled: boolean;
+  prompt: string;
+  toolCalls: readonly OraToolCallEnvelope[];
+  currentTaskState?: Partial<CausalTaskState>;
+  toolCallCount: number;
+  clarificationCount: number;
+  hasUnresolvedPlanItems: boolean;
+  responseText: string;
+  routerVersion: "v1" | "v2";
+}): boolean {
+  if (!params.enabled || params.routerVersion !== "v2") return false;
+  if (!isDiagnosisReadContextPrompt(params.prompt)) return false;
+  if (!hasReadContextEvidence(params.toolCalls)) return false;
+  if (hasStrongReadContextDiagnosisEvidence(params.toolCalls)) return false;
+  const policyResult = routeIntervention({
+    surfaceRequest: params.prompt,
+    taskState: params.currentTaskState,
+    proposedToolId: undefined,
+    proposedToolRisk: "low",
+    toolCallCount: params.toolCallCount,
+    clarificationCount: params.clarificationCount,
+    hasPendingApprovals: false,
+    hasPendingPlanDecisions: false,
+    hasUnresolvedPlanItems: params.hasUnresolvedPlanItems,
+    modelResponseText: params.responseText,
+    routerVersion: params.routerVersion,
+  });
+  return policyResult.action === "read_context";
+}
+
+export function shouldRepairManifestOnlyDiagnosisCompletion(params: {
+  enabled: boolean;
+  prompt: string;
+  toolCalls: readonly OraToolCallEnvelope[];
+  currentTaskState?: Partial<CausalTaskState>;
+  toolCallCount: number;
+  clarificationCount: number;
+  hasUnresolvedPlanItems: boolean;
+  responseText: string;
+  routerVersion: "v1" | "v2";
+  weakDiagnosisRepairUsed: boolean;
+}): boolean {
+  if (!params.weakDiagnosisRepairUsed) return false;
+  if (!params.enabled || params.routerVersion !== "v2") return false;
+  if (!isDiagnosisReadContextPrompt(params.prompt)) return false;
+  if (!hasManifestOnlyReadContextDiagnosisEvidence(params.toolCalls)) return false;
+  const policyResult = routeIntervention({
+    surfaceRequest: params.prompt,
+    taskState: params.currentTaskState,
+    proposedToolId: undefined,
+    proposedToolRisk: "low",
+    toolCallCount: params.toolCallCount,
+    clarificationCount: params.clarificationCount,
+    hasPendingApprovals: false,
+    hasPendingPlanDecisions: false,
+    hasUnresolvedPlanItems: params.hasUnresolvedPlanItems,
+    modelResponseText: params.responseText,
+    routerVersion: params.routerVersion,
+  });
+  return policyResult.action === "read_context";
+}
+
 export function shouldBlockToolForContextProbePolicy(params: {
   enabled: boolean;
   prompt: string;
   toolCalls: readonly OraToolCallEnvelope[];
   proposedToolId: string;
+  proposedToolArgs?: Record<string, unknown>;
   recommendedAction: string;
   routerVersion: "v1" | "v2";
   modeId?: string;
@@ -148,9 +346,95 @@ export function shouldBlockToolForContextProbePolicy(params: {
   if (!params.enabled || params.routerVersion !== "v2") return false;
   if (params.recommendedAction !== "read_context") return false;
   if (shouldBlockRepoExploreUpgradeForSingleAgent(params)) return true;
+  if (shouldBlockWideTaskArchiveReadForReporting(params)) return true;
   if (isReadContextTool(params.proposedToolId)) return false;
   if (hasReadContextEvidence(params.toolCalls)) return false;
   return true;
+}
+
+function isReportingReadContextPrompt(prompt: string): boolean {
+  return /\b(summary|report|weekly update|status update|changelog)\b|周报|汇报|总结|项目报告/u.test(prompt);
+}
+
+function hasHighSignalReportingEvidence(toolCalls: readonly OraToolCallEnvelope[]): boolean {
+  return toolCalls.some((call) => {
+    if (!isReadContextTool(call.toolId)) return false;
+    if (!(call.status === "proposed" || call.status === "running" || call.status === "succeeded" || call.status === "repaired")) {
+      return false;
+    }
+    const path = typeof call.args?.path === "string" ? call.args.path : "";
+    const pattern = typeof call.args?.pattern === "string" ? call.args.pattern : "";
+    const haystack = `${path}\n${pattern}`.toLowerCase();
+    return haystack.includes("docs/")
+      || haystack.includes("changelog")
+      || haystack.includes("release")
+      || haystack.includes("latest.json");
+  });
+}
+
+function isTaskJournalPath(path: string): boolean {
+  return /^tasks\/TASK-[^/]+\.md$/i.test(path);
+}
+
+function countTaskJournalReads(toolCalls: readonly OraToolCallEnvelope[]): number {
+  return toolCalls.filter((call) => {
+    if (call.toolId !== "file.read") return false;
+    if (!(call.status === "proposed" || call.status === "running" || call.status === "succeeded" || call.status === "repaired")) {
+      return false;
+    }
+    const path = typeof call.args?.path === "string" ? call.args.path : "";
+    return isTaskJournalPath(path);
+  }).length;
+}
+
+function isWideTaskArchiveEntryPoint(toolId: string, args?: Record<string, unknown>): boolean {
+  const path = typeof args?.path === "string" ? args.path : "";
+  const pattern = typeof args?.pattern === "string" ? args.pattern : "";
+  if (toolId === "file.list") {
+    return path === "tasks" || path === "tasks/";
+  }
+  if (toolId === "file.glob") {
+    return pattern.toLowerCase().startsWith("tasks/") && pattern.includes("*");
+  }
+  return false;
+}
+
+function isBroadReportingWorkspaceEntryPoint(toolId: string, args?: Record<string, unknown>): boolean {
+  if (toolId !== "file.list") {
+    return false;
+  }
+  const path = typeof args?.path === "string" ? args.path.trim() : ".";
+  return path === "" || path === "." || path === "./";
+}
+
+function isTaskJournalReadAttempt(toolId: string, args?: Record<string, unknown>): boolean {
+  if (toolId !== "file.read") return false;
+  const path = typeof args?.path === "string" ? args.path : "";
+  return isTaskJournalPath(path);
+}
+
+function shouldBlockWideTaskArchiveReadForReporting(params: {
+  prompt: string;
+  toolCalls: readonly OraToolCallEnvelope[];
+  proposedToolId: string;
+  proposedToolArgs?: Record<string, unknown>;
+  recommendedAction: string;
+}): boolean {
+  if (params.recommendedAction !== "read_context") return false;
+  if (!isReportingReadContextPrompt(params.prompt)) return false;
+  if (isBroadReportingWorkspaceEntryPoint(params.proposedToolId, params.proposedToolArgs)) {
+    return true;
+  }
+  if (isWideTaskArchiveEntryPoint(params.proposedToolId, params.proposedToolArgs)) {
+    return true;
+  }
+  if (!isTaskJournalReadAttempt(params.proposedToolId, params.proposedToolArgs)) {
+    return false;
+  }
+  if (!hasHighSignalReportingEvidence(params.toolCalls)) {
+    return true;
+  }
+  return countTaskJournalReads(params.toolCalls) >= 2;
 }
 
 function shouldBlockRepoExploreUpgradeForSingleAgent(params: {
@@ -176,6 +460,20 @@ function hasCausalFollowUpThisTurn(
   );
 }
 
+export function shouldContinueAfterCausalBlock(action: ReturnType<typeof routeIntervention>["action"]): boolean {
+  return action === "search_web" || action === "read_context";
+}
+
+export function toolMatchesCausalRecommendation(
+  action: ReturnType<typeof routeIntervention>["action"],
+  toolId: string | undefined,
+): boolean {
+  if (!toolId) return false;
+  if (action === "read_context") return isReadContextTool(toolId);
+  if (action === "search_web") return isSearchTool(toolId);
+  return action === "use_tool";
+}
+
 function hasSucceededSearchEvidence(toolCalls: readonly OraToolCallEnvelope[]): boolean {
   return toolCalls.some((call) =>
     isSearchTool(call.toolId) && (call.status === "succeeded" || call.status === "repaired")
@@ -199,6 +497,40 @@ function buildContextProbePolicyFollowUp(params: {
     return "[Context Probe Policy] The request already points to a concrete artifact or repository context. In single-agent mode, inspect that context with file.read/file.grep/file.glob/file.list before escalating to repo.explore, using other tools, or answering.";
   }
   return "[Context Probe Policy] The request already points to a concrete artifact or repository context. Read that context first before using other tools or answering.";
+}
+
+export function buildReadContextPolicyFollowUp(prompt: string): string {
+  const guidance = [
+    "[Read Context Policy] This request likely depends on repository or local context. Before finalizing, inspect the relevant local evidence with a read-context tool such as file.read, file.list, file.grep, or file.glob.",
+    "Treat dependency names, package entries, or config strings as partial clues only, not proof of the active runtime path or root cause.",
+    "Package manifests alone are weak evidence: do not diagnose the active failing component from package.json-style declarations without corroborating code paths, runtime config, logs, or a narrow clarification.",
+  ];
+  if (/\b(summary|report|weekly update|status update|changelog)\b|周报|汇报|总结|项目报告/u.test(prompt)) {
+    guidance.push(
+      "For summaries, reports, changelogs, weekly updates, or status updates, start with the highest-signal artifacts first such as docs/, CHANGELOG, release notes, dated notes, or commit summaries. Only if those are insufficient should you add a few recent dated task journals.",
+      "If you need task journals, target at most 1-2 recent artifacts that match the likely time window or topic instead of sweeping the whole tasks/ archive.",
+    );
+  }
+  guidance.push(
+    "If the evidence still does not identify the user's real target system, report the repo-grounded finding and ask a narrow clarification instead of generalizing.",
+  );
+  return guidance.join(" ");
+}
+
+export function buildWeakReadContextDiagnosisFollowUp(): string {
+  return "[Read Context Policy] The local evidence here is still weak: dependency declarations, package manifests, and empty grep results are not enough to prove the active failing runtime or to rule out the user's real connection-pool problem. Revise the answer so it stays evidence-bound to this repo, avoid claims that the user's environment definitely is or is not using a pool, and ask for one narrow next artifact such as the exact error log, stack trace, runtime config, or deployment database target.";
+}
+
+export function buildManifestOnlyDiagnosisFollowUp(): string {
+  return "[Read Context Policy] Your current diagnosis still leans on package-manifest dependency names without corroborating code-path or runtime evidence. Do not mention dependencies like better-sqlite3, ioredis, Prisma, or similar package names as if they prove the active runtime path. Limit the answer to the concrete checks you actually ran (for example, empty grep results in inspected code/config paths), say that this repo evidence is insufficient to identify the failing system, and ask for one concrete artifact such as the exact error log, stack trace, runtime config, or deployment target.";
+}
+
+export function buildReadContextNoEvidenceFinalFollowUp(): string {
+  return "[Read Context Policy] You still have not inspected any local repository evidence for this diagnosis. Do not invent or assume repository-specific databases, ORMs, vendors, connection-pool sizes, file paths, or config values. Revise the answer to say that no matching local evidence has been inspected yet, keep the conclusion evidence-bound, and ask for one concrete next artifact such as the exact error log, stack trace, runtime config, deployment database target, or the file/config path to inspect next.";
+}
+
+export function buildReportingReadContextSurfaceFollowUp(): string {
+  return "[Read Context Policy] For summary/report/week-update requests, first inspect high-signal project artifacts such as docs/, CHANGELOG, release notes, or release metadata. Use workspace-relative file paths, not absolute paths. For discovery, prefer targeted file.glob/file.grep calls over broad file.list on the workspace root (for example, file.glob with patterns like CHANGELOG*, docs/**/*.md, or *release*.json). Prioritize concrete release metadata files when they already exist in the root, such as release.json or latest.json, before broad docs summaries. Only use file.read on a concrete file path such as release.json, latest.json, or docs/weekly-update.md, and do not attach pattern to file.read. Do not start with broad tasks/ archive sweeps; only read 1-2 recent task journals after those higher-signal sources prove insufficient.";
 }
 
 const NODE_RUNTIME_HARD_TIMEOUT_MULTIPLIER = 6;
@@ -1198,6 +1530,10 @@ export async function runNodeRuntimeLoop(
   let lastAutoAdvanceEvidenceKey = "";
   let emptyFinalOutputRepairUsed = false;
   let freshnessPolicyRepairUsed = false;
+  let readContextPolicyRepairUsed = false;
+  let weakReadContextDiagnosisRepairUsed = false;
+  let manifestOnlyDiagnosisRepairUsed = false;
+  let internalProtocolRepairUsed = false;
   const continueOrCompleteNaturally = async (
     currentResponse: ModelResponse,
     iteration: number,
@@ -1236,6 +1572,91 @@ export async function runNodeRuntimeLoop(
       const planList = deps.planList();
       const hasUnresolvedPlanItems = planList.some(s => s.status !== "completed");
       const currentTaskState = latestCausalTaskState(deps.events());
+      const shouldBlockForReadContext = shouldBlockFinalForReadContextPolicy({
+        enabled: completion.toolsAllowed(completionScope),
+        prompt: input.prompt,
+        toolCalls: deps.toolCalls(),
+        currentTaskState,
+        toolCallCount: completion.toolAttempts,
+        clarificationCount: deps.clarificationCount(),
+        hasUnresolvedPlanItems,
+        responseText: currentResponse.text,
+        routerVersion,
+      });
+      if (shouldBlockForReadContext && !readContextPolicyRepairUsed) {
+        readContextPolicyRepairUsed = true;
+        nodeLoopController.emitTransitionResult("model_request", "running_model", {
+          agentId: params.agentId,
+          title: params.title,
+          reason: "read_context_policy_blocked",
+          detail: "This request likely depends on local context that has not been inspected yet.",
+          iteration,
+        });
+        messages = [
+          ...messages,
+          { role: "assistant", content: currentResponse.text },
+          {
+            role: "user",
+            content: buildReadContextPolicyFollowUp(input.prompt),
+          },
+        ];
+        return {
+          kind: "continue",
+          response: await invokeFollowUpModel({
+            messages,
+            system: params.system,
+            providerCache: params.providerCache,
+            cacheDiagnosticsContext: params.cacheDiagnosticsContext,
+            responseFormat: params.responseFormat,
+            maxTokens: config.budget?.maxTokens,
+            tools: nativeTools,
+            toolChoice: completion.toolsAllowed(completionScope) && nativeTools.length > 0 ? "auto" : "none",
+          }, currentResponse, "read_context_policy_blocked"),
+        };
+      }
+      const shouldRepairNoEvidenceDiagnosis = shouldRepairReadContextDiagnosisWithoutEvidence({
+        enabled: completion.toolsAllowed(completionScope),
+        prompt: input.prompt,
+        toolCalls: deps.toolCalls(),
+        currentTaskState,
+        toolCallCount: completion.toolAttempts,
+        clarificationCount: deps.clarificationCount(),
+        hasUnresolvedPlanItems,
+        responseText: currentResponse.text,
+        routerVersion,
+        readContextPolicyRepairUsed,
+      });
+      if (shouldRepairNoEvidenceDiagnosis && !weakReadContextDiagnosisRepairUsed) {
+        weakReadContextDiagnosisRepairUsed = true;
+        nodeLoopController.emitTransitionResult("model_request", "running_model", {
+          agentId: params.agentId,
+          title: params.title,
+          reason: "read_context_diagnosis_missing_local_evidence",
+          detail: "The diagnosis still lacks any inspected local evidence and must not invent repo-specific details.",
+          iteration,
+        });
+        messages = [
+          ...messages,
+          { role: "assistant", content: currentResponse.text },
+          {
+            role: "user",
+            content: buildReadContextNoEvidenceFinalFollowUp(),
+          },
+        ];
+        return {
+          kind: "continue",
+          response: await invokeFollowUpModel({
+            messages,
+            system: params.system,
+            providerCache: params.providerCache,
+            cacheDiagnosticsContext: params.cacheDiagnosticsContext,
+            responseFormat: params.responseFormat,
+            maxTokens: config.budget?.maxTokens,
+            tools: nativeTools,
+            toolChoice: completion.toolsAllowed(completionScope) && nativeTools.length > 0 ? "auto" : "none",
+          }, currentResponse, "read_context_diagnosis_missing_local_evidence"),
+        };
+      }
       const shouldBlockForFreshness = shouldBlockFinalForFreshnessPolicy({
         enabled: freshnessBlockPolicyEnabled,
         prompt: input.prompt,
@@ -1278,6 +1699,91 @@ export async function runNodeRuntimeLoop(
             tools: nativeTools,
             toolChoice: completion.toolsAllowed(completionScope) && nativeTools.length > 0 ? "auto" : "none",
           }, currentResponse, "freshness_policy_blocked"),
+        };
+      }
+      const shouldRepairWeakDiagnosis = shouldRepairWeakReadContextDiagnosisCompletion({
+        enabled: completion.toolsAllowed(completionScope),
+        prompt: input.prompt,
+        toolCalls: deps.toolCalls(),
+        currentTaskState,
+        toolCallCount: completion.toolAttempts,
+        clarificationCount: deps.clarificationCount(),
+        hasUnresolvedPlanItems,
+        responseText: currentResponse.text,
+        routerVersion,
+      });
+      if (shouldRepairWeakDiagnosis && !weakReadContextDiagnosisRepairUsed) {
+        weakReadContextDiagnosisRepairUsed = true;
+        nodeLoopController.emitTransitionResult("model_request", "running_model", {
+          agentId: params.agentId,
+          title: params.title,
+          reason: "read_context_diagnosis_evidence_weak",
+          detail: "The current diagnosis relies on weak repo evidence and needs an evidence-bound revision.",
+          iteration,
+        });
+        messages = [
+          ...messages,
+          { role: "assistant", content: currentResponse.text },
+          {
+            role: "user",
+            content: buildWeakReadContextDiagnosisFollowUp(),
+          },
+        ];
+        return {
+          kind: "continue",
+          response: await invokeFollowUpModel({
+            messages,
+            system: params.system,
+            providerCache: params.providerCache,
+            cacheDiagnosticsContext: params.cacheDiagnosticsContext,
+            responseFormat: params.responseFormat,
+            maxTokens: config.budget?.maxTokens,
+            tools: nativeTools,
+            toolChoice: completion.toolsAllowed(completionScope) && nativeTools.length > 0 ? "auto" : "none",
+          }, currentResponse, "read_context_diagnosis_evidence_weak"),
+        };
+      }
+      const shouldRepairManifestOnlyDiagnosis = shouldRepairManifestOnlyDiagnosisCompletion({
+        enabled: completion.toolsAllowed(completionScope),
+        prompt: input.prompt,
+        toolCalls: deps.toolCalls(),
+        currentTaskState,
+        toolCallCount: completion.toolAttempts,
+        clarificationCount: deps.clarificationCount(),
+        hasUnresolvedPlanItems,
+        responseText: currentResponse.text,
+        routerVersion,
+        weakDiagnosisRepairUsed: weakReadContextDiagnosisRepairUsed,
+      });
+      if (shouldRepairManifestOnlyDiagnosis && !manifestOnlyDiagnosisRepairUsed) {
+        manifestOnlyDiagnosisRepairUsed = true;
+        nodeLoopController.emitTransitionResult("model_request", "running_model", {
+          agentId: params.agentId,
+          title: params.title,
+          reason: "read_context_diagnosis_manifest_only",
+          detail: "The diagnosis still leans on manifest dependency names without corroborating runtime evidence.",
+          iteration,
+        });
+        messages = [
+          ...messages,
+          { role: "assistant", content: currentResponse.text },
+          {
+            role: "user",
+            content: buildManifestOnlyDiagnosisFollowUp(),
+          },
+        ];
+        return {
+          kind: "continue",
+          response: await invokeFollowUpModel({
+            messages,
+            system: params.system,
+            providerCache: params.providerCache,
+            cacheDiagnosticsContext: params.cacheDiagnosticsContext,
+            responseFormat: params.responseFormat,
+            maxTokens: config.budget?.maxTokens,
+            tools: nativeTools,
+            toolChoice: completion.toolsAllowed(completionScope) && nativeTools.length > 0 ? "auto" : "none",
+          }, currentResponse, "read_context_diagnosis_manifest_only"),
         };
       }
 
@@ -1328,6 +1834,41 @@ export async function runNodeRuntimeLoop(
           `reason: ${outputGuardResult.reason}`,
           outputGuardResult.detail,
         ].join("\n"));
+      }
+
+      if (isInternalProviderAssistantText(currentResponse.text)) {
+        if (!internalProtocolRepairUsed) {
+          internalProtocolRepairUsed = true;
+          nodeLoopController.emitTransitionResult("model_request", "running_model", {
+            agentId: params.agentId,
+            title: params.title,
+            reason: "internal_protocol_repair",
+            detail: "Final model response contained internal protocol text and must be rewritten as plain prose.",
+            iteration,
+          });
+          messages = [
+            ...messages,
+            { role: "assistant", content: currentResponse.text },
+            {
+              role: "user",
+              content: "Rewrite the final answer in plain user-facing prose only. Do not include JSON tool calls, code-block tool intents, XML-like tool markers, or any other internal protocol text.",
+            },
+          ];
+          return {
+            kind: "continue",
+            response: await invokeFollowUpModel({
+              messages,
+              system: params.system,
+              providerCache: params.providerCache,
+              cacheDiagnosticsContext: params.cacheDiagnosticsContext,
+              responseFormat: params.responseFormat,
+              maxTokens: config.budget?.maxTokens,
+              tools: nativeTools,
+              toolChoice: "none",
+            }, currentResponse, "internal_protocol_repair"),
+          };
+        }
+        throw new Error("Run cannot complete: final output contains internal protocol text.");
       }
 
       nodeLoopController.emitTransitionResult("complete", "completed", {
@@ -1689,6 +2230,7 @@ export async function runNodeRuntimeLoop(
       prompt: input.prompt,
       toolCalls: deps.toolCalls(),
       proposedToolId: toolCall.tool,
+      proposedToolArgs: toolCall.args,
       recommendedAction: policyResult.action,
       routerVersion,
       modeId: config.modeId,
@@ -1744,18 +2286,79 @@ export async function runNodeRuntimeLoop(
       continue;
     }
 
-    // Enforcing mode: for search_web, inject guidance and let the model
-    // continue with tools instead of forcing a final answer. This must
+    if (
+      shouldBlockWideTaskArchiveReadForReporting({
+        prompt: input.prompt,
+        toolCalls: deps.toolCalls(),
+        proposedToolId: toolCall.tool,
+        proposedToolArgs: toolCall.args,
+        recommendedAction: policyResult.action,
+      })
+    ) {
+      emit("causal.decision.rejected", {
+        toolId: toolCall.tool,
+        recommendedAction: policyResult.action,
+        reason: "reporting_read_context_surface",
+        level: "context_probe_policy",
+        diagnostic: {
+          recordedAt: now(),
+          toolCallCount: completion.toolAttempts,
+          hasHighSignalReportingEvidence: hasHighSignalReportingEvidence(deps.toolCalls()),
+          promptExcerpt: input.prompt.slice(0, 200),
+          proposedToolId: toolCall.tool,
+          proposedToolArgs: toolCall.args,
+          iteration,
+        },
+      }, {
+        agentId: params.agentId,
+        nodeId: params.nodeId,
+      });
+      nodeLoopController.emitTransitionResult("model_request", "running_model", {
+        agentId: params.agentId,
+        title: params.title,
+        toolId: toolCall.tool,
+        reason: "reporting_read_context_surface",
+        detail: "Start with docs/changelog/release artifacts before wide task-archive reads.",
+        iteration,
+      });
+      messages = [
+        ...messages,
+        { role: "assistant", content: response.text },
+        {
+          role: "user",
+          content: buildReportingReadContextSurfaceFollowUp(),
+        },
+      ];
+      response = await invokeFollowUpModel({
+        messages,
+        system: params.system,
+        providerCache: params.providerCache,
+        cacheDiagnosticsContext: params.cacheDiagnosticsContext,
+        responseFormat: params.responseFormat,
+        maxTokens: config.budget?.maxTokens,
+        tools: nativeTools,
+        toolChoice: nativeTools.length > 0 ? "auto" : undefined,
+      }, response, "reporting_read_context_surface_blocked");
+      continue;
+    }
+
+    // Enforcing mode: for executable interventions, inject guidance and let
+    // the model continue with tools instead of forcing a final answer. This must
     // happen before emitToolRequested() to keep the state machine valid.
     const interventionLevel = deps.config.causalInterventionLevel ?? "record_only";
+    const toolAlreadyMatchesRecommendation = toolMatchesCausalRecommendation(
+      policyResult.action,
+      toolCall.tool,
+    );
     if (
       interventionLevel === "enforcing" &&
-      policyResult.action === "search_web"
+      shouldContinueAfterCausalBlock(policyResult.action) &&
+      !toolAlreadyMatchesRecommendation
     ) {
       const blockResult = applyCausalPolicyGate(policyResult, interventionLevel);
       if (blockResult.blocked) {
         if (hasCausalFollowUpThisTurn(messages, toolCall.tool)) {
-          // Already issued a causal freshness follow-up this turn;
+          // Already issued a causal follow-up this turn;
           // fall through to emitToolRequested + existing force-final path.
         } else {
           emit("causal.decision.rejected", {
@@ -1767,7 +2370,7 @@ export async function runNodeRuntimeLoop(
             agentId: params.agentId,
             nodeId: params.nodeId,
           });
-          nodeLoopController.emitTransitionResult("boundary_failure", "running_model", {
+          nodeLoopController.emitTransitionResult("model_request", "running_model", {
             agentId: params.agentId,
             title: params.title,
             toolId: toolCall.tool,
@@ -1795,7 +2398,7 @@ export async function runNodeRuntimeLoop(
             maxTokens: config.budget?.maxTokens,
             tools: nativeTools,
             toolChoice: nativeTools.length > 0 ? "auto" : undefined,
-          }, response, "causal_policy_search_blocked");
+          }, response, `causal_policy_${policyResult.action}_blocked`);
           continue;
         }
       }
@@ -1811,7 +2414,7 @@ export async function runNodeRuntimeLoop(
 
     // Causal policy gate: in advisory/enforcing mode, the causal decision
     // may override or block the proposed tool call.
-    if (interventionLevel !== "record_only") {
+    if (interventionLevel !== "record_only" && !toolAlreadyMatchesRecommendation) {
       const blockResult = applyCausalPolicyGate(policyResult, interventionLevel);
       if (blockResult.blocked) {
         emit("causal.decision.rejected", {

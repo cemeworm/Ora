@@ -658,6 +658,124 @@ describe("node runtime loop transition contract", () => {
     expect(emitted.some((event) => event.type === "task.progress")).toBe(false);
   });
 
+  it("adds focused guidance for degraded web.search timeouts before the follow-up model call", async () => {
+    const emitted: Array<{ type: string; payload: any; extra?: any; agentId?: string; nodeId?: string }> = [];
+    const replacedMessages: Array<readonly { role: string; content?: string; toolName?: string }[]> = [];
+    const followUpRequests: Array<{ messages: readonly { role: string; content?: string; toolName?: string }[] }> = [];
+    const actionLedger = new ActionLedger("run-web-search-recovery", [
+      {
+        id: "action-web-search",
+        runId: "run-web-search-recovery",
+        type: "web.search",
+        riskLevel: "low",
+        status: "running",
+        input: {},
+        artifactIds: [],
+        agentId: ORA_ROOT_AGENT_ID,
+      } as never,
+    ]);
+    const nodeLoopController = new NodeLoopController({
+      emit: (state, params) => {
+        emitted.push({
+          type: "node.updated",
+          agentId: params.agentId,
+          nodeId: params.agentId,
+          payload: { state, ...params },
+        });
+      },
+      onInvalidTransition: "throw",
+    });
+    nodeLoopController.emitPending({ agentId: ORA_ROOT_AGENT_ID, title: "Root" });
+    nodeLoopController.emitModelRequest({ agentId: ORA_ROOT_AGENT_ID, title: "Root" });
+    nodeLoopController.emitToolRequested({ agentId: ORA_ROOT_AGENT_ID, title: "Root", toolId: "web.search" });
+    nodeLoopController.emitToolRunning({ agentId: ORA_ROOT_AGENT_ID, title: "Root", toolId: "web.search" });
+    const modeSpec = MVP_MODES.find((mode) => mode.id === SINGLE_AGENT_MODE_ID)!;
+    let messages: Array<{ role: string; content?: string; toolName?: string }> = [
+      { role: "user", content: "Deno 2.0和Node.js 22怎么选" },
+    ];
+    const service = new RuntimeToolRecoveryService({
+      agentId: ORA_ROOT_AGENT_ID,
+      nodeId: ORA_ROOT_AGENT_ID,
+      title: "Root",
+      inputPrompt: "Deno 2.0和Node.js 22怎么选",
+      system: "system",
+      config: {} as never,
+      modeSpec,
+      nativeTools: [],
+      invokeProvider: async () => {
+        throw new Error("provider should not be invoked");
+      },
+      completion: {} as never,
+      completionScope: { agentId: ORA_ROOT_AGENT_ID, nodeId: ORA_ROOT_AGENT_ID },
+      recoveryCoordinator: new RecoveryCoordinator(modeSpec, []),
+      nodeLoopController,
+      runtimeToolExecutor: {} as never,
+      actionDeps: () => ({
+        actionLedger,
+        emit: () => undefined,
+        appendToolCall: (params) => params as never,
+      }),
+      actionLedger,
+      now: () => 123,
+      eventsLength: () => emitted.length,
+      getMessages: () => messages,
+      replaceMessages: (nextMessages) => {
+        messages = [...nextMessages] as typeof messages;
+        replacedMessages.push(messages);
+      },
+      emit: (type, payload, extra = {}) => {
+        emitted.push({ type, payload, extra, agentId: extra.agentId, nodeId: extra.nodeId });
+        return { type, payload, ...extra } as never;
+      },
+      emitRecoveryDecision: () => undefined,
+      runForcedFinalProviderCall: async () => {
+        throw new Error("forced final should not run");
+      },
+      emitForcedFinalProviderState: () => undefined,
+      invokeFollowUpModel: async (request) => {
+        followUpRequests.push({ messages: request.messages as typeof messages });
+        return {
+          providerId: "provider",
+          providerType: "openai_compatible",
+          modelId: "model",
+          text: "fallback answer",
+          raw: {},
+        };
+      },
+      publishRecoveryArtifact: () => ({ id: "artifact-1" }),
+      publishFileChangeArtifact: () => ({ id: "file-artifact-1" }) as never,
+      sleep: async () => undefined,
+    });
+
+    const result = await service.recoverToolFailure({
+      error: new Error("Search provider request timed out."),
+      action: { id: "action-web-search", type: "web.search", riskLevel: "low", status: "running", input: {}, agentId: ORA_ROOT_AGENT_ID } as never,
+      toolCall: { tool: "web.search", args: { query: "Deno 2.0 vs Node.js 22 comparison 2026" } },
+      toolCallRecord: { id: "tool-record-1" } as never,
+      allowRisky: false,
+      iteration: 0,
+      response: {
+        providerId: "provider",
+        providerType: "openai_compatible",
+        modelId: "model",
+        text: "{\"tool\":\"web.search\",\"args\":{\"query\":\"Deno 2.0 vs Node.js 22 comparison 2026\"}}",
+        raw: {},
+      },
+      surface: "tool",
+    });
+
+    expect(result).toMatchObject({ kind: "continue", response: expect.objectContaining({ text: "fallback answer" }) });
+    expect(replacedMessages).toHaveLength(1);
+    const recoveryMessage = replacedMessages[0]?.[2];
+    expect(recoveryMessage?.role).toBe("user");
+    expect(recoveryMessage?.content).toContain("Workspace tool degraded for web.search");
+    expect(recoveryMessage?.content).toContain("Recovery guidance:");
+    expect(recoveryMessage?.content).toContain("Continue answering the user's request instead of stopping at the failure note.");
+    expect(recoveryMessage?.content).toContain("Keep the timeout disclaimer brief");
+    expect(followUpRequests).toHaveLength(1);
+    expect(followUpRequests[0]?.messages.at(-1)?.content).toContain("Recovery guidance:");
+  });
+
   it("routes recovery and boundary-failure state emits through typed intents", () => {
     const source = readRuntimeSource("src/harness/node-runtime-loop.ts");
     const middlewareSource = readRuntimeSource("src/harness/runtime-middleware.ts");

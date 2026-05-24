@@ -384,25 +384,68 @@ export function extractRuntimeToolCallFromText(text: string, toolIds: readonly s
 
 function extractInlineJsonCandidates(text: string): string[] {
   const results: string[] = [];
-  const enabledPattern = /\{[^{}]*"tool"\s*:\s*"[^"]+"\s*[,}][^{}]*\}/g;
-  let match: RegExpExecArray | null;
-  while ((match = enabledPattern.exec(text)) !== null) {
-    // Try to expand to balanced braces
-    const start = match.index;
-    let depth = 0;
-    let end = start;
-    for (let i = start; i < text.length; i++) {
-      if (text[i] === "{") depth++;
-      else if (text[i] === "}") {
-        depth--;
-        if (depth === 0) { end = i + 1; break; }
-      }
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] !== "{") {
+      continue;
     }
-    if (end > start) {
-      results.push(text.slice(start, end));
+
+    const candidate = extractBalancedJsonObject(text, i);
+    if (!candidate) {
+      continue;
     }
+    if (!/"tool"\s*:/.test(candidate)) {
+      i += candidate.length - 1;
+      continue;
+    }
+
+    results.push(candidate);
+    i += candidate.length - 1;
   }
   return results;
+}
+
+function extractBalancedJsonObject(text: string, start: number): string | undefined {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let i = start; i < text.length; i++) {
+    const char = text[i];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (char === "\\") {
+        escaped = true;
+        continue;
+      }
+      if (char === "\"") {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (char === "\"") {
+      inString = true;
+      continue;
+    }
+    if (char === "{") {
+      depth++;
+      continue;
+    }
+    if (char === "}") {
+      depth--;
+      if (depth === 0) {
+        return text.slice(start, i + 1);
+      }
+      if (depth < 0) {
+        return undefined;
+      }
+    }
+  }
+
+  return undefined;
 }
 
 function extractJsonToolCall(candidate: string, enabled: Set<RuntimeToolId>): RuntimeToolCall | undefined {
@@ -415,11 +458,14 @@ function extractJsonToolCall(candidate: string, enabled: Set<RuntimeToolId>): Ru
     if (typeof record.tool !== "string" || !enabled.has(record.tool as RuntimeToolId)) {
       return undefined;
     }
+    const liftedArgs = { ...record };
+    delete liftedArgs.tool;
+    delete liftedArgs.args;
     return {
       tool: record.tool as RuntimeToolId,
       args: record.args && typeof record.args === "object" && !Array.isArray(record.args)
         ? record.args as Record<string, unknown>
-        : {},
+        : liftedArgs,
     };
   } catch {
     return undefined;
@@ -624,6 +670,11 @@ export class RuntimeToolExecutor {
       "Examples:",
       examples,
       "After a tool result is returned, answer the user normally unless another tool call is required.",
+      "If local tool evidence only supports repository-specific findings or rules out only part of the problem, state that evidence-bound finding and ask a narrow clarification instead of generalizing to the user's real environment.",
+      "For summaries, reports, changelogs, weekly updates, or status updates, start with the highest-signal artifacts first: docs/, CHANGELOG, release notes, dated notes, or commit summaries. Only if those are insufficient should you add a few recent dated task journals.",
+      "For task-journal evidence, target at most 1-2 recent artifacts that match the requested time window or topic. Avoid broad sweeps across the whole tasks/ archive when a narrower dated slice or a release note/doc already exists.",
+      "Do not treat the presence of a dependency, package, or config string by itself as proof that it is the active runtime path or the root cause of the user's issue.",
+      "Package manifests, release metadata, directory listings, and dependency declarations are weak clues. Do not diagnose the active failing component, summarize weekly project work, or infer the main change narrative from package.json-style evidence, latest.json, wide task-directory scans, or directory listings alone; look for higher-signal docs, changelogs, release notes, at most 1-2 recent task journals, code paths, runtime config, logs, or ask a narrow clarification.",
     ].filter(Boolean).join("\n");
   }
 

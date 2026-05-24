@@ -330,6 +330,9 @@ describe("runtime kernel architecture guards", () => {
     expect(transitionSource).toContain("reduce(state: NodeRuntimeLoopState): NodeLoopReduction");
     expect(transitionSource).toContain("commit(reduction: NodeLoopReduction): void");
     expect(transitionSource).toContain("this.reducer = new NodeLoopReducer");
+    expect(source).toContain("internalProtocolRepairUsed");
+    expect(source).toContain("Rewrite the final answer in plain user-facing prose only.");
+    expect(source).toContain('reason: "internal_protocol_repair"');
   });
 
   it("treats repaired agent.spawn calls as collaboration evidence", () => {

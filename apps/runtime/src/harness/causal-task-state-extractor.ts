@@ -147,6 +147,7 @@ async function extractSemanticStateWithLlm(
         "Intervention guidance:",
         "- Prefer read_context for debugging, diagnosis, root-cause analysis, or requests about an existing project/system/service when logs, configs, code, local files, or repository context would materially change the answer.",
         "- Prefer read_context for requests to write summaries, reports, changelogs, weekly updates, status updates, or project documents when the needed facts may already exist in repository files, commits, logs, notes, or local artifacts.",
+        "- For summary/report/week-update requests, start with docs, release notes, changelogs, dated notes, or commit summaries. Only if those are insufficient should you read at most 1-2 recent task journals that match the likely time window or topic.",
         "- Prefer clarify only when the missing context cannot reasonably be gathered from available local/project artifacts.",
         "",
         "Keep values compact, factual, and grounded in the provided context.",

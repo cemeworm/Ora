@@ -105,6 +105,14 @@ describe("recovery policy classification", () => {
     });
 
     expect(coordinator.resolve(classifyRecoveryError(
+      new Error("file.read target not found: apps/runtime/src/datastore.ts"),
+      { surface: "tool", nodeId: "orchestrator", agentId: "orchestrator", toolId: "file.read" },
+    ))).toMatchObject({
+      action: "fallback_artifact",
+      ruleId: "tool-error-fallback",
+    });
+
+    expect(coordinator.resolve(classifyRecoveryError(
       new Error("plan.update is not available in plan mode."),
       { surface: "tool", nodeId: "orchestrator", agentId: "orchestrator", toolId: "plan.update" },
     ))).toMatchObject({

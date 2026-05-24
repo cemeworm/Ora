@@ -7,6 +7,7 @@ import {
   readPositiveInt,
   relativeWorkspacePath,
   resolveFileToolTarget,
+  workspaceRootPath,
   type ResolvedFileToolTarget,
 } from "./runtime-tool-utils.js";
 import { approvalRequestLanguage, stringArg } from "./runtime-tool-approval.js";
@@ -36,6 +37,7 @@ export function fileToolRuntimeFields(toolId: string): Partial<RuntimeToolDefini
     case "file.read":
       return {
         promptExample: "{\"tool\":\"file.read\",\"args\":{\"path\":\"relative/path.ts\"}}",
+        prepareArguments: (args, context) => normalizeWorkspaceAbsoluteFileReadPath(args, context.workspace),
         execute: (args, context) => ({ output: readLocalFile(resolveFileToolTarget({ workspace: context.workspace, hostFilesystem: context.hostFilesystem, args, capability: "read" }), args, context.limits) }),
         resultPreview: (result) => fileReadResultPreview((result as { output: unknown }).output),
       };
@@ -80,6 +82,31 @@ export function fileToolRuntimeFields(toolId: string): Partial<RuntimeToolDefini
     default:
       return {};
   }
+}
+
+function normalizeWorkspaceAbsoluteFileReadPath(
+  args: Record<string, unknown>,
+  workspace: unknown,
+): Record<string, unknown> {
+  if (args.scope === "host_tmp" || args.scope === "host_grant") {
+    return args;
+  }
+  const requestedPath = typeof args.path === "string" ? args.path.trim() : "";
+  if (!requestedPath || !path.isAbsolute(requestedPath)) {
+    return args;
+  }
+  const rootPath = workspaceRootPath(workspace);
+  if (!rootPath) {
+    return args;
+  }
+  const relative = path.relative(rootPath, requestedPath);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+    return args;
+  }
+  return {
+    ...args,
+    path: relativeWorkspacePath(rootPath, path.resolve(requestedPath)),
+  };
 }
 
 function fileWriteApprovalRequest(args: Record<string, unknown>, context: { userPrompt?: string }) {
@@ -149,7 +176,15 @@ function approvalTargetLabel(args: Record<string, unknown>, zh: boolean): string
 
 function readLocalFile(target: ResolvedFileToolTarget, args: Record<string, unknown>, limits: ResolvedToolLimits) {
   const absolutePath = target.absolutePath;
-  const stat = fs.statSync(absolutePath);
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(absolutePath);
+  } catch (error) {
+    if (isErrnoCode(error, "ENOENT")) {
+      throw new Error(`file.read target not found: ${target.displayPath}`);
+    }
+    throw error;
+  }
   if (!stat.isFile()) {
     throw new Error("file.read target must be a file.");
   }
@@ -780,16 +815,29 @@ function isProbablyBinaryFile(filePath: string): boolean {
 
 function globToRegExp(pattern: string): RegExp {
   let source = "";
+  let inBraceGroup = false;
   for (let index = 0; index < pattern.length; index += 1) {
     const char = pattern[index]!;
     const next = pattern[index + 1];
-    if (char === "*" && next === "*") {
+    const afterNext = pattern[index + 2];
+    if (char === "*" && next === "*" && afterNext === "/") {
+      source += "(?:.*/)?";
+      index += 2;
+    } else if (char === "*" && next === "*") {
       source += ".*";
       index += 1;
     } else if (char === "*") {
       source += "[^/]*";
     } else if (char === "?") {
       source += "[^/]";
+    } else if (char === "{") {
+      source += "(?:";
+      inBraceGroup = true;
+    } else if (char === "}" && inBraceGroup) {
+      source += ")";
+      inBraceGroup = false;
+    } else if (char === "," && inBraceGroup) {
+      source += "|";
     } else {
       source += char.replace(/[|\\{}()[\]^$+?.]/g, "\\$&");
     }

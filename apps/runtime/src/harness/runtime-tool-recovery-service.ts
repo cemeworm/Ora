@@ -396,7 +396,12 @@ export class RuntimeToolRecoveryService {
       errorType: incident.errorType,
       error: incident.detail,
     };
-    const degradedToolContent = `Workspace tool degraded for ${toolCall.tool}:\n${JSON.stringify(fallbackOutput, null, 2)}`;
+    const degradedToolContent = buildDegradedToolContent({
+      toolId: toolCall.tool,
+      toolArgs: toolCall.args,
+      incident,
+      fallbackOutput,
+    });
     const cleanedAssistantText = stripInternalAssistantText(failure.response.text);
     this.deps.replaceMessages(
       toolCall.source === "provider_native" && toolCall.providerCallId
@@ -468,4 +473,42 @@ export class RuntimeToolRecoveryService {
       emitNodeRuntimeState: this.deps.emitForcedFinalProviderState,
     });
   }
+}
+
+function buildDegradedToolContent(params: {
+  toolId: string;
+  toolArgs: Record<string, unknown>;
+  incident: RecoveryIncident;
+  fallbackOutput: unknown;
+}): string {
+  const baseContent = `Workspace tool degraded for ${params.toolId}:\n${JSON.stringify(params.fallbackOutput, null, 2)}`;
+  const guidance = buildDegradedToolGuidance(params);
+  return guidance ? `${baseContent}\n\nRecovery guidance:\n${guidance}` : baseContent;
+}
+
+function buildDegradedToolGuidance(params: {
+  toolId: string;
+  toolArgs: Record<string, unknown>;
+  incident: RecoveryIncident;
+  fallbackOutput: unknown;
+}): string | undefined {
+  if (!isSearchTimeoutDegradation(params.toolId, params.incident)) {
+    return undefined;
+  }
+  const query = typeof params.toolArgs.query === "string" && params.toolArgs.query.trim()
+    ? params.toolArgs.query.trim()
+    : "the original query";
+  return [
+    `- Live web verification for "${query}" failed because the search provider timed out.`,
+    "- Continue answering the user's request instead of stopping at the failure note.",
+    "- Keep the timeout disclaimer brief, then provide the best comparison or recommendation you can from existing knowledge.",
+    "- Explicitly label any freshness-sensitive claims as unverified because live search did not complete.",
+  ].join("\n");
+}
+
+function isSearchTimeoutDegradation(toolId: string, incident: RecoveryIncident): boolean {
+  if (toolId !== "web.search") {
+    return false;
+  }
+  return /timed?\s*out|timeout/i.test(incident.detail);
 }
