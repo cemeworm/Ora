@@ -8,13 +8,25 @@ export type ProposedPlanContractStatus =
   | "invalid_multiple"
   | "invalid_malformed";
 
+export type ProposedPlanGateEligibility =
+  | "none"
+  | "recoverable_single"
+  | "strict_single"
+  | "hard_invalid_multiple"
+  | "hard_invalid_malformed";
+
+export type ProposedPlanQuality = "none" | "thin" | "normal";
+
 export interface ProposedPlanContractResult {
   status: ProposedPlanContractStatus;
+  gateEligibility: ProposedPlanGateEligibility;
+  quality: ProposedPlanQuality;
   hasStartedPlan: boolean;
   hasCompletePlan: boolean;
   completePlanCount: number;
   startedPlanCount: number;
   completePlanContent?: string;
+  candidatePlanContent?: string;
   displayText: string;
   rawPlanContent?: string;
 }
@@ -32,6 +44,8 @@ export function inspectProposedPlanContract(
   if (completePlanCount > 1) {
     return {
       status: "invalid_multiple",
+      gateEligibility: "hard_invalid_multiple",
+      quality: "none",
       hasStartedPlan: true,
       hasCompletePlan: false,
       completePlanCount,
@@ -51,21 +65,36 @@ export function inspectProposedPlanContract(
     if (startedPlanCount !== 1 || closeMatches.length !== 1 || contentLength < MIN_COMPLETE_PLAN_CONTENT_LENGTH) {
       return {
         status: "invalid_malformed",
+        gateEligibility:
+          startedPlanCount === 1 && closeMatches.length === 1
+            ? "recoverable_single"
+            : "hard_invalid_malformed",
+        quality:
+          startedPlanCount === 1 && closeMatches.length === 1
+            ? "thin"
+            : "none",
         hasStartedPlan: true,
         hasCompletePlan: false,
         completePlanCount,
         startedPlanCount,
+        candidatePlanContent:
+          startedPlanCount === 1 && closeMatches.length === 1 && planContent
+            ? planContent
+            : undefined,
         displayText,
         rawPlanContent: planContent,
       };
     }
     return {
       status: "complete_single",
+      gateEligibility: "strict_single",
+      quality: "normal",
       hasStartedPlan: true,
       hasCompletePlan: true,
       completePlanCount,
       startedPlanCount,
       completePlanContent: planContent,
+      candidatePlanContent: planContent,
       displayText,
       rawPlanContent: planContent,
     };
@@ -76,6 +105,8 @@ export function inspectProposedPlanContract(
     if (closeMatches.length > 0) {
       return {
         status: "invalid_malformed",
+        gateEligibility: "hard_invalid_malformed",
+        quality: "none",
         hasStartedPlan: false,
         hasCompletePlan: false,
         completePlanCount: 0,
@@ -85,6 +116,8 @@ export function inspectProposedPlanContract(
     }
     return {
       status: "none",
+      gateEligibility: "none",
+      quality: "none",
       hasStartedPlan: false,
       hasCompletePlan: false,
       completePlanCount: 0,
@@ -95,11 +128,14 @@ export function inspectProposedPlanContract(
 
   return {
     status: closeMatches.length > 0 || startedPlanCount > 1 ? "invalid_malformed" : "streaming_single",
+    gateEligibility: closeMatches.length > 0 || startedPlanCount > 1 ? "hard_invalid_malformed" : "recoverable_single",
+    quality: "thin",
     hasStartedPlan: true,
     hasCompletePlan: false,
     completePlanCount: 0,
     startedPlanCount,
     displayText: trimBoundaryWhitespace(source.slice(0, openIndex)),
+    candidatePlanContent: trimBoundaryWhitespace(source.slice(openIndex + OPEN_TAG.length)) || undefined,
     rawPlanContent: trimBoundaryWhitespace(source.slice(openIndex + OPEN_TAG.length)),
   };
 }

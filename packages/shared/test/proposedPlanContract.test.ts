@@ -36,12 +36,15 @@ describe("inspectProposedPlanContract", () => {
   it("treats a too-short complete block as malformed", () => {
     const result = inspectProposedPlanContract("<proposed_plan>\n短\n</proposed_plan>");
     expect(result.status).toBe("invalid_malformed");
+    expect(result.gateEligibility).toBe("recoverable_single");
     expect(result.hasCompletePlan).toBe(false);
+    expect(result.candidatePlanContent).toBe("短");
   });
 
   it("treats a stray closing tag as malformed instead of no-plan text", () => {
     const result = inspectProposedPlanContract("前置说明\n</proposed_plan>\n结尾说明");
     expect(result.status).toBe("invalid_malformed");
+    expect(result.gateEligibility).toBe("hard_invalid_malformed");
     expect(result.hasStartedPlan).toBe(false);
     expect(result.hasCompletePlan).toBe(false);
     expect(result.displayText).toBe("前置说明\n\n结尾说明");

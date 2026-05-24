@@ -1839,7 +1839,7 @@ export function deriveAcceptedPlanResumeProjection(params: {
   const acceptedDecision = snapshot?.planDecisions?.find((decision) => decision.status === "accepted");
   const matchedAcceptedDecisionId = pendingDecision?.status === "accepted"
     ? pendingDecision.decisionId
-    : acceptedDecisionId;
+    : acceptedDecisionId ?? acceptedDecision?.id;
   const acceptedDecisionMatches = Boolean(
     matchedAcceptedDecisionId &&
     acceptedDecision &&
@@ -2170,6 +2170,25 @@ export function extractCompleteProposedPlanContent(snapshot: Pick<StateSnapshot,
   return inspected.status === "complete_single"
     ? inspected.completePlanContent
     : undefined;
+}
+
+export function extractProposedPlanDecisionCandidate(
+  snapshot: Pick<StateSnapshot, "events"> & { output?: unknown },
+): { planContent?: string; strict: boolean } | undefined {
+  const text = projectAssistantTextFromSnapshot(snapshot);
+  if (!text) return undefined;
+  const inspected = inspectProposedPlanContract(text);
+  if (inspected.gateEligibility === "strict_single") {
+    return inspected.candidatePlanContent
+      ? { planContent: inspected.candidatePlanContent, strict: true }
+      : { strict: true };
+  }
+  if (inspected.gateEligibility === "recoverable_single") {
+    return inspected.candidatePlanContent
+      ? { planContent: inspected.candidatePlanContent, strict: false }
+      : { strict: false };
+  }
+  return undefined;
 }
 
 export function deriveRunInteraction(snapshot: StateSnapshot): RunInteraction {
