@@ -82,6 +82,7 @@ import {
   SessionBranchGroupListParamsSchema,
   SessionBranchGroupSchema,
   SessionDetail,
+  SessionForkParamsSchema,
   type SessionContextState,
   SessionSummary,
   SessionSummarySchema,
@@ -187,6 +188,127 @@ import { readLangfuseRunTrace } from "./telemetry/langfuse.js";
 import { mergeTrailObservations, synthesizeLocalTrail } from "./telemetry/trails.js";
 
 const PROJECT_DISCOVERY_CONFIRMER_CONFIDENCE_THRESHOLD = 0.75;
+
+type ForkedSnapshotReferenceMaps = {
+  checkpointIds: Map<string, string>;
+  artifactIds: Map<string, string>;
+  planIds: Map<string, string>;
+  planStepIds: Map<string, string>;
+  actionIds: Map<string, string>;
+  toolCallIds: Map<string, string>;
+  todoIds: Map<string, string>;
+};
+
+function remapForkedSnapshotReferences(
+  source: StateSnapshot,
+  runId: string,
+): {
+  checkpoints: CheckpointMeta[];
+  artifacts: ArtifactRef[];
+  plan: StateSnapshot["plan"];
+  actions: StateSnapshot["actions"];
+  planList: StateSnapshot["planList"];
+  todos: StateSnapshot["todos"];
+  toolCalls: StateSnapshot["toolCalls"];
+  conversation: StateSnapshot["conversation"];
+  toolResults: StateSnapshot["toolResults"];
+  policyDecisions: StateSnapshot["policyDecisions"];
+} {
+  const maps: ForkedSnapshotReferenceMaps = {
+    checkpointIds: new Map(source.checkpoints.map((checkpoint, index) => [checkpoint.id, `${runId}:checkpoint-${index}`])),
+    artifactIds: new Map(source.artifacts.map((artifact, index) => [artifact.id, `${runId}:artifact-${index}`])),
+    planIds: new Map(source.plan.map((item, index) => [item.id, `${runId}:plan-${index}`])),
+    planStepIds: new Map(
+      source.planList
+        .map((step, index) => [step.id, step.id ? `${runId}:plan-step-${index}` : undefined] as const)
+        .filter((entry): entry is [string, string] => typeof entry[0] === "string" && typeof entry[1] === "string"),
+    ),
+    actionIds: new Map(source.actions.map((action, index) => [action.id, `${runId}:action-${index}`])),
+    toolCallIds: new Map(source.toolCalls.map((toolCall, index) => [toolCall.id, `${runId}:tool-call-${index}`])),
+    todoIds: new Map(source.todos.map((todo, index) => [todo.id, `${runId}:todo-${index}`])),
+  };
+  const remapCheckpointId = (id?: string): string | undefined => (id ? (maps.checkpointIds.get(id) ?? id) : undefined);
+  const remapArtifactId = (id: string): string => maps.artifactIds.get(id) ?? id;
+  const remapPlanId = (id?: string): string | undefined => (id ? (maps.planIds.get(id) ?? id) : undefined);
+  const remapPlanStepId = (id?: string): string | undefined => (id ? (maps.planStepIds.get(id) ?? id) : undefined);
+  const remapActionId = (id?: string): string | undefined => (id ? (maps.actionIds.get(id) ?? id) : undefined);
+  const remapToolCallId = (id?: string): string | undefined => (id ? (maps.toolCallIds.get(id) ?? id) : undefined);
+
+  return {
+    checkpoints: source.checkpoints.map((checkpoint, index) => ({
+      ...checkpoint,
+      id: `${runId}:checkpoint-${index}`,
+      runId,
+    })),
+    artifacts: source.artifacts.map((artifact, index) => ({
+      ...artifact,
+      id: `${runId}:artifact-${index}`,
+      runId,
+    })),
+    plan: source.plan.map((item, index) => ({
+      ...item,
+      id: `${runId}:plan-${index}`,
+      runId,
+      dependencies: item.dependencies.map((dependencyId) => remapPlanId(dependencyId) ?? dependencyId),
+      linkedActionIds: item.linkedActionIds.map((actionId) => remapActionId(actionId) ?? actionId),
+      checkpointIds: item.checkpointIds.map((checkpointId) => remapCheckpointId(checkpointId) ?? checkpointId),
+    })),
+    actions: source.actions.map((action, index) => ({
+      ...action,
+      id: `${runId}:action-${index}`,
+      runId,
+      planItemId: remapPlanId(action.planItemId),
+      planStepId: remapPlanStepId(action.planStepId),
+      artifactIds: action.artifactIds.map(remapArtifactId),
+      status: action.status === "approval_required" ? "proposed" : action.status,
+    })),
+    planList: source.planList.map((step, index) => ({
+      ...step,
+      id: step.id ? `${runId}:plan-step-${index}` : step.id,
+    })),
+    todos: source.todos.map((todo, index) => ({
+      ...todo,
+      id: `${runId}:todo-${index}`,
+      runId,
+      sourcePlanItemId: remapPlanId(todo.sourcePlanItemId),
+    })),
+    toolCalls: source.toolCalls.map((toolCall, index) => ({
+      ...toolCall,
+      id: `${runId}:tool-call-${index}`,
+      runId,
+      actionId: remapActionId(toolCall.actionId),
+      planStepId: remapPlanStepId(toolCall.planStepId),
+    })),
+    conversation: source.conversation.map((entry) => {
+      if (entry.role === "assistant") {
+        return {
+          ...entry,
+          toolCalls: entry.toolCalls.map((toolCall) => ({
+            ...toolCall,
+            id: remapToolCallId(toolCall.id) ?? toolCall.id,
+          })),
+        };
+      }
+      if (entry.role === "tool") {
+        return {
+          ...entry,
+          toolCallId: remapToolCallId(entry.toolCallId) ?? entry.toolCallId,
+        };
+      }
+      return entry;
+    }),
+    toolResults: source.toolResults.map((result) => ({
+      ...result,
+      resultToolCallId: remapToolCallId(result.resultToolCallId) ?? result.resultToolCallId,
+    })),
+    policyDecisions: source.policyDecisions.map((decision, index) => ({
+      ...decision,
+      id: `${runId}:policy-${index}`,
+      runId,
+      actionId: remapActionId(decision.actionId) ?? decision.actionId,
+    })),
+  };
+}
 const ProjectDiscoveryConfirmerResponseSchema = z.object({
   selectedPath: z.string().min(1).optional(),
   confidence: z.number().min(0).max(1).default(0),
@@ -1028,6 +1150,44 @@ export class LocalRunStore {
 
   archiveSession(params: unknown): SessionSummary {
     return archiveSessionOperation(params, this.projectSessionOperationDeps());
+  }
+
+  forkSession(params: unknown): SessionDetail {
+    const parsed = SessionForkParamsSchema.parse(params);
+    const sourceSession = this.getSessionOrThrow(parsed.sessionId);
+    const visibleRuns = this.runsForSession(parsed.sessionId);
+    const forkIndex = visibleRuns.findIndex((run) => run.runId === parsed.runId);
+    if (forkIndex < 0) {
+      throw new OraRuntimeError(`Run ${parsed.runId} is not a visible run in session ${parsed.sessionId}.`, -32004, parsed);
+    }
+    const forkRuns = visibleRuns
+      .slice(0, forkIndex + 1)
+      .map((run) => this.getRunOrThrow(run.runId));
+    const newSession = this.createSession({
+      projectId: sourceSession.projectId,
+      label: forkedSessionTitle(sourceSession.title),
+    });
+    const now = this.now();
+    for (const [index, sourceRun] of forkRuns.entries()) {
+      const forked = this.buildForkedSessionSnapshot(sourceRun, {
+        sessionId: newSession.sessionId,
+        turnIndex: index + 1,
+        updatedAt: now + index,
+      });
+      if (this.isLedgerBackedSession(newSession.sessionId)) {
+        this.appendRunStartedToLedger({
+          sessionId: newSession.sessionId,
+          runId: forked.runId,
+          turnIndex: forked.turnIndex ?? (index + 1),
+          input: forked.input,
+          config: forked.config,
+          modeId: forked.modeId,
+          createdAt: forked.input.createdAt ?? forked.updatedAt,
+        });
+      }
+      this.persistRun(forked);
+    }
+    return this.getSession({ sessionId: newSession.sessionId });
   }
 
   getSession(params: unknown): SessionDetail {
@@ -4506,6 +4666,101 @@ export class LocalRunStore {
     return runId;
   }
 
+  private buildForkedSessionSnapshot(
+    source: StateSnapshot,
+    params: { sessionId: string; turnIndex: number; updatedAt: number },
+  ): StateSnapshot {
+    const runId = this.nextRunId();
+    const metadata = { ...(source.config.metadata ?? {}) } as Record<string, unknown>;
+    delete metadata.branchGroupId;
+    delete metadata.branchRole;
+    delete metadata.branchTarget;
+    delete metadata.branchPrompt;
+    delete metadata.branchBaseTurnIndex;
+    delete metadata.branchGroupCreatedAt;
+    delete metadata.branchCandidateLabel;
+    delete metadata.branchBaseRunId;
+    delete metadata.branchReplaceRunId;
+    delete metadata.branchDismissed;
+    delete metadata.branchDismissedAt;
+    delete metadata.branchAdoptedAt;
+    delete metadata.branchGroupAdoptedRunId;
+    delete metadata.supersededByRunId;
+    delete metadata.supersededAt;
+    delete metadata.forkedFromRunId;
+    delete metadata.forkedFromCheckpointId;
+
+    const forkedRefs = remapForkedSnapshotReferences(source, runId);
+    const events = source.events.map((event, index) => {
+      const checkpointIndex = typeof event.checkpointId === "string"
+        ? source.checkpoints.findIndex((checkpoint) => checkpoint.id === event.checkpointId)
+        : -1;
+      return OraEventEnvelopeSchema.parse({
+        ...event,
+        id: `${runId}:evt-${index}`,
+        runId,
+        seq: index,
+        checkpointId: typeof event.checkpointId === "string"
+          ? (checkpointIndex >= 0
+            ? forkedRefs.checkpoints[checkpointIndex]?.id
+            : `${runId}:checkpoint-${checkpointOrdinal(event.checkpointId)}`)
+          : undefined,
+      });
+    });
+    const agentMessages = source.agentMessages.map((message, index) => ({
+      ...message,
+      id: `${runId}:agent-message-${index}`,
+      runId,
+    }));
+    const publicAssistantText = assistantTextForRun(source);
+    const output = publicAssistantText
+      ? { text: publicAssistantText }
+      : source.output;
+
+    return StateSnapshotSchema.parse({
+      ...source,
+      runId,
+      sessionId: params.sessionId,
+      turnIndex: params.turnIndex,
+      status: "succeeded",
+      attention: undefined,
+      input: {
+        ...source.input,
+        createdAt: source.input.createdAt ?? params.updatedAt,
+      },
+      config: {
+        ...source.config,
+        metadata,
+      },
+      plan: forkedRefs.plan,
+      planList: forkedRefs.planList,
+      todos: forkedRefs.todos,
+      actions: forkedRefs.actions,
+      toolCalls: forkedRefs.toolCalls,
+      continuation: { frames: [] },
+      planDecisions: [],
+      conversation: forkedRefs.conversation,
+      toolResults: forkedRefs.toolResults,
+      policyDecisions: forkedRefs.policyDecisions,
+      checkpoints: forkedRefs.checkpoints,
+      events,
+      agentMessages,
+      childSessions: [],
+      parentCoordination: undefined,
+      artifacts: forkedRefs.artifacts,
+      output,
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 0, completed: 0, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [], stopReason: undefined },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      contextState: undefined,
+      updatedAt: params.updatedAt,
+      snapshotSource: undefined,
+    });
+  }
+
   private nextSessionId(): string {
     const sessionId = `session-${String(this.manifest.nextSessionNumber).padStart(4, "0")}`;
     this.manifest = {
@@ -6399,6 +6654,16 @@ function previousMainlineRunBefore(
 ): StateSnapshot | undefined {
   const index = runs.findIndex((run) => run.sessionId === sessionId && run.runId === runId);
   return index > 0 ? runs[index - 1] : undefined;
+}
+
+function checkpointOrdinal(checkpointId: string): number {
+  const match = checkpointId.match(/(\d+)(?!.*\d)/);
+  return match ? Number(match[1]) : 0;
+}
+
+function forkedSessionTitle(title: string): string {
+  const base = title.trim() || DEFAULT_SESSION_TITLE;
+  return base.endsWith("（分支）") ? base : `${base}（分支）`;
 }
 
 export class InMemoryRunStore extends LocalRunStore {}

@@ -150,6 +150,48 @@ describe("desktop runtime client agent catalog", () => {
     expect((await client.listProjects())[0]?.projectId).toBe(created.projectId);
   });
 
+  it("forks a new session from an assistant turn in browser fallback without mutating the source session", async () => {
+    const client = createRuntimeClient();
+    const project = await client.createProject({
+      sourceKind: "local_folder",
+      rootPath: "/tmp/runtime-client-fork",
+      label: "runtime-client-fork",
+    });
+    const session = await client.createSession({ projectId: project.projectId, label: "原始会话" });
+    const first = await client.startRun(
+      { prompt: "第一轮", context: {} },
+      { modeId: "single_agent", providerId: "local-smoke", modelRef: "local/smoke-model" },
+      session.sessionId,
+    );
+    await client.startRun(
+      { prompt: "第二轮", context: {} },
+      { modeId: "code_development", providerId: "deepseek", modelRef: "deepseek-chat" },
+      session.sessionId,
+    );
+
+    const forked = await client.forkSession({
+      sessionId: session.sessionId,
+      runId: first.runId,
+    });
+
+    const sourceDetail = await client.getSession(session.sessionId);
+
+    expect(forked.session.sessionId).not.toBe(session.sessionId);
+    expect(forked.session.title).toBe(`${sourceDetail.session.title}（分支）`);
+    expect(forked.session.projectId).toBe(project.projectId);
+    expect(forked.turns).toHaveLength(1);
+    expect(forked.transcript).toHaveLength(2);
+    expect(forked.latestSnapshot?.runId).not.toBe(first.runId);
+    expect(forked.latestSnapshot?.pattern).toBe(first.pattern);
+    expect(forked.latestSnapshot?.config.providerId).toBe("local-smoke");
+    expect(forked.latestSnapshot?.config.modelRef).toBe("local/smoke-model");
+    expect(forked.latestSnapshot?.pendingApprovals).toEqual([]);
+    expect(forked.latestSnapshot?.pendingClarifications).toEqual([]);
+
+    expect(sourceDetail.session.turnCount).toBe(2);
+    expect(sourceDetail.turns).toHaveLength(2);
+  });
+
   it("persists widget layout updates in browser fallback", async () => {
     const client = createRuntimeClient();
     const created = await client.createWidget({

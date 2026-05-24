@@ -1202,6 +1202,12 @@ export const SessionGetParamsSchema = z.object({
 });
 export type SessionGetParams = z.infer<typeof SessionGetParamsSchema>;
 
+export const SessionForkParamsSchema = z.object({
+  sessionId: z.string().min(1),
+  runId: z.string().min(1),
+});
+export type SessionForkParams = z.infer<typeof SessionForkParamsSchema>;
+
 export const SessionArchiveParamsSchema = z.object({
   sessionId: z.string().min(1),
 });

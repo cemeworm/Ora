@@ -945,6 +945,70 @@ describe("desktop workbench state", () => {
     expect(next.activeSessionDetail?.session.status).toBe("succeeded");
   });
 
+  it("forces fork hydration to adopt the forked session mode instead of preserving the previous composer mode", () => {
+    const previousSnapshot = testSnapshot({
+      runId: "run-source",
+      sessionId: "session-source",
+      status: "succeeded",
+      updatedAt: 1_714_000_000_000,
+    });
+    const forkedSnapshot = {
+      ...testSnapshot({
+        runId: "run-forked",
+        sessionId: "session-forked",
+        status: "succeeded",
+        updatedAt: 1_714_000_000_100,
+      }),
+      modeId: CODE_DEVELOPMENT_MODE_ID,
+      config: {
+        ...testSnapshot().config,
+        modeId: CODE_DEVELOPMENT_MODE_ID,
+      },
+    } as OraStateSnapshot;
+    const state: WorkbenchState = {
+      ...initialWorkbenchState,
+      selectedSessionId: "session-source",
+      selectedTurnRunId: previousSnapshot.runId,
+      selectedModeId: SINGLE_AGENT_MODE_ID,
+      runLifecycle: lifecycleFromSnapshot(previousSnapshot),
+      activeSessionDetail: {
+        session: { ...sessionSummary("session-source"), latestRunId: previousSnapshot.runId },
+        turns: [{ runId: previousSnapshot.runId } as unknown as NonNullable<WorkbenchState["activeSessionDetail"]>["turns"][number]],
+        transcript: [],
+        latestSnapshot: previousSnapshot,
+      },
+    };
+
+    const next = workbenchReducer(state, {
+      type: "HYDRATE_SESSION",
+      projects: [],
+      sessions: [{ ...sessionSummary("session-forked"), latestRunId: forkedSnapshot.runId }],
+      detail: {
+        session: { ...sessionSummary("session-forked"), latestRunId: forkedSnapshot.runId },
+        turns: [{
+          runId: forkedSnapshot.runId,
+          sessionId: "session-forked",
+          turnIndex: 1,
+          status: "succeeded",
+          pattern: forkedSnapshot.pattern,
+          modeId: CODE_DEVELOPMENT_MODE_ID,
+          prompt: "fork",
+          startedAt: forkedSnapshot.updatedAt,
+          updatedAt: forkedSnapshot.updatedAt,
+          eventCount: 0,
+          checkpointCount: 0,
+          artifactCount: 0,
+        }],
+        transcript: [],
+        latestSnapshot: forkedSnapshot,
+      },
+      forceSnapshotComposerMode: true,
+    });
+
+    expect(next.selectedSessionId).toBe("session-forked");
+    expect(next.selectedModeId).toBe(CODE_DEVELOPMENT_MODE_ID);
+  });
+
   it("keeps a final local snapshot authoritative over stale collection refreshes", () => {
     const sessionId = "session-collection-authority";
     const runId = "run-collection-authority";

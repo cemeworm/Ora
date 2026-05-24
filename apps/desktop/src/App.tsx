@@ -1362,9 +1362,8 @@ function WorkbenchInner() {
               dispatch({ type: "SET_PROMPT", text })
             }
             onClearSelectedCustomAgent={actions.clearSelectedCustomAgent}
-            onForkRun={actions.forkRun}
-            onCreateAndRunBranchGroup={(params) =>
-              void actions.createAndRunBranchGroup(params)
+            onForkSessionFromTurn={(runId) =>
+              void actions.forkSessionFromTurn(runId)
             }
             onAdoptBranchGroup={(branchGroupId: string, runId: string) =>
               void actions.adoptBranchGroup(branchGroupId, runId)

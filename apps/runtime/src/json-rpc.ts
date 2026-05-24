@@ -182,6 +182,8 @@ export function createRuntimeMethodHandler(
         return store.listSessions(request.params);
       case "sessions.get":
         return store.getSession(request.params);
+      case "sessions.fork":
+        return store.forkSession(request.params);
       case "sessions.branchGroups.list":
         return store.listSessionBranchGroups(request.params);
       case "sessions.branchGroups.get":

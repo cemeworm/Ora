@@ -355,6 +355,7 @@ export type WorkbenchAction =
       snapshot?: OraStateSnapshot;
       feedback?: string;
       preserveSelection?: boolean;
+      forceSnapshotComposerMode?: boolean;
     }
   | { type: "CACHE_SESSION_DETAIL"; detail: OraSessionDetail }
   | {
@@ -3322,6 +3323,17 @@ function preserveComposerMode(
   return state.selectedModeId || candidateModeId || "";
 }
 
+function resolveHydratedComposerMode(
+  state: WorkbenchState,
+  candidateModeId: string | undefined,
+  forceSnapshotComposerMode: boolean | undefined,
+): string {
+  if (forceSnapshotComposerMode && candidateModeId) {
+    return candidateModeId;
+  }
+  return preserveComposerMode(state, candidateModeId);
+}
+
 export function workbenchReducer(
   state: WorkbenchState,
   action: WorkbenchAction,
@@ -3510,9 +3522,10 @@ export function workbenchReducer(
           effectiveSnapshot?.pattern ??
           latestTurn?.pattern ??
           state.selectedPattern,
-        selectedModeId: preserveComposerMode(
+        selectedModeId: resolveHydratedComposerMode(
           state,
           effectiveSnapshot?.modeId ?? latestTurn?.modeId,
+          action.forceSnapshotComposerMode,
         ),
         selectedModeSelection:
           effectiveSnapshot?.config.modeSelection ?? state.selectedModeSelection,

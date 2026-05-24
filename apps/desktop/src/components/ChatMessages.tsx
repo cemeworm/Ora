@@ -30,6 +30,7 @@ interface ChatMessagesProps {
   surfaceFrameWidthClassName?: string;
   onOpenArtifact?: (artifactId: string) => void;
   onSubmitFeedback?: (message: ChatMessage, feedbackText: string) => Promise<void>;
+  onForkSessionFromTurn?: (runId: string) => void;
   onAdoptBranchGroup?: (branchGroupId: string, runId: string) => void;
   projectRootPath?: string;
 }
@@ -77,6 +78,7 @@ export const ChatMessages = memo(function ChatMessages({
   surfaceFrameWidthClassName = CHAT_SURFACE_FRAME_WIDTH_CLASS,
   onOpenArtifact,
   onSubmitFeedback,
+  onForkSessionFromTurn,
   onAdoptBranchGroup,
   projectRootPath,
 }: ChatMessagesProps) {
@@ -135,6 +137,7 @@ export const ChatMessages = memo(function ChatMessages({
                       language={language}
                       onOpenArtifact={onOpenArtifact}
                       onSubmitFeedback={onSubmitFeedback}
+                      onForkSessionFromTurn={onForkSessionFromTurn}
                       onAdoptBranchGroup={onAdoptBranchGroup}
                       projectRootPath={projectRootPath}
                     />
@@ -221,6 +224,7 @@ const AssistantMessageCard = memo(function AssistantMessageCard({
   language,
   onOpenArtifact,
   onSubmitFeedback,
+  onForkSessionFromTurn,
   onAdoptBranchGroup,
   projectRootPath,
 }: {
@@ -230,6 +234,7 @@ const AssistantMessageCard = memo(function AssistantMessageCard({
   language: AppLanguage;
   onOpenArtifact?: (artifactId: string) => void;
   onSubmitFeedback?: (message: ChatMessage, feedbackText: string) => Promise<void>;
+  onForkSessionFromTurn?: (runId: string) => void;
   onAdoptBranchGroup?: (branchGroupId: string, runId: string) => void;
   projectRootPath?: string;
 }) {
@@ -265,6 +270,7 @@ const AssistantMessageCard = memo(function AssistantMessageCard({
         isPlaceholder={message.isPlaceholder}
         onOpenArtifact={onOpenArtifact}
         onSubmitFeedback={message.turn && onSubmitFeedback ? handleSubmitFeedback : undefined}
+        onForkSessionFromTurn={onForkSessionFromTurn}
         projectRootPath={projectRootPath}
       />
     </div>

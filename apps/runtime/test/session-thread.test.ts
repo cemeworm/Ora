@@ -1968,6 +1968,190 @@ describe("session thread runtime behavior", () => {
     expect(sessionDetail.session.turnCount).toBe(2);
   });
 
+  it("forks a new session from an assistant turn without mutating the source session", async () => {
+    const store = new LocalRunStore({ dataDir: freshStoreDir(), clock });
+    const handle = createRuntimeMethodHandler(store);
+
+    const session = await handle({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "sessions.create",
+      params: { label: "Fork source session" },
+    }) as { sessionId: string };
+
+    const first = await handle({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "runs.start",
+      params: {
+        sessionId: session.sessionId,
+        input: { prompt: "First turn" },
+        config: { pattern: "generator_verifier" },
+      },
+    }) as { runId: string };
+    await handle({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "runs.start",
+      params: {
+        sessionId: session.sessionId,
+        input: { prompt: "Second turn" },
+        config: { pattern: "shared_state" },
+      },
+    });
+
+    const forked = SessionDetailSchema.parse(await handle({
+      jsonrpc: "2.0",
+      id: 4,
+      method: "sessions.fork",
+      params: { sessionId: session.sessionId, runId: first.runId },
+    }));
+
+    const sourceDetail = SessionDetailSchema.parse(await handle({
+      jsonrpc: "2.0",
+      id: 5,
+      method: "sessions.get",
+      params: { sessionId: session.sessionId },
+    }));
+
+    expect(forked.session.sessionId).not.toBe(session.sessionId);
+    expect(forked.session.title).toContain("（分支）");
+    expect(forked.session.projectId).toBe(sourceDetail.session.projectId);
+    expect(forked.turns).toHaveLength(1);
+    expect(forked.turns[0]?.prompt).toBe("First turn");
+    expect(forked.turns[0]?.runId).not.toBe(first.runId);
+    expect(forked.session.turnCount).toBe(1);
+    expect(forked.transcript[0]).toMatchObject({
+      role: "user",
+      content: "First turn",
+      runId: forked.turns[0]?.runId,
+    });
+
+    expect(sourceDetail.turns).toHaveLength(2);
+    expect(sourceDetail.turns[0]?.runId).toBe(first.runId);
+    expect(sourceDetail.session.turnCount).toBe(2);
+  });
+
+  it("rewrites run-scoped references when building a forked session snapshot", async () => {
+    const store = new LocalRunStore({ dataDir: freshStoreDir(), clock });
+    const session = store.createSession({ label: "Fork helper source" });
+    const first = await store.startRun({
+      sessionId: session.sessionId,
+      input: { prompt: "First turn" },
+      config: { pattern: "generator_verifier" },
+    });
+    const firstSnapshot = StateSnapshotSchema.parse(store.getRunState({ runId: first.runId }));
+    const enriched = StateSnapshotSchema.parse({
+      ...firstSnapshot,
+      planList: [{ id: `${first.runId}:plan-step-0`, step: "Plan step", status: "completed" }],
+      plan: [{
+        id: `${first.runId}:plan-0`,
+        runId: first.runId,
+        status: "done",
+        title: "Plan item",
+        dependencies: [],
+        linkedActionIds: [`${first.runId}:action-0`],
+        checkpointIds: firstSnapshot.checkpoints[0] ? [firstSnapshot.checkpoints[0].id] : [],
+      }],
+      todos: [{
+        id: `${first.runId}:todo-0`,
+        runId: first.runId,
+        sourcePlanItemId: `${first.runId}:plan-0`,
+        status: "done",
+        label: "Todo item",
+        createdAt: firstSnapshot.updatedAt,
+        updatedAt: firstSnapshot.updatedAt,
+      }],
+      actions: [{
+        id: `${first.runId}:action-0`,
+        runId: first.runId,
+        planItemId: `${first.runId}:plan-0`,
+        planStepId: `${first.runId}:plan-step-0`,
+        type: "shell.execute",
+        riskLevel: "low",
+        status: "succeeded",
+        input: {},
+        artifactIds: [],
+      }],
+      toolCalls: [{
+        id: `${first.runId}:tool-call-0`,
+        runId: first.runId,
+        actionId: `${first.runId}:action-0`,
+        planStepId: `${first.runId}:plan-step-0`,
+        toolId: "shell.execute",
+        args: {},
+        source: "json_fallback",
+        status: "succeeded",
+        requestedAt: firstSnapshot.updatedAt,
+        updatedAt: firstSnapshot.updatedAt,
+      }],
+      conversation: [
+        {
+          role: "assistant",
+          content: "First turn",
+          toolCalls: [{ id: `${first.runId}:tool-call-0`, toolId: "shell.execute", args: {} }],
+          createdAt: firstSnapshot.updatedAt,
+        },
+        {
+          role: "tool",
+          toolCallId: `${first.runId}:tool-call-0`,
+          toolId: "shell.execute",
+          content: "ok",
+          status: "succeeded",
+          createdAt: firstSnapshot.updatedAt,
+        },
+      ],
+      toolResults: [{
+        key: `${first.runId}:tool-result-0`,
+        toolId: "shell.execute",
+        argsDigest: "digest",
+        resultToolCallId: `${first.runId}:tool-call-0`,
+        status: "succeeded",
+        createdAt: firstSnapshot.updatedAt,
+        updatedAt: firstSnapshot.updatedAt,
+      }],
+      policyDecisions: [{
+        id: `${first.runId}:policy-0`,
+        runId: first.runId,
+        actionId: `${first.runId}:action-0`,
+        policyId: "safe",
+        requiredApproval: false,
+        reason: "ok",
+        createdAt: firstSnapshot.updatedAt,
+      }],
+    });
+
+    const forkedRun = StateSnapshotSchema.parse(
+      (store as unknown as {
+        buildForkedSessionSnapshot(source: typeof enriched, params: {
+          sessionId: string;
+          turnIndex: number;
+          updatedAt: number;
+        }): unknown;
+      }).buildForkedSessionSnapshot(enriched, {
+        sessionId: "session-forked",
+        turnIndex: 1,
+        updatedAt: firstSnapshot.updatedAt + 1,
+      }),
+    );
+
+    expect(forkedRun.todos[0]?.runId).toBe(forkedRun.runId);
+    expect(forkedRun.todos[0]?.sourcePlanItemId).toBe(`${forkedRun.runId}:plan-0`);
+    expect(forkedRun.actions[0]?.planStepId).toBe(`${forkedRun.runId}:plan-step-0`);
+    expect(forkedRun.toolCalls[0]?.actionId).toBe(`${forkedRun.runId}:action-0`);
+    expect(forkedRun.toolCalls[0]?.planStepId).toBe(`${forkedRun.runId}:plan-step-0`);
+    expect(forkedRun.conversation[0]).toMatchObject({
+      role: "assistant",
+      toolCalls: [{ id: `${forkedRun.runId}:tool-call-0` }],
+    });
+    expect(forkedRun.conversation[1]).toMatchObject({
+      role: "tool",
+      toolCallId: `${forkedRun.runId}:tool-call-0`,
+    });
+    expect(forkedRun.toolResults[0]?.resultToolCallId).toBe(`${forkedRun.runId}:tool-call-0`);
+    expect(forkedRun.policyDecisions[0]?.actionId).toBe(`${forkedRun.runId}:action-0`);
+  });
+
   it("persists branch created, candidate started, and dismissed facts in the session ledger", async () => {
     const dir = freshStoreDir();
     const store = new LocalRunStore({ dataDir: dir, clock });

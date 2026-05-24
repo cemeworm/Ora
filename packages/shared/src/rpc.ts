@@ -63,6 +63,7 @@ export const RuntimeJsonRpcMethodSchema = z.enum([
   "sessions.create",
   "sessions.list",
   "sessions.get",
+  "sessions.fork",
   "sessions.branchGroups.list",
   "sessions.branchGroups.get",
   "sessions.branchGroups.createAndRun",

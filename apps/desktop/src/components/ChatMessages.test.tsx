@@ -573,4 +573,36 @@ describe("ChatMessages bottom inset", () => {
     expect(html).not.toContain('<img');
     expect(html).toContain('Hello');
   });
+
+  it("passes the fork-session action through to assistant turns", () => {
+    const html = renderToStaticMarkup(
+      <ChatMessages
+        chatMessages={[{
+          id: "assistant-fork",
+          role: "assistant",
+          content: "可以从这里分支。",
+          timestamp: "12:02",
+          turn: {
+            runId: "run-fork-through",
+            turnIndex: 1,
+            status: "done",
+            pattern: "agent_teams",
+            sources: [],
+            processSteps: [],
+            agentMessages: [],
+            artifacts: [],
+            todos: [],
+            planList: [],
+            approvalCount: 0,
+            clarificationCount: 0,
+            hasProposedPlan: false,
+            activeLoadingTarget: { kind: "thinking" },
+          },
+        }]}
+        onForkSessionFromTurn={() => {}}
+      />,
+    );
+
+    expect(html).toContain("aria-label=\"分支到新会话\"");
+  });
 });

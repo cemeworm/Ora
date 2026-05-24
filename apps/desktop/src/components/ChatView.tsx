@@ -1,6 +1,6 @@
 import { deriveSnapshotGateProjection, type ModeSelection } from "@cemeworm/shared";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Bot, ChevronDown, GitBranchPlus } from "lucide-react";
+import { Bot, ChevronDown } from "lucide-react";
 import { AssistantTurnCard } from "./AssistantTurnCard";
 import { ChatHeader } from "./ChatHeader";
 import { ChatMessages } from "./ChatMessages";
@@ -13,8 +13,6 @@ import {
   FLOATING_OVERLAY_PANEL_CLASS,
   PlanStepsTray,
 } from "./PlanStepsTray";
-import { Button } from "./ui/button";
-import { Select } from "./ui/select";
 import { cn } from "../lib/utils";
 import type {
   ActionRecord,
@@ -28,12 +26,11 @@ import type {
   TopologyNode,
   TurnPlanListStep,
 } from "../types";
-import type { OraRunConfig, OraSessionBranchGroupCreateParams, OraStateSnapshot } from "../lib/runtimeClient";
+import type { OraStateSnapshot } from "../lib/runtimeClient";
 import { runnableProviderOptions } from "../lib/providerOptions";
 import { useWorkbench, type ComposerImageAttachment, type ComposerLocalFileAttachment } from "../lib/state";
 import { derivePresentedAssistantTurnFromSnapshot } from "../lib/viewModel";
 import { getWelcomeGreeting } from "../lib/welcomeGreeting";
-import { translateCopy, type AppLanguage } from "../lib/i18n";
 import type { DesktopRunInteractionState } from "../lib/runInteractionState";
 import {
   CHAT_SURFACE_FRAME_WIDTH_CLASS,
@@ -95,8 +92,7 @@ interface ChatViewProps {
   onCancelRun: () => void;
   onComposerPromptChange: (prompt: string) => void;
   onClearSelectedCustomAgent: () => void;
-  onForkRun: () => void;
-  onCreateAndRunBranchGroup: (params: OraSessionBranchGroupCreateParams) => void;
+  onForkSessionFromTurn: (runId: string) => void;
   onAdoptBranchGroup: (branchGroupId: string, runId: string) => void;
   onInterruptRun: () => void;
   onReplaySelection: () => void;
@@ -762,7 +758,7 @@ export function ChatView({
   onAcceptPlanDecisionAndStartImplementation,
   onResolvePlanDecision,
   onCancelRun,
-  onCreateAndRunBranchGroup,
+  onForkSessionFromTurn,
   onAdoptBranchGroup,
   onOpenArtifact,
   onSubmitFeedback,
@@ -914,7 +910,6 @@ export function ChatView({
     [showDesktopOverlayRail],
   );
   const branchGroups = state.activeSessionDetail?.branchGroups ?? [];
-  const [branchPanelOpen, setBranchPanelOpen] = useState(false);
 
   const openLocalFiles = useCallback(async () => {
     try {
@@ -970,15 +965,6 @@ export function ChatView({
     });
   }, [dispatch, selectedSession.id]);
 
-  const handleBranchPanelToggle = useCallback(() => {
-    setBranchPanelOpen((open) => !open);
-  }, []);
-
-  const handleBranchGroupCreate = useCallback((params: OraSessionBranchGroupCreateParams) => {
-    onCreateAndRunBranchGroup(params);
-    setBranchPanelOpen(false);
-  }, [onCreateAndRunBranchGroup]);
-
   const handleProviderChange = useCallback((providerId: string) => {
     dispatch({ type: "SET_PROVIDER", providerId });
   }, [dispatch]);
@@ -1032,28 +1018,11 @@ export function ChatView({
       <ChatHeader
         busyCommand={busyCommand}
         selectedSession={selectedSession}
-        onOpenBranches={handleBranchPanelToggle}
         onToggleDetailDrawer={onToggleDetailDrawer}
         detailDrawer={detailDrawer}
         language={state.language}
       />
       <main className={CHAT_VIEW_MAIN_CLASS}>
-        {branchPanelOpen && (
-          <BranchComparisonPanel
-            sessionId={selectedSession.id}
-            composerPrompt={composerPrompt}
-            activeSnapshot={activeSnapshot}
-            modeCards={modeCards}
-            providerOptions={providerOptions}
-            selectedProviderId={state.selectedProviderId}
-            selectedModeId={state.selectedModeId}
-            taskIntent={state.taskIntent}
-            permissionMode={state.permissionMode}
-            language={state.language}
-            disabled={busyCommand !== undefined || runInteractionState.isProcessing}
-            onCreateAndRunBranchGroup={handleBranchGroupCreate}
-          />
-        )}
         <div ref={setContentRowElement} className={CHAT_VIEW_CONTENT_ROW_CLASS}>
           <div className={CHAT_VIEW_MESSAGES_PANEL_CLASS}>
             <div
@@ -1100,6 +1069,7 @@ export function ChatView({
                 projectRootPath={projectRootPath}
                 onOpenArtifact={onOpenArtifact}
                 onSubmitFeedback={onSubmitFeedback}
+                onForkSessionFromTurn={onForkSessionFromTurn}
                 onAdoptBranchGroup={onAdoptBranchGroup}
               />
               <ChatInput
@@ -1498,129 +1468,4 @@ function inferBrowserFileMimeType(fileName: string): string {
     default:
       return "application/octet-stream";
   }
-}
-
-interface BranchDraft {
-  id: string;
-  label: string;
-  providerId: string;
-  modeId: string;
-}
-
-function branchCandidateLabel(language: AppLanguage, index: number) {
-  return language === "zh" ? `候选 ${index}` : `Candidate ${index}`;
-}
-
-function BranchComparisonPanel({
-  sessionId,
-  composerPrompt,
-  activeSnapshot,
-  modeCards,
-  providerOptions,
-  selectedProviderId,
-  selectedModeId,
-  taskIntent,
-  permissionMode,
-  language,
-  disabled,
-  onCreateAndRunBranchGroup,
-}: {
-  sessionId: string;
-  composerPrompt: string;
-  activeSnapshot?: OraStateSnapshot;
-  modeCards: ModeCard[];
-  providerOptions: { id: string; label: string; modelId?: string }[];
-  selectedProviderId?: string;
-  selectedModeId: string;
-  taskIntent: "chat" | "plan" | "implement";
-  permissionMode: string;
-  language: AppLanguage;
-  disabled: boolean;
-  onCreateAndRunBranchGroup: (params: OraSessionBranchGroupCreateParams) => void;
-}) {
-  const defaultProviderId = selectedProviderId ?? providerOptions[0]?.id ?? "";
-  const defaultModeId = selectedModeId || modeCards[0]?.id || "single_agent";
-  const t = (value: string) => translateCopy(language, value);
-  const [drafts, setDrafts] = useState<BranchDraft[]>([
-    { id: "candidate-1", label: branchCandidateLabel(language, 1), providerId: defaultProviderId, modeId: defaultModeId },
-    { id: "candidate-2", label: branchCandidateLabel(language, 2), providerId: defaultProviderId, modeId: defaultModeId },
-  ]);
-
-  function updateDraft(id: string, patch: Partial<BranchDraft>) {
-    setDrafts((current) => current.map((draft) => draft.id === id ? { ...draft, ...patch } : draft));
-  }
-
-  function startBranches() {
-    const prompt = composerPrompt.trim();
-    const candidates = drafts.map((draft) => {
-      const provider = providerOptions.find((option) => option.id === draft.providerId);
-      const mode = modeCards.find((option) => option.id === draft.modeId);
-      const config: Partial<OraRunConfig> = {
-        pattern: mode?.family,
-        modeId: draft.modeId,
-        modeSelection: "manual",
-        providerId: draft.providerId,
-        providerConfig: provider as OraRunConfig["providerConfig"],
-        modelRef: provider?.modelId ?? "",
-        permissionMode: permissionMode as OraRunConfig["permissionMode"],
-        metadata: {
-          source: "desktop-branch-panel",
-          taskIntent,
-        },
-      };
-      return {
-        label: draft.label.trim() || draft.id,
-        config,
-      };
-    });
-    onCreateAndRunBranchGroup({
-      sessionId,
-      target: "replace_latest",
-      ...(prompt ? { prompt } : {}),
-      candidates: candidates.slice(0, 2),
-    });
-  }
-
-  return (
-    <section className="mx-auto mt-4 flex w-full max-w-[88rem] flex-col gap-3 border-b border-border bg-background/95 px-4 pb-4 pt-3 shadow-sm md:px-6 xl:px-8">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-2 text-sm font-medium">
-          <GitBranchPlus size={15} />
-          <span>{t("Branch candidates")}</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="rounded-md border border-border bg-background px-2.5 py-1.5 text-xs text-muted-foreground">
-            {t("Replace latest turn")}
-          </span>
-          <Button size="sm" variant="secondary" onClick={startBranches} disabled={disabled || !activeSnapshot?.input.prompt}>
-            <GitBranchPlus size={14} />
-            {t("Run")}
-          </Button>
-        </div>
-      </div>
-
-      <div className="grid gap-2 md:grid-cols-2">
-        {drafts.map((draft) => (
-          <div key={draft.id} className="grid gap-2 rounded-md border border-border bg-card p-2 md:grid-cols-3">
-            <input
-              value={draft.label}
-              onChange={(event) => updateDraft(draft.id, { label: event.target.value })}
-              className="h-8 rounded-md border border-input bg-background px-2 text-xs"
-              disabled={disabled}
-            />
-            <Select value={draft.providerId} onChange={(event) => updateDraft(draft.id, { providerId: event.target.value })} className="h-8 text-xs" disabled={disabled}>
-              {providerOptions.map((provider) => (
-                <option key={provider.id} value={provider.id}>{provider.label}</option>
-              ))}
-            </Select>
-            <Select value={draft.modeId} onChange={(event) => updateDraft(draft.id, { modeId: event.target.value })} className="h-8 text-xs" disabled={disabled}>
-              {modeCards.map((mode) => (
-                <option key={mode.id} value={mode.id}>{mode.label}</option>
-              ))}
-            </Select>
-          </div>
-        ))}
-      </div>
-    </section>
-  );
 }

@@ -1476,6 +1476,30 @@ export function useRunActions() {
     }
   }
 
+  async function forkSessionFromTurn(runId: string) {
+    const sessionId = state.selectedSessionId;
+    if (!sessionId) return;
+    dispatch({ type: "SET_BUSY_COMMAND", command: "Fork session" });
+    try {
+      const detail = await runtimeClient.forkSession({ sessionId, runId });
+      const [projects, sessions] = await Promise.all([
+        runtimeClient.listProjects(),
+        runtimeClient.listSessions(),
+      ]);
+      dispatch({
+        type: "HYDRATE_SESSION",
+        projects,
+        sessions,
+        detail,
+        feedback: "已创建分支会话。",
+        forceSnapshotComposerMode: true,
+      });
+    } catch (error) {
+      dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: error instanceof Error ? error.message : "Session fork failed." });
+      dispatch({ type: "SET_BUSY_COMMAND", command: undefined });
+    }
+  }
+
   async function adoptBranchGroup(branchGroupId: string, runId: string) {
     const sessionId = state.selectedSessionId;
     if (!sessionId) return;
@@ -1696,6 +1720,7 @@ export function useRunActions() {
       acceptPlanDecisionAndStartImplementation,
       forkRun,
       forkAndResumeRun,
+      forkSessionFromTurn,
       createAndRunBranchGroup,
       adoptBranchGroup,
       dismissBranchGroup,

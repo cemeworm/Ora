@@ -1356,6 +1356,7 @@ impl RuntimeFacade {
             "sessions.create" => self.sessions_create(params.as_ref()),
             "sessions.list" => self.sessions_list(params.as_ref()),
             "sessions.get" => self.sessions_get(params.as_ref()),
+            "sessions.fork" => self.sessions_fork(params.as_ref()),
             "sessions.archive" => self.sessions_archive(params.as_ref()),
             "sessions.branchGroups.list" => self.sessions_branch_groups_list(params.as_ref()),
             "sessions.branchGroups.get" => self.sessions_branch_groups_get(params.as_ref()),
@@ -1995,6 +1996,89 @@ impl RuntimeFacade {
             .cloned()
             .cloned();
         let branch_groups = branch_groups_for_session(&state, &session_id);
+
+        Ok(json!({
+            "session": session,
+            "turns": turns,
+            "transcript": transcript,
+            "latestSnapshot": latest_snapshot,
+            "branchGroups": branch_groups
+        }))
+    }
+
+    fn sessions_fork(&self, params: Option<&Value>) -> Result<Value, RuntimeJsonRpcError> {
+        let session_id = require_session_id(params)?;
+        let run_id = require_run_id(params)?;
+        let mut state = self.lock_state()?;
+        let source_session = get_session(&state, &session_id)?.clone();
+        let source_runs = visible_runs_for_session(&state, &session_id);
+        let fork_index = source_runs
+            .iter()
+            .position(|run| run["runId"].as_str() == Some(run_id.as_str()))
+            .ok_or_else(|| {
+                runtime_error(
+                    -32004,
+                    "Run is not a visible run in the source session",
+                    Some(json!({ "sessionId": session_id, "runId": run_id })),
+                )
+            })?;
+        let fork_runs = source_runs
+            .into_iter()
+            .take(fork_index + 1)
+            .filter_map(|run| run["runId"].as_str())
+            .filter_map(|run_id| state.runs.get(run_id).cloned())
+            .collect::<Vec<Value>>();
+        let created_at = now_ms();
+        state.next_session_number += 1;
+        let fork_session_id = format!("session-{:04}", state.next_session_number);
+        let fork_session_title = forked_session_title(
+            source_session["title"].as_str().unwrap_or("New Chat"),
+        );
+        state.sessions.insert(
+            fork_session_id.clone(),
+            json!({
+                "sessionId": fork_session_id,
+                "title": fork_session_title,
+                "projectId": source_session["projectId"].clone(),
+                "status": "idle",
+                "turnCount": 0,
+                "createdAt": created_at,
+                "updatedAt": created_at
+            }),
+        );
+        if let Some(project_id) = source_session["projectId"].as_str() {
+            sync_project_summary(&mut state, project_id);
+        }
+
+        for (index, source_run) in fork_runs.iter().enumerate() {
+            state.next_run_number += 1;
+            let next_run_id = format!("run-{:04}", state.next_run_number);
+            let forked = build_forked_session_snapshot(
+                source_run,
+                &fork_session_id,
+                &next_run_id,
+                (index + 1) as u64,
+                created_at + index as u64,
+            );
+            state.runs.insert(next_run_id, forked.clone());
+            upsert_session_from_snapshot(&mut state, &forked);
+        }
+
+        if let Some(session) = state.sessions.get_mut(&fork_session_id) {
+            set_object_value(session, "title", json!(forked_session_title(source_session["title"].as_str().unwrap_or("New Chat"))));
+        }
+
+        let session = get_session(&state, &fork_session_id)?.clone();
+        let turns = visible_runs_for_session(&state, &fork_session_id)
+            .into_iter()
+            .map(session_turn)
+            .collect::<Vec<Value>>();
+        let transcript = session_transcript(&state, &fork_session_id);
+        let latest_snapshot = visible_runs_for_session(&state, &fork_session_id)
+            .last()
+            .cloned()
+            .cloned();
+        let branch_groups = branch_groups_for_session(&state, &fork_session_id);
 
         Ok(json!({
             "session": session,
@@ -5137,6 +5221,17 @@ fn default_session_title(prompt: &str) -> String {
     }
 }
 
+fn forked_session_title(title: &str) -> String {
+    let trimmed = title.trim();
+    if trimmed.is_empty() {
+        "New Chat（分支）".to_string()
+    } else if trimmed.ends_with("（分支）") {
+        trimmed.to_string()
+    } else {
+        format!("{trimmed}（分支）")
+    }
+}
+
 fn assistant_text_for_run(snapshot: &Value) -> String {
     if let Some(text) = snapshot["output"]["text"].as_str() {
         if !text.trim().is_empty() {
@@ -5195,6 +5290,419 @@ fn session_transcript(state: &FacadeState, session_id: &str) -> Vec<Value> {
         }
     }
     transcript
+}
+
+fn checkpoint_ordinal(checkpoint_id: &str) -> usize {
+    checkpoint_id
+        .rsplit("checkpoint-")
+        .next()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(0)
+}
+
+struct ForkedSnapshotRefs {
+    checkpoints: Vec<Value>,
+    artifacts: Vec<Value>,
+    plan: Vec<Value>,
+    actions: Vec<Value>,
+    plan_list: Vec<Value>,
+    todos: Vec<Value>,
+    tool_calls: Vec<Value>,
+    conversation: Vec<Value>,
+    tool_results: Vec<Value>,
+    policy_decisions: Vec<Value>,
+}
+
+fn remap_fork_snapshot_references(source: &Value, run_id: &str) -> ForkedSnapshotRefs {
+    let source_checkpoints = source["checkpoints"].as_array().cloned().unwrap_or_default();
+    let source_artifacts = source["artifacts"].as_array().cloned().unwrap_or_default();
+    let source_plan = source["plan"].as_array().cloned().unwrap_or_default();
+    let source_actions = source["actions"].as_array().cloned().unwrap_or_default();
+    let source_todos = source["todos"].as_array().cloned().unwrap_or_default();
+    let source_tool_calls = source["toolCalls"].as_array().cloned().unwrap_or_default();
+    let source_conversation = source["conversation"].as_array().cloned().unwrap_or_default();
+    let source_tool_results = source["toolResults"].as_array().cloned().unwrap_or_default();
+    let source_policy_decisions = source["policyDecisions"].as_array().cloned().unwrap_or_default();
+
+    let checkpoint_ids = source_checkpoints
+        .iter()
+        .enumerate()
+        .filter_map(|(index, checkpoint)| checkpoint["id"].as_str().map(|id| (id.to_string(), format!("{run_id}:checkpoint-{index}"))))
+        .collect::<HashMap<_, _>>();
+    let artifact_ids = source_artifacts
+        .iter()
+        .enumerate()
+        .filter_map(|(index, artifact)| artifact["id"].as_str().map(|id| (id.to_string(), format!("{run_id}:artifact-{index}"))))
+        .collect::<HashMap<_, _>>();
+    let plan_ids = source_plan
+        .iter()
+        .enumerate()
+        .filter_map(|(index, item)| item["id"].as_str().map(|id| (id.to_string(), format!("{run_id}:plan-{index}"))))
+        .collect::<HashMap<_, _>>();
+    let action_ids = source_actions
+        .iter()
+        .enumerate()
+        .filter_map(|(index, action)| action["id"].as_str().map(|id| (id.to_string(), format!("{run_id}:action-{index}"))))
+        .collect::<HashMap<_, _>>();
+    let plan_step_ids = source["planList"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .enumerate()
+        .filter_map(|(index, step)| step["id"].as_str().map(|id| (id.to_string(), format!("{run_id}:plan-step-{index}"))))
+        .collect::<HashMap<_, _>>();
+    let tool_call_ids = source_tool_calls
+        .iter()
+        .enumerate()
+        .filter_map(|(index, tool_call)| tool_call["id"].as_str().map(|id| (id.to_string(), format!("{run_id}:tool-call-{index}"))))
+        .collect::<HashMap<_, _>>();
+
+    let remap = |map: &HashMap<String, String>, id: &str| map.get(id).cloned().unwrap_or_else(|| id.to_string());
+
+    let checkpoints = source_checkpoints
+        .iter()
+        .enumerate()
+        .map(|(index, checkpoint)| {
+            let mut next = checkpoint.clone();
+            set_object_value(&mut next, "id", json!(format!("{run_id}:checkpoint-{index}")));
+            set_object_value(&mut next, "runId", json!(run_id));
+            next
+        })
+        .collect::<Vec<_>>();
+    let artifacts = source_artifacts
+        .iter()
+        .enumerate()
+        .map(|(index, artifact)| {
+            let mut next = artifact.clone();
+            set_object_value(&mut next, "id", json!(format!("{run_id}:artifact-{index}")));
+            set_object_value(&mut next, "runId", json!(run_id));
+            next
+        })
+        .collect::<Vec<_>>();
+    let plan = source_plan
+        .iter()
+        .enumerate()
+        .map(|(index, item)| {
+            let mut next = item.clone();
+            set_object_value(&mut next, "id", json!(format!("{run_id}:plan-{index}")));
+            set_object_value(&mut next, "runId", json!(run_id));
+            if let Some(dependencies) = item["dependencies"].as_array() {
+                set_object_value(
+                    &mut next,
+                    "dependencies",
+                    Value::Array(
+                        dependencies
+                            .iter()
+                            .map(|dependency| json!(dependency.as_str().map(|id| remap(&plan_ids, id)).unwrap_or_default()))
+                            .collect(),
+                    ),
+                );
+            }
+            if let Some(linked_action_ids) = item["linkedActionIds"].as_array() {
+                set_object_value(
+                    &mut next,
+                    "linkedActionIds",
+                    Value::Array(
+                        linked_action_ids
+                            .iter()
+                            .map(|action_id| json!(action_id.as_str().map(|id| remap(&action_ids, id)).unwrap_or_default()))
+                            .collect(),
+                    ),
+                );
+            }
+            if let Some(checkpoint_ids_value) = item["checkpointIds"].as_array() {
+                set_object_value(
+                    &mut next,
+                    "checkpointIds",
+                    Value::Array(
+                        checkpoint_ids_value
+                            .iter()
+                            .map(|checkpoint_id| json!(checkpoint_id.as_str().map(|id| remap(&checkpoint_ids, id)).unwrap_or_default()))
+                            .collect(),
+                    ),
+                );
+            }
+            next
+        })
+        .collect::<Vec<_>>();
+    let actions = source_actions
+        .iter()
+        .enumerate()
+        .map(|(index, action)| {
+            let mut next = action.clone();
+            set_object_value(&mut next, "id", json!(format!("{run_id}:action-{index}")));
+            set_object_value(&mut next, "runId", json!(run_id));
+            if let Some(plan_item_id) = action["planItemId"].as_str() {
+                set_object_value(&mut next, "planItemId", json!(remap(&plan_ids, plan_item_id)));
+            }
+            if let Some(plan_step_id) = action["planStepId"].as_str() {
+                set_object_value(&mut next, "planStepId", json!(remap(&plan_step_ids, plan_step_id)));
+            }
+            if let Some(artifact_ids_value) = action["artifactIds"].as_array() {
+                set_object_value(
+                    &mut next,
+                    "artifactIds",
+                    Value::Array(
+                        artifact_ids_value
+                            .iter()
+                            .map(|artifact_id| json!(artifact_id.as_str().map(|id| remap(&artifact_ids, id)).unwrap_or_default()))
+                            .collect(),
+                    ),
+                );
+            }
+            if action["status"].as_str() == Some("approval_required") {
+                set_object_value(&mut next, "status", json!("proposed"));
+            }
+            next
+        })
+        .collect::<Vec<_>>();
+    let plan_list = source["planList"]
+        .as_array()
+        .map(|plan_list| {
+            plan_list
+                .iter()
+                .enumerate()
+                .map(|(index, step)| {
+                    let mut next = step.clone();
+                    if step.get("id").and_then(Value::as_str).is_some() {
+                        set_object_value(&mut next, "id", json!(format!("{run_id}:plan-step-{index}")));
+                    }
+                    next
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let todos = source_todos
+        .iter()
+        .enumerate()
+        .map(|(index, todo)| {
+            let mut next = todo.clone();
+            set_object_value(&mut next, "id", json!(format!("{run_id}:todo-{index}")));
+            set_object_value(&mut next, "runId", json!(run_id));
+            if let Some(source_plan_item_id) = todo["sourcePlanItemId"].as_str() {
+                set_object_value(&mut next, "sourcePlanItemId", json!(remap(&plan_ids, source_plan_item_id)));
+            }
+            next
+        })
+        .collect::<Vec<_>>();
+    let tool_calls = source_tool_calls
+        .iter()
+        .enumerate()
+        .map(|(index, tool_call)| {
+            let mut next = tool_call.clone();
+            set_object_value(&mut next, "id", json!(format!("{run_id}:tool-call-{index}")));
+            set_object_value(&mut next, "runId", json!(run_id));
+            if let Some(action_id) = tool_call["actionId"].as_str() {
+                set_object_value(&mut next, "actionId", json!(remap(&action_ids, action_id)));
+            }
+            if let Some(plan_step_id) = tool_call["planStepId"].as_str() {
+                set_object_value(&mut next, "planStepId", json!(remap(&plan_step_ids, plan_step_id)));
+            }
+            next
+        })
+        .collect::<Vec<_>>();
+    let conversation = source_conversation
+        .iter()
+        .map(|entry| {
+            let mut next = entry.clone();
+            match entry["role"].as_str() {
+                Some("assistant") => {
+                    if let Some(tool_calls_value) = entry["toolCalls"].as_array() {
+                        let updated = tool_calls_value
+                            .iter()
+                            .map(|tool_call| {
+                                let mut updated_tool_call = tool_call.clone();
+                                if let Some(id) = tool_call["id"].as_str() {
+                                    set_object_value(&mut updated_tool_call, "id", json!(remap(&tool_call_ids, id)));
+                                }
+                                updated_tool_call
+                            })
+                            .collect::<Vec<_>>();
+                        set_object_value(&mut next, "toolCalls", Value::Array(updated));
+                    }
+                }
+                Some("tool") => {
+                    if let Some(tool_call_id) = entry["toolCallId"].as_str() {
+                        set_object_value(&mut next, "toolCallId", json!(remap(&tool_call_ids, tool_call_id)));
+                    }
+                }
+                _ => {}
+            }
+            next
+        })
+        .collect::<Vec<_>>();
+    let tool_results = source_tool_results
+        .iter()
+        .map(|result| {
+            let mut next = result.clone();
+            if let Some(tool_call_id) = result["resultToolCallId"].as_str() {
+                set_object_value(&mut next, "resultToolCallId", json!(remap(&tool_call_ids, tool_call_id)));
+            }
+            next
+        })
+        .collect::<Vec<_>>();
+    let policy_decisions = source_policy_decisions
+        .iter()
+        .enumerate()
+        .map(|(index, decision)| {
+            let mut next = decision.clone();
+            set_object_value(&mut next, "id", json!(format!("{run_id}:policy-{index}")));
+            set_object_value(&mut next, "runId", json!(run_id));
+            if let Some(action_id) = decision["actionId"].as_str() {
+                set_object_value(&mut next, "actionId", json!(remap(&action_ids, action_id)));
+            }
+            next
+        })
+        .collect::<Vec<_>>();
+
+    ForkedSnapshotRefs {
+        checkpoints,
+        artifacts,
+        plan,
+        actions,
+        plan_list,
+        todos,
+        tool_calls,
+        conversation,
+        tool_results,
+        policy_decisions,
+    }
+}
+
+fn build_forked_session_snapshot(
+    source: &Value,
+    session_id: &str,
+    run_id: &str,
+    turn_index: u64,
+    updated_at: u64,
+) -> Value {
+    let mut metadata = source["config"]["metadata"]
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    for key in [
+        "branchGroupId",
+        "branchRole",
+        "branchTarget",
+        "branchPrompt",
+        "branchBaseTurnIndex",
+        "branchGroupCreatedAt",
+        "branchCandidateLabel",
+        "branchBaseRunId",
+        "branchReplaceRunId",
+        "branchDismissed",
+        "branchDismissedAt",
+        "branchAdoptedAt",
+        "branchGroupAdoptedRunId",
+        "supersededByRunId",
+        "supersededAt",
+        "forkedFromRunId",
+        "forkedFromCheckpointId",
+    ] {
+        metadata.remove(key);
+    }
+
+    let source_checkpoints = source["checkpoints"].as_array().cloned().unwrap_or_default();
+    let forked_refs = remap_fork_snapshot_references(source, run_id);
+    let events = source["events"]
+        .as_array()
+        .map(|events| {
+            events
+                .iter()
+                .enumerate()
+                .map(|(index, event)| {
+                    let mut next = event.clone();
+                    set_object_value(&mut next, "id", json!(format!("{run_id}:evt-{index}")));
+                    set_object_value(&mut next, "runId", json!(run_id));
+                    set_object_value(&mut next, "seq", json!(index));
+                    if let Some(checkpoint_id) = event["checkpointId"].as_str() {
+                        let checkpoint_index = source_checkpoints
+                            .iter()
+                            .position(|checkpoint| checkpoint["id"].as_str() == Some(checkpoint_id))
+                            .unwrap_or_else(|| checkpoint_ordinal(checkpoint_id));
+                        if let Some(checkpoint) = forked_refs.checkpoints.get(checkpoint_index) {
+                            set_object_value(&mut next, "checkpointId", checkpoint["id"].clone());
+                        } else {
+                            set_object_value(
+                                &mut next,
+                                "checkpointId",
+                                json!(format!("{run_id}:checkpoint-{checkpoint_index}")),
+                            );
+                        }
+                    }
+                    next
+                })
+                .collect::<Vec<Value>>()
+        })
+        .unwrap_or_default();
+    let agent_messages = source["agentMessages"]
+        .as_array()
+        .map(|messages| {
+            messages
+                .iter()
+                .enumerate()
+                .map(|(index, message)| {
+                    let mut next = message.clone();
+                    set_object_value(
+                        &mut next,
+                        "id",
+                        json!(format!("{run_id}:agent-message-{index}")),
+                    );
+                    set_object_value(&mut next, "runId", json!(run_id));
+                    next
+                })
+                .collect::<Vec<Value>>()
+        })
+        .unwrap_or_default();
+
+    let assistant_output = assistant_text_for_run(source);
+    let output = if assistant_output.is_empty() {
+        source["output"].clone()
+    } else {
+        json!({ "text": assistant_output })
+    };
+
+    let mut snapshot = source.clone();
+    set_object_value(&mut snapshot, "runId", json!(run_id));
+    set_object_value(&mut snapshot, "sessionId", json!(session_id));
+    set_object_value(&mut snapshot, "turnIndex", json!(turn_index));
+    set_object_value(&mut snapshot, "status", json!("succeeded"));
+    set_object_value(&mut snapshot, "attention", Value::Null);
+    set_object_value(&mut snapshot, "updatedAt", json!(updated_at));
+    set_object_value(&mut snapshot, "output", output);
+    set_object_value(&mut snapshot, "plan", Value::Array(forked_refs.plan));
+    set_object_value(&mut snapshot, "planList", Value::Array(forked_refs.plan_list));
+    set_object_value(&mut snapshot, "todos", Value::Array(forked_refs.todos));
+    set_object_value(&mut snapshot, "actions", Value::Array(forked_refs.actions));
+    set_object_value(&mut snapshot, "toolCalls", Value::Array(forked_refs.tool_calls));
+    set_object_value(&mut snapshot, "conversation", Value::Array(forked_refs.conversation));
+    set_object_value(&mut snapshot, "toolResults", Value::Array(forked_refs.tool_results));
+    set_object_value(&mut snapshot, "policyDecisions", Value::Array(forked_refs.policy_decisions));
+    set_object_value(&mut snapshot, "checkpoints", Value::Array(forked_refs.checkpoints));
+    set_object_value(&mut snapshot, "events", Value::Array(events));
+    set_object_value(&mut snapshot, "artifacts", Value::Array(forked_refs.artifacts));
+    set_object_value(&mut snapshot, "agentMessages", Value::Array(agent_messages));
+    set_object_value(&mut snapshot, "continuation", json!({ "frames": [] }));
+    set_object_value(&mut snapshot, "planDecisions", json!([]));
+    set_object_value(&mut snapshot, "childSessions", json!([]));
+    set_object_value(&mut snapshot, "contextState", Value::Null);
+    set_object_value(&mut snapshot, "parentCoordination", Value::Null);
+    set_object_value(&mut snapshot, "pendingClarifications", json!([]));
+    set_object_value(&mut snapshot, "pendingApprovals", json!([]));
+
+    if let Some(input) = snapshot.get_mut("input") {
+        set_object_value(
+            input,
+            "createdAt",
+            json!(source["input"]["createdAt"].as_u64().unwrap_or(updated_at)),
+        );
+    }
+    if let Some(config) = snapshot.get_mut("config") {
+        set_object_value(config, "metadata", Value::Object(metadata));
+    }
+
+    snapshot
 }
 
 fn ensure_session_for_run(
@@ -6963,6 +7471,191 @@ mod tests {
         assert_eq!(detail_after_adoption["latestSnapshot"]["pattern"], json!("shared_state"));
         assert_eq!(detail_after_adoption["turns"].as_array().unwrap().len(), 1);
         assert_eq!(detail_after_adoption["branchGroups"][0]["status"], json!("adopted"));
+    }
+
+    #[test]
+    fn sessions_fork_creates_new_session_from_visible_turn_prefix_in_facade() {
+        let facade = RuntimeFacade::default();
+        let project = facade
+            .handle_method(
+                "projects.create",
+                Some(json!({ "rootPath": "/tmp/ora-fork-facade", "label": "ora-fork-facade" })),
+            )
+            .unwrap();
+        let created = facade
+            .handle_method(
+                "sessions.create",
+                Some(json!({ "projectId": project["projectId"] })),
+            )
+            .unwrap();
+        let session_id = created["sessionId"].as_str().unwrap().to_string();
+        let first = facade
+            .handle_method(
+                "runs.start",
+                Some(json!({
+                    "sessionId": session_id.clone(),
+                    "input": { "prompt": "First forkable turn" },
+                    "config": { "pattern": "generator_verifier", "providerId": "local-smoke", "modelRef": "local/smoke-model" }
+                })),
+            )
+            .unwrap();
+        let second = facade
+            .handle_method(
+                "runs.start",
+                Some(json!({
+                    "sessionId": session_id.clone(),
+                    "input": { "prompt": "Second turn stays behind" },
+                    "config": { "pattern": "shared_state", "providerId": "deepseek", "modelRef": "deepseek-chat" }
+                })),
+            )
+            .unwrap();
+
+        let forked = facade
+            .handle_method(
+                "sessions.fork",
+                Some(json!({
+                    "sessionId": session_id.clone(),
+                    "runId": first["runId"]
+                })),
+            )
+            .unwrap();
+
+        assert_ne!(forked["session"]["sessionId"], json!(session_id));
+        assert_eq!(forked["session"]["title"], json!("First forkable turn（分支）"));
+        assert_eq!(forked["session"]["projectId"], project["projectId"]);
+        assert_eq!(forked["session"]["turnCount"], json!(1));
+        assert_eq!(forked["turns"].as_array().unwrap().len(), 1);
+        assert_eq!(forked["transcript"].as_array().unwrap().len(), 2);
+        assert_eq!(forked["latestSnapshot"]["pattern"], json!("generator_verifier"));
+        assert_eq!(forked["latestSnapshot"]["config"]["providerId"], json!("local-smoke"));
+        assert_eq!(forked["latestSnapshot"]["config"]["modelRef"], json!("local/smoke-model"));
+        assert_eq!(forked["latestSnapshot"]["pendingApprovals"], json!([]));
+        assert_eq!(forked["latestSnapshot"]["pendingClarifications"], json!([]));
+
+        let source_detail = facade
+            .handle_method("sessions.get", Some(json!({ "sessionId": session_id })))
+            .unwrap();
+        assert_eq!(source_detail["session"]["turnCount"], json!(2));
+        assert_eq!(source_detail["latestSnapshot"]["runId"], second["runId"]);
+    }
+
+    #[test]
+    fn build_forked_session_snapshot_rewrites_run_scoped_references() {
+        let source_run_id = "run-source";
+        let source = json!({
+            "runId": source_run_id,
+            "sessionId": "session-source",
+            "turnIndex": 1,
+            "status": "succeeded",
+            "pattern": "generator_verifier",
+            "modeId": "single_agent",
+            "input": { "prompt": "First turn", "createdAt": 100, "context": {} },
+            "config": { "pattern": "generator_verifier", "modeId": "single_agent", "metadata": {} },
+            "topology": { "nodes": [], "edges": [] },
+            "profiles": [],
+            "memory": [],
+            "planList": [{ "id": format!("{source_run_id}:plan-step-0"), "step": "Plan step", "status": "completed" }],
+            "plan": [{
+                "id": format!("{source_run_id}:plan-0"),
+                "runId": source_run_id,
+                "status": "done",
+                "title": "Plan item",
+                "dependencies": [],
+                "linkedActionIds": [format!("{source_run_id}:action-0")],
+                "checkpointIds": [format!("{source_run_id}:checkpoint-0")],
+            }],
+            "todos": [{
+                "id": format!("{source_run_id}:todo-0"),
+                "runId": source_run_id,
+                "sourcePlanItemId": format!("{source_run_id}:plan-0"),
+                "status": "done",
+                "label": "Todo item",
+                "createdAt": 100,
+                "updatedAt": 100,
+            }],
+            "actions": [{
+                "id": format!("{source_run_id}:action-0"),
+                "runId": source_run_id,
+                "planItemId": format!("{source_run_id}:plan-0"),
+                "planStepId": format!("{source_run_id}:plan-step-0"),
+                "type": "shell.execute",
+                "riskLevel": "low",
+                "status": "succeeded",
+                "input": {},
+                "artifactIds": [],
+            }],
+            "toolCalls": [{
+                "id": format!("{source_run_id}:tool-call-0"),
+                "runId": source_run_id,
+                "actionId": format!("{source_run_id}:action-0"),
+                "planStepId": format!("{source_run_id}:plan-step-0"),
+                "toolId": "shell.execute",
+                "args": {},
+                "source": "json_fallback",
+                "status": "succeeded",
+                "requestedAt": 100,
+                "updatedAt": 100,
+            }],
+            "continuation": { "frames": [] },
+            "planDecisions": [],
+            "conversation": [
+                {
+                    "role": "assistant",
+                    "content": "First turn",
+                    "toolCalls": [{ "id": format!("{source_run_id}:tool-call-0"), "toolId": "shell.execute", "args": {} }],
+                    "createdAt": 100,
+                },
+                {
+                    "role": "tool",
+                    "toolCallId": format!("{source_run_id}:tool-call-0"),
+                    "toolId": "shell.execute",
+                    "content": "ok",
+                    "status": "succeeded",
+                    "createdAt": 100,
+                }
+            ],
+            "toolResults": [{
+                "key": format!("{source_run_id}:tool-result-0"),
+                "toolId": "shell.execute",
+                "argsDigest": "digest",
+                "resultToolCallId": format!("{source_run_id}:tool-call-0"),
+                "status": "succeeded",
+                "createdAt": 100,
+                "updatedAt": 100,
+            }],
+            "policyDecisions": [{
+                "id": format!("{source_run_id}:policy-0"),
+                "runId": source_run_id,
+                "actionId": format!("{source_run_id}:action-0"),
+                "policyId": "safe",
+                "requiredApproval": false,
+                "reason": "ok",
+                "createdAt": 100,
+            }],
+            "checkpoints": [{ "id": format!("{source_run_id}:checkpoint-0"), "runId": source_run_id, "label": "cp0", "seq": 0, "createdAt": 100 }],
+            "events": [],
+            "agentMessages": [],
+            "artifacts": [],
+            "activeAgents": [],
+            "queueSummary": { "mode": "dag", "pending": 0, "inProgress": 0, "completed": 0, "topics": [] },
+            "sharedStateSummary": { "enabled": false, "storeKind": "none", "version": 0, "entries": [] },
+            "busStats": { "enabled": false, "publishedCount": 0, "routedCount": 0, "topicCounts": {} },
+            "pendingClarifications": [],
+            "pendingApprovals": [],
+            "updatedAt": 100,
+        });
+
+        let forked = build_forked_session_snapshot(&source, "session-forked", "run-forked", 1, 101);
+
+        assert_eq!(forked["todos"][0]["runId"], json!("run-forked"));
+        assert_eq!(forked["todos"][0]["sourcePlanItemId"], json!("run-forked:plan-0"));
+        assert_eq!(forked["actions"][0]["planStepId"], json!("run-forked:plan-step-0"));
+        assert_eq!(forked["toolCalls"][0]["actionId"], json!("run-forked:action-0"));
+        assert_eq!(forked["toolCalls"][0]["planStepId"], json!("run-forked:plan-step-0"));
+        assert_eq!(forked["conversation"][0]["toolCalls"][0]["id"], json!("run-forked:tool-call-0"));
+        assert_eq!(forked["conversation"][1]["toolCallId"], json!("run-forked:tool-call-0"));
+        assert_eq!(forked["toolResults"][0]["resultToolCallId"], json!("run-forked:tool-call-0"));
+        assert_eq!(forked["policyDecisions"][0]["actionId"], json!("run-forked:action-0"));
     }
 
     #[test]

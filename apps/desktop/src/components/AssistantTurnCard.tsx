@@ -8,6 +8,7 @@ import {
   FileImage,
   FileText,
   FolderOpen,
+  GitBranchPlus,
   ListTodo,
   LoaderCircle,
   MessageSquareWarning,
@@ -65,6 +66,7 @@ interface AssistantTurnCardProps {
     turn: AssistantTurnAttachment;
     feedbackText: string;
   }) => Promise<void>;
+  onForkSessionFromTurn?: (runId: string) => void;
   projectRootPath?: string;
 }
 
@@ -75,6 +77,7 @@ export const AssistantTurnCard = memo(function AssistantTurnCard({
   density = "default",
   onOpenArtifact,
   onSubmitFeedback,
+  onForkSessionFromTurn,
   projectRootPath,
 }: AssistantTurnCardProps) {
   const isCompact = density === "compact";
@@ -119,7 +122,13 @@ export const AssistantTurnCard = memo(function AssistantTurnCard({
   const sources = turn?.sources ?? [];
   const showCopyAction = canCopyContent && !isCompact;
   const showFeedbackAction = canSubmitFeedback && !isCompact;
-  const canShowActions = showCopyAction || showFeedbackAction || sources.length > 0;
+  const canForkSession = Boolean(
+    onForkSessionFromTurn &&
+    turn?.runId &&
+    !isPlaceholder &&
+    turn.status !== "running",
+  );
+  const canShowActions = showCopyAction || showFeedbackAction || canForkSession || sources.length > 0;
   const currentAgentLabel = turn?.currentAgentLabel?.trim();
   const hasTimelineAgentLabel = timelineItems.some((item) => Boolean(timelineAgentLabel(item)));
   const showThinkingIndicator = shouldShowThinkingIndicator({
@@ -278,6 +287,17 @@ export const AssistantTurnCard = memo(function AssistantTurnCard({
                   className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-foreground/20"
                 >
                   <MessageSquareWarning size={14} />
+                </button>
+              ) : null}
+              {canForkSession ? (
+                <button
+                  type="button"
+                  onClick={() => onForkSessionFromTurn?.(turn!.runId)}
+                  title="分支到新会话"
+                  aria-label="分支到新会话"
+                  className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-foreground/20"
+                >
+                  <GitBranchPlus size={14} />
                 </button>
               ) : null}
               {sources.length > 0 ? (

@@ -1,5 +1,5 @@
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   AssistantTurnCard,
   processSummary,
@@ -1585,6 +1585,35 @@ describe("assistant turn display helpers", () => {
     expect(html).toContain("aria-label=\"引用来源\"");
     expect(html).not.toContain("aria-label=\"复制消息\"");
     expect(html).not.toContain("aria-label=\"Feedback\"");
+  });
+
+  it("renders a fork-session action for settled assistant turns", () => {
+    const turn: AssistantTurnAttachment = {
+      runId: "run-fork-action",
+      turnIndex: 1,
+      status: "done",
+      pattern: "agent_teams",
+      sources: [],
+      processSteps: [],
+      agentMessages: [],
+      artifacts: [],
+      todos: [],
+      planList: [],
+      approvalCount: 0,
+      clarificationCount: 0,
+      hasProposedPlan: false,
+      activeLoadingTarget: { kind: "thinking" },
+    };
+
+    const html = renderToStaticMarkup(
+      <AssistantTurnCard
+        content="已完成。"
+        turn={turn}
+        onForkSessionFromTurn={vi.fn()}
+      />,
+    );
+
+    expect(html).toContain("aria-label=\"分支到新会话\"");
   });
 
 });

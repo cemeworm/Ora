@@ -1,4 +1,4 @@
-import { BookOpenText, Files, GitBranchPlus, PanelRightOpen } from "lucide-react";
+import { BookOpenText, Files, PanelRightOpen } from "lucide-react";
 import { Button } from "./ui/button";
 import type { SessionRun } from "../types";
 import { translateCopy, type AppLanguage } from "../lib/i18n";
@@ -6,7 +6,6 @@ import { translateCopy, type AppLanguage } from "../lib/i18n";
 interface ChatHeaderProps {
   busyCommand?: string;
   selectedSession: SessionRun;
-  onOpenBranches: () => void;
   onToggleDetailDrawer: (drawer: "trails" | "documents") => void;
   detailDrawer: "trails" | "documents" | undefined;
   language: AppLanguage;
@@ -15,7 +14,6 @@ interface ChatHeaderProps {
 export function ChatHeader({
   busyCommand,
   selectedSession,
-  onOpenBranches,
   onToggleDetailDrawer,
   detailDrawer,
   language,
@@ -29,10 +27,6 @@ export function ChatHeader({
         <h2 className="truncate text-sm font-medium">{selectedSession.title}</h2>
       </div>
       <div className="flex items-center gap-1.5">
-        <Button variant="ghost" size="sm" onClick={onOpenBranches} disabled={busyCommand !== undefined} title={t("Branch candidates")}>
-          <GitBranchPlus size={14} />
-          <span className="hidden sm:inline">{t("Branches")}</span>
-        </Button>
         <Button
           variant={trailsOpen ? "secondary" : "ghost"}
           size="sm"

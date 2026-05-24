@@ -104,6 +104,7 @@ import type {
   RunTrail as OraRunTrail,
   RunTrailMetrics as OraRunTrailMetrics,
   SessionCreateParams as OraSessionCreateParams,
+  SessionForkParams as OraSessionForkParams,
   SessionBranchGroup as OraSessionBranchGroup,
   SessionBranchGroupCreateParams as OraSessionBranchGroupCreateParams,
   SessionBranchGroupAdoptParams as OraSessionBranchGroupAdoptParams,
@@ -134,7 +135,7 @@ import type {
   ToolRegistry as OraToolRegistry,
   UserTaskInput as OraUserTaskInput,
 } from "@cemeworm/shared";
-import { AutomationCreateParamsSchema, AutomationPreviewScheduleParamsSchema, AutomationSchema, AutomationUpdateParamsSchema, DEFAULT_AGENT_MODE_TOOL_IDS, DEFAULT_PROVIDERS, DEBATE_MODE_ID, FeedbackLoopActionApplyParamsSchema, FeedbackLoopActionResultSchema, FeedbackLoopCalibrationRuleSchema, FeedbackLoopRuleUpdateParamsSchema, LongTermMemoryProfileSchema, MVP_MODE_RUNTIME_ATOMS, MVP_MODES, MVP_PATTERNS, MVP_SKILLS, MVP_TOOLS, ORA_HOST_ABI_VERSION, ORA_ROOT_AGENT_ID, ORA_ROOT_AGENT_LABEL, ORA_RUNTIME_ABI_VERSION, ProjectInsightSchema, ProjectSignalSchema, ProviderConfigSchema, SINGLE_AGENT_MODE_ID, SYSTEM_AGENT_ID_ALIASES, SelfIterationCandidateApplyParamsSchema, SelfIterationCandidateSchema, SelfIterationPolicySchema, SelfIterationScanResultSchema, SystemAgentOverrideUpdateParamsSchema, agentLabelFromSnapshot, canonicalSystemAgentId, deriveRunAttention, deriveSessionBranchGroupsForSession, extractCompleteProposedPlanContent, legacySystemAgentIdsFor, modeSpecToPatternDefinition, projectAssistantTextFromSnapshot, snapshotContainsCompleteProposedPlan, validateModeSpec, visibleToolIdsForPreset } from "@cemeworm/shared";
+import { AutomationCreateParamsSchema, AutomationPreviewScheduleParamsSchema, AutomationSchema, AutomationUpdateParamsSchema, DEFAULT_AGENT_MODE_TOOL_IDS, DEFAULT_PROVIDERS, DEBATE_MODE_ID, FeedbackLoopActionApplyParamsSchema, FeedbackLoopActionResultSchema, FeedbackLoopCalibrationRuleSchema, FeedbackLoopRuleUpdateParamsSchema, LongTermMemoryProfileSchema, MVP_MODE_RUNTIME_ATOMS, MVP_MODES, MVP_PATTERNS, MVP_SKILLS, MVP_TOOLS, ORA_HOST_ABI_VERSION, ORA_ROOT_AGENT_ID, ORA_ROOT_AGENT_LABEL, ORA_RUNTIME_ABI_VERSION, ProjectInsightSchema, ProjectSignalSchema, ProviderConfigSchema, SessionForkParamsSchema, SINGLE_AGENT_MODE_ID, SYSTEM_AGENT_ID_ALIASES, SelfIterationCandidateApplyParamsSchema, SelfIterationCandidateSchema, SelfIterationPolicySchema, SelfIterationScanResultSchema, SystemAgentOverrideUpdateParamsSchema, agentLabelFromSnapshot, canonicalSystemAgentId, deriveRunAttention, deriveSessionBranchGroupsForSession, extractCompleteProposedPlanContent, legacySystemAgentIdsFor, modeSpecToPatternDefinition, projectAssistantTextFromSnapshot, snapshotContainsCompleteProposedPlan, validateModeSpec, visibleToolIdsForPreset } from "@cemeworm/shared";
 import { PROVIDER_PRESETS } from "./providerPresets";
 
 export const USER_CANCELLED_MESSAGE = "Stopped processing as instructed.";
@@ -246,6 +247,7 @@ export type {
   OraSessionBranchGroupListParams,
   OraSessionAcceptPlanDecisionAndResumeParams,
   OraSessionCreateParams,
+  OraSessionForkParams,
   OraSessionPlanDecisionResolveParams,
   OraSessionDetail,
   OraSessionSummary,
@@ -512,6 +514,9 @@ export function createRuntimeClient() {
       dispatchOptions?: { priority?: "background" | "interactive" | "urgent"; tag?: string },
     ): Promise<OraSessionSummary> {
       return call<OraSessionSummary>("sessions.create", params, dispatchOptions);
+    },
+    async forkSession(params: OraSessionForkParams): Promise<OraSessionDetail> {
+      return call<OraSessionDetail>("sessions.fork", params);
     },
     async listChannels(params: { kind?: string; enabled?: boolean; limit?: number } = {}): Promise<OraChannelConfig[]> {
       return call<OraChannelConfig[]>("channels.list", params);
@@ -1673,6 +1678,8 @@ class LocalJsonRpcRuntime {
         return this.readProjectFile(params);
       case "sessions.create":
         return this.createSession(params);
+      case "sessions.fork":
+        return this.forkSession(params as OraSessionForkParams);
       case "sessions.list":
         return [...this.sessions.values()]
           .filter((session) => session.archivedAt === undefined)
@@ -2716,6 +2723,43 @@ class LocalJsonRpcRuntime {
       this.syncProjectSummary(projectId);
     }
     return session;
+  }
+
+  private forkSession(params: unknown): OraSessionDetail {
+    const parsed = SessionForkParamsSchema.parse(params);
+    const sourceSession = this.sessions.get(parsed.sessionId);
+    if (!sourceSession) {
+      throw new Error(`Session not found: ${parsed.sessionId}`);
+    }
+    const sourceRuns = [...this.runs.values()]
+      .filter((run) => run.sessionId === parsed.sessionId && isVisibleMockMainlineRun(run))
+      .sort((a, b) => (a.turnIndex ?? 1) - (b.turnIndex ?? 1) || a.updatedAt - b.updatedAt);
+    const forkIndex = sourceRuns.findIndex((run) => run.runId === parsed.runId);
+    if (forkIndex < 0) {
+      throw new Error(`Run ${parsed.runId} is not a visible run in session ${parsed.sessionId}.`);
+    }
+    const forkRuns = sourceRuns.slice(0, forkIndex + 1);
+    const forkedTitle = mockForkedSessionTitle(sourceSession.title);
+    const forkedSession = this.createSession({
+      projectId: sourceSession.projectId,
+      label: forkedTitle,
+    });
+    for (const [index, sourceRun] of forkRuns.entries()) {
+      const snapshot = this.buildMockForkedSessionSnapshot(sourceRun, {
+        sessionId: forkedSession.sessionId,
+        turnIndex: index + 1,
+        updatedAt: Date.now() + index,
+      });
+      this.updateSessionFromSnapshot(snapshot);
+    }
+    const created = this.sessions.get(forkedSession.sessionId);
+    if (created) {
+      this.sessions.set(forkedSession.sessionId, {
+        ...created,
+        title: forkedTitle,
+      });
+    }
+    return this.getSessionDetail({ sessionId: forkedSession.sessionId });
   }
 
   private archiveSession(params: unknown): OraSessionSummary {
@@ -5715,6 +5759,98 @@ class LocalJsonRpcRuntime {
     return (last?.turnIndex ?? 0) + 1;
   }
 
+  private nextRunId(): string {
+    return `run-${String(this.nextRunNumber++).padStart(4, "0")}`;
+  }
+
+  private buildMockForkedSessionSnapshot(
+    source: OraStateSnapshot,
+    params: { sessionId: string; turnIndex: number; updatedAt: number },
+  ): OraStateSnapshot {
+    const runId = this.nextRunId();
+    const metadata = { ...(source.config.metadata ?? {}) } as Record<string, unknown>;
+    delete metadata.branchGroupId;
+    delete metadata.branchRole;
+    delete metadata.branchTarget;
+    delete metadata.branchPrompt;
+    delete metadata.branchBaseTurnIndex;
+    delete metadata.branchGroupCreatedAt;
+    delete metadata.branchCandidateLabel;
+    delete metadata.branchBaseRunId;
+    delete metadata.branchReplaceRunId;
+    delete metadata.branchDismissed;
+    delete metadata.branchDismissedAt;
+    delete metadata.branchAdoptedAt;
+    delete metadata.branchGroupAdoptedRunId;
+    delete metadata.supersededByRunId;
+    delete metadata.supersededAt;
+    delete metadata.forkedFromRunId;
+    delete metadata.forkedFromCheckpointId;
+
+    const forkedRefs = remapMockForkSnapshotReferences(source, runId);
+    const events = source.events.map((event, index) => {
+      const checkpointIndex = typeof event.checkpointId === "string"
+        ? source.checkpoints.findIndex((checkpoint) => checkpoint.id === event.checkpointId)
+        : -1;
+      return {
+        ...event,
+        id: `${runId}:evt-${index}`,
+        runId,
+        seq: index,
+        checkpointId: typeof event.checkpointId === "string"
+          ? (checkpointIndex >= 0
+            ? forkedRefs.checkpoints[checkpointIndex]?.id
+            : `${runId}:checkpoint-${mockCheckpointOrdinal(event.checkpointId)}`)
+          : undefined,
+      };
+    });
+    const agentMessages = source.agentMessages.map((message, index) => ({
+      ...message,
+      id: `${runId}:agent-message-${index}`,
+      runId,
+    }));
+    const assistantOutput = this.assistantTextForRun(source);
+    const output = assistantOutput ? { text: assistantOutput } : source.output;
+
+    return {
+      ...source,
+      runId,
+      sessionId: params.sessionId,
+      turnIndex: params.turnIndex,
+      status: "succeeded",
+      attention: undefined,
+      input: {
+        ...source.input,
+        createdAt: source.input.createdAt ?? params.updatedAt,
+      },
+      config: {
+        ...source.config,
+        metadata,
+      },
+      checkpoints: forkedRefs.checkpoints,
+      events,
+      artifacts: forkedRefs.artifacts,
+      agentMessages,
+      plan: forkedRefs.plan,
+      planList: forkedRefs.planList,
+      todos: forkedRefs.todos,
+      actions: forkedRefs.actions,
+      toolCalls: forkedRefs.toolCalls,
+      continuation: { frames: [] },
+      planDecisions: [],
+      conversation: forkedRefs.conversation,
+      toolResults: forkedRefs.toolResults,
+      policyDecisions: forkedRefs.policyDecisions,
+      childSessions: [],
+      parentCoordination: undefined,
+      contextState: undefined,
+      pendingClarifications: [],
+      pendingApprovals: [],
+      output,
+      updatedAt: params.updatedAt,
+    };
+  }
+
   private normalizeMockSnapshot(snapshot: OraStateSnapshot): OraStateSnapshot {
     let normalized = snapshot;
     const planCheck = {
@@ -6181,8 +6317,128 @@ function previousVisibleMockRunBefore(sessionId: string, runId: string, runs: Or
   return index > 0 ? visibleRuns[index - 1] : undefined;
 }
 
+function mockCheckpointOrdinal(checkpointId: string): number {
+  const suffix = checkpointId.split("checkpoint-").at(-1);
+  const parsed = Number(suffix);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function remapMockForkSnapshotReferences(
+  source: OraStateSnapshot,
+  runId: string,
+): {
+  checkpoints: OraStateSnapshot["checkpoints"];
+  artifacts: OraStateSnapshot["artifacts"];
+  plan: OraStateSnapshot["plan"];
+  actions: OraStateSnapshot["actions"];
+  planList: OraStateSnapshot["planList"];
+  todos: OraStateSnapshot["todos"];
+  toolCalls: OraStateSnapshot["toolCalls"];
+  conversation: OraStateSnapshot["conversation"];
+  toolResults: OraStateSnapshot["toolResults"];
+  policyDecisions: OraStateSnapshot["policyDecisions"];
+} {
+  const checkpointIds = new Map(source.checkpoints.map((checkpoint, index) => [checkpoint.id, `${runId}:checkpoint-${index}`]));
+  const artifactIds = new Map(source.artifacts.map((artifact, index) => [artifact.id, `${runId}:artifact-${index}`]));
+  const planIds = new Map(source.plan.map((item, index) => [item.id, `${runId}:plan-${index}`]));
+  const planStepIds = new Map(
+    source.planList
+      .map((step, index) => [step.id, step.id ? `${runId}:plan-step-${index}` : undefined] as const)
+      .filter((entry): entry is [string, string] => typeof entry[0] === "string" && typeof entry[1] === "string"),
+  );
+  const actionIds = new Map(source.actions.map((action, index) => [action.id, `${runId}:action-${index}`]));
+  const toolCallIds = new Map(source.toolCalls.map((toolCall, index) => [toolCall.id, `${runId}:tool-call-${index}`]));
+  const remapCheckpointId = (id?: string) => (id ? (checkpointIds.get(id) ?? id) : undefined);
+  const remapArtifactId = (id: string) => artifactIds.get(id) ?? id;
+  const remapPlanId = (id?: string) => (id ? (planIds.get(id) ?? id) : undefined);
+  const remapPlanStepId = (id?: string) => (id ? (planStepIds.get(id) ?? id) : undefined);
+  const remapActionId = (id?: string) => (id ? (actionIds.get(id) ?? id) : undefined);
+  const remapToolCallId = (id?: string) => (id ? (toolCallIds.get(id) ?? id) : undefined);
+
+  return {
+    checkpoints: source.checkpoints.map((checkpoint, index) => ({
+      ...checkpoint,
+      id: `${runId}:checkpoint-${index}`,
+      runId,
+    })),
+    artifacts: source.artifacts.map((artifact, index) => ({
+      ...artifact,
+      id: `${runId}:artifact-${index}`,
+      runId,
+    })),
+    plan: source.plan.map((item, index) => ({
+      ...item,
+      id: `${runId}:plan-${index}`,
+      runId,
+      dependencies: item.dependencies.map((dependencyId) => remapPlanId(dependencyId) ?? dependencyId),
+      linkedActionIds: item.linkedActionIds.map((actionId) => remapActionId(actionId) ?? actionId),
+      checkpointIds: item.checkpointIds.map((checkpointId) => remapCheckpointId(checkpointId) ?? checkpointId),
+    })),
+    actions: source.actions.map((action, index) => ({
+      ...action,
+      id: `${runId}:action-${index}`,
+      runId,
+      planItemId: remapPlanId(action.planItemId),
+      planStepId: remapPlanStepId(action.planStepId),
+      artifactIds: action.artifactIds.map(remapArtifactId),
+      status: action.status === "approval_required" ? "proposed" : action.status,
+    })),
+    planList: source.planList.map((step, index) => ({
+      ...step,
+      id: step.id ? `${runId}:plan-step-${index}` : step.id,
+    })),
+    todos: source.todos.map((todo, index) => ({
+      ...todo,
+      id: `${runId}:todo-${index}`,
+      runId,
+      sourcePlanItemId: remapPlanId(todo.sourcePlanItemId),
+    })),
+    toolCalls: source.toolCalls.map((toolCall, index) => ({
+      ...toolCall,
+      id: `${runId}:tool-call-${index}`,
+      runId,
+      actionId: remapActionId(toolCall.actionId),
+      planStepId: remapPlanStepId(toolCall.planStepId),
+    })),
+    conversation: source.conversation.map((entry) => {
+      if (entry.role === "assistant") {
+        return {
+          ...entry,
+          toolCalls: entry.toolCalls.map((toolCall) => ({
+            ...toolCall,
+            id: remapToolCallId(toolCall.id) ?? toolCall.id,
+          })),
+        };
+      }
+      if (entry.role === "tool") {
+        return {
+          ...entry,
+          toolCallId: remapToolCallId(entry.toolCallId) ?? entry.toolCallId,
+        };
+      }
+      return entry;
+    }),
+    toolResults: source.toolResults.map((result) => ({
+      ...result,
+      resultToolCallId: remapToolCallId(result.resultToolCallId) ?? result.resultToolCallId,
+    })),
+    policyDecisions: source.policyDecisions.map((decision, index) => ({
+      ...decision,
+      id: `${runId}:policy-${index}`,
+      runId,
+      actionId: remapActionId(decision.actionId) ?? decision.actionId,
+    })),
+  };
+}
+
 function buildMockBranchGroups(sessionId: string, runs: OraStateSnapshot[]): OraSessionBranchGroup[] {
   return deriveSessionBranchGroupsForSession(sessionId, runs);
+}
+
+function mockForkedSessionTitle(title: string): string {
+  const trimmed = title.trim();
+  if (!trimmed) return "New Chat（分支）";
+  return trimmed.endsWith("（分支）") ? trimmed : `${trimmed}（分支）`;
 }
 
 function branchTargetValue(value: unknown): OraSessionBranchGroup["target"] {
