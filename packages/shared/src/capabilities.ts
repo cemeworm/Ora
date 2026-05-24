@@ -415,8 +415,8 @@ export const TOOL_VISIBILITY_PRESETS: Record<ToolVisibilityPresetId, ToolVisibil
     id: "single_agent_readonly",
     label: "Single Agent Read Only",
     allowedFamilies: ["explore", "coordinate", "execute", "environment"],
-    toolIds: ["file.read", "file.list", "file.glob", "file.grep", "plan.update", "agent.spawn", "agent.wait", "message.send", "web.fetch", "web.search"],
-    blockedToolIds: ["repo.explore", "file.write", "file.patch", "file.apply_patch", "shell.execute"],
+    toolIds: ["file.read", "file.list", "file.glob", "file.grep", "plan.update", "agent.wait", "message.send", "web.fetch", "web.search"],
+    blockedToolIds: ["repo.explore", "file.write", "file.patch", "file.apply_patch", "shell.execute", "agent.spawn"],
   },
   single_agent_implement: {
     id: "single_agent_implement",

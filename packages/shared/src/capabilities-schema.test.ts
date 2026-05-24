@@ -174,7 +174,7 @@ describe("MVP_TOOLS parameter schemas", () => {
     expect(resolution.visibleToolIds).toEqual(visibleToolIdsForPreset("single_agent_readonly", availableToolIds));
     expect(resolution.visibleToolIds).not.toContain("repo.explore");
     expect(resolution.visibleToolIds).toContain("file.read");
-    expect(resolution.visibleToolIds).toContain("agent.spawn");
+    expect(resolution.visibleToolIds).not.toContain("agent.spawn");
     expect(resolution.visibleToolIds).toContain("web.search");
   });
 

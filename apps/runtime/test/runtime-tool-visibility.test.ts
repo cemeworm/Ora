@@ -123,8 +123,8 @@ describe("runtime tool visibility", () => {
     });
 
     expect(resolution.decisionSource).toBe("resolver_default");
-    expect(resolution.visibleToolIds).toContain("repo.explore");
-    expect(resolution.visibleToolIds).toContain("agent.spawn");
+    expect(resolution.visibleToolIds).not.toContain("repo.explore");
+    expect(resolution.visibleToolIds).not.toContain("agent.spawn");
     expect(resolution.visibleToolIds).not.toContain("file.apply_patch");
     expect(resolution.visibleToolIds).not.toContain("shell.execute");
   });
