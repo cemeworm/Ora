@@ -22,6 +22,7 @@ import { AgentProfileSchema, CoordinationKindSchema, CoordinationPatternSchema, 
 import { ProviderConfigSchema } from "./providers.js";
 import { TopologyEdgeSchema, TopologyNodeSchema } from "./topology.js";
 import { projectAssistantTextFromSnapshot } from "./assistantTextProjection.js";
+import { inspectProposedPlanContract } from "./proposedPlanContract.js";
 
 export const UserTaskInputSchema = z.object({
   taskId: z.string().min(1).optional(),
@@ -37,6 +38,11 @@ export type ModeSelection = z.infer<typeof ModeSelectionSchema>;
 
 export const TaskIntentSchema = z.enum(["chat", "plan", "implement"]);
 export type TaskIntent = z.infer<typeof TaskIntentSchema>;
+
+export const AcceptedPlanExecutionContractSchema = z.enum([
+  "same_run_implementation",
+]);
+export type AcceptedPlanExecutionContract = z.infer<typeof AcceptedPlanExecutionContractSchema>;
 
 export const DelegationIntentPreferenceSchema = z.enum(["none", "allow", "prefer"]);
 export type DelegationIntentPreference = z.infer<typeof DelegationIntentPreferenceSchema>;
@@ -380,6 +386,32 @@ export type RunConfig = z.infer<typeof RunConfigSchema>;
 export function delegationIntentFromMetadata(metadata: RunConfig["metadata"]): DelegationIntent | undefined {
   const parsed = DelegationIntentSchema.safeParse(metadata.delegationIntent);
   return parsed.success ? parsed.data : undefined;
+}
+
+export function acceptedPlanExecutionContractFromMetadata(
+  metadata: RunConfig["metadata"],
+): AcceptedPlanExecutionContract | undefined {
+  const parsed = AcceptedPlanExecutionContractSchema.safeParse(metadata.acceptedPlanExecutionContract);
+  return parsed.success ? parsed.data : undefined;
+}
+
+export function hasAcceptedPlanSameRunImplementationContract(
+  metadata: RunConfig["metadata"] | undefined,
+  runId?: string,
+): boolean {
+  if (!metadata) {
+    return false;
+  }
+  if (acceptedPlanExecutionContractFromMetadata(metadata) !== "same_run_implementation") {
+    return false;
+  }
+  if (typeof metadata.acceptedPlanDecisionId !== "string" || metadata.acceptedPlanDecisionId.length === 0) {
+    return false;
+  }
+  if (typeof metadata.acceptedPlanRunId !== "string" || metadata.acceptedPlanRunId.length === 0) {
+    return false;
+  }
+  return !runId || metadata.acceptedPlanRunId === runId;
 }
 
 export const AutomationScheduleSchema = z.discriminatedUnion("kind", [
@@ -2134,8 +2166,10 @@ export function snapshotContainsCompleteProposedPlan(snapshot: Pick<StateSnapsho
 export function extractCompleteProposedPlanContent(snapshot: Pick<StateSnapshot, "events"> & { output?: unknown }): string | undefined {
   const text = projectAssistantTextFromSnapshot(snapshot);
   if (!text) return undefined;
-  const match = text.match(/<proposed_plan>\s*([\s\S]+?)\s*<\/proposed_plan>/);
-  return match?.[1]?.trim();
+  const inspected = inspectProposedPlanContract(text);
+  return inspected.status === "complete_single"
+    ? inspected.completePlanContent
+    : undefined;
 }
 
 export function deriveRunInteraction(snapshot: StateSnapshot): RunInteraction {

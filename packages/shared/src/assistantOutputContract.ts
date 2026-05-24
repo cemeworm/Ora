@@ -1,6 +1,8 @@
 export type AssistantOutputRejectionReason =
   | "internal_protocol"
   | "recovery_fallback"
+  | "invalid_multiple_proposed_plans"
+  | "invalid_malformed_proposed_plan"
   | "empty";
 
 export interface PublicAssistantTextResolution {
