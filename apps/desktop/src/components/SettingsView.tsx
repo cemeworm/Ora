@@ -423,7 +423,10 @@ function channelFieldPlaceholder(channel: OraChannelConfig | undefined, field: C
   return field.placeholder ?? "可选";
 }
 
-function channelStateLabel(channel: OraChannelConfig | undefined, runtimeImplemented: boolean) {
+export function channelStateLabel(channel: OraChannelConfig | undefined, runtimeImplemented: boolean) {
+  if (channel?.kind === "wechat" && channel.enabled && channel.config?.bound !== true) {
+    return "已掉绑";
+  }
   if (channel?.enabled) {
     return "运行中";
   }
@@ -431,6 +434,18 @@ function channelStateLabel(channel: OraChannelConfig | undefined, runtimeImpleme
     return "未配置";
   }
   return runtimeImplemented ? "已配置" : "已保存，适配器待实现";
+}
+
+export function isWechatReconnectRequired(channel: OraChannelConfig | undefined) {
+  return channel?.kind === "wechat" && channel.enabled && channel.config?.bound !== true;
+}
+
+export function shouldAutoRefreshChannelStatus(
+  open: boolean,
+  activeSection: SettingsSection,
+  channelTabId: ChannelProviderKind,
+) {
+  return open && activeSection === "channels" && channelTabId === "wechat";
 }
 
 function buildInfoValue(value: string | undefined) {
@@ -582,6 +597,7 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
   const selectedChannelStartedAt = selectedChannel
     ? new Date(selectedChannel.createdAt).toLocaleString()
     : "未启动";
+  const wechatReconnectRequired = isWechatReconnectRequired(selectedChannel);
 
   const activeSnapshot = getActiveSnapshot(state.runLifecycle);
   const memoryRecords = activeSnapshot?.memory ?? [];
@@ -653,6 +669,16 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
     }
     void loadChannels();
   }, [activeSection, open]);
+
+  useEffect(() => {
+    if (!shouldAutoRefreshChannelStatus(open, activeSection, selectedChannelTab.id)) {
+      return;
+    }
+    const interval = setInterval(() => {
+      void loadChannels();
+    }, 10_000);
+    return () => clearInterval(interval);
+  }, [activeSection, open, selectedChannelTab.id]);
 
   const providerModelsKey = `${providerDraft.type}:${providerDraft.baseUrl}:${providerDraft.apiKeyEnv}:${providerDraft.id}`;
   const activeProviderModelsResult = lastFetchedProviderModelsKey === providerModelsKey ? providerModelsResult : undefined;
@@ -2443,7 +2469,7 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
                     <div className="mt-5 rounded-2xl bg-white px-5 py-4 shadow-xs ring-1 ring-inset ring-bench-200">
                       <div className="flex flex-wrap items-center justify-between gap-3">
                         <div className="flex items-center gap-2">
-                          <span className={cn("h-2 w-2 rounded-full", selectedChannel?.enabled ? "bg-emerald-500" : "bg-bench-300")} />
+                          <span className={cn("h-2 w-2 rounded-full", wechatReconnectRequired ? "bg-amber-500" : selectedChannel?.enabled ? "bg-emerald-500" : "bg-bench-300")} />
                           <span className="text-sm font-semibold text-bench-900">
                             {channelStateLabel(selectedChannel, selectedChannelTab.runtimeImplemented)}
                           </span>
@@ -2460,6 +2486,15 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
                           </Button>
                         ) : null}
                       </div>
+
+                      {wechatReconnectRequired && (
+                        <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
+                          <p className="font-semibold">WeChat 绑定已失效</p>
+                          <p className="mt-1 text-xs leading-5 text-amber-800">
+                            当前渠道仍处于启用状态，但 runtime 已检测到微信 bot session 失效。现在不会接收新的 WeChat 消息，请立即重新扫码绑定。
+                          </p>
+                        </div>
+                      )}
 
                       <div className="mt-4 grid gap-3 md:grid-cols-2">
                         <label className="space-y-2">
@@ -2495,6 +2530,7 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
                             <WechatQrCodePanel
                               channelId={selectedChannel.channelId}
                               isBound={Boolean(selectedChannel.config?.bound)}
+                              isEnabled={Boolean(selectedChannel.enabled)}
                               runtimeClient={runtimeClient}
                               onBind={async (id, credentials) => {
                                 const runConfig = buildChannelRunConfig(selectedChannelRunProvider, {

@@ -16,6 +16,8 @@ interface WechatQrCodePanelProps {
   channelId: string;
   /** Whether the channel already has bound credentials */
   isBound: boolean;
+  /** Whether the channel is currently enabled and expected to receive messages */
+  isEnabled?: boolean;
   /** Called when binding is confirmed – persists credentials via runtime */
   onBind: (channelId: string, credentials: { botToken: string; baseUrl: string }) => Promise<void>;
   runtimeClient: RuntimeClient;
@@ -28,6 +30,7 @@ interface WechatQrCodePanelProps {
 export function WechatQrCodePanel({
   channelId,
   isBound,
+  isEnabled = false,
   onBind,
   runtimeClient,
 }: WechatQrCodePanelProps) {
@@ -169,6 +172,10 @@ export function WechatQrCodePanel({
   }
 
   if (state === "idle" || state === "failed") {
+    const actionLabel = isEnabled ? "重新扫码绑定微信 Bot" : "扫码绑定微信 Bot";
+    const helperText = isEnabled
+      ? "当前渠道已启用，但微信绑定已失效。重新扫码后才会恢复收发消息。"
+      : "点击后使用微信扫描二维码完成绑定";
     return (
       <div className="flex flex-col items-center gap-3 rounded-xl bg-bench-50 px-4 py-6 ring-1 ring-inset ring-bench-200">
         {error && (
@@ -180,10 +187,10 @@ export function WechatQrCodePanel({
           className="rounded-xl bg-bench-900 text-white hover:bg-bench-800"
           onClick={startBinding}
         >
-          扫码绑定微信 Bot
+          {actionLabel}
         </Button>
         <p className="text-xs text-bench-500">
-          点击后使用微信扫描二维码完成绑定
+          {helperText}
         </p>
       </div>
     );
