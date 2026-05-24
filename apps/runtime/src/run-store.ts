@@ -14,7 +14,6 @@ import {
   CustomAgentUpdateParams,
   CustomAgentCreateParamsSchema,
   deriveRunAttention,
-  deriveAcceptedPlanResumeProjection,
   deriveSnapshotGateProjection,
   EvaluationConfigSummary,
   EvaluationFeedbackRecord,
@@ -1681,16 +1680,6 @@ export class LocalRunStore {
         decisionId: parsed.decisionId,
         status: "accepted",
       });
-    }
-
-    const currentSnapshot = this.getRunState({ runId: parsed.runId });
-    const resumeProjection = deriveAcceptedPlanResumeProjection({
-      snapshot: currentSnapshot,
-      currentRunId: parsed.runId,
-      acceptedDecisionId: parsed.decisionId,
-    });
-    if (resumeProjection.phase === "resumed_running" || resumeProjection.phase === "resume_terminal") {
-      return toRunHandle(currentSnapshot);
     }
 
     const resumeParams = {

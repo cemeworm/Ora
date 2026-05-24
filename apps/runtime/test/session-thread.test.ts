@@ -1330,6 +1330,70 @@ describe("session thread runtime behavior", () => {
     });
   });
 
+  it("starts first accepted-plan implementation resume with same-run implement contract metadata", async () => {
+    titleResponses.push("Accepted Plan Contract Session");
+    const dir = freshStoreDir();
+    const store = new LocalRunStore({ dataDir: dir, clock });
+    const session = store.createSession();
+
+    await store.startRun({
+      sessionId: session.sessionId,
+      input: { prompt: COMPLETE_PROPOSED_PLAN },
+      config: {
+        pattern: "orchestrator_subagent",
+        providerId: "openai-gpt",
+        providerConfig: localSmokeProviderConfig("openai-gpt", "gpt-plan-contract-test"),
+        modelRef: "gpt-plan-contract-test",
+        metadata: { taskIntent: "plan" },
+      },
+    });
+
+    const planned = SessionDetailSchema.parse(store.getSession({ sessionId: session.sessionId }));
+    const decision = planned.latestSnapshot?.planDecisions[0];
+    expect(decision?.status).toBe("pending");
+
+    const kernelExecutionService = (store as unknown as {
+      runKernelExecutionService: {
+        executePreparedResume: (params: {
+          snapshot: StateSnapshot;
+          configOverride?: { metadata?: Record<string, unknown> };
+        }) => Promise<StateSnapshot>;
+      };
+    }).runKernelExecutionService;
+    let capturedResumeMetadata: Record<string, unknown> | undefined;
+    vi.spyOn(kernelExecutionService, "executePreparedResume").mockImplementation(async (params) => {
+      capturedResumeMetadata = params.configOverride?.metadata;
+      return StateSnapshotSchema.parse({
+        ...params.snapshot,
+        status: "running",
+        planDecisions: params.snapshot.planDecisions.map((candidate) =>
+          candidate.id === decision?.id
+            ? {
+                ...candidate,
+                status: "accepted" as const,
+                resolvedAt: FIXED_TIME,
+              }
+            : candidate
+        ),
+        updatedAt: FIXED_TIME,
+      });
+    });
+
+    const handle = await store.acceptPlanDecisionAndResume({
+      sessionId: session.sessionId,
+      runId: planned.latestSnapshot?.runId,
+      decisionId: decision?.id,
+    });
+
+    expect(handle.status).toBe("running");
+    expect(capturedResumeMetadata).toMatchObject({
+      taskIntent: "implement",
+      acceptedPlanExecutionContract: "same_run_implementation",
+      acceptedPlanDecisionId: decision?.id,
+      acceptedPlanRunId: planned.latestSnapshot?.runId,
+    });
+  });
+
   it("publishes a running first live snapshot without reopening the accepted plan gate", async () => {
     titleResponses.push("Atomic First Live Snapshot Session");
     const dir = freshStoreDir();
