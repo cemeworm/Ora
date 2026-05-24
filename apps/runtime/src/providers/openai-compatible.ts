@@ -311,8 +311,15 @@ function createChatCompletionsPayload(config: ProviderConfig, request: Parameter
     }).filter(Boolean),
   ];
 
-  const reasoningField = deepseek && request.reasoningEffort
-    ? { thinking: { type: "enabled" as const } }
+  const deepseekThinkingField = deepseek
+    ? request.providerOptions?.disableThinking
+      ? { thinking: { type: "disabled" as const } }
+      : request.reasoningEffort
+        ? { thinking: { type: "enabled" as const } }
+        : {}
+    : {};
+  const reasoningField = Object.keys(deepseekThinkingField).length > 0
+    ? deepseekThinkingField
     : request.reasoningEffort
       ? { reasoning_effort: request.reasoningEffort }
       : {};

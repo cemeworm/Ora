@@ -110,6 +110,42 @@ describe("causal task-state extractor", () => {
     expect(state.confidence).toBe(0.81);
   });
 
+  it("requests json_object output from the provider", async () => {
+    let capturedRequest: Record<string, unknown> | undefined;
+
+    await extractCausalTaskState({
+      prompt: "Python 3.13有什么新特性",
+      config: mockConfig(),
+      phase: "run_start",
+      allowLlmExtraction: true,
+    }, {
+      invokeProvider: async (_config, request) => {
+        capturedRequest = request as unknown as Record<string, unknown>;
+        return {
+          providerId: "test",
+          modelId: "test",
+          providerType: "openai_compatible",
+          text: JSON.stringify({
+            latentGoalHypotheses: ["了解 Python 3.13 的新增能力"],
+            selectedLatentGoal: "确认 Python 3.13 的最新新增特性",
+            constraints: [],
+            candidateInterventions: ["search_web"],
+            counterfactualRiskIfSkipped: "可能输出过时版本信息",
+            expectedOutcomeLift: "提供基于当前版本的准确信息",
+            stopCondition: "确认最新版本信息后停止",
+            confidence: 0.88,
+            needsFreshnessEvidence: true,
+          }),
+          raw: {},
+        } as never;
+      },
+    });
+
+    expect(capturedRequest?.responseFormat).toEqual({ type: "json_object" });
+    expect(capturedRequest?.providerOptions).toEqual({ disableThinking: true });
+    expect(capturedRequest?.maxTokens).toBe(420);
+  });
+
   it("falls back to non-semantic state when provider JSON is invalid", async () => {
     const state = await extractCausalTaskState({
       prompt: "这个问题需要先确认范围",
@@ -143,76 +179,164 @@ describe("causal task-state extractor", () => {
   });
 
   it("passes needsFreshnessEvidence=true from LLM extraction through merge", async () => {
-      const state = await extractCausalTaskState({
-        prompt: "python最新版本有哪些新特性",
-        config: mockConfig(),
-        phase: "run_start",
-        allowLlmExtraction: true,
-      }, {
-        invokeProvider: async () => ({
-          providerId: "test",
-          modelRef: "test",
-          text: JSON.stringify({
-            latentGoalHypotheses: ["获取Python最新版本信息"],
-            selectedLatentGoal: "获取Python最新版本的新特性信息",
-            constraints: [],
-            candidateInterventions: ["search_web"],
-            counterfactualRiskIfSkipped: "可能给出过时的版本信息",
-            expectedOutcomeLift: "提供最新准确的版本信息",
-            stopCondition: "确认版本信息后停止",
-            confidence: 0.85,
-            needsFreshnessEvidence: true,
-          }),
-        } as never),
-      });
-
-      expect(state.needsFreshnessEvidence).toBe(true);
+    const state = await extractCausalTaskState({
+      prompt: "python最新版本有哪些新特性",
+      config: mockConfig(),
+      phase: "run_start",
+      allowLlmExtraction: true,
+    }, {
+      invokeProvider: async () => ({
+        providerId: "test",
+        modelRef: "test",
+        text: JSON.stringify({
+          latentGoalHypotheses: ["获取Python最新版本信息"],
+          selectedLatentGoal: "获取Python最新版本的新特性信息",
+          constraints: [],
+          candidateInterventions: ["search_web"],
+          counterfactualRiskIfSkipped: "可能给出过时的版本信息",
+          expectedOutcomeLift: "提供最新准确的版本信息",
+          stopCondition: "确认版本信息后停止",
+          confidence: 0.85,
+          needsFreshnessEvidence: true,
+        }),
+      } as never),
     });
 
-    it("passes needsFreshnessEvidence=false from LLM extraction through merge", async () => {
-      const state = await extractCausalTaskState({
-        prompt: "解释什么是闭包",
-        config: mockConfig(),
-        phase: "run_start",
-        allowLlmExtraction: true,
-      }, {
-        invokeProvider: async () => ({
-          providerId: "test",
-          modelRef: "test",
-          text: JSON.stringify({
-            latentGoalHypotheses: ["学习JavaScript闭包概念"],
-            selectedLatentGoal: "理解闭包的工作原理",
-            constraints: [],
-            candidateInterventions: ["answer_directly"],
-            counterfactualRiskIfSkipped: "",
-            expectedOutcomeLift: "",
-            stopCondition: "",
-            confidence: 0.9,
-            needsFreshnessEvidence: false,
-          }),
-        } as never),
-      });
+    expect(state.selectedLatentGoal).toBe("获取Python最新版本的新特性信息");
+    expect(state.candidateInterventions).toEqual(["search_web"]);
+    expect(state.needsFreshnessEvidence).toBe(true);
+  });
 
-      expect(state.needsFreshnessEvidence).toBe(false);
+  it("passes needsFreshnessEvidence=false from LLM extraction through merge", async () => {
+    const state = await extractCausalTaskState({
+      prompt: "解释什么是闭包",
+      config: mockConfig(),
+      phase: "run_start",
+      allowLlmExtraction: true,
+    }, {
+      invokeProvider: async () => ({
+        providerId: "test",
+        modelRef: "test",
+        text: JSON.stringify({
+          latentGoalHypotheses: ["学习JavaScript闭包概念"],
+          selectedLatentGoal: "理解闭包的工作原理",
+          constraints: [],
+          candidateInterventions: ["answer_directly"],
+          counterfactualRiskIfSkipped: "",
+          expectedOutcomeLift: "",
+          stopCondition: "",
+          confidence: 0.9,
+          needsFreshnessEvidence: false,
+        }),
+      } as never),
     });
 
-    it("keeps left needsFreshnessEvidence when LLM does not extract the field", () => {
-      const merged = mergeCausalTaskState(
-        { needsFreshnessEvidence: true, selectedLatentGoal: "获取最新信息" },
-        { selectedLatentGoal: "获取最新信息" },
-      );
+    expect(state.needsFreshnessEvidence).toBe(false);
+  });
 
-      expect(merged.needsFreshnessEvidence).toBe(true);
+  it("passes read_context candidateInterventions through for diagnosis-style prompts", async () => {
+    const state = await extractCausalTaskState({
+      prompt: "数据库连接池满了",
+      config: mockConfig(),
+      phase: "run_start",
+      allowLlmExtraction: true,
+    }, {
+      invokeProvider: async () => ({
+        providerId: "test",
+        modelRef: "test",
+        text: JSON.stringify({
+          latentGoalHypotheses: ["诊断数据库连接池耗尽问题"],
+          selectedLatentGoal: "诊断并解决数据库连接池耗尽问题",
+          constraints: ["需要结合配置或日志判断"],
+          candidateInterventions: ["read_context", "clarify"],
+          counterfactualRiskIfSkipped: "可能在未读取配置和日志的情况下给出泛化建议",
+          expectedOutcomeLift: "基于真实上下文给出更准确的诊断步骤",
+          stopCondition: "确认关键根因或缺失上下文后停止",
+          confidence: 0.82,
+          needsFreshnessEvidence: false,
+        }),
+      } as never),
     });
 
-    it("right needsFreshnessEvidence=false overrides left true", () => {
-      const merged = mergeCausalTaskState(
-        { needsFreshnessEvidence: true },
-        { needsFreshnessEvidence: false },
-      );
+    expect(state.selectedLatentGoal).toBe("诊断并解决数据库连接池耗尽问题");
+    expect(state.candidateInterventions).toEqual(["read_context", "clarify"]);
+    expect(state.needsFreshnessEvidence).toBe(false);
+  });
 
-      expect(merged.needsFreshnessEvidence).toBe(false);
+  it("passes read_context candidateInterventions through for repo-grounded reporting prompts", async () => {
+    const state = await extractCausalTaskState({
+      prompt: "帮我写项目周报",
+      config: mockConfig(),
+      phase: "run_start",
+      allowLlmExtraction: true,
+    }, {
+      invokeProvider: async () => ({
+        providerId: "test",
+        modelRef: "test",
+        text: JSON.stringify({
+          latentGoalHypotheses: ["基于现有项目事实生成周报"],
+          selectedLatentGoal: "基于仓库上下文生成项目周报",
+          constraints: ["需要读取项目中的真实进展信息"],
+          candidateInterventions: ["read_context", "clarify"],
+          counterfactualRiskIfSkipped: "可能在未读取项目事实的情况下输出空泛周报",
+          expectedOutcomeLift: "基于真实项目进展生成更准确的周报",
+          stopCondition: "确认已有足够上下文生成周报或确认缺失信息后停止",
+          confidence: 0.84,
+          needsFreshnessEvidence: false,
+        }),
+      } as never),
     });
+
+    expect(state.selectedLatentGoal).toBe("基于仓库上下文生成项目周报");
+    expect(state.candidateInterventions).toEqual(["read_context", "clarify"]);
+    expect(state.needsFreshnessEvidence).toBe(false);
+  });
+
+  it("keeps repo-grounded reporting prompts non-freshness when reading local context", async () => {
+    const state = await extractCausalTaskState({
+      prompt: "帮我写项目周报",
+      config: mockConfig(),
+      phase: "run_start",
+      allowLlmExtraction: true,
+    }, {
+      invokeProvider: async () => ({
+        providerId: "test",
+        modelRef: "test",
+        text: JSON.stringify({
+          latentGoalHypotheses: ["基于当前项目状态自动生成周报内容"],
+          selectedLatentGoal: "用户希望基于当前项目状态自动生成周报内容",
+          constraints: ["周报应反映项目实际进展", "需要获取项目相关数据或上下文"],
+          candidateInterventions: ["read_context", "clarify", "plan"],
+          counterfactualRiskIfSkipped: "如果不先读取项目上下文，生成的周报可能缺乏具体内容，无法反映真实进展",
+          expectedOutcomeLift: "通过读取项目文件或仓库信息，生成有数据支撑的周报",
+          stopCondition: "用户确认周报内容满意或明确表示停止",
+          confidence: 0.7,
+          needsFreshnessEvidence: false,
+        }),
+      } as never),
+    });
+
+    expect(state.candidateInterventions).toEqual(["read_context", "clarify", "plan"]);
+    expect(state.needsFreshnessEvidence).toBe(false);
+  });
+
+  it("keeps left needsFreshnessEvidence when LLM does not extract the field", () => {
+    const merged = mergeCausalTaskState(
+      { needsFreshnessEvidence: true, selectedLatentGoal: "获取最新信息" },
+      { selectedLatentGoal: "获取最新信息" },
+    );
+
+    expect(merged.needsFreshnessEvidence).toBe(true);
+  });
+
+  it("right needsFreshnessEvidence=false overrides left true", () => {
+    const merged = mergeCausalTaskState(
+      { needsFreshnessEvidence: true },
+      { needsFreshnessEvidence: false },
+    );
+
+    expect(merged.needsFreshnessEvidence).toBe(false);
+  });
 
   it("tracks the latest native task state and first primary tool request", () => {
     const events = [

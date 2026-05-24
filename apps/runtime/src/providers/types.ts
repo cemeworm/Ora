@@ -64,6 +64,9 @@ export interface ModelRequest {
   responseFormat?: {
     type: "json_object";
   };
+  providerOptions?: {
+    disableThinking?: boolean;
+  };
   signal?: AbortSignal;
 }
 

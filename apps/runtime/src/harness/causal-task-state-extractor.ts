@@ -11,7 +11,7 @@ import { z } from "zod";
 import { parseJsonObject } from "../provider-json.js";
 import { invokeRunProvider } from "../providers/index.js";
 
-const CAUSAL_SEMANTIC_MAX_TOKENS = 260;
+const CAUSAL_SEMANTIC_MAX_TOKENS = 420;
 
 const ExtractedCausalSemanticStateSchema = z.object({
   latentGoalHypotheses: z.array(z.string().min(1)).default([]),
@@ -142,6 +142,12 @@ async function extractSemanticStateWithLlm(
         "- stopCondition: when the agent should stop instead of taking more actions",
         "- confidence: number from 0 to 1",
         "- needsFreshnessEvidence: true if the request involves information that changes over time (version numbers, release dates, current status, pricing, compatibility, breaking changes, recent events). false for timeless knowledge (concepts, algorithms, syntax, design patterns) or tasks that work with existing local data.",
+        "- For summaries, reports, changelogs, weekly updates, status updates, or project documents grounded in local/repository artifacts, set needsFreshnessEvidence to false unless the user explicitly asks for external current-market/current-web facts.",
+        "",
+        "Intervention guidance:",
+        "- Prefer read_context for debugging, diagnosis, root-cause analysis, or requests about an existing project/system/service when logs, configs, code, local files, or repository context would materially change the answer.",
+        "- Prefer read_context for requests to write summaries, reports, changelogs, weekly updates, status updates, or project documents when the needed facts may already exist in repository files, commits, logs, notes, or local artifacts.",
+        "- Prefer clarify only when the missing context cannot reasonably be gathered from available local/project artifacts.",
         "",
         "Keep values compact, factual, and grounded in the provided context.",
         "If context is insufficient, return empty strings or empty arrays instead of inventing detail.",
@@ -164,6 +170,8 @@ async function extractSemanticStateWithLlm(
         }),
       }],
       maxTokens: CAUSAL_SEMANTIC_MAX_TOKENS,
+      responseFormat: { type: "json_object" },
+      providerOptions: { disableThinking: true },
       toolChoice: "none",
       temperature: 0,
     });

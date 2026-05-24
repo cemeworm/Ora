@@ -1649,6 +1649,30 @@ describe("DeepSeek provider", () => {
     expect(response.text).toBe("DeepSeek reasoning answer.");
   });
 
+  it("can explicitly disable DeepSeek thinking for JSON-only extraction requests", async () => {
+    const fetchImpl = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      expect(body.thinking).toEqual({ type: "disabled" });
+      expect(body).not.toHaveProperty("reasoning_effort");
+      expect(body.response_format).toEqual({ type: "json_object" });
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: "{\"selectedLatentGoal\":\"ok\"}" } }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    });
+
+    const provider = createModelProvider(deepseekConfig, {
+      env: { DEEPSEEK_API_KEY: "test-key" },
+      fetchImpl,
+    });
+
+    const response = await provider({
+      prompt: "Extract JSON.",
+      responseFormat: { type: "json_object" },
+      providerOptions: { disableThinking: true },
+    });
+    expect(response.text).toBe("{\"selectedLatentGoal\":\"ok\"}");
+  });
+
   it("splits DeepSeek stable system prefix from the volatile system tail", async () => {
     const fetchImpl = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as {
