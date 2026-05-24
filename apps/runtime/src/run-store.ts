@@ -14,6 +14,7 @@ import {
   CustomAgentUpdateParams,
   CustomAgentCreateParamsSchema,
   deriveRunAttention,
+  deriveAcceptedPlanResumeProjection,
   deriveSnapshotGateProjection,
   EvaluationConfigSummary,
   EvaluationFeedbackRecord,
@@ -104,6 +105,7 @@ import {
   SelfIterationEnvironmentObserverPolicy,
   deriveSessionBranchGroupStatus,
   extractCompleteProposedPlanContent,
+  extractProposedPlanDecisionCandidate,
   snapshotContainsCompleteProposedPlan,
   StateSnapshot,
   StateSnapshotSchema,
@@ -1665,6 +1667,12 @@ export class LocalRunStore {
         decisionId: parsed.decisionId,
       });
     }
+    if (
+      existingDecision.status === "accepted" &&
+      (snapshot.status === "queued" || snapshot.status === "running")
+    ) {
+      return toRunHandle(snapshot);
+    }
 
     if (existingDecision.status !== "accepted") {
       this.resolvePlanDecision({
@@ -1673,6 +1681,16 @@ export class LocalRunStore {
         decisionId: parsed.decisionId,
         status: "accepted",
       });
+    }
+
+    const currentSnapshot = this.getRunState({ runId: parsed.runId });
+    const resumeProjection = deriveAcceptedPlanResumeProjection({
+      snapshot: currentSnapshot,
+      currentRunId: parsed.runId,
+      acceptedDecisionId: parsed.decisionId,
+    });
+    if (resumeProjection.phase === "resumed_running" || resumeProjection.phase === "resume_terminal") {
+      return toRunHandle(currentSnapshot);
     }
 
     const resumeParams = {
@@ -2403,6 +2421,7 @@ export class LocalRunStore {
       updatedAt: this.now(),
     });
     this.persistRun(liveSnapshot);
+    this.cacheRun(liveSnapshot, false, { deferInitialTitle: true });
     const abortController = this.runStreamingService.createAbortController(snapshot.runId);
     const streamingSession = this.runStreamingService.createSession({
       runId: snapshot.runId,
@@ -2740,16 +2759,18 @@ export class LocalRunStore {
     let liveSnapshot = this.markResumeRunning(snapshot, approvedActionIds);
 
     try {
-      const approvedToolContinuation = (
+      const approvedToolStrategy =
         strategy.kind === "approved_tool_continuation" || strategy.kind === "clarification_tool_continuation"
-      )
+          ? strategy
+          : undefined;
+      const approvedToolContinuation = approvedToolStrategy
         ? await executeApprovedToolContinuationStrategy({
           snapshot,
           approvedActionIds,
-          continuationActionIds: strategy.continuationActionIds,
+          continuationActionIds: approvedToolStrategy.continuationActionIds,
           reason: parsed.reason,
           patch: parsed.patch,
-          continuationMode: strategy.kind === "clarification_tool_continuation" ? "clarification" : "approval",
+          continuationMode: approvedToolStrategy.kind === "clarification_tool_continuation" ? "clarification" : "approval",
           deps: this.approvedFileWriteResumeDeps({
             clarificationPatch,
           }),
@@ -2759,14 +2780,14 @@ export class LocalRunStore {
         const completedApprovedTool = this.#shouldContinueApprovedToolToKernel(
           approvedToolContinuation,
           clarificationPatch,
-          strategy.kind,
+          approvedToolStrategy?.kind,
         )
           ? await this.runKernelExecutionService.continueAfterApprovedTool({
             originalSnapshot: snapshot,
             continuationSnapshot: approvedToolContinuation.snapshot,
             clarificationPatch,
             approvedActionIds,
-            continuationActionIds: strategy.continuationActionIds,
+            continuationActionIds: approvedToolStrategy?.continuationActionIds,
           })
           : approvedToolContinuation.snapshot;
         return this.runResumeFinalizationService.persistTerminal({
@@ -4107,6 +4128,16 @@ export class LocalRunStore {
     for (const run of projection.runs) {
       const snapshot = cachedProjection.snapshotsByRunId.get(run.runId);
       if (snapshot) {
+        const cached = this.runs.get(run.runId);
+        if (
+          cached &&
+          cached.sessionId === sessionId &&
+          (cached.status === "queued" || cached.status === "running") &&
+          isTerminalRunStatus(snapshot.status)
+        ) {
+          this.storeRunProjection(cached);
+          continue;
+        }
         this.storeRunProjection(snapshot);
       }
     }
@@ -4299,6 +4330,13 @@ export class LocalRunStore {
   }
 
   private rebaseActiveRunSnapshot(projected: StateSnapshot, cached?: StateSnapshot): StateSnapshot {
+    if (
+      cached &&
+      (cached.status === "queued" || cached.status === "running") &&
+      isTerminalRunStatus(projected.status)
+    ) {
+      return cached;
+    }
     if (projected.status !== "queued" && projected.status !== "running") {
       return projected;
     }
@@ -5214,14 +5252,14 @@ export class LocalRunStore {
 
   private normalizeSnapshotForPersistence(snapshot: StateSnapshot): StateSnapshot {
     let normalized = StateSnapshotSchema.parse(snapshot);
+    const proposedPlanDecision = extractProposedPlanDecisionCandidate(normalized);
     if (
       normalized.sessionId &&
       normalized.status === "succeeded" &&
       normalized.config.metadata.taskIntent === "plan" &&
-      snapshotContainsCompleteProposedPlan(normalized) &&
+      proposedPlanDecision &&
       !normalized.planDecisions.some((decision) => decision.status === "pending")
     ) {
-      const planContent = extractCompleteProposedPlanContent(normalized);
       normalized = StateSnapshotSchema.parse({
         ...normalized,
         planDecisions: [
@@ -5231,7 +5269,9 @@ export class LocalRunStore {
             runId: normalized.runId,
             sessionId: normalized.sessionId,
             status: "pending",
-            ...(planContent ? { planContent, planSourceRunId: normalized.runId } : {}),
+            ...(proposedPlanDecision.planContent
+              ? { planContent: proposedPlanDecision.planContent, planSourceRunId: normalized.runId }
+              : {}),
             createdAt: normalized.updatedAt,
           },
         ],

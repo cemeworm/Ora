@@ -5814,7 +5814,10 @@ export async function executeRuntimeKernel(
     }
     if (
       config.metadata.taskIntent === "plan" &&
-      inspectProposedPlanContract(modeOutputText(modeOutput)).status === "complete_single"
+      (() => {
+        const proposedPlan = inspectProposedPlanContract(modeOutputText(modeOutput));
+        return proposedPlan.gateEligibility === "strict_single" || proposedPlan.gateEligibility === "recoverable_single";
+      })()
     ) {
       return modeOutput;
     }

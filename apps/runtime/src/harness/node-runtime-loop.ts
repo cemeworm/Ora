@@ -785,7 +785,8 @@ export function stripInternalAssistantText(text: string): string {
 }
 
 function containsCompleteProposedPlanText(text: string): boolean {
-  return inspectProposedPlanContract(text).status === "complete_single";
+  const proposedPlan = inspectProposedPlanContract(text);
+  return proposedPlan.gateEligibility === "strict_single" || proposedPlan.gateEligibility === "recoverable_single";
 }
 
 function shouldPreferCompleteProposedPlanResponse(

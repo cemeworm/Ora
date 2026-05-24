@@ -6,6 +6,7 @@ import type {
   StateSnapshot,
 } from "@cemeworm/shared";
 import {
+  deriveAcceptedPlanResumeProjection,
   hasAcceptedPlanSameRunImplementationContract,
 } from "@cemeworm/shared";
 
@@ -14,6 +15,9 @@ export interface RuntimeCompletionGuardState {
   planList: readonly PlanListStep[];
   plan?: StateSnapshot["plan"];
   todos?: StateSnapshot["todos"];
+  status?: StateSnapshot["status"];
+  events?: readonly StateSnapshot["events"][number][];
+  planDecisions?: StateSnapshot["planDecisions"];
   replayedActionIds?: readonly string[];
   toolCalls: readonly OraToolCallEnvelope[];
   agentId?: string;
@@ -43,6 +47,9 @@ export interface TerminalStateAssertionInput {
   planList: readonly PlanListStep[];
   plan?: StateSnapshot["plan"];
   todos?: StateSnapshot["todos"];
+  status?: StateSnapshot["status"];
+  events?: readonly StateSnapshot["events"][number][];
+  planDecisions?: StateSnapshot["planDecisions"];
   runId?: string;
   modeId?: string;
   metadata?: Record<string, unknown>;
@@ -220,11 +227,51 @@ function acceptedImplementationEvidenceSummary(
   return { observed: false, detail: "no implementation evidence observed after accepted same-run resume" };
 }
 
+function acceptedPlanResumePhaseSummary(
+  state: Pick<RuntimeCompletionGuardState, "status" | "events" | "planDecisions" | "runId">,
+): {
+  phase: ReturnType<typeof deriveAcceptedPlanResumeProjection>["phase"];
+  detail: string;
+} {
+  const projection = deriveAcceptedPlanResumeProjection({
+    currentRunId: state.runId,
+    snapshot: state.runId
+      ? {
+          runId: state.runId,
+          status: state.status ?? "succeeded",
+          events: [...(state.events ?? [])],
+          attention: undefined,
+          planDecisions: [...(state.planDecisions ?? [])],
+        }
+      : undefined,
+  });
+  return {
+    phase: projection.phase,
+    detail: `accepted plan resume phase=${projection.phase}; evidence=${projection.evidence}`,
+  };
+}
+
 export function acceptedPlanImplementationEvidenceGuard(
   state: RuntimeCompletionGuardState,
 ): RuntimeCompletionGuardResult {
   if (!hasAcceptedPlanSameRunImplementationContract(state.metadata, state.runId)) {
     return { allowComplete: true };
+  }
+  const phase = acceptedPlanResumePhaseSummary(state);
+  if (phase.phase !== "resumed_running" && phase.phase !== "resume_terminal") {
+    return {
+      allowComplete: false,
+      reason: "accepted_plan_resume_not_started",
+      progressTrigger: "accepted_plan.resume_not_started",
+      progressSummary: "Accepted same-run implementation contract has not reached resumed-running state; refusing to complete.",
+      detail: phase.detail,
+      followUpReason: "accepted_plan_resume_not_started_follow_up",
+      followUpContent: [
+        "The user accepted the implementation plan for this same run.",
+        "Do not finish the run yet because the accepted-plan resume has not actually re-entered implementation.",
+        "Continue the same-run resume flow until the run has resumed and then perform real implementation work.",
+      ].join(" "),
+    };
   }
   const evidence = acceptedImplementationEvidenceSummary(state);
   if (evidence.observed) {
@@ -459,6 +506,9 @@ export function assertRunCanBecomeTerminal(
     planList: input.planList,
     plan: input.plan,
     todos: input.todos,
+    status: input.status,
+    events: input.events,
+    planDecisions: input.planDecisions,
     toolCalls: input.toolCalls,
     runId: input.runId,
     modeId: input.modeId,
@@ -586,6 +636,9 @@ export function deriveTerminalStateAssertionFromSnapshot(
     planList: readonly PlanListStep[];
     plan?: readonly { id: string; status: string; runId?: string; title?: string; linkedActionIds?: readonly string[] }[];
     todos?: readonly { id: string; status: string }[];
+    status?: StateSnapshot["status"];
+    events?: readonly StateSnapshot["events"][number][];
+    planDecisions?: StateSnapshot["planDecisions"];
     runId?: string;
     modeId?: string;
     config?: { metadata?: Record<string, unknown> };
@@ -607,6 +660,9 @@ export function deriveTerminalStateAssertionFromSnapshot(
     planList: snapshot.planList,
     plan: snapshot.plan as TerminalStateAssertionInput["plan"],
     todos: snapshot.todos as TerminalStateAssertionInput["todos"],
+    status: snapshot.status,
+    events: snapshot.events,
+    planDecisions: snapshot.planDecisions,
     runId: snapshot.runId,
     modeId: snapshot.modeId,
     metadata: snapshot.config?.metadata,

@@ -177,7 +177,8 @@ export interface SharedStateBag extends ExecutionBag {
 }
 
 export function containsCompleteProposedPlan(value: unknown): boolean {
-  return inspectProposedPlanContract(asText(value)).status === "complete_single";
+  const proposedPlan = inspectProposedPlanContract(asText(value));
+  return proposedPlan.gateEligibility === "strict_single" || proposedPlan.gateEligibility === "recoverable_single";
 }
 
 export function finishPlanModeAfterProposedPlan(

@@ -151,13 +151,13 @@ export function finalOutputContractViolation(
   const resolved = resolvePublicAssistantText(text);
   if (!resolved.isRejected) {
     const proposedPlan = inspectProposedPlanContract(text);
-    if (proposedPlan.status === "invalid_multiple") {
+    if (proposedPlan.gateEligibility === "hard_invalid_multiple") {
       return {
         reason: "invalid_multiple_proposed_plans",
         visibleText: proposedPlan.displayText,
       };
     }
-    if (proposedPlan.status === "invalid_malformed") {
+    if (proposedPlan.gateEligibility === "hard_invalid_malformed") {
       return {
         reason: "invalid_malformed_proposed_plan",
         visibleText: proposedPlan.displayText,
