@@ -2,6 +2,8 @@
 
 Ora 是一个桌面端 AI Agent 工作台，Agent 在本地 Runtime 中运行。但用户不一定在电脑前，更多时候是通过 Slack、微信、飞书这些日常工具发消息过来。Channel/Connector 体系就是解决这件事的：把外部平台的消息统一转换成内部 session/run，Agent 执行完后再把结果送回对应的对话里。
 
+这套体系里最容易被误解的一点，是很多人会把 channel 入口想成“收到一句话后，系统会自己猜用户在说哪个项目”。现在不是这样。当前主路径是：**普通自然语言消息只复用当前已绑定项目，不会偷偷触发新的本地项目绑定；只有显式 `/project` 和后续数字确认，才会进入项目发现和绑定流程。**
+
 ## 阅读地图
 
 | 层级 | 核心文件 | 职责 |
@@ -199,7 +201,7 @@ ingest(params)
         │      ├─ needs_approval + /deny  → cancel
         │      ├─ needs_clarification + 文本 → resume
         │      └─ 无 pending → 走新 run
-        ├─ 12. 项目发现（如果 prompt 涉及本地文件且 session 无 project）
+        ├─ 12. 显式项目发现（仅 `/project` 或待确认数字回复）
         │      └─ 返回候选列表让用户选择
         ├─ 13. 启动 run（startAndWaitForRun）
         │      └─ 等待 run 进入终态 (succeeded/failed/cancelled/interrupted)
@@ -212,7 +214,14 @@ ingest(params)
 
 **Run 超时**，`startAndWaitForRun` 和 `resumeAndWaitForRun` 通过 `runTimeoutMs`（默认 60s）限制等待时间。超时后抛出错误，Manager 不自动重试。
 
-**项目发现**，当 prompt 涉及本地文件相关关键词（obsidian/vault/markdown 等）且 session 未绑定项目时，Manager 先尝试匹配已有 project，若无匹配则扫描文件系统，返回最多 `projectDiscoveryLimit` 个候选，等待用户数字选择后绑定 project 到 session 再启动 run。
+**项目绑定边界**，当前主路径故意更保守：
+
+- 普通自然语言消息不会因为命中目录名、文件名或关键词就自动触发本地项目发现
+- 如果当前 session 已经绑定项目，后续普通消息只复用这个绑定
+- 只有显式 `/project [keyword]`，以及用户对候选列表的数字确认，才会进入项目发现和重新绑定
+- 如果 session 没有绑定项目，普通消息会按“无项目上下文”继续，不会偷偷补一个项目进来
+
+这样做不是为了少做一步，而是为了避免 channel 层把“候选召回”误当成“绑定真相”。项目发现现在只负责找候选，不负责替用户做最终判断。
 
 ### 2.4 ChannelAdapter 接口
 
@@ -343,7 +352,7 @@ webhook 路径的认证分派逻辑：`http_webhook` 走 `validateHttpWebhookAut
 | `/help` | 返回可用命令列表 |
 | `/status` | 返回当前 binding/session/project/queue 状态 |
 | `/new` | 为当前外部 chat 创建新 session，下次消息进入新 session |
-| `/project [keyword]` | 触发项目发现流程，返回候选项目列表供用户选择 |
+| `/project [keyword]` | 显式触发项目发现，返回候选项目列表供用户选择 |
 
 命令由 `ChannelManager.processCommand` 处理，大部分直接生成 outbound 回复，不启动 run。
 
@@ -369,11 +378,19 @@ webhook 路径的认证分派逻辑：`http_webhook` 走 `validateHttpWebhookAut
 - **ChannelInboundMessage**：已接收入站消息的耐久记录
 - **ChannelMessageBus**：不是 source of truth，它是瞬态的进程内事件通道，重启后消失
 
+对项目绑定也适用同样的规则：
+
+- **候选列表不是绑定真相**
+- **`ChannelBinding.metadata` 中已经确认的项目绑定才是真相**
+- **数字回复只是确认动作，不是新的语义理解器**
+
 ### 3.6 容易误解的点
 
 **Channel 不直接调用 LLM**。Channel 层的全部职责是消息收/发和 session/run 生命周期触发。实际的 agent loop 由 Runtime kernel 执行，Channel 不知道模式图、gate、ledger 的存在。
 
 **Binding 不是用户账号**。一个外部 chat 只有一个 binding，但多个外部 user 可能在同一个 chat 里。`externalUserId` 仅用于 metadata 记录，不参与权限判断。
+
+**普通消息不会偷偷改项目绑定。** 现在的 channel 主路径不再根据自然语言内容自动 project auto-bind。用户如果只是继续聊天，系统只会复用当前 session 的已绑定项目；如果没有绑定，就继续在无项目上下文下运行。
 
 **HTTP server 是 webhook 入口，不是 API 网关**。`/channels/:id/webhook` 只服务外部平台的回调。Ora 自身的管理 API（创建/启停 channel 等）走另一个 JSON-RPC 通道。
 
@@ -389,7 +406,7 @@ webhook 路径的认证分派逻辑：`http_webhook` 走 `validateHttpWebhookAut
 - 入站消息规范化 + 去重
 - 附件下载增强
 - 命令系统（/help /status /new /project）
-- 项目发现（本地文件系统扫描）
+- 显式项目发现（本地文件系统扫描 + 候选确认）
 - Run continuation（approval/clarification 回复）
 - 出站投递完整状态机（queued → sending → sent/retry_scheduled → failed）
 - 投递重试：指数退避，最多 5 次，公式 `min(1000 * 2^attempt, 60000)`，耗尽后标记 failed。`applyDeliveryResult` 统一首次发送和重试的状态转换

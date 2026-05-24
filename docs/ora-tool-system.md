@@ -2,8 +2,6 @@
 
 本文档是 Ora runtime 工具系统的权威参考，覆盖架构设计、治理链机制、执行管道、基础设施和当前状态。Ora 的工具系统不是一个简单的"函数调用列表"，而是一个以 **runtime governance** 为中心的产品级 agent 工具平台。
 
-> **最近更新 (2026-05-21)**：补齐 `task_intent` child intent contract、`single_agent_implement` / `self_builder_*` preset、以及 `mode_stage` capability contract 与 preflight 语义；`agent.spawn` 继续聚焦 dynamic spawn authority，不与 stage-owned child contract 混用。
-
 ## 1. 设计理念与架构概览
 
 ### 1.1 核心设计原则
@@ -634,6 +632,58 @@ throw new ApprovalInterruptError(action.id);
 `file.read`、`file.list`、`file.glob`、`file.grep` 为只读操作，`safe` 风险等级，支持结果缓存。默认跳过 `.git`、`node_modules`、`dist`、`.next` 等目录，以及 `.db`、`.sqlite` 等二进制文件后缀。
 
 `file.grep`/`file.glob` 的 bare glob/include 在非 root `path` 下做 scoped 匹配。
+
+从用户视角看，这里最重要的不是“参数有哪些”，而是 **Ora 现在如何理解一次文件读取失败**。当前系统刻意把三类情况分开：
+
+1. **repo 内语义 miss**
+   - 模型想读的是仓库里的某个文件或目录，但路径写错了、目录层级猜错了、或者目标根本不存在
+   - 这类情况不应一律上升成环境故障
+2. **真实环境错误**
+   - 没有 workspace、权限不允许、scope 越界、底层文件系统不可用
+   - 这类情况仍然是硬错误
+3. **项目外只读访问**
+   - 用户或工具明确要读项目根目录以外的本地文件
+   - 只读访问可以放宽，写访问仍然不能越界
+
+这样拆分的原因很直接：读错 repo 内路径，本质上更接近“目标解析失败”，不是“环境坏了”。
+
+### 9.1.1 repo 内只读 miss 的语义恢复
+
+`file.read` / `file.grep` / `file.glob` 在 repo 内读取目标时，当前主路径优先把失败理解成**目标解析语义**，而不是立刻抛成 `ENOENT -> env_unavailable -> run.failed`。
+
+- `file.read`
+  - 如果存在单一高置信候选，可以做保守自动纠偏
+  - 如果没有高置信候选，返回结构化 miss，让上层决定是否继续澄清或换策略
+- `file.grep` / `file.glob`
+  - 当目标目录不存在时，返回结构化 miss，不把它伪装成环境不可用
+
+这里的保守边界也很明确：
+
+- 不做全仓模糊搜索
+- 不静默纠偏到多个候选中的任意一个
+- 只有在“单一高置信候选”时才允许自动纠偏
+
+### 9.1.2 自动纠偏与 clarification 的边界
+
+自动纠偏和 clarification 不是一回事：
+
+- **自动纠偏** 只用于单一高置信候选，系统可以安全地替用户补正
+- **clarification** 只在必须由用户在多个候选里做决策时才介入
+
+这条边界很重要，因为 Gate 的语义是“等待外部决策”。多数 repo 内 miss 只是模型找错路径，不值得 durable 化成新的 gate。
+
+### 9.1.3 workspace scope 下的项目外只读文件
+
+当前 workspace scope 对只读能力做了有意放宽：
+
+- `read` / `list` / `search` 可以读取项目外、但本机上真实存在的文件
+- `write` / `patch` 仍然严格限制在项目根目录内
+- 这条放宽不走 host grant 系统，也不改变写工具的安全沙箱
+
+对用户来说，可以这样理解：
+
+- 想**看**项目外的本地文件，Ora 可以帮你读
+- 想**改**项目外的本地文件，Ora 仍然不会在 workspace scope 下直接写
 
 ### 9.2 file.write
 

@@ -48,7 +48,7 @@ Causal Decision 在 Ora 里是一种产品能力，不是一个独立技巧。�
 
 - **闭环**：decision -> recording -> evaluation -> feedback -> improved decisions
 - **保守默认**：生产环境默认 `record_only`，实验和验证再显式升级，避免未充分验证的 gate 直接改变所有运行行为
-- **优雅降级**：语义提取失败不影响 run 的成败，provider 不可用时自动回退到启发式规则
+- **优雅降级**：语义提取失败不影响 run 的成败，但高影响决策不能退回到自然语言启发式真相
 - **共享语义**：Trail 和 Evaluation 消费同一套 episode 语义层，不再各自解析 raw events
 - **Gap 分类**：把"没理解任务"（semantic gap）和"动作选错了"（intervention gap）分开，对应不同的改进路径
 
@@ -294,7 +294,7 @@ Dual reporting 结构包括：
 
 ## 9. 当前边界
 
-1. **semantic extraction 是 best-effort，不是强一致依赖**：provider 不可用时会回退到 heuristics，run 不会因为 semantic extraction 失败而失败
+1. **semantic extraction 是 best-effort，不是强一致依赖**：provider 不可用时，run 不会因为 semantic extraction 失败而失败，但降级目标应是保守观测或低风险默认值，而不是把自然语言 heuristics 重新抬成高影响决策真相
 
 2. **legacy adapter 仍是近似值**：adapter 适合做 A/B 对照，不适合当作高保真 semantic truth
 
@@ -303,3 +303,5 @@ Dual reporting 结构包括：
 4. **episode 已经是共享语义层，但不是交互状态权威**：UI 交互态仍然以 snapshot / gate projection 为权威；episode 用于解释和评估，不直接驱动交互状态
 
 5. **failure taxonomy 刚进入可用阶段**：现在已经能区分 semantic gap 与 intervention gap，但还不是完整的长期研究分类法
+
+6. **允许的是低频、结构化、best-effort 语义提取，不是关键词判案**：可以用结构化提取补充 `selectedLatentGoal`、`constraints`、`keyUncertainties` 这类字段；不应再用自然语言关键词、正则启发式或 phrase whitelist 直接替代高影响判断

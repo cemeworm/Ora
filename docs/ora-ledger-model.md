@@ -2,17 +2,13 @@
 
 本文描述 Ora 的 **Ledger 事实层** — 它不只是一份运行时日志，而是 Ora 的事件溯源、状态投影与恢复事实的 source of truth。读完本文，对 Ora 的架构理解会从「流程图」升级到「状态模型」。
 
-> **最近更新 (2026-05-24)**：第 5 章 Branch 模型替换为 Session Fork 模型；新增 visible/full ledger projection 分流描述与 file 工具 dual-track scope 说明。
-> **最近更新 (2026-05-19)**：新增 child collaboration durable facts（`child_session.updated` / `parent_coordination.updated`）与 `replayRef` 事件范围引用；同时明确 current-turn metadata 不作为用户原始 prompt 持久化，而是在 model context 重建时按输入事实再生成。
-
-
 | 关注点 | 对应章节 |
 | --- | --- |
 | Ledger 是什么、为什么需要它 | [1. 定位：Ledger 在 Ora 中的角色](#1-定位ledger-在-ora-中的角色) |
 | entry 类型体系与链式结构 | [2. RuntimeSessionLedger 的结构](#2-runtimesessionledger-的结构) |
 | 每个 entry 类型的 payload 与语义 | [3. Entry 类型详解](#3-entry-类型详解) |
 | 如何从 entry 链衍生 session/run projection | [4. 投影系统：从 entry 到 read model](#4-投影系统从-entry-到-read-model) |
-| branch、candidate、adopted run 如何落在 ledger | [5. 分支模型：Branch 如何在 ledger 上工作](#5-分支模型branch-如何在-ledger-上工作) |
+| 为什么前台是 session fork，而不是 branch adopt | [5. Session Fork 与兼容 Branch 事实](#5-session-fork-与兼容-branch-事实) |
 | gate 生命周期如何变成 durable facts | [6. Gate 的耐久化](#6-gate-的耐久化) |
 | plan handoff 的 ledger 路径 | [7. Plan Handoff 的 ledger 事实](#7-plan-handoff-的-ledger-事实) |
 | compaction 如何进入 ledger | [8. Compaction 的 ledger 事实](#8-compaction-的-ledger-事实) |
@@ -27,14 +23,14 @@
 | --- | --- |
 | `packages/shared/src/runtime-ledger.ts` | Ledger 类型定义、entry 排序、投影衍生、attention 推导（shared contract） |
 | `apps/runtime/src/run-ledger-service.ts` | 运行时 ledger 写入服务，管理 entry 追加、seq、leaf 更新 |
-| `apps/runtime/src/run-ledger-branch-service.ts` | 分支 ledger 管理：candidate run 的独立 leaf 追踪 |
+| `apps/runtime/src/run-ledger-branch-service.ts` | 兼容分支 ledger 管理：保留旧 candidate/adopt 事实的独立 leaf 追踪 |
 | `apps/runtime/src/runtime-gate-service.ts` | Gate 生命周期管理：open/resolve entry 的生成逻辑 |
 | `apps/runtime/src/runtime-gate-ledger-service.ts` | Gate entry 写入 ledger 的适配层 |
 | `apps/runtime/src/persistence/session-ledger-projections.ts` | 批量 ledger → read model 的持久化投影入口 |
 
 ## 1. 定位：Ledger 在 Ora 中的角色
 
-Ora 的运行时会产生大量事件和状态变更：run 开始/结束、模型输出、工具调用、gate 打开/解决、计划决策、分支操作等。Ledger 是这些事实的**耐久存储**，采用 append-only 的事件溯源模型。
+Ora 的运行时会产生大量事件和状态变更：run 开始/结束、模型输出、工具调用、gate 打开/解决、计划决策、session fork、以及少量兼容性的 branch 内部事实。Ledger 是这些事实的**耐久存储**，采用 append-only 的事件溯源模型。
 
 ```mermaid
 flowchart TD
@@ -53,7 +49,7 @@ flowchart TD
 | resume 应该信什么状态？ | 不清楚信 continuation frame、live snapshot 还是内存状态 | 所有事实都可从 ledger replay 重建，projection 是唯一权威的 read model |
 | gate 何时变成 durable fact？ | gate 可能在内存中丢失 | `gate.opened` / `gate.resolved` 都是 ledger entry，掉电不丢 |
 | plan mode 的 decision 落在哪里？ | 不确定 decision gate 和 accepted handoff 该存哪里 | `gate.opened` (plan_decision) + `handoff.accepted_plan` 都是 ledger entry |
-| branch 的 candidate run 为什么不能直接更新 session leaf？ | 可能污染主会话链 | candidate run 有独立 ledger leaf，只在被 adopt 后才合并进主链 |
+| 为什么 fork 不能只是 UI 层复制几条消息？ | 容易丢失 run/gate/snapshot 的结构事实 | fork 的来源历史、复制边界和新 session 的 settled 快照都可以从 ledger/投影规则推导 |
 | desktop 应该消费什么？ | UI 可能本地猜测状态 | desktop 消费 projection，projection 来自 ledger replay |
 | event batch slim 后如何重建？ | 可能丢失事件历史 | slim 只去掉 events 数组，投影可从 entry payload 重建 |
 
@@ -129,10 +125,10 @@ function runtimeSessionEntryReplayOrder(entry): number {
 | `gate.resolved` | Gate 解决 | 用户回答 clarification / 批准 action / 决定计划 |
 | `handoff.accepted_plan` | 计划交接被接受 | 用户接受 plan mode 输出的计划 |
 | `compaction.summary` | 上下文压缩摘要 | 对话历史被 compact |
-| `branch.created` | 分支组创建 | 用户发起 branch 操作 |
-| `branch.candidate_started` | 候选 run 启动 | branch 中的某个 candidate 开始执行 |
-| `branch.adopted` | 分支被采纳 | 用户选择 adopt 某个 candidate |
-| `branch.dismissed` | 分支被关闭 | 用户或系统关闭分支组 |
+| `branch.created` | 兼容分支组创建 | 旧 branch candidate 流程启动 |
+| `branch.candidate_started` | 兼容候选 run 启动 | 旧 branch 流程中的某个 candidate 开始执行 |
+| `branch.adopted` | 兼容分支被采纳 | 旧 branch candidate 被 adopt |
+| `branch.dismissed` | 兼容分支被关闭 | 旧 branch 流程结束 |
 
 ## 3. Entry 类型详解
 
@@ -502,9 +498,14 @@ Terminal state invariant 位于 gate 检查之前，保证了：即使 ledger �
 - 将 resolved approval 的 action 标记为 succeeded
 - 去重并清理重复的 approved tool call
 
-## 5. 分支模型：Branch 如何在 ledger 上工作
+## 5. Session Fork 与兼容 Branch 事实
 
-Branch 是 Ora 的「平行宇宙」机制：允许在同一个 session 中分叉出多个 candidate run，用户选择最好的一个 adopt。
+现在用户在前台看到的岔开能力是 **session fork**，不是早期的 branch adopt。用户点的是某个 assistant turn 上的 fork 入口，系统会把这条 turn 之前的**可见 settled 主线历史**复制成一个新 session，然后切过去继续做；原 session 不会被替换，也不会等用户在多个 candidate 之间做 adopt。
+
+这一层最容易误解的地方是：**前台语义已经换了，但 ledger 里仍然保留一部分 branch 事实类型作为兼容能力**。所以文档需要把这两件事分开看：
+
+- 对用户来说，主路径是 session fork
+- 对 runtime 来说，`branch.*` 仍然是可读、可 replay 的兼容事实，不等于当前推荐的前台交互模型
 
 ### 5.1 关键概念
 
@@ -514,29 +515,35 @@ flowchart TD
         M1["user.message (turn 1)"] --> M2["run.started + assistant.message (turn 1)"]
         M2 --> M3["user.message (turn 2)"]
         M3 --> M4["run.started + assistant.message (turn 2)"]
-        M4 --> BC["branch.created"]
+        M4 --> FORK["sessions.fork -> 新 session"]
     end
 
-    subgraph "Candidate A (独立 leaf)"
-        BC --> CA1["branch.candidate_started (run-A)"]
-        CA1 --> CA2["runtime.event_batch (run-A)"]
-        CA2 --> CA3["assistant.message (run-A)"]
+    subgraph "Forked Session"
+        FORK --> FS1["session.created (new)"]
+        FS1 --> FS2["copied visible settled turns"]
+        FS2 --> FS3["继续新的 run/mainline"]
     end
-
-    subgraph "Candidate B (独立 leaf)"
-        BC --> CB1["branch.candidate_started (run-B)"]
-        CB1 --> CB2["runtime.event_batch (run-B)"]
-        CB2 --> CB3["assistant.message (run-B)"]
-    end
-
-    CA3 --> ADOPT["branch.adopted (选择 A)"]
-    CB3 --> ADOPT
-    ADOPT --> NEXT["继续 session (非 branch)"]
 ```
 
-### 5.2 Candidate run 的独立 ledger leaf
+对用户来说，session fork 解决的是一个更直接的问题：**我想从这里岔开继续试，不想替换原对话，也不想理解 candidate/adopt 这套内部机制。**
 
-Candidate run 在 append entry 时，**不会更新 session 的 `leafEntryId`**。`RunLedgerService.appendRunLedgerEntry` 检测到 `config.metadata.branchRole === "candidate"` 时：
+当前 fork 的结构约束是：
+
+- 只对已完成 assistant turn 生效，不支持运行中截断 fork
+- 复制的是主聊天可见的 settled 历史，不是 Trails/诊断所需的全量事件流
+- 新 session 会继承被 fork turn 的 mode/provider/model，但不会继承旧 run 的运行态、pending gate 或半完成工具状态
+
+### 5.2 为什么 ledger 里还保留 `branch.*`
+
+Ledger 的职责不是“只保留当前 UI 还会展示的事实”，而是保留系统历史上已经存在过的结构事实。`branch.*` 仍然存在有三个原因：
+
+1. 旧数据需要继续可读、可 replay
+2. 一些底层 candidate/adopt 元数据仍服务于兼容路径和历史投影
+3. 事实层允许“前台语义已切换，底层兼容事实仍可存在”，前提是 projection 不再把它误讲成当前主路径
+
+### 5.3 兼容 Candidate run 的独立 ledger leaf
+
+兼容 branch candidate run 在 append entry 时，**不会更新 session 的 `leafEntryId`**。`RunLedgerService.appendRunLedgerEntry` 检测到 `config.metadata.branchRole === "candidate"` 时：
 
 1. 通过 `RunLedgerBranchService.candidateLedgerLeaf` 找到该 candidate 自己的最近 entry
 2. 以该 entry 为 `parentId` 写入新 entry
@@ -545,19 +552,19 @@ Candidate run 在 append entry 时，**不会更新 session 的 `leafEntryId`**�
 
 这意味着：
 - **主会话链不受 candidate run 的中间事件污染**
-- 用户看到的主时间线仍然是 adoption 前的最后一条消息
+- 用户看到的主时间线仍然停留在 adopt 前的最后一条消息
 - 每个 candidate 在自己的子链上独立运行
 
-### 5.3 BranchGroup 的四种 entry
+### 5.4 兼容 BranchGroup 的四种 entry
 
 | Entry | 含义 | 对投影的影响 |
 | --- | --- | --- |
-| `branch.created` | 分支组创建 | 创建 `SessionBranchGroup`，状态 `running` |
-| `branch.candidate_started` | 候选 run 启动 | 将 candidate run 加入 branchGroup 的 `candidateRunIds` |
-| `branch.adopted` | 采纳某个 candidate | 更新 branchGroup 状态为 `adopted`；标记 superseded run；通知其他 candidate |
-| `branch.dismissed` | 关闭分支组 | 更新 branchGroup 状态为 `dismissed`；标记被 dismiss 的 candidate run |
+| `branch.created` | 兼容分支组创建 | 创建 `SessionBranchGroup`，状态 `running` |
+| `branch.candidate_started` | 兼容候选 run 启动 | 将 candidate run 加入 branchGroup 的 `candidateRunIds` |
+| `branch.adopted` | 兼容采纳某个 candidate | 更新 branchGroup 状态为 `adopted`；标记 superseded run；通知其他 candidate |
+| `branch.dismissed` | 兼容关闭分支组 | 更新 branchGroup 状态为 `dismissed`；标记被 dismiss 的 candidate run |
 
-### 5.4 Adopted run 的替换与隐藏
+### 5.5 兼容 adopted run 的替换与隐藏
 
 当 branch 被 adopt（`target: "replace_latest"`）时：
 
@@ -568,7 +575,7 @@ Candidate run 在 append entry 时，**不会更新 session 的 `leafEntryId`**�
 
 **被替换的 run 不会从 ledger 删除**，只是不在投影中呈现。这保证了事实不可篡改。
 
-### 5.5 从 StateSnapshot 反向推导 BranchGroup
+### 5.6 从 StateSnapshot 反向推导兼容 BranchGroup
 
 `deriveSessionBranchGroupsForSession` 函数可以从一组 `StateSnapshot` 反向构建 `SessionBranchGroup`，用于不通过 ledger 直接消费的场景。它从 `config.metadata` 中提取 `branchGroupId`、`branchTarget`、`branchRole` 等字段。
 
@@ -697,7 +704,7 @@ sequenceDiagram
 
 ## 9. Live Snapshot 与 Ledger Projection 的边界
 
-这是最容易混淆的边界之一。
+这是最容易混淆的边界之一。对用户来说，可以直接记一条规则：**主聊天首屏、session 列表、切换历史会话时看到的内容，应该优先来自轻量 projection；Trails、诊断、深度排查才去读 full snapshot。**
 
 | 维度 | Live Snapshot | Ledger Projection |
 | --- | --- | --- |
@@ -710,10 +717,11 @@ sequenceDiagram
 
 **关键原则**：
 
-1. **Desktop UI 应该消费 ledger projection，而不是 live snapshot。** `deriveSessionProjection` / `deriveRunSnapshot` 是 read model 的唯一权威来源。
-2. **Live snapshot 是 viewing 用途，不是 source of truth。** streaming 期间的 UI 可以消费 live snapshot，但最终状态（session detail、Trails、attention）必须来自 ledger projection。
-3. **Attention 推导不依赖 UI 猜测。** `deriveLedgerRunAttention` 完全从 ledger-backed gate projection 计算，不参考 UI 本地缓存的「上一个状态」。
-4. **Handoff 必须显式。** live snapshot 工厂会标记 `"live"`；ledger projection 会标记 `"ledger"`；desktop 的 interaction state 通过 `shouldSwitchToLedgerSnapshot` 在终态/ hydrate 后优先切到 ledger-backed state。
+1. **Desktop UI 的交互真相来自 projection，而不是本地猜测。** `deriveSessionProjection` / `deriveRunSnapshot` 是 read model 的唯一权威来源。
+2. **Live snapshot 解决的是“正在发生什么”，ledger projection 解决的是“现在应该信什么”。**
+3. **主聊天与诊断分轨。** 首屏和历史切换优先走 visible/轻量投影；Trails、诊断、按需 hydrate 才走 full snapshot。
+4. **Attention 推导不依赖 UI 猜测。** `deriveLedgerRunAttention` 完全从 ledger-backed gate projection 计算，不参考 UI 本地缓存的「上一个状态」。
+5. **Handoff 必须显式。** live snapshot 工厂会标记 `"live"`；ledger projection 会标记 `"ledger"`；desktop 的 interaction state 通过 `shouldSwitchToLedgerSnapshot` 在终态/ hydrate 后优先切到 ledger-backed state。
 
 ### 9.1 哪些状态来自 live snapshot
 
@@ -727,14 +735,14 @@ sequenceDiagram
 - Session 列表（标题、最新状态、attention）
 - Run attention（blocking/clarification/approval 判断）
 - Run 的最终 status、output、error
-- Branch group 状态
+- 兼容 branch group 状态
 - Accepted plan handoff
 
 ### 9.3 投影一致性保证
 
 `deriveSessionProjection` 从 `leafEntryId` 开始回溯，只处理该路径上的 entry。这意味着：
 - 如果 candidate run 未被 adopt，它的中间事件不会出现在主投影中
-- 如果 branch 被 adopt 并替换了旧 run，旧 run 被 `hiddenRunIds` 过滤
+- 如果兼容 branch 被 adopt 并替换了旧 run，旧 run 被 `hiddenRunIds` 过滤
 - 所有 gate 决议都是幂等的（已 resolved 的 gate 不会被重新打开）
 
 ## 10. Event Batch Slim 与 Snapshot Compaction
@@ -792,7 +800,7 @@ Slim 和 compaction 都不会丢失投影所需的关键信息：
 
 ### 11.1 "Ledger 就是日志"
 
-**不是。** Ledger 是事件溯源模型中的 **事实源**（source of truth），不是运维日志。它的 entry 严格类型化，projection 从中派生所有 read model。日志可以丢、可以截断，但 ledger entry 一旦写入就是永久事实（除非通过 branch adopt 从投影中隐藏，但从不删除）。
+**不是。** Ledger 是事件溯源模型中的 **事实源**（source of truth），不是运维日志。它的 entry 严格类型化，projection 从中派生所有 read model。日志可以丢、可以截断，但 ledger entry 一旦写入就是永久事实。某些兼容 branch run 可能在投影里被隐藏，但事实本身不会被删除。
 
 ### 11.2 "Live snapshot 和 ledger projection 可以互相替代"
 
@@ -823,7 +831,7 @@ Slim 和 compaction 都不会丢失投影所需的关键信息：
 | Ledger 存储 | 通过 `RuntimePersistenceBackend` 抽象，支持 SQLite / JSON 文件 | 未实现 ledger 分片或归档，大 session 的完整 replay 可能影响性能 |
 | Slim / Compaction | 写入时高频 `:events-` batch 不写 snapshot，低频 `:update-` 保留 compact snapshot；`buildVisibleLedger` 移 events；SQLite maintenance 可清理历史 snapshot | Historical compaction 仅显式触发；JSON-file backend 实现为 no-op |
 | 终态完整性 | `assertRunCanBecomeTerminal()` 守卫所有 terminal writer；投影层检测矛盾组合（如 succeeded + open_gate）并降级 attention 为 failed | 依赖 writer 端守卫 + projection 端降级双重保护，但不修正已写入的非法 entry |
-| Branch 投影 | 通过 `hiddenRunIds` 过滤被替换的 run | 被替换的 run 仍在 `entries` 中，只是不在投影中。长期运行可能导致 ledger 膨胀 |
+| 兼容 Branch 投影 | 通过 `hiddenRunIds` 过滤被替换的 run | 被替换的 run 仍在 `entries` 中，只是不在投影中。长期运行可能导致 ledger 膨胀 |
 | Gate 重开 | 使用 `state.gates.set()` 语义，新 `gate.opened` 覆盖旧 entry | entry ID 含时间戳区分多次打开；多 run 间 gate 重开尚未支持 |
 | SessionSummary gate | `SessionSummary.interactionGate` 字段（`GateProjection`）携带来 compact gate projection | 摘要 snapshots 非实时，需要 desktop 端覆盖写入 |
 | Event 反向投影 | `reconcileSnapshotRuntimeFields` 从 gate 决议生成事件 | 反向投影的事件标记为 `ledger-projected` 来源，但不回到 ledger 存储 |

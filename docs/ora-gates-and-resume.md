@@ -273,15 +273,21 @@ Plan decision 是四种 gate 中最特殊的一个：它处理的场景不是"Ru
 
 ### 完整流程
 
-Plan mode run 产出 `<proposed_plan>` 后，run 以 `succeeded` 收束，同时 ledger 中写入 `gate.opened (plan_decision)`，session attention 变为 `needs_plan_decision`。
+Plan mode run 产出 `<proposed_plan>` 后，run 以 `succeeded` 收束，同时 ledger 中写入 `gate.opened (plan_decision)`，session attention 变为 `needs_plan_decision`。这里要注意一件事：**pending plan decision 的创建，看的不是“输出长得像不像某个过严的单一形状”，而是这段输出是否满足建 gate 的结构资格。** 也就是说，plan display、plan gate、final output guard 现在是分层合同，不再混成一个判断。
 
-用户选择 accept 后，runtime 可以直接 same-run resume：通过 `flows.resume(planDecisionResolutions)` 注入 accepted-plan context，将 taskIntent 切到 implement，继续同一 run 执行。兼容路径下，调用方也可以写入 `handoff.accepted_plan`，由下一个 `taskIntent: "implement"` 的 run 启动时消费（检查 `acceptedPlanHandoffs` 中未被消费的记录，注入 plan content 到 conversation context，标记 `consumedByRunId`）。
+用户选择 accept 后，runtime 可以直接 same-run resume：通过 `flows.resume(planDecisionResolutions)` 注入 accepted-plan context，将原 run 切到 implement 语义继续执行。这里的关键也不只是 `taskIntent=implement`，而是进入一个显式的 **implementation contract**：driver、completion guard、terminal assertion 都不能再把它当成“计划已经说完了，可以直接 Done”的普通 plan-only run。
+
+换句话说，accepted same-run resume 想合法结束，必须看到真实 implementation evidence，而不是只看到一次 plan accept 动作。
+
+兼容路径下，调用方也可以写入 `handoff.accepted_plan`，由下一个 `taskIntent: "implement"` 的 run 启动时消费（检查 `acceptedPlanHandoffs` 中未被消费的记录，注入 plan content 到 conversation context，标记 `consumedByRunId`）。
 
 用户选择 decline 后，gate resolve，desktop 默认恢复 composer，等待用户输入下一条真实消息。
 
 ### 为什么是 hybrid
 
 Plan run 在产出计划后通常已经 `succeeded`，但这不等价于"绝不 resume"。和 clarification/approval 的差异在于"起点常常是已成功结束的 run"，而不是"永远跨 run、永远不 resume"。这个 hybrid 设计让 accepted plan 可以选择最自然的执行路径（原 run 继续），同时兼容旧的跨 run handoff 链路。
+
+如果从用户视角记一句话，可以记成：**plan decision 不是普通 interrupt，但 accept 之后也不是纯 UI 确认，而是一次受合同约束的 same-run continuation。**
 
 ## 实现边界与演进方向
 

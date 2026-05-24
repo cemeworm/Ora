@@ -2,8 +2,6 @@
 
 本文描述当前 Ora runtime loop 的主结构：Task Flow 兼容层、run 外层生命周期、continuation dispatcher、mode 编排层、单个 node 内部的 model-tool loop，以及 plan list、gate、streaming finalization 如何进入持久 projection。
 
-> **最近更新 (2026-05-23)**：`mode_stage` 现已具备显式 capability contract 与 preflight/block 诊断；`single_agent + implement` root 走 `single_agent_implement`；`deep_research` staged path 已收敛到结构化 bag、pure-review verify 和 accepted-artifact-only synthesis；`code_development` 补齐结构化 stage contract 与交付 gate 语义；channel 自然语言消息不再触发本地 project auto-bind；review/debug gate 已移除 free-text heuristic verdict。
-
 ## 阅读地图
 
 Ora 的 runtime loop 不是单一循环，而是几层边界叠在一起：
@@ -14,9 +12,16 @@ Ora 的 runtime loop 不是单一循环，而是几层边界叠在一起：
 4. **Mode 编排层**：`executeModeSpec` 按 mode nodes/stages 推进 agent 调用，并同步 plan、todo、queue、topology。
 5. **Node 执行层**：`runNodeRuntimeLoop` 在单个 agent/node 内做模型调用、工具调用、审批、澄清、plan-list lifecycle、恢复和强制 finalization。
 
-本轮实现还补上了一个新的可见性约束：
+对用户来说，这篇最重要的不是记住多少服务名，而是分清 **自己到底会看到哪几类内容**。当前 runtime 把可见内容明确分成三轨：
+
+- **最终正文**：主聊天里应该被当成答案的内容
+- **commentary**：运行中的进度说明，可以帮助理解过程，但不属于最终输出权威
+- **协作区 / child collaboration 信息**：子 Agent、mode stage、dynamic spawn 的低频结构事实，主要给协作区和 Trails 看
+
+本轮实现把这三轨的边界收得更紧了：
 
 - 用户正文只消费父 Agent 的最终叙事。
+- 运行中的 commentary delta 可以显示进度，但不会进入 final output authority。
 - 子 Agent 的流式 delta 会被标记为 `audience/visibility = collaboration`，不再进入正文投影。
 - 子 Agent 的低频结构事实通过 `child_session.updated` / `parent_coordination.updated` 进入 snapshot 与 ledger-backed projection，主要供 desktop 右侧协作区、Trails，以及主聊天区/运行进度里的少量公开协作里程碑消费。
 - `child_session.updated` 现在不仅记录状态，还会写明它是 `mode_stage` 还是 `dynamic_spawn`，以及 child 实际跑在什么 tool preset 上；Trails 应把这视为权限来源事实，而不是普通状态噪音。
@@ -411,8 +416,8 @@ flowchart LR
 
   E --> E1["run.done but PlanDecisionGate pending"]
   E1 --> E2["attention: needs_plan_decision"]
-  E2 --> E3["accept -> accepted plan handoff"]
-  E3 --> E4["next implement run consumes handoff"]
+  E2 --> E3["accept -> same-run implementation continuation"]
+  E3 --> E4["compat: handoff only for explicit next-run path"]
 
   F --> F1["run.interrupted or run.cancelled"]
   F1 --> F2["cancellation / manual attention projection"]
@@ -824,7 +829,7 @@ plan run 输出 `<proposed_plan>` 后：
 1. snapshot 归一化时生成 pending `PlanDecisionGate`。
 2. 用户 accept 后，session ledger 记录 `handoff.accepted_plan`。
 3. accepted plan 现在有两条路径：
-   - 主路径：通过 `planDecisionResolutions` 回到原 run，切成 implement 语义继续执行
+   - 主路径：通过 `planDecisionResolutions` 回到原 run，切成 same-run implementation continuation 继续执行
    - 兼容路径：下一次 `taskIntent: "implement"` 的 run 把 accepted plan 注入 conversation context
 4. 兼容 handoff 路径下，implement run 启动后会把 handoff 标记为 consumed，避免重复消费。
 
