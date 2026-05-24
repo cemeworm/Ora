@@ -2,9 +2,9 @@
 
 本文描述 Ora 的 **Ledger 事实层** — 它不只是一份运行时日志，而是 Ora 的事件溯源、状态投影与恢复事实的 source of truth。读完本文，对 Ora 的架构理解会从「流程图」升级到「状态模型」。
 
+> **最近更新 (2026-05-24)**：第 5 章 Branch 模型替换为 Session Fork 模型；新增 visible/full ledger projection 分流描述与 file 工具 dual-track scope 说明。
 > **最近更新 (2026-05-19)**：新增 child collaboration durable facts（`child_session.updated` / `parent_coordination.updated`）与 `replayRef` 事件范围引用；同时明确 current-turn metadata 不作为用户原始 prompt 持久化，而是在 model context 重建时按输入事实再生成。
 
-## 阅读地图
 
 | 关注点 | 对应章节 |
 | --- | --- |

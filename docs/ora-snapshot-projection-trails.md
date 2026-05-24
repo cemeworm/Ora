@@ -2,10 +2,10 @@
 
 本文解释 runtime 产生的执行事实如何经过 snapshot、projection、trails 三层加工，最终变成 desktop UI 可消费的七个标签页。它把 `StateSnapshot` → `toFlowRunDetail` / `toSessionTurn` → `synthesizeLocalTrail` → `trailViewModel` → `TrailsTabs` 串成一条完整的消费链。
 
+> **最近更新 (2026-05-24)**：新增 Authority Taxonomy 五层权威分层、visible/full 双读视图与分流规则、session-aware turnSnapshots cache、Public Final Output Contract、Commentary Delta；更新 plan-decision gate 权威判断规则。
 > **最近更新 (2026-05-19)**：新增 `childSessions` / `parentCoordination` snapshot 字段、background child lifecycle 字段、desktop `sessionLiveSnapshotsById` 会话级 live authority，以及 accepted-plan 的 UI-only synthetic user turn projection。
 
 ## 阅读地图
-
 | 关注点 | 对应章节 |
 | --- | --- |
 | StateSnapshot 的数据模型 | [1. StateSnapshot：运行时事实的容器](#1-statesnapshot运行时事实的容器) |
@@ -118,6 +118,37 @@ live stream
   -> 终态后再逐步收敛到 ledger-backed snapshot
 ```
 
+### 1.3 Authority Taxonomy：五层权威分层
+
+Ora 的状态在不同消费面有不同的"权威"含义。一个 `StateSnapshot` 的持有者不同（live stream、full ledger replay、visible ledger、compact cache、UI 解释层），其可消费的字段和应承担的角色也不同。以下五层 taxonomy 定义了每层的 producer、allowed uses、forbidden uses：
+
+| 层 | Producer | Allowed uses | Forbidden uses |
+| --- | --- | --- | --- |
+| **live snapshot** | runtime streaming path / desktop `runLifecycle` | 当前运行中的 active session 交互态、流式正文、pending run 合并 | 历史 session 冷启动的唯一事实来源；跨 session 预取缓存 |
+| **full snapshot** | `getRunState(runId)`、full ledger replay | Trails、诊断、按需历史 turn hydrate、需要完整 `events/output/checkpoints/toolResults` 的消费面 | 历史 session 首屏默认读取路径 |
+| **visible detail** | `buildVisibleLedger()` + visible `deriveSessionProjection()` + `sessions.get` | session 首屏、turn 列表、transcript、latest interactive summary、聊天首屏所需轻量 latest snapshot | 诊断、Trails、需要完整 output/event payload 的消费面 |
+| **compact detail** | desktop prefetch/cache compaction | session 列表/切换预热、非 authority 的冷启动提示信息 | active snapshot authority、assistant 正文重建、interaction gate truth |
+| **UI-only projection** | desktop presentation helpers（如 accepted-plan synthetic turn） | 展示解释层 | active snapshot authority、gate truth、final output truth |
+
+**关键规则**：
+- visible / compact / UI-only projection 虽然可能改善首屏或展示体验，但**不得无声地恢复 active snapshot authority**。
+- 主聊天路径不应走 `1 + N` 次 full snapshot replay，必须走 visible detail + session-scoped cached full turn snapshots 的混合路径。
+- projection cache（如 `sessionProjectionForLedger`）属于 authority 机制，不是纯性能优化 — 因为它改变了 UI 实际读取的事实来源。
+
+### 1.4 权威分层显式化
+
+区分以下概念，避免隐式恢复 authority：
+
+- `live snapshot`：streaming path 产出，仅用于 active session 交互态
+- `full snapshot`：`getRunState()` / full ledger replay 产出，仅用于 Trails/诊断/按需 hydrate
+- `visible detail`：`buildVisibleLedger()` + visible projection 产出，用于 session 首屏/turn 列表/transcript
+- `compact detail`：desktop prefetch/cache compaction，仅用于预热提示
+- `UI-only projection`：展示解释层，如 accepted-plan synthetic turn
+
+每层显式记录 producer、allowed uses、forbidden uses。主聊天与诊断分轨：chat first paint 优先 visible session detail + session-scoped cached full turn snapshots；Trails / diagnostics / deep inspection 必须按需读取 full snapshots。
+
+**缓存也是权威机制**：任何改变 UI 实际读取事实来源的 cache 必须进入 authority taxonomy，有显式 ownership、invalidation rules 和回归覆盖。projection cache 和 session-scoped turn snapshot cache 不属于"纯性能优化"。
+
 ## 2. 从事件到 Snapshot 再到 Ledger
 
 ### 2.1 事件产生
@@ -154,6 +185,32 @@ RuntimeSessionLedger.entries
 ```
 
 详见 `ora-ledger-model.md` 第 4 章和第 9 章。
+
+### 2.6 Visible Projection 与 Full Projection 的分流
+
+Ledger replay 不只有一种投影模式。Ora 提供了 **visible projection** 和 **full projection** 两种读视图，它们基于同一份 ledger 权威，但产出不同的 payload：
+
+- **`buildVisibleLedger()`**：从完整 ledger 生成 visible ledger — **保留所有 entry 和 parent chain**，但裁剪 heavy payload：
+  - 移除 `runtime.event_batch.events` 数组
+  - 移除 `assistant.message.snapshot/output` 的完整内容
+  - 保留所有结构性字段（status、gate resolution、checkpoint meta）
+- **`deriveSessionProjection(ledger, { mode })`**：接受 `'visible' | 'full'` 参数，控制投影深度。
+  - `mode: 'visible'` → 产出 `visible detail`
+  - `mode: 'full'` → 产出 `full snapshot`
+
+**默认读取路径分流**：
+
+| 读取入口 | 默认模式 | 说明 |
+| --- | --- | --- |
+| `sessions.get` | visible | 主聊天首屏、session 列表 |
+| `getRunState(runId)` | full | Trails、诊断、按需 hydrate |
+| `applyLedgerToStore()` | 复用 `sessionProjectionForLedger()` 的共享 projection cache | 消掉 per-run 重复 replay |
+
+**共享 Projection Cache**：`sessionProjectionForLedger(ledger, mode)` 在 runtime 侧维护 session+leaf 级别的 projection 缓存。同一 session 的多次 visible/full 请求复用缓存结果，避免 A/B/A session 切换时重复冷启动。
+
+**关键不变式**：visible ledger 只能裁 payload，不能删除 ledger entry 或破坏 parent chain。这是从 2026-05-09 的 parent chain 断裂回归中吸取的教训 — 过滤 ledger 行会导致后续 entry 的 parent 引用断裂。
+
+**`latestSnapshot` 在 visible 读取路径的保护**：`getSession()` 在组装 `latestSnapshot` 时直接复用 `runsForSession()` 的缓存，不再额外调用 `getRunOrThrow()` 强制 full reproject。这确保 `sessions.get` 的 `latestSnapshot` 保持 visible 规模，不被 full path 意外覆盖。
 
 ## 3. Projection 层：snapshot → read model
 
@@ -355,6 +412,31 @@ projectAssistantTextFromSnapshot(snapshot)
 
 这不是 ledger 的替代层。ledger 负责保存和重建 `output`、event batch、tool/gate facts；assistant text projection 只负责在读取时解释这些事实。
 
+### 3.9 Commentary Delta：运行中进度正文
+
+**是什么**：root-agent 在长时间 tool-heavy 运行中发出的进度正文。它不是最终答案，而是帮助用户理解"agent 现在在做什么"的实时进度信息。
+
+**关键属性**：
+- `visibility: "commentary"`，不进入 final output authority
+- 默认被以下消费者过滤排除：
+  - channel 外发
+  - session title 生成
+  - memory 记录
+  - evaluation 输出提取
+  - final latency marking（`firstUserReadableAssistantTextProduced` 会跳过 commentary）
+- desktop 主聊天在 **active run 中展示** commentary，Trails 不重复展示
+- 不与 `task.progress` trail observation 合并 — commentary 是 chat body 层的进度文本，process-step 是 Trails 层的结构化步骤记录
+
+**V1 限制**：
+- 不承诺 durable ledger 持久化或跨 reload 历史回放
+- 不保证 slim/compaction 后 commentary 仍可重建
+- 仅 root-agent 产出，不包含 child-agent transcript
+
+**实现要点**：
+- runtime 侧通过 `phase: commentary` / `surface: chat_progress` delta 发射
+- shared assistant text projection 默认忽略 commentary delta
+- channel outbound 丢弃 commentary
+
 ## 4. Trails 层：snapshot → 观测记录
 
 Trails 是 Ora 的可观测性层。它从 snapshot 合成结构化观测记录，并可选地合并 Langfuse 远程追踪数据。
@@ -389,6 +471,44 @@ synthesizeLocalTrail(snapshot, base?) → {
 ### 4.3 generationRefs 合成
 
 `localGenerationRefs` 从 `message.delta` 和 `token.delta` 事件合成模型生成引用，用于成本估算和延迟追踪。
+
+## 4.5 Public Final Output Contract
+
+### 4.5.1 为什么需要这个 Contract
+
+模型原始输出中可能包含 internal DSML 协议文本（如 `<proposed_plan>`、`<upstream-output>`、`<clarification>` 等）。如果这些内部协议文本未经校验就被接受为 `snapshot.output` 和 `assistant.message`，会导致：
+
+- 终态 run 被标记为 `succeeded`，但实际没有用户可见输出
+- desktop / Trails / channel / memory 等下游消费者收到内部协议文本
+- writer 和 reader 对"什么是合法公众输出"判定不一致
+
+Public Final Output Contract 在 writer 和 reader 之间建立**单一共享校验权威**，确保只有合规的公众文本才能成为终态成功输出。
+
+### 4.5.2 核心规则
+
+1. **`isPublicFinalOutput()` 共享校验**：任何模型原始输出必须通过此函数判定为"非内部协议、用户可见、内容完整"，才允许成为 `snapshot.output` 和 `assistant.message`
+2. **internal DSML 协议文本被分类拒绝**：命中 `<proposed_plan>`、`<upstream-output>`、`<clarification>` 等内部协议的文本**不允许 strip 后直接成功** — strip 只能作为 repair 输入，不能作为 success authority
+3. **reject → repair 路径**：被拒绝的输出触发最多一次模型修复尝试（重新生成合规输出）
+4. **repair 失败 → `run.failed`**：如果修复尝试后仍然无法产出合规输出，run 进入 `failed` 状态并附诊断信息
+
+### 4.5.3 接入的终态 Writer
+
+所有以下终态路径统一接入此 contract：
+
+| Writer | 接入点 |
+| --- | --- |
+| Kernel root finalizer | `harness/runtime-output.ts` |
+| Suspended-frame resume terminal | `run-resume-finalization-service.ts` |
+| Approved-tool continuation terminal | `approved-file-write-resume.ts` |
+| Forced final / output guard | `harness/runtime-kernel.ts` |
+
+### 4.5.4 Reader 侧统一
+
+- `packages/shared/src/assistantOutputContract.ts` 是**唯一 reader/writer 权威**，不接受 runtime/desktop 各自维护 regex
+- `assistant.message` 的写入和读取均通过同一 contract 校验
+- desktop/trails/chat preview 的文本回退（`output.text` 不可用时）优先消费 public delta，不消费 commentary delta 或 internal protocol 文本
+- suspended-frame resume 和 approved-tool continuation 也不得绕过 contract：strip 后直接成功已被禁止
+- resume downgrade-to-failed 路径会追加 terminal failure event，确保 ledger 和 snapshot 一致
 
 ## 5. Desktop View Model：snapshot → 七个标签页
 
@@ -451,6 +571,19 @@ StateSnapshot + OraRunTrail
 - 非 streaming 状态零行为变化
 
 这使长任务后的最终正文渲染频率从 ~20-30/s 降到 ~5/s，缓解"顿一下再跳一下"的感知。
+
+### 5.4.1 Session-Aware Turn Snapshot Cache
+
+desktop 的 `turnSnapshots` 不是全局 `Map<runId, snapshot>`，而是 **session-aware cache**：
+
+- **loaded revision key 绑定**：历史 snapshot 的加载状态绑定到 `sessionId + leafEntryId`，不是只记 `sessionId`
+- **A/B/A 切换复用**：切回之前访问过的 session 时，若 revision 未变化，直接复用已缓存的 turn snapshots，不重复冷启动
+- **Trails 按需 hydrate**：Trails 面板打开时才触发 `getRunState(runId)` 走 full snapshot，不影响聊天主视图
+- **同 revision in-flight 批次抑制**：同一 session 同一 revision 的历史批量加载不会因 React effect cleanup 重入而被重复发起
+
+这结构性解决了 session 切换时"长时间 Loading"的问题：主聊天首屏只消费 visible detail，不等待 full history snapshot batch；Trails 的诊断能力通过按需 full hydrate 保留。
+
+**注意**：此 cache 改变了 UI 实际读取的事实来源，因此属于 authority 机制（见 1.3 节），不是纯性能优化。
 
 ### 5.5 Running Session Snapshot 跨切换保留
 
@@ -612,6 +745,7 @@ desktop UI 如果从自己的本地状态推断 runtime 状态（比如"上一�
 | plan 是否已完成 | `planList.every(s => s.status === "completed")` | 不应从文本中猜测"看起来计划做完了" |
 | gate 是否已解决 | `snapshot.planDecisions` 的 `status`、`pendingClarifications` 的长度 | 不应从"之前见过 gate.opened"推断 |
 | resume 后是否可以视为终态 | 已经过 `RunResumeFinalizationService` 收口的 snapshot：gate resolution 已 materialize、continuation 已关闭、`activeFrameId` 已清空 | 不应看到“回答像是结束了”就直接把 run 渲染成完成 |
+| plan-decision gate 是否仍 pending | `deriveSnapshotGateProjection()` 检查 `planDecisions.status`，仅在 `planDecisions` 缺失的兼容场景下回退到 `attention.kind` | 不应从 `attention.kind === "needs_plan_decision"` 单独读取 gate 状态 — 已 resolved 的 decision 存在时，stale attention 可能复活 gate |
 | approval-required 是否等于 failure | `snapshot.attention.kind === "needs_approval"`（不等于 failure） | 不应因 approval interrupt error text 存在而将其渲染为 run/tool failure；Trails summary / diagnostics 优先展示 gate 语义 |
 
 ### 7.3 snapshotSource 标记
