@@ -1632,6 +1632,7 @@ describe("desktop workbench state", () => {
       sessionId: "session-a",
       prompt: "use this skill",
       createdAt: Date.now(),
+      skillIds: [],
     });
 
     expect(state.selectedSkillIds).toEqual([]);
@@ -2709,6 +2710,7 @@ describe("desktop workbench state", () => {
       sessionId,
       prompt,
       createdAt,
+      skillIds: [],
     });
 
     const hydrated = workbenchReducer(state, {
@@ -2799,6 +2801,7 @@ describe("desktop workbench state", () => {
       sessionId,
       prompt,
       createdAt,
+      skillIds: [],
     });
     const withHandle = workbenchReducer(started, {
       type: "ATTACH_PENDING_RUN_HANDLE",
@@ -5376,6 +5379,7 @@ describe("preservedSettledSnapshots limit enforcement", () => {
       sessionId: "session-test",
       prompt: "test",
       createdAt: 200,
+      skillIds: [],
     });
 
     expect(Object.keys(next.preservedSettledSnapshots).length).toBe(6);
@@ -5398,6 +5402,7 @@ describe("preservedSettledSnapshots limit enforcement", () => {
       sessionId: "session-test",
       prompt: "test",
       createdAt: 600,
+      skillIds: [],
     });
 
     const keys = Object.keys(next.preservedSettledSnapshots);
@@ -5428,6 +5433,7 @@ describe("preservedSettledSnapshots limit enforcement", () => {
       sessionId: "session-test",
       prompt: "test",
       createdAt: 200,
+      skillIds: [],
     });
 
     // Running snapshot should not be preserved

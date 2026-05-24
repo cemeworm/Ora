@@ -1044,7 +1044,26 @@ function WorkbenchInner() {
 
   const chatMessages = useMemo(() => {
     const transcript = state.activeSessionDetail?.transcript ?? [];
-    const pendingRun = getPendingRunState(state.runLifecycle);
+    const rawPendingRun = getPendingRunState(state.runLifecycle);
+    const resolveSkills = (ids: string[]): { id: string; name: string }[] => {
+      if (!state.skillRegistry?.skills || ids.length === 0) return [];
+      const result: { id: string; name: string }[] = [];
+      for (const id of ids) {
+        const skill = state.skillRegistry.skills.find((s) => s.id === id);
+        if (skill) result.push({ id: skill.id, name: skill.name });
+      }
+      return result;
+    };
+    const pendingRun = rawPendingRun
+      ? {
+          sessionId: rawPendingRun.sessionId,
+          runId: rawPendingRun.runId,
+          prompt: rawPendingRun.prompt,
+          createdAt: rawPendingRun.createdAt,
+          progressText: rawPendingRun.progressText,
+          skills: rawPendingRun.skillIds?.length ? resolveSkills(rawPendingRun.skillIds) : undefined,
+        }
+      : undefined;
     const cacheKey = buildChatMessagesCacheKey({
       transcript,
       turnSnapshots: activeSessionTurnSnapshots,

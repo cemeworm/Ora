@@ -89,6 +89,7 @@ export interface PendingRunState {
   createdAt: number;
   progressText?: string;
   latency?: OraStateSnapshot["latency"];
+  skillIds?: string[];
 }
 export type RunLifecycle =
   | { stage: "idle" }
@@ -100,6 +101,7 @@ export type RunLifecycle =
       createdAt: number;
       progressText?: string;
       latency?: OraStateSnapshot["latency"];
+      skillIds?: string[];
     }
   | {
       stage: "streaming";
@@ -177,6 +179,7 @@ export function getPendingRunState(lc: RunLifecycle): PendingRunState | undefine
   if (lc.runId) result.runId = lc.runId;
   if (lc.progressText) result.progressText = lc.progressText;
   if (lc.latency) result.latency = lc.latency;
+  if (lc.skillIds) result.skillIds = lc.skillIds;
   return result;
 }
 
@@ -190,6 +193,7 @@ function runLifecycleFromPendingRun(pendingRun: PendingRunState | undefined): Ru
         createdAt: pendingRun.createdAt,
         progressText: pendingRun.progressText,
         latency: pendingRun.latency,
+        skillIds: pendingRun.skillIds,
       }
     : { stage: "idle" };
 }
@@ -433,6 +437,7 @@ export type WorkbenchAction =
       sessionId: string;
       prompt: string;
       createdAt: number;
+      skillIds: string[];
     }
   | {
       type: "ATTACH_PENDING_RUN_HANDLE";
@@ -4577,6 +4582,7 @@ export function workbenchReducer(
           sessionId: action.sessionId,
           prompt: action.prompt,
           createdAt: action.createdAt,
+          skillIds: action.skillIds,
         },
         liveMessageDeltaBuffer: {},
         preservedSettledSnapshots: currentSnapshot && isSettledRunStatus(currentSnapshot.status)

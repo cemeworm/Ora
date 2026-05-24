@@ -452,4 +452,5 @@ export interface ChatMessage {
   isPlaceholder?: boolean;
   attachments?: ChatMessageAttachment[];
   images?: ChatMessageImage[];
+  skills?: { id: string; name: string }[];
 }

@@ -1,5 +1,5 @@
 import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useRef } from "react";
-import { FileText } from "lucide-react";
+import { FileText, Sparkles } from "lucide-react";
 import { MessageBubble } from "./MessageBubble";
 import { AssistantTurnCard } from "./AssistantTurnCard";
 import { BranchComparisonTurn } from "./BranchComparisonTurn";
@@ -147,6 +147,7 @@ export const ChatMessages = memo(function ChatMessages({
                 const hasImages = message.role === "user" && message.images && message.images.length > 0;
                 const hasText = message.content.trim().length > 0;
                 const bubbles: React.ReactNode[] = [];
+                const hasSkills = message.role === "user" && message.skills && message.skills.length > 0;
 
                 if (hasImages) {
                   message.images!.forEach((img, idx) => {
@@ -163,6 +164,19 @@ export const ChatMessages = memo(function ChatMessages({
                           style={{ maxHeight: 400 }}
                         />
                       </MessageBubble>
+                    );
+                  });
+                }
+
+                if (hasSkills) {
+                  message.skills!.forEach((skill, idx) => {
+                    bubbles.push(
+                      <MessageBubble
+                        key={`${message.id}-skill-${idx}`}
+                        role="user"
+                        content=""
+                        className="inline-flex items-center gap-1.5"
+                      ><Sparkles size={14} /> {skill.name}</MessageBubble>
                     );
                   });
                 }

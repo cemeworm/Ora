@@ -1084,6 +1084,7 @@ export function useRunActions() {
           sessionId,
           prompt: submittedPrompt,
           createdAt: Date.now(),
+          skillIds: submittedSkillIds,
         });
       }
       if (options.clearPromptIfMatched ?? true) {
@@ -1142,6 +1143,16 @@ export function useRunActions() {
         ? resolvedToolIds.filter((id) => !(FILE_MODIFICATION_TOOL_IDS as readonly string[]).includes(id))
         : resolvedToolIds;
       desktopLatencyMarks.push(desktopLatencyMark("startStreamingRunCalledAt"));
+      const attachedSkills = state.selectedSkillIds.length > 0 && state.skillRegistry?.skills
+        ? (() => {
+            const result: { id: string; name: string }[] = [];
+            for (const id of state.selectedSkillIds) {
+              const skill = state.skillRegistry!.skills.find((s) => s.id === id);
+              if (skill) result.push({ id: skill.id, name: skill.name });
+            }
+            return result;
+          })()
+        : undefined;
       const handle = await runtimeClient.startStreamingRun(
         {
           prompt: submittedPrompt,
@@ -1150,7 +1161,10 @@ export function useRunActions() {
             submittedProjectFileAttachments,
             submittedLocalFileAttachments,
             submittedImageAttachments,
-            options.extraContext,
+            {
+              ...options.extraContext,
+              ...(attachedSkills ? { attachedSkills } : {}),
+            },
           ),
         },
         {

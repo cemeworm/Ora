@@ -97,6 +97,7 @@ export interface PendingRunPreview {
   prompt: string;
   createdAt: number;
   progressText?: string;
+  skills?: { id: string; name: string }[];
 }
 
 export interface AcceptedPlanDecisionTurnPreview {
@@ -1280,6 +1281,19 @@ function extractImagesFromSnapshot(
   return result.length > 0 ? result : undefined;
 }
 
+function extractSkillsFromContext(
+  context: Record<string, unknown> | undefined,
+): { id: string; name: string }[] | undefined {
+  if (!context) return undefined;
+  const skills = context.attachedSkills;
+  if (!Array.isArray(skills) || skills.length === 0) return undefined;
+  const result = skills
+    .filter((s): s is Record<string, unknown> => s != null && typeof s === "object")
+    .map((s) => ({ id: typeof s.id === "string" ? s.id : "", name: typeof s.name === "string" ? s.name : "" }))
+    .filter((s) => s.id.length > 0);
+  return result.length > 0 ? result : undefined;
+}
+
 export function adaptChatMessages(
   transcript: OraSessionTranscriptMessage[],
   turnSnapshots: Record<string, OraStateSnapshot | undefined> = {},
@@ -1335,6 +1349,7 @@ export function adaptChatMessages(
       const snapshotContext = turn.snapshot
         ? (turn.snapshot.input.context as Record<string, unknown> | undefined)
         : undefined;
+      const skills = extractSkillsFromContext(snapshotContext);
       const attachments = extractAttachmentsFromSnapshot(snapshotContext);
       const images = extractImagesFromSnapshot(snapshotContext);
 
@@ -1348,7 +1363,9 @@ export function adaptChatMessages(
             runId: turn.user.runId,
             turnIndex: turn.user.turnIndex,
             pattern: turn.user.pattern,
+            ...(skills ? { skills } : {}),
           },
+          skills,
           attachments,
           images,
         });
@@ -1364,6 +1381,7 @@ export function adaptChatMessages(
             pattern: turn.pattern,
           },
           attachments,
+          skills,
           images,
         });
       }
@@ -1867,21 +1885,36 @@ export function adaptPendingRunMessages(
     return [];
   }
 
-  return [
-    {
-      id: `${pendingRun.sessionId}:pending:user`,
-      role: "user",
-      content: pendingRun.prompt,
-      timestamp: formatClock(pendingRun.createdAt),
-    },
-    {
-      id: `${pendingRun.sessionId}:pending:assistant`,
-      role: "assistant",
-      content: pendingRun.progressText?.trim() || "",
-      timestamp: formatClock(pendingRun.createdAt),
-      isPlaceholder: true,
-    },
-  ];
+  const messages: ChatMessage[] = [];
+
+  if (pendingRun.skills && pendingRun.skills.length > 0) {
+    pendingRun.skills.forEach((skill, idx) => {
+      messages.push({
+        id: `${pendingRun.sessionId}:pending:skill-${idx}`,
+        role: "user",
+        content: "",
+        skills: [skill],
+        timestamp: formatClock(pendingRun.createdAt),
+      });
+    });
+  }
+
+  messages.push({
+    id: `${pendingRun.sessionId}:pending:user`,
+    role: "user",
+    content: pendingRun.prompt,
+    timestamp: formatClock(pendingRun.createdAt),
+  });
+
+  messages.push({
+    id: `${pendingRun.sessionId}:pending:assistant`,
+    role: "assistant",
+    content: pendingRun.progressText?.trim() || "",
+    timestamp: formatClock(pendingRun.createdAt),
+    isPlaceholder: true,
+  });
+
+  return messages;
 }
 
 export function derivePresentedAssistantTurnFromSnapshot(
