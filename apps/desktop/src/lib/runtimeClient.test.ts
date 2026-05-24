@@ -182,11 +182,16 @@ describe("desktop runtime client agent catalog", () => {
     expect(forked.turns).toHaveLength(1);
     expect(forked.transcript).toHaveLength(2);
     expect(forked.latestSnapshot?.runId).not.toBe(first.runId);
+    expect(forked.session.status).toBe("succeeded");
+    expect(forked.turns[0]?.status).toBe("succeeded");
+    expect(forked.latestSnapshot?.status).toBe("succeeded");
     expect(forked.latestSnapshot?.pattern).toBe(first.pattern);
     expect(forked.latestSnapshot?.config.providerId).toBe("local-smoke");
     expect(forked.latestSnapshot?.config.modelRef).toBe("local/smoke-model");
     expect(forked.latestSnapshot?.pendingApprovals).toEqual([]);
     expect(forked.latestSnapshot?.pendingClarifications).toEqual([]);
+    expect(forked.transcript[1]?.role).toBe("assistant");
+    expect(forked.transcript[1]?.content.trim().length).toBeGreaterThan(0);
 
     expect(sourceDetail.session.turnCount).toBe(2);
     expect(sourceDetail.turns).toHaveLength(2);

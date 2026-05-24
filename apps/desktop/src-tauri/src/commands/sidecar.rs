@@ -5233,6 +5233,16 @@ fn forked_session_title(title: &str) -> String {
 }
 
 fn assistant_text_for_run(snapshot: &Value) -> String {
+    if let Some(messages) = snapshot["agentMessages"].as_array() {
+        for message in messages.iter().rev() {
+            let owns_final = message["transcript"]["layout"]["ownsFinalAnswer"].as_bool() == Some(true);
+            let supplemental_body = message["transcript"]["layout"]["supplementalBody"].as_str();
+            let content = message["content"].as_str().unwrap_or("").trim();
+            if owns_final && supplemental_body == Some("never") && !content.is_empty() {
+                return content.to_string();
+            }
+        }
+    }
     if let Some(text) = snapshot["output"]["text"].as_str() {
         if !text.trim().is_empty() {
             return text.trim().to_string();
@@ -5690,6 +5700,33 @@ fn build_forked_session_snapshot(
     set_object_value(&mut snapshot, "parentCoordination", Value::Null);
     set_object_value(&mut snapshot, "pendingClarifications", json!([]));
     set_object_value(&mut snapshot, "pendingApprovals", json!([]));
+    set_object_value(&mut snapshot, "activeAgents", json!([]));
+    settle_topology_statuses(&mut snapshot);
+    settle_action_statuses(&mut snapshot);
+    settle_tool_call_statuses(&mut snapshot);
+    settle_agent_message_statuses(&mut snapshot);
+    let queue_mode = snapshot["queueSummary"]["mode"].as_str().unwrap_or("dag").to_string();
+    let completed_count = snapshot["plan"].as_array().map(|items| items.len()).unwrap_or(0);
+    set_object_value(&mut snapshot, "queueSummary", json!({
+        "mode": queue_mode,
+        "pending": 0,
+        "inProgress": 0,
+        "completed": completed_count,
+        "topics": []
+    }));
+    set_object_value(&mut snapshot, "sharedStateSummary", json!({
+        "enabled": false,
+        "storeKind": "none",
+        "version": 0,
+        "entries": [],
+        "stopReason": Value::Null
+    }));
+    set_object_value(&mut snapshot, "busStats", json!({
+        "enabled": false,
+        "publishedCount": 0,
+        "routedCount": 0,
+        "topicCounts": {}
+    }));
 
     if let Some(input) = snapshot.get_mut("input") {
         set_object_value(
@@ -6203,10 +6240,81 @@ fn set_topology_status(snapshot: &mut Value, status: &str) {
     }
 }
 
+fn settle_topology_statuses(snapshot: &mut Value) {
+    if let Some(nodes) = snapshot
+        .get_mut("topology")
+        .and_then(Value::as_object_mut)
+        .and_then(|topology| topology.get_mut("nodes"))
+        .and_then(Value::as_array_mut)
+    {
+        for node in nodes {
+            if node["status"].as_str() != Some("failed") {
+                set_object_value(node, "status", json!("done"));
+            }
+        }
+    }
+}
+
 fn set_plan_status(snapshot: &mut Value, status: &str) {
     if let Some(items) = snapshot.get_mut("plan").and_then(Value::as_array_mut) {
         for item in items {
             set_object_value(item, "status", json!(status));
+        }
+    }
+}
+
+fn settle_action_statuses(snapshot: &mut Value) {
+    if let Some(items) = snapshot.get_mut("actions").and_then(Value::as_array_mut) {
+        for item in items {
+            let original_status = item["status"].as_str().unwrap_or("succeeded").to_string();
+            let should_clear_error = matches!(original_status.as_str(), "proposed" | "approval_required" | "approved" | "running");
+            let next_status = match original_status.as_str() {
+                "proposed" | "approval_required" | "approved" | "running" => "succeeded",
+                other => other,
+            };
+            set_object_value(item, "status", json!(next_status));
+            set_object_value(item, "approvalRequest", Value::Null);
+            if should_clear_error {
+                set_object_value(item, "error", Value::Null);
+            }
+        }
+    }
+}
+
+fn settle_tool_call_statuses(snapshot: &mut Value) {
+    if let Some(items) = snapshot.get_mut("toolCalls").and_then(Value::as_array_mut) {
+        for item in items {
+            let original_status = item["status"].as_str().unwrap_or("succeeded").to_string();
+            let should_clear_error = matches!(original_status.as_str(), "proposed" | "approval_required" | "approved" | "running");
+            let next_status = match original_status.as_str() {
+                "proposed" | "approval_required" | "approved" | "running" => "succeeded",
+                other => other,
+            };
+            set_object_value(item, "status", json!(next_status));
+            if should_clear_error {
+                set_object_value(item, "error", Value::Null);
+            }
+            if let Some(result) = item.get_mut("result") {
+                set_object_value(result, "status", json!(next_status));
+                if should_clear_error {
+                    set_object_value(result, "error", Value::Null);
+                }
+            }
+        }
+    }
+}
+
+fn settle_agent_message_statuses(snapshot: &mut Value) {
+    if let Some(messages) = snapshot.get_mut("agentMessages").and_then(Value::as_array_mut) {
+        for message in messages {
+            if message["status"].as_str() == Some("running") {
+                set_object_value(message, "status", json!("done"));
+            }
+            if let Some(transcript) = message.get_mut("transcript") {
+                if transcript["status"].as_str() == Some("running") {
+                    set_object_value(transcript, "status", json!("done"));
+                }
+            }
         }
     }
 }
@@ -7551,7 +7659,13 @@ mod tests {
             "modeId": "single_agent",
             "input": { "prompt": "First turn", "createdAt": 100, "context": {} },
             "config": { "pattern": "generator_verifier", "modeId": "single_agent", "metadata": {} },
-            "topology": { "nodes": [], "edges": [] },
+            "topology": {
+                "nodes": [
+                    { "id": "node-running", "label": "Run", "kind": "run", "status": "running", "metadata": {} },
+                    { "id": "node-failed", "label": "Verifier", "kind": "agent", "status": "failed", "metadata": {} }
+                ],
+                "edges": []
+            },
             "profiles": [],
             "memory": [],
             "planList": [{ "id": format!("{source_run_id}:plan-step-0"), "step": "Plan step", "status": "completed" }],
@@ -7656,6 +7770,29 @@ mod tests {
         assert_eq!(forked["conversation"][1]["toolCallId"], json!("run-forked:tool-call-0"));
         assert_eq!(forked["toolResults"][0]["resultToolCallId"], json!("run-forked:tool-call-0"));
         assert_eq!(forked["policyDecisions"][0]["actionId"], json!("run-forked:action-0"));
+        assert_eq!(forked["topology"]["nodes"][0]["status"], json!("done"));
+        assert_eq!(forked["topology"]["nodes"][1]["status"], json!("failed"));
+    }
+
+    #[test]
+    fn assistant_text_for_run_prefers_transcript_owned_final_answer() {
+        let snapshot = json!({
+            "output": { "text": "摘要文本" },
+            "agentMessages": [{
+                "id": "msg-1",
+                "runId": "run-1",
+                "content": "这是完整最终正文",
+                "transcript": {
+                    "layout": {
+                        "ownsFinalAnswer": true,
+                        "supplementalBody": "never"
+                    }
+                }
+            }],
+            "events": []
+        });
+
+        assert_eq!(assistant_text_for_run(&snapshot), "这是完整最终正文");
     }
 
     #[test]

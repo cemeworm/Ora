@@ -1616,4 +1616,32 @@ describe("assistant turn display helpers", () => {
     expect(html).toContain("aria-label=\"分支到新会话\"");
   });
 
+  it("does not render a fork-session action for queued assistant turns", () => {
+    const turn: AssistantTurnAttachment = {
+      runId: "run-fork-action-queued",
+      turnIndex: 1,
+      status: "queued",
+      pattern: "agent_teams",
+      sources: [],
+      processSteps: [],
+      agentMessages: [],
+      artifacts: [],
+      todos: [],
+      planList: [],
+      approvalCount: 0,
+      clarificationCount: 0,
+      hasProposedPlan: false,
+    };
+
+    const html = renderToStaticMarkup(
+      <AssistantTurnCard
+        content="排队中。"
+        turn={turn}
+        onForkSessionFromTurn={vi.fn()}
+      />,
+    );
+
+    expect(html).not.toContain("aria-label=\"分支到新会话\"");
+  });
+
 });

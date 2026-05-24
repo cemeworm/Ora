@@ -1009,6 +1009,79 @@ describe("desktop workbench state", () => {
     expect(next.selectedModeId).toBe(CODE_DEVELOPMENT_MODE_ID);
   });
 
+  it("keeps fork hydration settled when the forked snapshot carries historical execution residue", () => {
+    const previousSnapshot = testSnapshot({
+      runId: "run-source",
+      sessionId: "session-source",
+      status: "succeeded",
+      updatedAt: 1_714_000_000_000,
+    });
+    const forkedSnapshot = {
+      ...testSnapshot({
+        runId: "run-forked-settled",
+        sessionId: "session-forked-settled",
+        status: "succeeded",
+        updatedAt: 1_714_000_000_200,
+        activeAgents: [],
+      }),
+      toolCalls: [{
+        id: "run-forked-settled:tool-0",
+        runId: "run-forked-settled",
+        toolId: "shell.execute",
+        args: {},
+        source: "json_fallback" as const,
+        status: "succeeded" as const,
+        requestedAt: 1_714_000_000_100,
+        updatedAt: 1_714_000_000_100,
+      }],
+      queueSummary: { mode: "dag" as const, pending: 0, inProgress: 0, completed: 1, topics: [] },
+    } as OraStateSnapshot;
+
+    const state: WorkbenchState = {
+      ...initialWorkbenchState,
+      selectedSessionId: "session-source",
+      selectedTurnRunId: previousSnapshot.runId,
+      runLifecycle: lifecycleFromSnapshot(previousSnapshot),
+      activeSessionDetail: {
+        session: { ...sessionSummary("session-source"), latestRunId: previousSnapshot.runId },
+        turns: [{ runId: previousSnapshot.runId } as unknown as NonNullable<WorkbenchState["activeSessionDetail"]>["turns"][number]],
+        transcript: [],
+        latestSnapshot: previousSnapshot,
+      },
+    };
+
+    const next = workbenchReducer(state, {
+      type: "HYDRATE_SESSION",
+      projects: [],
+      sessions: [{ ...sessionSummary("session-forked-settled"), latestRunId: forkedSnapshot.runId, status: "succeeded" }],
+      detail: {
+        session: { ...sessionSummary("session-forked-settled"), latestRunId: forkedSnapshot.runId, status: "succeeded" },
+        turns: [{
+          runId: forkedSnapshot.runId,
+          sessionId: "session-forked-settled",
+          turnIndex: 1,
+          status: "succeeded",
+          pattern: forkedSnapshot.pattern,
+          modeId: forkedSnapshot.modeId,
+          prompt: "fork",
+          startedAt: forkedSnapshot.updatedAt,
+          updatedAt: forkedSnapshot.updatedAt,
+          eventCount: 0,
+          checkpointCount: 0,
+          artifactCount: 0,
+        }],
+        transcript: [],
+        latestSnapshot: forkedSnapshot,
+      },
+      forceSnapshotComposerMode: true,
+    });
+
+    expect(next.runLifecycle.stage).toBe("settled");
+    expect(getActiveSnapshot(next.runLifecycle)?.status).toBe("succeeded");
+    expect(next.activeSessionDetail?.session.status).toBe("succeeded");
+    expect(next.isLoading).toBe(false);
+  });
+
   it("keeps a final local snapshot authoritative over stale collection refreshes", () => {
     const sessionId = "session-collection-authority";
     const runId = "run-collection-authority";
@@ -4654,11 +4727,12 @@ describe("desktop workbench state", () => {
       expect(next.commandFeedback).toBe("Plan accepted. Continuing run.");
     });
 
-    it("clears accepted plan decision busy state when hydration returns the resolved snapshot", () => {
+    it("clears accepted-only busy state when hydration resolves before same-run local authority starts", () => {
       const sessionId = "session-plan";
       const snapshot = testSnapshot({
         runId: "run-plan",
         sessionId,
+        status: "succeeded",
         planDecisions: [{
           id: "run-plan:plan-decision",
           runId: "run-plan",
@@ -4695,6 +4769,7 @@ describe("desktop workbench state", () => {
       expect(next.isLoading).toBe(false);
       expect(next.busyCommand).toBeUndefined();
       expect(next.commandFeedback).toBe("Plan accepted.");
+      expect(next.runLifecycle.stage).toBe("settled");
     });
 
     it("keeps the session in running state when hydration returns a running snapshot with an accepted plan decision", () => {
@@ -4752,6 +4827,79 @@ describe("desktop workbench state", () => {
       expect(next.pendingPlanDecisionResolution).toBeUndefined();
       expect(next.isLoading).toBe(false);
       expect(next.commandFeedback).toBe("Plan accepted and resumed.");
+    });
+
+    it("keeps local same-run resume authority when hydration returns an accepted settled snapshot over a running local snapshot", () => {
+      const sessionId = "session-plan";
+      const runId = "run-plan";
+      const localRunningSnapshot = testSnapshot({
+        runId,
+        sessionId,
+        status: "running",
+        planDecisions: [{
+          id: `${runId}:plan-decision`,
+          runId,
+          sessionId,
+          status: "accepted",
+          createdAt: 1_714_000_000_000,
+          resolvedAt: 1_714_000_000_100,
+        }],
+        attention: {
+          kind: "running",
+          blocking: false,
+          sourceRunId: runId,
+          pendingActionIds: [],
+          pendingToolCallIds: [],
+          pendingClarificationIds: [],
+        },
+      });
+      const staleAcceptedSnapshot = testSnapshot({
+        runId,
+        sessionId,
+        status: "succeeded",
+        planDecisions: [{
+          id: `${runId}:plan-decision`,
+          runId,
+          sessionId,
+          status: "accepted",
+          createdAt: 1_714_000_000_000,
+          resolvedAt: 1_714_000_000_100,
+        }],
+      });
+
+      const state = workbenchReducer({
+        ...initialWorkbenchState,
+        selectedSessionId: sessionId,
+        selectedTurnRunId: runId,
+        runLifecycle: lifecycleFromSnapshot(localRunningSnapshot),
+        pendingPlanDecisionResolution: {
+          sessionId,
+          decisionId: `${runId}:plan-decision`,
+          status: "accepted",
+          createdAt: 1_714_000_000_100,
+        },
+      }, {
+        type: "HYDRATE_SESSION",
+        projects: [],
+        sessions: [{ ...sessionSummary(sessionId), latestRunId: runId }],
+        detail: {
+          session: { ...sessionSummary(sessionId), latestRunId: runId },
+          turns: [],
+          transcript: [],
+          latestSnapshot: staleAcceptedSnapshot,
+        },
+        snapshot: staleAcceptedSnapshot,
+        feedback: "Plan accepted.",
+      });
+
+      expect(state.pendingPlanDecisionResolution).toMatchObject({
+        sessionId,
+        decisionId: `${runId}:plan-decision`,
+        status: "accepted",
+      });
+      expect(getActiveSnapshot(state.runLifecycle)?.status).toBe("running");
+      expect(state.activeSessionDetail?.latestSnapshot?.status).toBe("running");
+      expect(state.isLoading).toBe(true);
     });
 
     it("does not revive stale plan-decision attention when hydrate receives a resumed running snapshot", () => {

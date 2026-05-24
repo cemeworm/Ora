@@ -2,6 +2,7 @@ import type { CoordinationPattern, BuiltInCoordinationPattern } from "@cemeworm/
 export type { CoordinationPattern, BuiltInCoordinationPattern };
 
 export type RunStatus =
+  | "queued"
   | "running"
   | "approval_required"
   | "clarification_required"

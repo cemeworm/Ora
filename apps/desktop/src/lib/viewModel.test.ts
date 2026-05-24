@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import fs from "node:fs";
-import { CODE_DEVELOPMENT_MODE_ID, DEBATE_MODE_ID, DEERFLOW_HARNESS_MODE_ID, MVP_MODES, MVP_PATTERNS, ORA_ROOT_AGENT_ID, ORA_ROOT_AGENT_LABEL, SINGLE_AGENT_MODE_ID } from "@cemeworm/shared";
+import { CODE_DEVELOPMENT_MODE_ID, DEBATE_MODE_ID, DEERFLOW_HARNESS_MODE_ID, MVP_MODES, MVP_PATTERNS, ORA_ROOT_AGENT_ID, ORA_ROOT_AGENT_LABEL, SINGLE_AGENT_MODE_ID, projectForkSettledSnapshot, projectForkVisibleAssistantText } from "@cemeworm/shared";
 import { mergeStateSnapshot } from "./state";
 import { adaptChatMessages, adaptPendingRunMessages, adaptRenderableChatMessages, buildWorkbenchViewModel, derivePresentedAssistantTurnFromSnapshot, isSessionProcessing } from "./viewModel";
 import type { OraSessionDetail, OraSessionSummary, OraStateSnapshot } from "./runtimeClient";
@@ -4307,6 +4307,103 @@ describe("desktop session view model", () => {
       kind: "agent_message",
       content: finalVerdict,
     }));
+  });
+
+  it("keeps transcript-owned final answers settled without a thinking indicator", () => {
+    const createdAt = 1_714_000_000_000;
+    const finalVerdict = "这是 fork 后也应保留的完整 assistant 正文。";
+    const sourceSnapshot = {
+      runId: "run-fork-transcript-owned",
+      sessionId: "session-fork-transcript-owned",
+      turnIndex: 1,
+      status: "succeeded",
+      pattern: "orchestrator_subagent",
+      modeId: SINGLE_AGENT_MODE_ID,
+      input: { prompt: "总结一下", createdAt, context: {} },
+      config: {
+        modeId: SINGLE_AGENT_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["debate_agent"],
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-fork-transcript-owned",
+        skillIds: [],
+        toolIds: [],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      planList: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [],
+      agentMessages: [{
+        id: "run-fork-transcript-owned:agent-message:0",
+        runId: "run-fork-transcript-owned",
+        createdAt: createdAt + 1,
+        fromAgentId: "moderator",
+        toAgentIds: [],
+        threadId: "run-fork-transcript-owned:debate",
+        kind: "reply",
+        status: "done",
+        content: finalVerdict,
+        artifactIds: [],
+        transcript: {
+          kind: "stage_transcript",
+          groupId: "debate",
+          stageId: "moderator-synthesis",
+          stageLabel: "主持总结",
+          sequence: 0,
+          speakerLabel: "主持人总结",
+          status: "done",
+          layout: {
+            style: "two_sided_duel",
+            ownsFinalAnswer: true,
+            supplementalBody: "never",
+          },
+        },
+      }],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 0, completed: 1, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      output: { text: "摘要文本" },
+      updatedAt: createdAt + 2,
+    } as unknown as OraStateSnapshot;
+    const snapshot = projectForkSettledSnapshot(
+      sourceSnapshot,
+      projectForkVisibleAssistantText(sourceSnapshot),
+    );
+
+    const assistant = adaptChatMessages(
+      [{
+        id: "run-fork-transcript-owned:user",
+        sessionId: "session-fork-transcript-owned",
+        runId: "run-fork-transcript-owned",
+        turnIndex: 1,
+        role: "user",
+        content: "总结一下",
+        pattern: "orchestrator_subagent",
+        modeId: SINGLE_AGENT_MODE_ID,
+        createdAt,
+      }],
+      { "run-fork-transcript-owned": snapshot },
+    ).find((message) => message.role === "assistant");
+
+    expect(assistant?.content).toBe(finalVerdict);
+    expect(assistant?.turn?.status).toBe("done");
+    expect(assistant?.turn?.activeLoadingTarget).toBeUndefined();
   });
 
   it("keeps orchestrator subagent handoff content out of the public chat timeline", () => {

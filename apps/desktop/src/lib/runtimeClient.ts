@@ -135,7 +135,7 @@ import type {
   ToolRegistry as OraToolRegistry,
   UserTaskInput as OraUserTaskInput,
 } from "@cemeworm/shared";
-import { AutomationCreateParamsSchema, AutomationPreviewScheduleParamsSchema, AutomationSchema, AutomationUpdateParamsSchema, DEFAULT_AGENT_MODE_TOOL_IDS, DEFAULT_PROVIDERS, DEBATE_MODE_ID, FeedbackLoopActionApplyParamsSchema, FeedbackLoopActionResultSchema, FeedbackLoopCalibrationRuleSchema, FeedbackLoopRuleUpdateParamsSchema, LongTermMemoryProfileSchema, MVP_MODE_RUNTIME_ATOMS, MVP_MODES, MVP_PATTERNS, MVP_SKILLS, MVP_TOOLS, ORA_HOST_ABI_VERSION, ORA_ROOT_AGENT_ID, ORA_ROOT_AGENT_LABEL, ORA_RUNTIME_ABI_VERSION, ProjectInsightSchema, ProjectSignalSchema, ProviderConfigSchema, SessionForkParamsSchema, SINGLE_AGENT_MODE_ID, SYSTEM_AGENT_ID_ALIASES, SelfIterationCandidateApplyParamsSchema, SelfIterationCandidateSchema, SelfIterationPolicySchema, SelfIterationScanResultSchema, SystemAgentOverrideUpdateParamsSchema, agentLabelFromSnapshot, canonicalSystemAgentId, deriveRunAttention, deriveSessionBranchGroupsForSession, extractCompleteProposedPlanContent, legacySystemAgentIdsFor, modeSpecToPatternDefinition, projectAssistantTextFromSnapshot, snapshotContainsCompleteProposedPlan, validateModeSpec, visibleToolIdsForPreset } from "@cemeworm/shared";
+import { AutomationCreateParamsSchema, AutomationPreviewScheduleParamsSchema, AutomationSchema, AutomationUpdateParamsSchema, DEFAULT_AGENT_MODE_TOOL_IDS, DEFAULT_PROVIDERS, DEBATE_MODE_ID, FeedbackLoopActionApplyParamsSchema, FeedbackLoopActionResultSchema, FeedbackLoopCalibrationRuleSchema, FeedbackLoopRuleUpdateParamsSchema, LongTermMemoryProfileSchema, MVP_MODE_RUNTIME_ATOMS, MVP_MODES, MVP_PATTERNS, MVP_SKILLS, MVP_TOOLS, ORA_HOST_ABI_VERSION, ORA_ROOT_AGENT_ID, ORA_ROOT_AGENT_LABEL, ORA_RUNTIME_ABI_VERSION, ProjectInsightSchema, ProjectSignalSchema, ProviderConfigSchema, SessionForkParamsSchema, SINGLE_AGENT_MODE_ID, SYSTEM_AGENT_ID_ALIASES, SelfIterationCandidateApplyParamsSchema, SelfIterationCandidateSchema, SelfIterationPolicySchema, SelfIterationScanResultSchema, SystemAgentOverrideUpdateParamsSchema, agentLabelFromSnapshot, canonicalSystemAgentId, deriveRunAttention, deriveSessionBranchGroupsForSession, extractCompleteProposedPlanContent, legacySystemAgentIdsFor, modeSpecToPatternDefinition, projectAssistantTextFromSnapshot, projectForkSettledSnapshot, projectForkVisibleAssistantText, snapshotContainsCompleteProposedPlan, validateModeSpec, visibleToolIdsForPreset } from "@cemeworm/shared";
 import { PROVIDER_PRESETS } from "./providerPresets";
 
 export const USER_CANCELLED_MESSAGE = "Stopped processing as instructed.";
@@ -5809,10 +5809,9 @@ class LocalJsonRpcRuntime {
       id: `${runId}:agent-message-${index}`,
       runId,
     }));
-    const assistantOutput = this.assistantTextForRun(source);
-    const output = assistantOutput ? { text: assistantOutput } : source.output;
+    const assistantOutput = projectForkVisibleAssistantText(source);
 
-    return {
+    return projectForkSettledSnapshot({
       ...source,
       runId,
       sessionId: params.sessionId,
@@ -5844,11 +5843,9 @@ class LocalJsonRpcRuntime {
       childSessions: [],
       parentCoordination: undefined,
       contextState: undefined,
-      pendingClarifications: [],
-      pendingApprovals: [],
-      output,
+      output: assistantOutput ? { text: assistantOutput } : source.output,
       updatedAt: params.updatedAt,
-    };
+    }, assistantOutput);
   }
 
   private normalizeMockSnapshot(snapshot: OraStateSnapshot): OraStateSnapshot {

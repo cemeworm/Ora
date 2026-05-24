@@ -126,7 +126,8 @@ export const AssistantTurnCard = memo(function AssistantTurnCard({
     onForkSessionFromTurn &&
     turn?.runId &&
     !isPlaceholder &&
-    turn.status !== "running",
+    turn.status !== "running" &&
+    turn.status !== "queued",
   );
   const canShowActions = showCopyAction || showFeedbackAction || canForkSession || sources.length > 0;
   const currentAgentLabel = turn?.currentAgentLabel?.trim();

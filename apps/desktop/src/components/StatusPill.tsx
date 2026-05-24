@@ -1,6 +1,7 @@
 import type { RunStatus } from "../types";
 
 const statusLabels: Record<RunStatus, string> = {
+  queued: "Queued",
   running: "Running",
   approval_required: "Approval",
   clarification_required: "Clarification",
@@ -15,7 +16,12 @@ const statusLabels: Record<RunStatus, string> = {
 export { statusLabels };
 
 export function StatusPill({ status }: { status: RunStatus }) {
-  const attention = status === "running" || status === "approval_required" || status === "clarification_required" || status === "decision_needed";
+  const attention =
+    status === "queued" ||
+    status === "running" ||
+    status === "approval_required" ||
+    status === "clarification_required" ||
+    status === "decision_needed";
   return (
     <span
       className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-semibold ${

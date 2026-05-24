@@ -1,4 +1,5 @@
 import {
+  deriveAcceptedPlanResumeProjection,
   BuiltInCoordinationPatternSchema,
   ChildSessionSummarySchema,
   CoordinationPatternSchema,
@@ -199,6 +200,7 @@ function runLifecycleFromSnapshot(
     pendingRun?: PendingRunState;
     previous?: RunLifecycle;
     fallbackSessionId?: string;
+    preserveIncomingSnapshot?: boolean;
   } = {},
 ): RunLifecycle {
   if (!snapshot) {
@@ -209,7 +211,9 @@ function runLifecycleFromSnapshot(
     params.previous.runId === snapshot.runId
       ? params.previous.snapshot
       : undefined;
-  const mergedSnapshot = mergeStateSnapshot(previousSnapshot, snapshot) ?? snapshot;
+  const mergedSnapshot = params.preserveIncomingSnapshot
+    ? snapshot
+    : (mergeStateSnapshot(previousSnapshot, snapshot) ?? snapshot);
   const fallbackSessionId = params.pendingRun?.sessionId ?? params.fallbackSessionId;
   const lifecycleSnapshot =
     !mergedSnapshot.sessionId && fallbackSessionId
@@ -3235,6 +3239,27 @@ function removeAcceptedPlanDecisionTurnProjection(
   return changed ? Object.fromEntries(nextEntries) : projections;
 }
 
+function acceptedPlanProjectionForSnapshot(
+  snapshot: OraStateSnapshot | undefined,
+  state: Pick<WorkbenchState, "pendingPlanDecisionResolution" | "acceptedPlanDecisionTurnProjections">,
+  currentRunId?: string,
+) {
+  const acceptedProjection = currentRunId
+    ? Object.values(state.acceptedPlanDecisionTurnProjections).find((projection) => projection.runId === currentRunId)
+    : undefined;
+  return deriveAcceptedPlanResumeProjection({
+    snapshot,
+    currentRunId,
+    pendingDecision: state.pendingPlanDecisionResolution
+      ? {
+          decisionId: state.pendingPlanDecisionResolution.decisionId,
+          status: state.pendingPlanDecisionResolution.status,
+        }
+      : undefined,
+    acceptedDecisionId: acceptedProjection?.decisionId,
+  });
+}
+
 function applyCancelRequestedToSessionDetail(
   detail: OraSessionDetail | undefined,
   snapshot: OraStateSnapshot | undefined,
@@ -3314,6 +3339,23 @@ function shouldPreserveHydratingPendingRun(params: {
     return false;
   }
   return true;
+}
+
+function shouldPreserveAcceptedPlanHydrationAuthority(params: {
+  state: Pick<WorkbenchState, "pendingPlanDecisionResolution" | "acceptedPlanDecisionTurnProjections">;
+  currentRunId?: string;
+  snapshot: OraStateSnapshot | undefined;
+  localAuthoritySnapshot?: OraStateSnapshot | undefined;
+}): boolean {
+  const projection = acceptedPlanProjectionForSnapshot(
+    params.snapshot,
+    params.state,
+    params.currentRunId,
+  );
+  return projection.phase === "accepted_resuming" &&
+    projection.sameRun &&
+    Boolean(params.localAuthoritySnapshot && !isSettledRunStatus(params.localAuthoritySnapshot.status)) &&
+    projection.blocksHydrationTerminalFallback;
 }
 
 function preserveComposerMode(
@@ -3408,19 +3450,33 @@ export function workbenchReducer(
       const normalizedIncomingLatestSnapshot = incomingLatestSnapshot
         ? normalizeDesktopSnapshot(incomingLatestSnapshot)
         : undefined;
+      const currentActiveSnapshot = getActiveSnapshot(state.runLifecycle);
+      const hydrateRunId =
+        normalizedIncomingLatestSnapshot?.runId ??
+        state.selectedTurnRunId ??
+        currentActiveSnapshot?.runId;
+      const preserveAcceptedPlanAuthority =
+        shouldPreserveAcceptedPlanHydrationAuthority({
+          state,
+          currentRunId: hydrateRunId,
+          snapshot: normalizedIncomingLatestSnapshot,
+          localAuthoritySnapshot: currentActiveSnapshot,
+        });
+      const authorityDetailSnapshot = preserveAcceptedPlanAuthority
+        ? currentActiveSnapshot
+        : normalizedIncomingLatestSnapshot;
       const detailSnapshot = normalizedIncomingLatestSnapshot ?? selectedSnapshotFromDetail(
         action.detail,
         undefined,
         state.selectedTurnRunId,
       );
-      const currentActiveSnapshot = getActiveSnapshot(state.runLifecycle);
       const liveSnapshotForSession = state.sessionLiveSnapshotsById[action.detail.session.sessionId];
       const incomingSnapshotSettled = Boolean(
         normalizedIncomingLatestSnapshot &&
         isSettledRunStatus(normalizedIncomingLatestSnapshot.status),
       );
       const authorityLiveSnapshot =
-        !incomingSnapshotSettled &&
+        (!incomingSnapshotSettled || preserveAcceptedPlanAuthority) &&
         (!normalizedIncomingLatestSnapshot ||
           normalizedIncomingLatestSnapshot.runId === liveSnapshotForSession?.runId)
           ? liveSnapshotForSession
@@ -3429,13 +3485,13 @@ export function workbenchReducer(
         currentActiveSnapshot &&
         currentActiveSnapshot.sessionId === action.detail.session.sessionId &&
         !isSettledRunStatus(currentActiveSnapshot.status) &&
-        !incomingSnapshotSettled &&
+        (!incomingSnapshotSettled || preserveAcceptedPlanAuthority) &&
         (!normalizedIncomingLatestSnapshot ||
           normalizedIncomingLatestSnapshot.runId === currentActiveSnapshot.runId)
           ? currentActiveSnapshot
           : undefined;
       const effectiveSnapshot = resolveSessionAuthoritySnapshot({
-        detailSnapshot,
+        detailSnapshot: preserveAcceptedPlanAuthority ? authorityDetailSnapshot : detailSnapshot,
         liveSnapshot: authorityLiveSnapshot,
         activeSnapshot: activeSnapshotForSession,
       });
@@ -3554,9 +3610,12 @@ export function workbenchReducer(
           : runLifecycleFromSnapshot(effectiveSnapshot, {
               previous: state.runLifecycle,
               fallbackSessionId: action.detail.session.sessionId,
+              preserveIncomingSnapshot: preserveAcceptedPlanAuthority,
             }),
-        pendingPlanDecisionResolution: undefined,
-        isLoading: preservePendingRun ? true : false,
+        pendingPlanDecisionResolution: preserveAcceptedPlanAuthority
+          ? state.pendingPlanDecisionResolution
+          : undefined,
+        isLoading: preservePendingRun || preserveAcceptedPlanAuthority ? true : false,
         busyCommand: undefined,
       };
       timeEnd("HYDRATE_SESSION reducer");
@@ -4219,6 +4278,11 @@ export function workbenchReducer(
         : synced.activeSessionDetail;
       const derivedStreamStatus = streamRunStatus(action.stream, streamSnapshot);
       const isSettled = isSettledRunStatus(derivedStreamStatus);
+      const acceptedPlanProjection = acceptedPlanProjectionForSnapshot(
+        streamSnapshot,
+        state,
+        action.stream.runId,
+      );
       const matchesPendingRun = streamMatchesPendingRun(
         currentPendingRun,
         action.stream,
@@ -4280,9 +4344,12 @@ export function workbenchReducer(
           ? (action.stream.events.at(-1)?.id ?? state.selectedBeatId)
           : state.selectedBeatId,
         runLifecycle,
-        pendingPlanDecisionResolution: shouldClearPendingRun
-          ? undefined
-          : state.pendingPlanDecisionResolution,
+        pendingPlanDecisionResolution:
+          acceptedPlanProjection.phase === "accepted_resuming"
+            ? state.pendingPlanDecisionResolution
+            : shouldClearPendingRun || acceptedPlanProjection.phase === "resumed_running" || acceptedPlanProjection.phase === "resume_terminal"
+              ? undefined
+              : state.pendingPlanDecisionResolution,
         selectedModeSelection: streamBelongsToActiveTurn
           ? (activeSnapshot?.config.modeSelection ??
             state.selectedModeSelection)
@@ -4297,7 +4364,8 @@ export function workbenchReducer(
             ? state.taskIntent
             : state.lastRunTaskIntent,
         isLoading: streamBelongsToActiveTurn
-          ? derivedStreamStatus === "running" ||
+          ? acceptedPlanProjection.phase === "accepted_resuming" ||
+            derivedStreamStatus === "running" ||
             derivedStreamStatus === "queued"
           : state.isLoading,
         commandFeedback:

@@ -89,6 +89,8 @@ import {
   SessionTranscriptMessage,
   SessionTranscriptMessageSchema,
   SessionTurn,
+  projectForkSettledSnapshot,
+  projectForkVisibleAssistantText,
   SkillCheckNameResult,
   SkillCreateParams,
   SkillDetail,
@@ -1184,8 +1186,13 @@ export class LocalRunStore {
           modeId: forked.modeId,
           createdAt: forked.input.createdAt ?? forked.updatedAt,
         });
+        const projected = this.appendRunSnapshotUpdateToLedger(this.normalizeSnapshotForPersistence(forked));
+        this.persistRun(projected);
+        this.cacheRun(projected, false, { deferInitialTitle: true });
+        continue;
       }
       this.persistRun(forked);
+      this.cacheRun(forked, false, { deferInitialTitle: true });
     }
     return this.getSession({ sessionId: newSession.sessionId });
   }
@@ -4712,12 +4719,8 @@ export class LocalRunStore {
       id: `${runId}:agent-message-${index}`,
       runId,
     }));
-    const publicAssistantText = assistantTextForRun(source);
-    const output = publicAssistantText
-      ? { text: publicAssistantText }
-      : source.output;
-
-    return StateSnapshotSchema.parse({
+    const publicAssistantText = projectForkVisibleAssistantText(source);
+    const forkedSnapshot = projectForkSettledSnapshot({
       ...source,
       runId,
       sessionId: params.sessionId,
@@ -4748,17 +4751,14 @@ export class LocalRunStore {
       childSessions: [],
       parentCoordination: undefined,
       artifacts: forkedRefs.artifacts,
-      output,
-      activeAgents: [],
-      queueSummary: { mode: "dag", pending: 0, inProgress: 0, completed: 0, topics: [] },
-      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [], stopReason: undefined },
-      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
-      pendingClarifications: [],
-      pendingApprovals: [],
-      contextState: undefined,
+      output: publicAssistantText
+        ? { text: publicAssistantText }
+        : source.output,
       updatedAt: params.updatedAt,
       snapshotSource: undefined,
-    });
+    }, publicAssistantText);
+
+    return StateSnapshotSchema.parse(forkedSnapshot);
   }
 
   private nextSessionId(): string {

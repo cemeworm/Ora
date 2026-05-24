@@ -1526,4 +1526,19 @@ describe("chat input keyboard shortcuts", () => {
 
     expect(onTaskIntentChange).toHaveBeenCalledWith("plan");
   });
+
+  it("prevents default focus navigation on Tab without Shift", () => {
+    const onTaskIntentChange = vi.fn();
+    const { container } = renderElement(
+      createElement(
+        ChatInput as any,
+        createBaseProps({
+          onTaskIntentChange,
+        }),
+      ),
+    );
+    const editor = getEditor(container);
+    dispatchEditorKey(editor, "Tab");
+    expect(onTaskIntentChange).not.toHaveBeenCalled();
+  });
 });

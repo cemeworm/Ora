@@ -1532,6 +1532,10 @@ export function ChatInput({
     if (isComposingRef.current || e.nativeEvent.isComposing) {
       return;
     }
+    if (e.key === "Tab" && !e.shiftKey) {
+      e.preventDefault();
+      return;
+    }
     if (e.key === "Tab" && e.shiftKey) {
       e.preventDefault();
       const nextIntent: TaskIntent =
