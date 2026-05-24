@@ -1418,6 +1418,116 @@ describe("session thread runtime behavior", () => {
     expect(liveDetail.session.attention?.kind).not.toBe("needs_plan_decision");
   });
 
+  it("treats a second accepted-plan click during same-run resume as idempotent instead of starting resume again", async () => {
+    titleResponses.push("Atomic Second Accept Session");
+    const dir = freshStoreDir();
+    const store = new LocalRunStore({ dataDir: dir, clock });
+    const session = store.createSession();
+
+    await store.startRun({
+      sessionId: session.sessionId,
+      input: { prompt: COMPLETE_PROPOSED_PLAN },
+      config: {
+        pattern: "orchestrator_subagent",
+        providerId: "openai-gpt",
+        providerConfig: localSmokeProviderConfig("openai-gpt", "gpt-plan-second-accept-test"),
+        modelRef: "gpt-plan-second-accept-test",
+        metadata: { taskIntent: "plan" },
+      },
+    });
+
+    const planned = SessionDetailSchema.parse(store.getSession({ sessionId: session.sessionId }));
+    const decision = planned.latestSnapshot?.planDecisions[0];
+    expect(decision?.status).toBe("pending");
+
+    const kernelExecutionService = (store as unknown as {
+      runKernelExecutionService: {
+        executeKernelResumeWork: (...args: unknown[]) => Promise<StateSnapshot>;
+      };
+    }).runKernelExecutionService;
+    const resumeResolvers: Array<(snapshot: StateSnapshot) => void> = [];
+    const executeKernelResumeWorkSpy = vi.spyOn(kernelExecutionService, "executeKernelResumeWork").mockImplementation(async () =>
+      await new Promise<StateSnapshot>((resolve) => {
+        resumeResolvers.push(resolve);
+      })
+    );
+
+    const firstHandle = await store.acceptPlanDecisionAndResume({
+      sessionId: session.sessionId,
+      runId: planned.latestSnapshot?.runId,
+      decisionId: decision?.id,
+    });
+
+    const duringResumeState = StateSnapshotSchema.parse(store.getRunState({ runId: firstHandle.runId }));
+    const duringResumeDetail = SessionDetailSchema.parse(store.getSession({ sessionId: session.sessionId }));
+
+    expect(firstHandle.status).toBe("running");
+    expect(duringResumeState.status).toBe("running");
+    expect(duringResumeState.planDecisions[0]).toMatchObject({
+      id: decision?.id,
+      status: "accepted",
+    });
+    expect(duringResumeDetail.session.attention?.kind).not.toBe("needs_plan_decision");
+
+    const secondHandle = await store.acceptPlanDecisionAndResume({
+      sessionId: session.sessionId,
+      runId: planned.latestSnapshot?.runId,
+      decisionId: decision?.id,
+    });
+
+    const afterSecondClickState = StateSnapshotSchema.parse(store.getRunState({ runId: secondHandle.runId }));
+    const afterSecondClickDetail = SessionDetailSchema.parse(store.getSession({ sessionId: session.sessionId }));
+
+    expect(secondHandle.runId).toBe(firstHandle.runId);
+    expect(secondHandle.status).toBe("running");
+    expect(executeKernelResumeWorkSpy).toHaveBeenCalledTimes(1);
+    expect(afterSecondClickState.status).toBe("running");
+    expect(afterSecondClickState.planDecisions[0]).toMatchObject({
+      id: decision?.id,
+      status: "accepted",
+    });
+    expect(afterSecondClickDetail.session.attention?.kind).not.toBe("needs_plan_decision");
+
+    const completedSnapshot = StateSnapshotSchema.parse({
+      ...planned.latestSnapshot,
+      status: "succeeded",
+      output: { text: "Implemented accepted plan after same-run resume." },
+      planDecisions: planned.latestSnapshot?.planDecisions.map((candidate) =>
+        candidate.id === decision?.id
+          ? {
+              ...candidate,
+              status: "accepted" as const,
+              resolvedAt: FIXED_TIME,
+            }
+          : candidate
+      ) ?? [],
+      attention: {
+        kind: "running",
+        blocking: false,
+        sourceRunId: planned.latestSnapshot?.runId ?? "missing-run",
+        pendingActionIds: [],
+        pendingToolCallIds: [],
+        pendingClarificationIds: [],
+      },
+      updatedAt: FIXED_TIME,
+    });
+    for (const resolve of resumeResolvers) {
+      resolve(completedSnapshot);
+    }
+
+    const terminalState = await waitFor(
+      () => StateSnapshotSchema.parse(store.getRunState({ runId: firstHandle.runId })),
+      (snapshot) => snapshot.status === "succeeded",
+    );
+    const terminalDetail = SessionDetailSchema.parse(store.getSession({ sessionId: session.sessionId }));
+
+    expect(terminalState.status).toBe("succeeded");
+    expect(terminalState.output).toMatchObject({
+      text: "Implemented accepted plan after same-run resume.",
+    });
+    expect(terminalDetail.session.attention?.kind).toBe("idle");
+  });
+
   it("retries accepted-plan resume startup automatically before succeeding", { timeout: 15_000 }, async () => {
     titleResponses.push("Atomic Retry Session");
     const dir = freshStoreDir();

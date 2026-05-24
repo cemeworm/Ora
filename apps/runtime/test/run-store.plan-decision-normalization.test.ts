@@ -88,4 +88,28 @@ describe("LocalRunStore plan decision normalization", () => {
     expect(normalized.attention?.kind).toBe("needs_plan_decision");
     expect(normalized.attention?.planDecisionId).toBe(pendingDecision?.id);
   });
+
+  it("adds a pending plan decision for a short recoverable single proposed plan", () => {
+    const store = new LocalRunStore({ dataDir: freshStoreDir(), clock: () => 2_000 });
+    const normalize = (store as unknown as {
+      normalizeSnapshotForPersistence: (snapshot: StateSnapshot) => StateSnapshot;
+    }).normalizeSnapshotForPersistence.bind(store);
+    const base = declinedPlanSnapshot();
+    const normalized = StateSnapshotSchema.parse(normalize(StateSnapshotSchema.parse({
+      ...base,
+      planDecisions: [],
+      output: {
+        text: "<proposed_plan>\n短\n</proposed_plan>",
+      },
+    })));
+
+    const pendingDecision = normalized.planDecisions.find((decision) => decision.status === "pending");
+    expect(pendingDecision).toMatchObject({
+      runId: normalized.runId,
+      sessionId: normalized.sessionId,
+      status: "pending",
+      planContent: "短",
+    });
+    expect(normalized.attention?.kind).toBe("needs_plan_decision");
+  });
 });

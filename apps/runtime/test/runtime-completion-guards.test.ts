@@ -72,6 +72,16 @@ describe("runtime completion guards", () => {
     const result = acceptedPlanImplementationEvidenceGuard({
       actions: [],
       planList: [],
+      status: "running",
+      events: [{
+        id: "run-accepted:evt-1",
+        runId: "run-accepted",
+        seq: 1,
+        type: "run.resumed",
+        createdAt: 1,
+        pattern: "orchestrator_subagent",
+        payload: { reason: "Plan accepted." },
+      }],
       plan: [{
         id: "run-accepted:decompose",
         runId: "run-accepted",
@@ -80,6 +90,14 @@ describe("runtime completion guards", () => {
         dependencies: [],
         linkedActionIds: [],
         checkpointIds: [],
+      }],
+      planDecisions: [{
+        id: "decision-plan",
+        runId: "run-accepted",
+        sessionId: "session-accepted",
+        status: "accepted",
+        createdAt: 1,
+        resolvedAt: 2,
       }],
       toolCalls: [],
       runId: "run-accepted",
@@ -98,6 +116,38 @@ describe("runtime completion guards", () => {
     });
   });
 
+  it("blocks completion when accepted same-run implementation contract has not resumed yet", () => {
+    const result = acceptedPlanImplementationEvidenceGuard({
+      actions: [],
+      planList: [],
+      status: "succeeded",
+      events: [],
+      plan: [],
+      planDecisions: [{
+        id: "decision-plan",
+        runId: "run-accepted",
+        sessionId: "session-accepted",
+        status: "accepted",
+        createdAt: 1,
+        resolvedAt: 2,
+      }],
+      toolCalls: [],
+      runId: "run-accepted",
+      modeId: "orchestrator_subagent",
+      metadata: {
+        taskIntent: "implement",
+        acceptedPlanExecutionContract: "same_run_implementation",
+        acceptedPlanDecisionId: "decision-plan",
+        acceptedPlanRunId: "run-accepted",
+      },
+    });
+
+    expect(result).toMatchObject({
+      allowComplete: false,
+      reason: "accepted_plan_resume_not_started",
+    });
+  });
+
   it("allows completion when accepted same-run implementation contract has implementation evidence", () => {
     const result = acceptedPlanImplementationEvidenceGuard({
       actions: [{
@@ -110,6 +160,24 @@ describe("runtime completion guards", () => {
         artifactIds: [],
       }],
       planList: [],
+      status: "running",
+      events: [{
+        id: "run-accepted:evt-1",
+        runId: "run-accepted",
+        seq: 1,
+        type: "run.resumed",
+        createdAt: 1,
+        pattern: "orchestrator_subagent",
+        payload: { reason: "Plan accepted." },
+      }],
+      planDecisions: [{
+        id: "decision-plan",
+        runId: "run-accepted",
+        sessionId: "session-accepted",
+        status: "accepted",
+        createdAt: 1,
+        resolvedAt: 2,
+      }],
       toolCalls: [],
       runId: "run-accepted",
       modeId: "orchestrator_subagent",

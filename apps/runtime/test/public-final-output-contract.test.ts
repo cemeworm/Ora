@@ -88,4 +88,10 @@ describe("public final output contract", () => {
       visibleText: "前置说明\n\n结尾说明",
     });
   });
+
+  it("accepts a short recoverable single proposed_plan block", () => {
+    expect(finalOutputContractViolation({
+      text: "<proposed_plan>\n短\n</proposed_plan>",
+    })).toBeUndefined();
+  });
 });

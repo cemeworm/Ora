@@ -390,7 +390,7 @@ describe("runtime ledger authority guards", () => {
     expect(resumeStreamingRun).toContain("this.runStreamingService.createSession");
     expect(streamingServiceSource).toContain("this.deps.appendRuntimeEventBatchToLedger");
     expect(appendRuntimeEventBatchToLedger).toContain("ledgerSnapshotOrFallback");
-    expect(appendRuntimeEventBatchToLedger).toContain("this.runs.set(projected.runId, projected)");
+    expect(appendRuntimeEventBatchToLedger).toContain("this.storeRunProjection(projected)");
   });
 
   it("rebases active running reads on ledger projection plus unflushed event tails", () => {
