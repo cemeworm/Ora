@@ -1542,3 +1542,159 @@ describe("chat input keyboard shortcuts", () => {
     expect(onTaskIntentChange).not.toHaveBeenCalled();
   });
 });
+
+describe("chat input undo / redo", () => {
+  it("reverts text insertion on Ctrl+Z", () => {
+    let latestState: HarnessState = {
+      prompt: "",
+      selectedSkillIds: [],
+      contextIds: [],
+    };
+    const { container } = renderElement(
+      createElement(ChatInputHarness, {
+        initialPrompt: "hello",
+        onStateChange: (state: HarnessState) => {
+          latestState = state;
+        },
+      }),
+    );
+
+    const editor = getEditor(container);
+    const textSegment = getTextSegments(editor)[0];
+    expect(textSegment).toBeTruthy();
+
+    // Change text and trigger input event
+    textSegment!.textContent = "hello!";
+    dispatchEditorInput(editor);
+
+    expect(latestState.prompt).toBe("hello!");
+
+    // Ctrl+Z: should revert to "hello"
+    dispatchEditorKey(editor, "z", { metaKey: true });
+
+    expect(latestState.prompt).toBe("hello");
+  });
+
+  it("reverts then redoes on Ctrl+Z then Ctrl+Shift+Z", () => {
+    let latestState: HarnessState = {
+      prompt: "",
+      selectedSkillIds: [],
+      contextIds: [],
+    };
+    const { container } = renderElement(
+      createElement(ChatInputHarness, {
+        initialPrompt: "ab",
+        onStateChange: (state: HarnessState) => {
+          latestState = state;
+        },
+      }),
+    );
+
+    const editor = getEditor(container);
+    const textSegment = getTextSegments(editor)[0];
+    textSegment!.textContent = "abc";
+    dispatchEditorInput(editor);
+    expect(latestState.prompt).toBe("abc");
+
+    // Undo: back to "ab"
+    dispatchEditorKey(editor, "z", { metaKey: true });
+    expect(latestState.prompt).toBe("ab");
+
+    // Redo: forward to "abc"
+    dispatchEditorKey(editor, "z", { metaKey: true, shiftKey: true });
+    expect(latestState.prompt).toBe("abc");
+  });
+
+  it("restores deleted chip on Ctrl+Z", () => {
+    let latestState: HarnessState = {
+      prompt: "",
+      selectedSkillIds: [],
+      contextIds: [],
+    };
+    const { container } = renderElement(
+      createElement(ChatInputHarness, {
+        initialSkillIds: ["release-helper", "doc-helper"],
+        onStateChange: (state: HarnessState) => {
+          latestState = state;
+        },
+      }),
+    );
+
+    const editor = getEditor(container);
+    expect(getSkillChips(editor)).toHaveLength(2);
+
+    // Place caret between the two chips and delete left chip
+    const betweenChipText = getTextSegments(editor)[1];
+    setCaret(betweenChipText, 0);
+    flushSelection(editor);
+    dispatchEditorKey(editor, "Backspace");
+    expect(latestState.selectedSkillIds).toEqual(["doc-helper"]);
+
+    // Undo: restore the deleted chip
+    dispatchEditorKey(editor, "z", { metaKey: true });
+    expect(latestState.selectedSkillIds).toEqual(["release-helper", "doc-helper"]);
+  });
+
+  it("does not throw when undo stack is empty", () => {
+    const { container } = renderElement(
+      createElement(ChatInput as any, createBaseProps()),
+    );
+
+    const editor = getEditor(container);
+    expect(() => {
+      dispatchEditorKey(editor, "z", { metaKey: true });
+    }).not.toThrow();
+  });
+
+  it("clears undo stack on session switch", () => {
+    let latestState: HarnessState = {
+      prompt: "",
+      selectedSkillIds: [],
+      contextIds: [],
+    };
+    const { container, rerender } = renderElement(
+      createElement(ChatInputHarness, {
+        sessionId: "session-1",
+        initialPrompt: "initial",
+        onStateChange: (state: HarnessState) => {
+          latestState = state;
+        },
+      }),
+    );
+
+    const editor = getEditor(container);
+
+    // Type something to create a snapshot
+    const textSegment = getTextSegments(editor)[0];
+    textSegment!.textContent = "modified";
+    dispatchEditorInput(editor);
+    expect(latestState.prompt).toBe("modified");
+
+    // Undo should work in session-1
+    dispatchEditorKey(editor, "z", { metaKey: true });
+    expect(latestState.prompt).toBe("initial");
+
+    // Re-type and switch session
+    textSegment!.textContent = "modified-again";
+    dispatchEditorInput(editor);
+    expect(latestState.prompt).toBe("modified-again");
+
+    rerender(
+      createElement(ChatInputHarness, {
+        key: "session-2",
+        sessionId: "session-2",
+        initialPrompt: "new-session",
+        onStateChange: (state: HarnessState) => {
+          latestState = state;
+        },
+      }),
+    );
+
+    // Undo should do nothing in new session
+    const newEditor = getEditor(container);
+    expect(() => {
+      dispatchEditorKey(newEditor, "z", { metaKey: true });
+    }).not.toThrow();
+    expect(latestState.prompt).toBe("new-session");
+  });
+});

@@ -203,6 +203,8 @@ const COMPOSER_TEXT_INPUT_TYPES = new Set([
   "insertText",
 ]);
 
+const COMPOSER_UNDO_DEBOUNCE_MS = 800;
+
 type ComposerTextSegment = {
   id: string;
   kind: "text";
@@ -1013,6 +1015,9 @@ export function ChatInput({
       contextChips,
     }),
   );
+  const undoStackRef = useRef<ComposerSegment[][]>([]);
+  const redoStackRef = useRef<ComposerSegment[][]>([]);
+  const lastUndoSnapshotTimeRef = useRef<number>(0);
   const [selectionBookmark, setSelectionBookmark] =
     useState<ComposerSelectionBookmark | null>(null);
   const plainTextPrompt = useMemo(() => segmentsToPrompt(segments), [segments]);
@@ -1093,6 +1098,9 @@ export function ChatInput({
       pendingSelectionRef.current = null;
       setHasPendingUserInput(false);
       setSelectionBookmark(null);
+      undoStackRef.current = [];
+      redoStackRef.current = [];
+      lastUndoSnapshotTimeRef.current = 0;
       setPreviewImage(null);
       setSegments(
         buildComposerSegments({
@@ -1221,10 +1229,27 @@ export function ChatInput({
     }
   }, [skillPickerIndex, showSkillPicker]);
 
+  function pushUndoSegmentsSnapshot(currentSegments: ComposerSegment[]) {
+    const now = Date.now();
+    if (now - lastUndoSnapshotTimeRef.current < COMPOSER_UNDO_DEBOUNCE_MS) {
+      return;
+    }
+    lastUndoSnapshotTimeRef.current = now;
+    const snapshot = JSON.parse(JSON.stringify(currentSegments)) as ComposerSegment[];
+    undoStackRef.current.push(snapshot);
+    if (undoStackRef.current.length > 50) {
+      undoStackRef.current.shift();
+    }
+    redoStackRef.current = [];
+  }
+
   function applySegmentChange(
     nextSegments: ComposerSegment[],
-    options: { focus?: boolean; selection?: ComposerSelectionBookmark | null } = {},
+    options: { focus?: boolean; selection?: ComposerSelectionBookmark | null; skipUndoSnapshot?: boolean } = {},
   ) {
+    if (!options.skipUndoSnapshot) {
+      pushUndoSegmentsSnapshot(segments);
+    }
     const normalized = normalizeComposerSegments(nextSegments);
     const previousPrompt = segmentsToPrompt(segments);
     const nextPrompt = segmentsToPrompt(normalized);
@@ -1546,6 +1571,28 @@ export function ChatInput({
     if (isComposingRef.current || e.nativeEvent.isComposing) {
       return;
     }
+    // Undo: Cmd+Z / Ctrl+Z
+    if ((e.metaKey || e.ctrlKey) && e.key === "z" && !e.shiftKey) {
+      e.preventDefault();
+      if (undoStackRef.current.length === 0) return;
+      const currentSnapshot = JSON.parse(JSON.stringify(segments)) as ComposerSegment[];
+      redoStackRef.current.push(currentSnapshot);
+      const restored = undoStackRef.current.pop()!;
+      applySegmentChange(restored, { focus: true, skipUndoSnapshot: true });
+      return;
+    }
+
+    // Redo: Cmd+Shift+Z / Ctrl+Shift+Z
+    if ((e.metaKey || e.ctrlKey) && e.key === "z" && e.shiftKey) {
+      e.preventDefault();
+      if (redoStackRef.current.length === 0) return;
+      const currentSnapshot = JSON.parse(JSON.stringify(segments)) as ComposerSegment[];
+      undoStackRef.current.push(currentSnapshot);
+      const restored = redoStackRef.current.pop()!;
+      applySegmentChange(restored, { focus: true, skipUndoSnapshot: true });
+      return;
+    }
+
     if (e.key === "Tab" && !e.shiftKey) {
       e.preventDefault();
       if (openPicker === "skills") {
@@ -1616,11 +1663,6 @@ export function ChatInput({
     if (e.key === "Enter" && openPicker === "skills") {
       e.preventDefault();
       confirmSkillPickerSelection();
-      return;
-    }
-    if (e.key === "Enter" && e.shiftKey) {
-      e.preventDefault();
-      insertTextAtSelection("\n");
       return;
     }
     if (e.key === "Enter" && !e.shiftKey) {
