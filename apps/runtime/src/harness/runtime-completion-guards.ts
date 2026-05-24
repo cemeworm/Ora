@@ -5,6 +5,9 @@ import type {
   PlanListStep,
   StateSnapshot,
 } from "@cemeworm/shared";
+import {
+  hasAcceptedPlanSameRunImplementationContract,
+} from "@cemeworm/shared";
 
 export interface RuntimeCompletionGuardState {
   actions: readonly ActionRecord[];
@@ -14,6 +17,9 @@ export interface RuntimeCompletionGuardState {
   replayedActionIds?: readonly string[];
   toolCalls: readonly OraToolCallEnvelope[];
   agentId?: string;
+  runId?: string;
+  modeId?: string;
+  metadata?: Record<string, unknown>;
   activeBackgroundChildCount?: number;
   pendingAsyncResultCount?: number;
   collaborationRequirement?: "none" | "required";
@@ -37,6 +43,9 @@ export interface TerminalStateAssertionInput {
   planList: readonly PlanListStep[];
   plan?: StateSnapshot["plan"];
   todos?: StateSnapshot["todos"];
+  runId?: string;
+  modeId?: string;
+  metadata?: Record<string, unknown>;
   activeBackgroundChildCount?: number;
   pendingAsyncResultCount?: number;
   gates?: readonly {
@@ -152,10 +161,89 @@ export const DEFAULT_RUNTIME_COMPLETION_GUARDS: readonly RuntimeCompletionGuard[
   planListCompletionGuard,
   legacyProgressCompletionGuard,
   pendingRuntimeWorkGuard,
+  acceptedPlanImplementationEvidenceGuard,
   requiredCollaborationGuard,
   stalledBackgroundWorkGuard,
   pendingBackgroundWorkGuard,
 ];
+
+function acceptedImplementationEvidenceSummary(
+  state: Pick<RuntimeCompletionGuardState, "actions" | "toolCalls" | "plan" | "modeId" | "runId">,
+): { observed: boolean; detail: string } {
+  const runId = state.runId;
+  const resumedActionEvidence = state.actions.filter((action) =>
+    action.status === "succeeded" &&
+    !action.type.startsWith("agent.") &&
+    (!runId || action.runId === runId)
+  );
+  if (resumedActionEvidence.length > 0) {
+    return {
+      observed: true,
+      detail: `succeeded actions: ${resumedActionEvidence.map((action) => `${action.type}:${action.id}`).join(", ")}`,
+    };
+  }
+
+  const resumedToolEvidence = state.toolCalls.filter((call) =>
+    call.status === "succeeded" &&
+    (!runId || call.runId === runId)
+  );
+  if (resumedToolEvidence.length > 0) {
+    return {
+      observed: true,
+      detail: `succeeded tool calls: ${resumedToolEvidence.map((call) => `${call.toolId}:${call.id}`).join(", ")}`,
+    };
+  }
+
+  const planItems = state.plan ?? [];
+  const resumePrefix = runId ? `${runId}:` : "";
+  const nonPlanningNodes = planItems.filter((item) =>
+    item.status === "done" &&
+    (!runId || item.runId === runId) &&
+    (
+      !resumePrefix ||
+      (
+        !item.id.startsWith(`${resumePrefix}decompose`) &&
+        !item.id.startsWith(`${resumePrefix}triage`)
+      )
+    )
+  );
+  if (nonPlanningNodes.length > 0) {
+    return {
+      observed: true,
+      detail: `completed implementation nodes: ${nonPlanningNodes.map((item) => item.id).join(", ")}`,
+    };
+  }
+
+  if (state.modeId === "orchestrator_subagent") {
+    return { observed: false, detail: "no succeeded runtime work after accepted same-run resume" };
+  }
+  return { observed: false, detail: "no implementation evidence observed after accepted same-run resume" };
+}
+
+export function acceptedPlanImplementationEvidenceGuard(
+  state: RuntimeCompletionGuardState,
+): RuntimeCompletionGuardResult {
+  if (!hasAcceptedPlanSameRunImplementationContract(state.metadata, state.runId)) {
+    return { allowComplete: true };
+  }
+  const evidence = acceptedImplementationEvidenceSummary(state);
+  if (evidence.observed) {
+    return { allowComplete: true };
+  }
+  return {
+    allowComplete: false,
+    reason: "accepted_plan_implementation_missing",
+    progressTrigger: "accepted_plan.implementation_missing",
+    progressSummary: "Accepted same-run implementation contract has no implementation evidence; refusing to complete.",
+    detail: evidence.detail,
+    followUpReason: "accepted_plan_implementation_missing_follow_up",
+    followUpContent: [
+      "The user accepted the implementation plan for this same run.",
+      "Do not finish the run as done until you have actually performed implementation work or surfaced a concrete blocking failure.",
+      "Continue the implementation flow instead of stopping at a plan-only milestone.",
+    ].join(" "),
+  };
+}
 
 export function requiredCollaborationGuard(
   state: RuntimeCompletionGuardState,
@@ -366,6 +454,22 @@ export function assertRunCanBecomeTerminal(
 ): void {
   const violations: string[] = [];
 
+  const acceptedImplementationGuardResult = acceptedPlanImplementationEvidenceGuard({
+    actions: input.actions,
+    planList: input.planList,
+    plan: input.plan,
+    todos: input.todos,
+    toolCalls: input.toolCalls,
+    runId: input.runId,
+    modeId: input.modeId,
+    metadata: input.metadata,
+    activeBackgroundChildCount: input.activeBackgroundChildCount,
+    pendingAsyncResultCount: input.pendingAsyncResultCount,
+  });
+  if (!acceptedImplementationGuardResult.allowComplete) {
+    violations.push(acceptedImplementationGuardResult.detail);
+  }
+
   // 1. Open gates (approval, clarification, plan-decision)
   if (input.gates) {
     const openGates = input.gates.filter((gate) => gate.status === "open");
@@ -473,7 +577,19 @@ export class TerminalStateIntegrityError extends Error {
  * direct access to kernel context.
  */
 export function deriveTerminalStateAssertionFromSnapshot(
-  snapshot: { actions: readonly ActionRecord[]; toolCalls: readonly OraToolCallEnvelope[]; pendingApprovals: readonly string[]; pendingClarifications: readonly { id: string }[]; continuation: { frames: readonly { id: string; status: string; reason: string; pendingActionIds: readonly string[]; pendingToolCallIds: readonly string[]; pendingClarificationIds: readonly string[] }[] }; planList: readonly PlanListStep[]; plan?: readonly { id: string; status: string }[]; todos?: readonly { id: string; status: string }[] },
+  snapshot: {
+    actions: readonly ActionRecord[];
+    toolCalls: readonly OraToolCallEnvelope[];
+    pendingApprovals: readonly string[];
+    pendingClarifications: readonly { id: string }[];
+    continuation: { frames: readonly { id: string; status: string; reason: string; pendingActionIds: readonly string[]; pendingToolCallIds: readonly string[]; pendingClarificationIds: readonly string[] }[] };
+    planList: readonly PlanListStep[];
+    plan?: readonly { id: string; status: string; runId?: string; title?: string; linkedActionIds?: readonly string[] }[];
+    todos?: readonly { id: string; status: string }[];
+    runId?: string;
+    modeId?: string;
+    config?: { metadata?: Record<string, unknown> };
+  },
   ): TerminalStateAssertionInput {
   const gates: { gateId: string; kind: "clarification" | "approval" | "plan_decision"; status: "open" | "resolved" }[] = [];
   for (const pc of snapshot.pendingClarifications) {
@@ -491,6 +607,9 @@ export function deriveTerminalStateAssertionFromSnapshot(
     planList: snapshot.planList,
     plan: snapshot.plan as TerminalStateAssertionInput["plan"],
     todos: snapshot.todos as TerminalStateAssertionInput["todos"],
+    runId: snapshot.runId,
+    modeId: snapshot.modeId,
+    metadata: snapshot.config?.metadata,
     gates,
   };
 }

@@ -609,4 +609,45 @@ describe("RunResumeService", () => {
       }),
     ).toThrow(TerminalStateIntegrityError);
   });
+
+  it("rejects terminal completion when accepted same-run implementation contract has no implementation evidence", () => {
+    const snapshot = StateSnapshotSchema.parse({
+      ...baseSnapshot(),
+      status: "succeeded",
+      config: {
+        ...baseSnapshot().config,
+        metadata: {
+          taskIntent: "implement",
+          acceptedPlanExecutionContract: "same_run_implementation",
+          acceptedPlanDecisionId: "decision-plan",
+          acceptedPlanRunId: "run-resume-strategy",
+        },
+      },
+      plan: [{
+        id: "run-resume-strategy:decompose",
+        runId: "run-resume-strategy",
+        title: "Decompose",
+        status: "done",
+        dependencies: [],
+        linkedActionIds: [],
+        checkpointIds: [],
+      }],
+    });
+
+    expect(() =>
+      assertRunCanBecomeTerminal({
+        actions: snapshot.actions,
+        toolCalls: snapshot.toolCalls,
+        pendingApprovals: snapshot.pendingApprovals,
+        pendingClarifications: snapshot.pendingClarifications,
+        continuation: snapshot.continuation,
+        planList: snapshot.planList,
+        plan: snapshot.plan,
+        todos: snapshot.todos,
+        runId: snapshot.runId,
+        modeId: snapshot.modeId,
+        metadata: snapshot.config.metadata,
+      }),
+    ).toThrow(TerminalStateIntegrityError);
+  });
 });

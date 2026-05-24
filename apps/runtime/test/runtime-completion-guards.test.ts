@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  acceptedPlanImplementationEvidenceGuard,
   evaluateRuntimeCompletionGuards,
   finalOutputGuard,
   legacyProgressCompletionGuard,
@@ -65,6 +66,62 @@ describe("runtime completion guards", () => {
       allowComplete: false,
       reason: "plan_list_incomplete",
     });
+  });
+
+  it("blocks completion when accepted same-run implementation contract has no implementation evidence", () => {
+    const result = acceptedPlanImplementationEvidenceGuard({
+      actions: [],
+      planList: [],
+      plan: [{
+        id: "run-accepted:decompose",
+        runId: "run-accepted",
+        title: "Decompose",
+        status: "done",
+        dependencies: [],
+        linkedActionIds: [],
+        checkpointIds: [],
+      }],
+      toolCalls: [],
+      runId: "run-accepted",
+      modeId: "orchestrator_subagent",
+      metadata: {
+        taskIntent: "implement",
+        acceptedPlanExecutionContract: "same_run_implementation",
+        acceptedPlanDecisionId: "decision-plan",
+        acceptedPlanRunId: "run-accepted",
+      },
+    });
+
+    expect(result).toMatchObject({
+      allowComplete: false,
+      reason: "accepted_plan_implementation_missing",
+    });
+  });
+
+  it("allows completion when accepted same-run implementation contract has implementation evidence", () => {
+    const result = acceptedPlanImplementationEvidenceGuard({
+      actions: [{
+        id: "run-accepted:action-write",
+        runId: "run-accepted",
+        type: "file.write",
+        riskLevel: "high",
+        status: "succeeded",
+        input: {},
+        artifactIds: [],
+      }],
+      planList: [],
+      toolCalls: [],
+      runId: "run-accepted",
+      modeId: "orchestrator_subagent",
+      metadata: {
+        taskIntent: "implement",
+        acceptedPlanExecutionContract: "same_run_implementation",
+        acceptedPlanDecisionId: "decision-plan",
+        acceptedPlanRunId: "run-accepted",
+      },
+    });
+
+    expect(result).toEqual({ allowComplete: true });
   });
 
   it("allows terminal approved replay tools to finalize blocked legacy progress", () => {

@@ -149,6 +149,7 @@ import { RuntimeSkillRegistry, RuntimeToolRegistry } from "./harness/capability-
 import { ApprovalInterruptError, ClarificationInterruptError, isApprovalInterruptError, isClarificationInterruptError } from "./harness/runtime-interrupts.js";
 import {
   approvedToolContinuationActions,
+  clarificationResolvedToolContinuationActions,
   type ApprovedFileWriteResumeDeps
 } from "./approved-file-write-resume.js";
 import {
@@ -2220,7 +2221,11 @@ export class LocalRunStore {
     return toFlowRunHandle(this.getRunState({ runId: handle.runId }));
   }
 
-  private approvedFileWriteResumeDeps(): ApprovedFileWriteResumeDeps {
+  private approvedFileWriteResumeDeps(params?: {
+    clarificationPatch?: Record<string, unknown>;
+    signal?: AbortSignal;
+  }): ApprovedFileWriteResumeDeps {
+    const clarificationPatch = params?.clarificationPatch ?? {};
     return {
       skillRegistry: this.skillRegistry,
       now: () => this.now(),
@@ -2228,18 +2233,30 @@ export class LocalRunStore {
       attachTraceMetadata: (snapshot) => attachTraceMetadata(snapshot),
       buildConversationMessages: (sessionId, currentPrompt, excludeRunId) =>
         this.buildConversationMessages(sessionId, currentPrompt, excludeRunId),
+      clarificationAnswer: (key, id) => {
+        if (clarificationPatch[key] !== undefined) {
+          return clarificationPatch[key];
+        }
+        return clarificationPatch[id];
+      },
+      signal: params?.signal,
     };
   }
 
   private assertResumeStrategyBoundary(params: {
     snapshot: StateSnapshot;
     approvedActionIds: string[];
+    clarificationPatch: Record<string, unknown>;
     hasKernelWork: boolean;
     strategy: RunResumeStrategy;
   }): void {
     const continuationActionIds = approvedToolContinuationActions(
       params.snapshot,
       params.approvedActionIds,
+    ).map((action) => action.id);
+    const clarificationContinuationActionIds = clarificationResolvedToolContinuationActions(
+      params.snapshot,
+      params.clarificationPatch,
     ).map((action) => action.id);
     const sameIds = (left: string[], right: string[]) =>
       left.length === right.length && left.every((value, index) => value === right[index]);
@@ -2255,6 +2272,18 @@ export class LocalRunStore {
         params.strategy.continueKernelAfterTool !== params.hasKernelWork
       ) {
         throw new OraRuntimeError("Run resume strategy approved-tool boundary diverged from LocalRunStore sources.", -32004, {
+          runId: params.snapshot.runId,
+        });
+      }
+      return;
+    }
+    if (clarificationContinuationActionIds.length > 0) {
+      if (
+        params.strategy.kind !== "clarification_tool_continuation" ||
+        !sameIds(params.strategy.continuationActionIds, clarificationContinuationActionIds) ||
+        params.strategy.continueKernelAfterTool !== params.hasKernelWork
+      ) {
+        throw new OraRuntimeError("Run resume strategy clarification-tool boundary diverged from LocalRunStore sources.", -32004, {
           runId: params.snapshot.runId,
         });
       }
@@ -2308,7 +2337,11 @@ export class LocalRunStore {
   #shouldContinueApprovedToolToKernel(
     result: { kind: string; snapshot: StateSnapshot },
     clarificationPatch: Record<string, unknown>,
+    strategyKind?: RunResumeStrategy["kind"],
   ): boolean {
+    if (strategyKind === "clarification_tool_continuation") {
+      return true;
+    }
     if (result.kind === "continue") return true;
     if (result.kind !== "completed") return false;
     if (Object.keys(clarificationPatch).length === 0) return false;
@@ -2327,7 +2360,7 @@ export class LocalRunStore {
       hasKernelWork,
       strategy,
     } = this.runResumeService.prepare(params);
-    this.assertResumeStrategyBoundary({ snapshot, approvedActionIds, hasKernelWork, strategy });
+    this.assertResumeStrategyBoundary({ snapshot, approvedActionIds, clarificationPatch, hasKernelWork, strategy });
 
     if (!hasKernelWork && snapshot.pendingClarifications.length > 0) {
       console.warn(
@@ -2380,13 +2413,18 @@ export class LocalRunStore {
     });
     streamingSession.publish([], liveSnapshot);
 
-    if (approvedToolContinuationActions(snapshot, approvedActionIds).length > 0) {
+    if (strategy.kind === "approved_tool_continuation" || strategy.kind === "clarification_tool_continuation") {
       void executeApprovedToolContinuationStrategy({
         snapshot,
         approvedActionIds,
+        continuationActionIds: strategy.continuationActionIds,
         reason: parsed.reason,
         patch: parsed.patch,
-        deps: this.approvedFileWriteResumeDeps(),
+        continuationMode: strategy.kind === "clarification_tool_continuation" ? "clarification" : "approval",
+        deps: this.approvedFileWriteResumeDeps({
+          clarificationPatch,
+          signal: abortController.signal,
+        }),
         onEvent: (event, nextSnapshot) => {
           liveSnapshot = streamingSession.acceptSnapshotForEvent(event, nextSnapshot) ?? liveSnapshot;
         },
@@ -2403,7 +2441,7 @@ export class LocalRunStore {
           return;
         }
         let completedSnapshot: StateSnapshot;
-        if (this.#shouldContinueApprovedToolToKernel(result, clarificationPatch)) {
+        if (this.#shouldContinueApprovedToolToKernel(result, clarificationPatch, strategy.kind)) {
           const continuationSnapshot = result.snapshot;
           liveSnapshot = streamingSession.replaceSnapshot(continuationSnapshot);
           completedSnapshot = await this.runKernelExecutionService.continueAfterApprovedTool({
@@ -2411,6 +2449,7 @@ export class LocalRunStore {
             continuationSnapshot,
             clarificationPatch,
             approvedActionIds,
+            continuationActionIds: strategy.continuationActionIds,
             signal: abortController.signal,
             onEvent: (event, baseSeq) => {
               const rebasedEvent = rebaseRunEvent(event, snapshot.runId, baseSeq);
@@ -2687,7 +2726,7 @@ export class LocalRunStore {
       hasKernelWork,
       strategy,
     } = this.runResumeService.prepare(params);
-    this.assertResumeStrategyBoundary({ snapshot, approvedActionIds, hasKernelWork, strategy });
+    this.assertResumeStrategyBoundary({ snapshot, approvedActionIds, clarificationPatch, hasKernelWork, strategy });
     if (!hasKernelWork && snapshot.pendingClarifications.length > 0) {
       console.warn(
         "[resumeRun] hasKernelWork=false but snapshot has",
@@ -2701,20 +2740,33 @@ export class LocalRunStore {
     let liveSnapshot = this.markResumeRunning(snapshot, approvedActionIds);
 
     try {
-      const approvedToolContinuation = await executeApprovedToolContinuationStrategy({
-        snapshot,
-        approvedActionIds,
-        reason: parsed.reason,
-        patch: parsed.patch,
-        deps: this.approvedFileWriteResumeDeps(),
-      });
+      const approvedToolContinuation = (
+        strategy.kind === "approved_tool_continuation" || strategy.kind === "clarification_tool_continuation"
+      )
+        ? await executeApprovedToolContinuationStrategy({
+          snapshot,
+          approvedActionIds,
+          continuationActionIds: strategy.continuationActionIds,
+          reason: parsed.reason,
+          patch: parsed.patch,
+          continuationMode: strategy.kind === "clarification_tool_continuation" ? "clarification" : "approval",
+          deps: this.approvedFileWriteResumeDeps({
+            clarificationPatch,
+          }),
+        })
+        : undefined;
       if (approvedToolContinuation) {
-        const completedApprovedTool = this.#shouldContinueApprovedToolToKernel(approvedToolContinuation, clarificationPatch)
+        const completedApprovedTool = this.#shouldContinueApprovedToolToKernel(
+          approvedToolContinuation,
+          clarificationPatch,
+          strategy.kind,
+        )
           ? await this.runKernelExecutionService.continueAfterApprovedTool({
             originalSnapshot: snapshot,
             continuationSnapshot: approvedToolContinuation.snapshot,
             clarificationPatch,
             approvedActionIds,
+            continuationActionIds: strategy.continuationActionIds,
           })
           : approvedToolContinuation.snapshot;
         return this.runResumeFinalizationService.persistTerminal({
@@ -3727,6 +3779,25 @@ export class LocalRunStore {
         clarificationPatch[clarification.key] !== undefined,
       )
       .map((clarification) => clarification.id);
+    if (resolvedClarificationIds.length > 0) {
+      const existingClarifications = working.input.context?.clarifications;
+      const nextClarifications = typeof existingClarifications === "object" && existingClarifications !== null
+        ? { ...existingClarifications, ...clarificationPatch }
+        : { ...clarificationPatch };
+      working = StateSnapshotSchema.parse({
+        ...working,
+        input: {
+          ...working.input,
+          context: {
+            ...working.input.context,
+            clarifications: nextClarifications,
+          },
+        },
+        pendingClarifications: working.pendingClarifications.filter((clarification) =>
+          !resolvedClarificationIds.includes(clarification.id),
+        ),
+      });
+    }
     working = this.appendResolvedClarificationEvents(
       working,
       currentPendingClarifications(original),
@@ -3827,9 +3898,28 @@ export class LocalRunStore {
             updatedAt: snapshot.updatedAt,
           };
         }
+        const resolvedActionIds = nextFrame.pendingActionIds.filter((id) => terminalActionIds.has(id));
+        const resolvedToolCallIds = nextFrame.pendingToolCallIds.filter((id) => terminalToolCallIds.has(id));
+        if (resolvedActionIds.length > 0 || resolvedToolCallIds.length > 0) {
+          changed = true;
+          const resolvedToolCallIdSet = new Set(resolvedToolCallIds);
+          nextFrame = {
+            ...nextFrame,
+            pendingActionIds: nextFrame.pendingActionIds.filter((id) => !terminalActionIds.has(id)),
+            pendingToolCallIds: nextFrame.pendingToolCallIds.filter((id) => !resolvedToolCallIdSet.has(id)),
+            updatedAt: snapshot.updatedAt,
+          };
+        }
         if (
+          nextFrame.pendingActionIds.length === 0 &&
+          nextFrame.pendingToolCallIds.length === 0 &&
           nextFrame.pendingClarificationIds.length === 0 &&
-          (nextFrame.status === "paused" || nextFrame.status === "awaiting_model" || nextFrame.status === "resuming")
+          (
+            nextFrame.status === "paused"
+            || nextFrame.status === "awaiting_model"
+            || nextFrame.status === "resuming"
+            || nextFrame.status === "executing_tool"
+          )
         ) {
           changed = true;
           nextFrame = {

@@ -59,6 +59,7 @@ export interface CallAgentParams {
 
 export interface PatternExecutionContext {
   projectId: string;
+  runId?: string;
   queueSummary: QueueSummary;
   sharedStateSummary: SharedStateSummary;
   busStats: BusStats;

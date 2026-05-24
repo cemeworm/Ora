@@ -11,6 +11,7 @@ import type {
   RunConfig,
 } from "@cemeworm/shared";
 import {
+  inspectProposedPlanContract,
   isInternalAssistantText as isSharedInternalAssistantText,
   isInternalRecoveryFallbackText as isSharedInternalRecoveryFallbackText,
   stripInternalAssistantProtocolText,
@@ -784,7 +785,7 @@ export function stripInternalAssistantText(text: string): string {
 }
 
 function containsCompleteProposedPlanText(text: string): boolean {
-  return /<proposed_plan>\s*[\s\S]+?\s*<\/proposed_plan>/.test(text);
+  return inspectProposedPlanContract(text).status === "complete_single";
 }
 
 function shouldPreferCompleteProposedPlanResponse(
@@ -1380,6 +1381,9 @@ export async function runNodeRuntimeLoop(
               allowRisky,
               currentAgentId: params.agentId,
               currentNodeId: params.nodeId,
+              currentNodeLabel: params.title,
+              clarificationAnswer,
+              ensureClarification,
               signal: (() => {
                 activeOperationAbortController = new AbortController();
                 return mergeAbortSignals(deps.signal, activeOperationAbortController.signal);
@@ -1560,6 +1564,9 @@ export async function runNodeRuntimeLoop(
       planList: deps.planList(),
       toolCalls: deps.toolCalls(),
       agentId: params.agentId,
+      runId: params.runId,
+      modeId: config.modeId,
+      metadata: config.metadata,
       activeBackgroundChildCount: backgroundChildCount(),
       pendingAsyncResultCount: pendingAsyncResultCount(),
       collaborationRequirement: params.agentId === ORA_ROOT_AGENT_ID

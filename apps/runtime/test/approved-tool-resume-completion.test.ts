@@ -190,6 +190,101 @@ describe("approved tool resume completion", () => {
     });
   });
 
+  it("preserves clarification frame authority while replaying a clarification-resolved tool action", async () => {
+    const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ora-clarification-tool-replay-"));
+    fs.mkdirSync(path.join(workspaceRoot, "src"), { recursive: true });
+    fs.writeFileSync(path.join(workspaceRoot, "src", "state.tsx"), "export const chosen = 'tsx';\n", "utf8");
+    const snapshot = StateSnapshotSchema.parse({
+      ...approvedFileWriteSnapshot(workspaceRoot, {
+        planList: [{ step: "Use the clarified file contents", status: "in_progress" }],
+      }),
+      pendingApprovals: [],
+      pendingClarifications: [{
+        id: "clarification:file-read-target:test",
+        key: "file_read_target_test",
+        nodeId: "solo_agent",
+        nodeLabel: "file.read",
+        question: "请选择要读取的目标文件。",
+        options: [{ id: "candidate_1", label: "src/state.tsx", value: "src/state.tsx" }],
+        requestedAt: 1,
+      }],
+      actions: [{
+        id: "run-approved:action-write",
+        runId: "run-approved",
+        type: "file.read",
+        riskLevel: "low",
+        status: "running",
+        input: { path: "src/state.ts" },
+        artifactIds: [],
+        agentId: "solo_agent",
+        planItemId: "run-approved:respond",
+      }],
+      toolCalls: [{
+        id: "run-approved:tool-call-write",
+        runId: "run-approved",
+        toolId: "file.read",
+        args: { path: "src/state.ts" },
+        source: "provider_native",
+        status: "running",
+        actionId: "run-approved:action-write",
+        agentId: "solo_agent",
+        nodeId: "solo_agent",
+        requestedAt: 1,
+        updatedAt: 1,
+      }],
+      continuation: {
+        activeFrameId: "run-approved:continuation:0",
+        frames: [{
+          id: "run-approved:continuation:0",
+          runId: "run-approved",
+          status: "paused",
+          reason: "clarification_required",
+          conversationCursor: 0,
+          pendingActionIds: ["run-approved:action-write"],
+          pendingToolCallIds: ["run-approved:tool-call-write"],
+          pendingClarificationIds: ["clarification:file-read-target:test"],
+          approvedActionIds: [],
+          resolvedClarificationIds: [],
+          agentId: "solo_agent",
+          nodeId: "solo_agent",
+          createdAt: 1,
+          updatedAt: 1,
+        }],
+      },
+    });
+
+    const result = await completeApprovedToolContinuation(
+      snapshot,
+      [],
+      ["run-approved:action-write"],
+      { continuationMode: "clarification" },
+      {
+        ...deps(),
+        clarificationAnswer: () => "src/state.tsx",
+      },
+    );
+
+    expect(result?.kind).toBe("continue");
+    if (result?.kind !== "continue") {
+      throw new Error("Expected clarification tool replay to continue into the kernel.");
+    }
+    const frame = result.snapshot.continuation.frames.find((item) => item.id === "run-approved:continuation:0");
+    expect(frame).toMatchObject({
+      status: "awaiting_model",
+      reason: "clarification_required",
+      pendingActionIds: ["run-approved:action-write"],
+      pendingToolCallIds: ["run-approved:tool-call-write"],
+      pendingClarificationIds: ["clarification:file-read-target:test"],
+      resolvedClarificationIds: [],
+      approvedActionIds: [],
+    });
+    expect(result.snapshot.toolCalls.find((call) => call.id === "run-approved:tool-call-write")).toMatchObject({
+      toolId: "file.read",
+      status: "succeeded",
+    });
+    expect(result.snapshot.conversation.at(-1)?.content).toContain("interrupted tool action has already been replayed");
+  });
+
   it("continues an agent-team approved tool from the paused frame owner when plan-list work remains", async () => {
     const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ora-approved-team-frame-"));
     const snapshot = approvedFileWriteSnapshot(workspaceRoot, {

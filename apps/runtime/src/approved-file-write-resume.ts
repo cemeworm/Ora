@@ -1,4 +1,4 @@
-import { OraEventEnvelope, resolvePublicAssistantText, StateSnapshot, StateSnapshotSchema } from "@cemeworm/shared";
+import { OraEventEnvelope, resolvePublicAssistantText, StateSnapshot, StateSnapshotSchema, type PendingClarificationOption } from "@cemeworm/shared";
 import type { ActionRecord } from "@cemeworm/shared";
 import { RuntimeSkillRegistry, RuntimeToolRegistry } from "./harness/capability-registries.js";
 import { continuationHandlerRegistry } from "./harness/approved-tool-continuation-handler.js";
@@ -38,6 +38,16 @@ export interface ApprovedFileWriteResumeDeps {
   ) => StateSnapshot;
   attachTraceMetadata: (snapshot: StateSnapshot) => StateSnapshot;
   buildConversationMessages: (sessionId: string, currentPrompt: string, excludeRunId?: string) => ModelMessage[];
+  clarificationAnswer?: (key: string, id: string) => unknown;
+  ensureClarification?: (params: {
+    id: string;
+    key: string;
+    nodeId: string;
+    nodeLabel: string;
+    question: string;
+    options?: PendingClarificationOption[];
+  }) => Promise<unknown>;
+  signal?: AbortSignal;
 }
 
 type ContinueGuardResult = Extract<RuntimeCompletionGuardResult, { allowComplete: false }>;
@@ -45,6 +55,56 @@ type ContinueGuardResult = Extract<RuntimeCompletionGuardResult, { allowComplete
 export type ApprovedToolContinuationResult =
   | { kind: "completed"; snapshot: StateSnapshot }
   | { kind: "continue"; snapshot: StateSnapshot; guardResult: ContinueGuardResult };
+
+type ToolContinuationMode = "approval" | "clarification";
+
+type ToolContinuationParams = {
+  reason?: string;
+  patch?: unknown;
+  continuationMode?: ToolContinuationMode;
+};
+
+function isContinuationParams(value: unknown): value is ToolContinuationParams {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function resolvedClarificationIdsForPatch(
+  snapshot: StateSnapshot,
+  patch: unknown,
+): string[] {
+  if (!patch || typeof patch !== "object" || Array.isArray(patch)) {
+    return [];
+  }
+  const patchRecord = patch as Record<string, unknown>;
+  const clarifications = patchRecord.clarifications;
+  if (!clarifications || typeof clarifications !== "object" || Array.isArray(clarifications)) {
+    return [];
+  }
+  const clarificationPatch = clarifications as Record<string, unknown>;
+  return currentPendingClarifications(snapshot)
+    .filter((clarification) =>
+      clarificationPatch[clarification.id] !== undefined ||
+      clarificationPatch[clarification.key] !== undefined
+    )
+    .map((clarification) => clarification.id);
+}
+
+function continuationActionsByIds(
+  snapshot: StateSnapshot,
+  continuationActionIds: readonly string[],
+): ActionRecord[] {
+  if (continuationActionIds.length === 0) {
+    return [];
+  }
+  const continuationIdSet = new Set(continuationActionIds);
+  const continuable = snapshot.actions.filter((action) =>
+    continuationIdSet.has(action.id) &&
+    continuationHandlerRegistry.get(action.type) !== undefined
+  );
+  return continuable.length > 0 && continuable.length === continuationIdSet.size
+    ? continuable
+    : [];
+}
 
 export function approvedToolContinuationActions(
   snapshot: StateSnapshot,
@@ -66,6 +126,43 @@ export function approvedToolContinuationActions(
     : [];
 }
 
+export function clarificationResolvedToolContinuationActions(
+  snapshot: StateSnapshot,
+  clarificationPatch: Record<string, unknown>,
+): ActionRecord[] {
+  const resolvedClarifications = currentPendingClarifications(snapshot);
+  if (resolvedClarifications.length === 0) {
+    return [];
+  }
+  const resolvedIds = new Set<string>();
+  for (const clarification of resolvedClarifications) {
+    if (clarification.id in clarificationPatch || clarification.key in clarificationPatch) {
+      resolvedIds.add(clarification.id);
+    }
+  }
+  if (resolvedIds.size === 0) {
+    return [];
+  }
+  const activeFrame = snapshot.continuation.frames.find((frame) => frame.id === snapshot.continuation.activeFrameId);
+  if (!activeFrame || activeFrame.reason !== "clarification_required") {
+    return [];
+  }
+  if (!activeFrame.pendingClarificationIds.some((id) => resolvedIds.has(id))) {
+    return [];
+  }
+  const pendingActionIds = new Set(activeFrame.pendingActionIds);
+  if (pendingActionIds.size === 0) {
+    return [];
+  }
+  const continuable = snapshot.actions.filter((action) =>
+    pendingActionIds.has(action.id)
+    && continuationHandlerRegistry.get(action.type) !== undefined
+  );
+  return continuable.length > 0 && continuable.length === pendingActionIds.size
+    ? continuable
+    : [];
+}
+
 export function approvedFileWriteResumeActions(
   snapshot: StateSnapshot,
   approvedActionIds: string[],
@@ -77,11 +174,31 @@ export function approvedFileWriteResumeActions(
 export async function completeApprovedToolContinuation(
   snapshot: StateSnapshot,
   approvedActionIds: string[],
-  params: { reason?: string; patch?: unknown } = {},
-  deps: ApprovedFileWriteResumeDeps,
-  onEvent?: (event: OraEventEnvelope, snapshot: StateSnapshot) => void,
+  continuationActionIdsOrParams: string[] | ToolContinuationParams = approvedActionIds,
+  paramsOrDeps: ToolContinuationParams | ApprovedFileWriteResumeDeps = {},
+  depsOrOnEvent?: ApprovedFileWriteResumeDeps | ((event: OraEventEnvelope, snapshot: StateSnapshot) => void),
+  maybeOnEvent?: (event: OraEventEnvelope, snapshot: StateSnapshot) => void,
 ): Promise<ApprovedToolContinuationResult | undefined> {
-  const approvedTools = approvedToolContinuationActions(snapshot, approvedActionIds);
+  const normalized = Array.isArray(continuationActionIdsOrParams)
+    ? {
+        continuationActionIds: continuationActionIdsOrParams,
+        params: isContinuationParams(paramsOrDeps) ? paramsOrDeps : {},
+        deps: (isContinuationParams(paramsOrDeps) ? depsOrOnEvent : paramsOrDeps) as ApprovedFileWriteResumeDeps,
+        onEvent: (isContinuationParams(paramsOrDeps) ? maybeOnEvent : depsOrOnEvent) as
+          | ((event: OraEventEnvelope, snapshot: StateSnapshot) => void)
+          | undefined,
+      }
+    : {
+        continuationActionIds: approvedActionIds,
+        params: continuationActionIdsOrParams,
+        deps: paramsOrDeps as ApprovedFileWriteResumeDeps,
+        onEvent: depsOrOnEvent as ((event: OraEventEnvelope, snapshot: StateSnapshot) => void) | undefined,
+      };
+  const continuationActionIds = normalized.continuationActionIds;
+  const params = normalized.params;
+  const deps = normalized.deps;
+  const onEvent = normalized.onEvent;
+  const approvedTools = continuationActionsByIds(snapshot, continuationActionIds);
   if (approvedTools.length === 0) {
     return undefined;
   }
@@ -101,14 +218,19 @@ export async function completeApprovedToolContinuation(
     skillRegistry: deps.skillRegistry,
     searchProviderConfig: snapshot.config.searchProvider,
     packageManager: new PackageManager(),
+    signal: deps.signal,
   });
 
-  const approvedIdSet = new Set(approvedActionIds);
+  const continuationIdSet = new Set(continuationActionIds);
   const frameId = snapshot.continuation.activeFrameId ?? `${snapshot.runId}:continuation:${snapshot.continuation.frames.length}`;
   const existingFrame = snapshot.continuation.frames.find((frame) => frame.id === frameId);
+  const continuationMode = params.continuationMode ?? "approval";
+  const resolvedClarificationIds = continuationMode === "clarification"
+    ? resolvedClarificationIdsForPatch(snapshot, params.patch)
+    : [];
   const createdAt = existingFrame?.createdAt ?? deps.now();
   const pendingToolCallIds = snapshot.toolCalls
-    .filter((call) => call.actionId && approvedIdSet.has(call.actionId))
+    .filter((call) => call.actionId && continuationIdSet.has(call.actionId))
     .map((call) => call.id);
   let working = StateSnapshotSchema.parse({
     ...snapshot,
@@ -118,13 +240,21 @@ export async function completeApprovedToolContinuation(
       id: frameId,
       runId: snapshot.runId,
       status: "resuming",
-      reason: "approval_required",
+      reason: continuationMode === "clarification"
+        ? existingFrame?.reason ?? "clarification_required"
+        : "approval_required",
       conversationCursor: snapshot.conversation.length,
       pendingActionIds: approvedTools.map((action) => action.id),
       pendingToolCallIds,
-      pendingClarificationIds: [],
-      approvedActionIds,
-      resolvedClarificationIds: [],
+      pendingClarificationIds: continuationMode === "clarification"
+        ? existingFrame?.pendingClarificationIds ?? []
+        : [],
+      approvedActionIds: continuationMode === "clarification"
+        ? existingFrame?.approvedActionIds ?? []
+        : approvedActionIds,
+      resolvedClarificationIds: continuationMode === "clarification"
+        ? [...new Set([...(existingFrame?.resolvedClarificationIds ?? []), ...resolvedClarificationIds])]
+        : [],
       agentId: existingFrame?.agentId,
       nodeId: existingFrame?.nodeId,
       planItemId: existingFrame?.planItemId,
@@ -281,7 +411,18 @@ export async function completeApprovedToolContinuation(
         ? action.input as Record<string, unknown>
         : {};
       const toolId = action.type as RuntimeToolId;
-      const execution = await executor.executeWithMetadata({ tool: toolId, args }, { allowRisky: true });
+      const execution = await executor.executeWithMetadata(
+        { tool: toolId, args },
+        {
+          allowRisky: true,
+          currentAgentId: action.agentId,
+          currentNodeId: existingFrame?.nodeId,
+          currentNodeLabel: existingFrame?.nodeId ?? "respond",
+          clarificationAnswer: deps.clarificationAnswer,
+          ensureClarification: deps.ensureClarification,
+          signal: deps.signal,
+        },
+      );
       const output = execution.output;
       const artifact = handler.buildArtifact
         ? handler.buildArtifact(execution, {
@@ -509,6 +650,22 @@ export async function completeApprovedToolContinuation(
   }
 
   updateContinuationStatus("awaiting_model");
+  if (continuationMode === "clarification") {
+    updateContinuationStatus("awaiting_model");
+    return continueWithGuardResult({
+      allowComplete: false,
+      reason: "clarification_tool_replay_completed",
+      progressTrigger: "clarification_tools.replayed",
+      progressSummary: "Clarification-targeted tool replay completed; resuming the interrupted node.",
+      detail: "The clarification-resolved tool action has been replayed. Resume the suspended node with the replayed tool result in context.",
+      followUpReason: "clarification_tool_replay_completed",
+      followUpContent: [
+        "The missing clarification has been resolved and the interrupted tool action has already been replayed.",
+        "Continue the suspended task from these results. Do not re-run the same tool unless the arguments must change.",
+      ].join("\n"),
+    });
+  }
+
   const guardResult = evaluateRuntimeCompletionGuards({
     actions: working.actions,
     planList: working.planList,
@@ -552,7 +709,11 @@ export async function completeApprovedToolContinuation(
       ? "Final approved-action output contained internal protocol text."
       : outputViolation.reason === "recovery_fallback"
         ? "Final approved-action output resolved to recovery fallback text."
-        : "Final approved-action output was empty after public-output filtering.";
+        : outputViolation.reason === "invalid_multiple_proposed_plans"
+          ? "Final approved-action output contained multiple complete proposed_plan blocks."
+          : outputViolation.reason === "invalid_malformed_proposed_plan"
+            ? "Final approved-action output contained a malformed proposed_plan block."
+            : "Final approved-action output was empty after public-output filtering.";
     append("run.failed", {
       status: "failed",
       error: detail,
@@ -621,11 +782,19 @@ export async function completeApprovedToolContinuation(
 export async function completeApprovedFileWriteResume(
   snapshot: StateSnapshot,
   approvedActionIds: string[],
+  continuationActionIds: string[] = approvedActionIds,
   params: { reason?: string; patch?: unknown } = {},
   deps: ApprovedFileWriteResumeDeps,
   onEvent?: (event: OraEventEnvelope, snapshot: StateSnapshot) => void,
 ): Promise<ApprovedToolContinuationResult | undefined> {
-  return completeApprovedToolContinuation(snapshot, approvedActionIds, params, deps, onEvent);
+  return completeApprovedToolContinuation(
+    snapshot,
+    approvedActionIds,
+    continuationActionIds,
+    params,
+    deps,
+    onEvent,
+  );
 }
 
 async function finalTextForApprovedToolContinuation(

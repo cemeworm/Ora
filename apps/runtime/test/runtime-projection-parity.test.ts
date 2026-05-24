@@ -335,6 +335,141 @@ describe("runtime projection parity guards", () => {
     expect(stream.snapshot).toEqual(state);
   });
 
+  it("keeps clarification continuation provenance in parity across live state, stream snapshot, cold reload, and ledger projection", () => {
+    const dataDir = tempDir();
+    const store = createStore(dataDir);
+    const session = store.createSession({}) as { sessionId: string };
+    const runId = "run-clarification-projection-parity";
+    const clarificationId = `${runId}:clarification-scope`;
+    const clarificationRequired = event(runId, 0, "clarification.required", {
+      clarificationId,
+      key: "scope",
+      question: "Which file?",
+    });
+    const clarificationResolved = event(runId, 1, "clarification.resolved", {
+      clarificationId,
+      key: "scope",
+      answer: "src/state.tsx",
+      mode: "resume",
+    });
+    const runDone = event(runId, 2, "run.done", {
+      status: "succeeded",
+      output: { text: "Resolved clarification and continued." },
+    });
+    const interrupted = snapshot({
+      runId,
+      sessionId: session.sessionId,
+      status: "interrupted",
+      pendingClarifications: [{
+        id: clarificationId,
+        key: "scope",
+        nodeId: "solo_agent",
+        nodeLabel: "Solo Agent",
+        question: "Which file?",
+        options: [{ id: "candidate_1", label: "src/state.tsx", value: "src/state.tsx" }],
+        requestedAt: clarificationRequired.createdAt,
+      }],
+      continuation: {
+        activeFrameId: `${runId}:continuation:0`,
+        frames: [{
+          id: `${runId}:continuation:0`,
+          runId,
+          status: "paused",
+          reason: "clarification_required",
+          conversationCursor: 0,
+          pendingActionIds: [`${runId}:action-read`],
+          pendingToolCallIds: [`${runId}:tool-read`],
+          pendingClarificationIds: [clarificationId],
+          approvedActionIds: [],
+          resolvedClarificationIds: [],
+          agentId: "solo_agent",
+          nodeId: "solo_agent",
+          createdAt: clarificationRequired.createdAt,
+          updatedAt: clarificationRequired.createdAt,
+        }],
+      },
+      events: [clarificationRequired],
+      updatedAt: clarificationRequired.createdAt,
+    });
+
+    (store as unknown as {
+      appendRunStartedToLedger(args: {
+        sessionId: string;
+        runId: string;
+        turnIndex: number;
+        input: StateSnapshot["input"];
+        config: StateSnapshot["config"];
+        modeId?: string;
+        createdAt?: number;
+      }): void;
+      appendRunSnapshotUpdateToLedger(snapshot: StateSnapshot): StateSnapshot;
+    }).appendRunStartedToLedger({
+      sessionId: session.sessionId,
+      runId,
+      turnIndex: 1,
+      input: interrupted.input,
+      config: interrupted.config,
+      modeId: interrupted.modeId,
+      createdAt: interrupted.input.createdAt,
+    });
+    const projectedInterrupted = (store as unknown as {
+      appendRunSnapshotUpdateToLedger(snapshot: StateSnapshot): StateSnapshot;
+    }).appendRunSnapshotUpdateToLedger(interrupted);
+
+    const liveFinal = StateSnapshotSchema.parse({
+      ...projectedInterrupted,
+      status: "succeeded",
+      pendingClarifications: [],
+      continuation: {
+        activeFrameId: undefined,
+        frames: [{
+          ...projectedInterrupted.continuation.frames[0]!,
+          status: "completed",
+          pendingActionIds: [],
+          pendingToolCallIds: [],
+          pendingClarificationIds: [],
+          resolvedClarificationIds: [clarificationId],
+          updatedAt: runDone.createdAt,
+        }],
+      },
+      events: [clarificationRequired, clarificationResolved, runDone],
+      output: { text: "Resolved clarification and continued." },
+      updatedAt: runDone.createdAt,
+    });
+    const projectedFinal = (store as unknown as {
+      appendRunSnapshotUpdateToLedger(snapshot: StateSnapshot): StateSnapshot;
+    }).appendRunSnapshotUpdateToLedger(liveFinal);
+    const state = StateSnapshotSchema.parse(store.getRunState({ runId }));
+    const stream = store.streamRun({ runId });
+    const ledger = RuntimeSessionLedgerSchema.parse(
+      (store as unknown as { backend: { getSessionLedger(sessionId: string): unknown } }).backend.getSessionLedger(session.sessionId),
+    );
+    const fromLedger = deriveRunSnapshot(ledger, runId);
+
+    expectFinalSnapshotParity(state, projectedFinal);
+    expectFinalSnapshotParity(fromLedger!, projectedFinal);
+    expect(stream.snapshot).toEqual(state);
+    expect(state.continuation.frames[0]).toMatchObject({
+      status: "completed",
+      reason: "clarification_required",
+      resolvedClarificationIds: [clarificationId],
+    });
+
+    const reloaded = createStore(dataDir);
+    const coldLive = StateSnapshotSchema.parse(reloaded.getRunState({ runId }));
+    const coldLedger = RuntimeSessionLedgerSchema.parse(
+      (reloaded as unknown as { backend: { getSessionLedger(sessionId: string): unknown } }).backend.getSessionLedger(session.sessionId),
+    );
+    const coldProjected = deriveRunSnapshot(coldLedger, runId);
+
+    expectFinalSnapshotParity(coldProjected!, coldLive);
+    expect(coldLive.continuation.frames[0]).toMatchObject({
+      status: "completed",
+      reason: "clarification_required",
+      resolvedClarificationIds: [clarificationId],
+    });
+  });
+
   it("rebases active reads over ledger projection with unflushed event tails", () => {
     const store = createStore();
     const session = store.createSession({}) as { sessionId: string };

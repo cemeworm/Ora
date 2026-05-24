@@ -5,6 +5,7 @@ import {
 } from "@cemeworm/shared";
 import {
   approvedToolContinuationActions,
+  clarificationResolvedToolContinuationActions,
   completeApprovedToolContinuation,
   type ApprovedFileWriteResumeDeps,
   type ApprovedToolContinuationResult,
@@ -37,6 +38,12 @@ interface RunResumeServiceDeps {
 export type RunResumeStrategy =
   | {
       kind: "approved_tool_continuation";
+      approvedActionIds: string[];
+      continuationActionIds: string[];
+      continueKernelAfterTool: boolean;
+    }
+  | {
+      kind: "clarification_tool_continuation";
       approvedActionIds: string[];
       continuationActionIds: string[];
       continueKernelAfterTool: boolean;
@@ -100,6 +107,7 @@ export class RunResumeService {
       strategy: this.classifyStrategy({
         snapshot,
         approvedActionIds: patch.approvedActionIds,
+        clarificationPatch: patch.clarificationPatch,
         planDecisionResolutions: patch.planDecisionResolutions,
         hasKernelWork,
       }),
@@ -109,6 +117,7 @@ export class RunResumeService {
   classifyStrategy(params: {
     snapshot: StateSnapshot;
     approvedActionIds: string[];
+    clarificationPatch?: Record<string, unknown>;
     planDecisionResolutions?: ParsedResumePatch["planDecisionResolutions"];
     hasKernelWork?: boolean;
   }): RunResumeStrategy {
@@ -121,6 +130,18 @@ export class RunResumeService {
         kind: "approved_tool_continuation",
         approvedActionIds: params.approvedActionIds,
         continuationActionIds: continuationActions.map((action) => action.id),
+        continueKernelAfterTool: hasKernelWork,
+      };
+    }
+    const clarificationContinuationActions = clarificationResolvedToolContinuationActions(
+      params.snapshot,
+      params.clarificationPatch ?? {},
+    );
+    if (clarificationContinuationActions.length > 0) {
+      return {
+        kind: "clarification_tool_continuation",
+        approvedActionIds: params.approvedActionIds,
+        continuationActionIds: clarificationContinuationActions.map((action) => action.id),
         continueKernelAfterTool: hasKernelWork,
       };
     }
@@ -173,15 +194,18 @@ export class RunResumeService {
   executeApprovedToolContinuation(params: {
     snapshot: StateSnapshot;
     approvedActionIds: string[];
+    continuationActionIds?: string[];
     reason?: string;
     patch?: unknown;
+    continuationMode?: "approval" | "clarification";
     deps: ApprovedFileWriteResumeDeps;
     onEvent?: (event: OraEventEnvelope, snapshot: StateSnapshot) => void;
   }): Promise<ApprovedToolContinuationResult | undefined> {
     return completeApprovedToolContinuation(
       params.snapshot,
       params.approvedActionIds,
-      { reason: params.reason, patch: params.patch },
+      params.continuationActionIds ?? params.approvedActionIds,
+      { reason: params.reason, patch: params.patch, continuationMode: params.continuationMode },
       params.deps,
       params.onEvent,
     );

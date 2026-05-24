@@ -100,7 +100,11 @@ export class RunResumeFinalizationService {
           ? "Terminal resume output contained internal protocol text."
           : outputViolation.reason === "recovery_fallback"
             ? "Terminal resume output resolved to recovery fallback text."
-            : "Terminal resume output was empty after public-output filtering.",
+            : outputViolation.reason === "invalid_multiple_proposed_plans"
+              ? "Terminal resume output contained multiple complete proposed_plan blocks."
+              : outputViolation.reason === "invalid_malformed_proposed_plan"
+                ? "Terminal resume output contained a malformed proposed_plan block."
+                : "Terminal resume output was empty after public-output filtering.",
         visibleText: outputViolation.visibleText,
       });
     }
@@ -149,7 +153,11 @@ export class RunResumeFinalizationService {
           ? "Terminal streaming resume output contained internal protocol text."
           : outputViolation.reason === "recovery_fallback"
             ? "Terminal streaming resume output resolved to recovery fallback text."
-            : "Terminal streaming resume output was empty after public-output filtering.",
+            : outputViolation.reason === "invalid_multiple_proposed_plans"
+              ? "Terminal streaming resume output contained multiple complete proposed_plan blocks."
+              : outputViolation.reason === "invalid_malformed_proposed_plan"
+                ? "Terminal streaming resume output contained a malformed proposed_plan block."
+                : "Terminal streaming resume output was empty after public-output filtering.",
         visibleText: outputViolation.visibleText,
       });
     }

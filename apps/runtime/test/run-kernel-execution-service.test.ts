@@ -226,6 +226,7 @@ describe("RunKernelExecutionService task memory integration", () => {
 
     expect(service.lastResumeParams?.config.metadata).toMatchObject({
       taskIntent: "implement",
+      acceptedPlanExecutionContract: "same_run_implementation",
       acceptedPlanDecisionId: "decision-plan",
       acceptedPlanRunId: snapshot.runId,
     });

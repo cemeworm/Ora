@@ -57,4 +57,35 @@ describe("public final output contract", () => {
       text: "已经完成修复，并补充了针对终态输出污染的回归测试。",
     })).toBeUndefined();
   });
+
+  it("rejects final output with multiple complete proposed_plan blocks", () => {
+    const plan = [
+      "<proposed_plan>",
+      "## 计划",
+      "## 背景",
+      "说明上下文",
+      "## 实施步骤",
+      "1. 第一步。",
+      "2. 第二步。",
+      "## 验证方式",
+      "- 运行测试",
+      "</proposed_plan>",
+    ].join("\n");
+
+    expect(finalOutputContractViolation({
+      text: `前置说明\n${plan}\n---\n${plan}\n结尾说明`,
+    })).toEqual({
+      reason: "invalid_multiple_proposed_plans",
+      visibleText: "前置说明\n\n---\n\n结尾说明",
+    });
+  });
+
+  it("rejects final output with a stray proposed_plan closing tag", () => {
+    expect(finalOutputContractViolation({
+      text: "前置说明\n</proposed_plan>\n结尾说明",
+    })).toEqual({
+      reason: "invalid_malformed_proposed_plan",
+      visibleText: "前置说明\n\n结尾说明",
+    });
+  });
 });

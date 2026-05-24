@@ -1,5 +1,5 @@
 import type { ModeNodeSpec } from "@cemeworm/shared";
-import { BAG_OUTPUT_SCHEMAS } from "@cemeworm/shared";
+import { BAG_OUTPUT_SCHEMAS, inspectProposedPlanContract } from "@cemeworm/shared";
 import type { PatternExecutionContext } from "./execution-context.js";
 import type { StructuredAgentCallDiagnostics } from "./execution-context.js";
 import { asText } from "./driver-utils.js";
@@ -177,7 +177,7 @@ export interface SharedStateBag extends ExecutionBag {
 }
 
 export function containsCompleteProposedPlan(value: unknown): boolean {
-  return /<proposed_plan>\s*[\s\S]+?\s*<\/proposed_plan>/.test(asText(value));
+  return inspectProposedPlanContract(asText(value)).status === "complete_single";
 }
 
 export function finishPlanModeAfterProposedPlan(

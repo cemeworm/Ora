@@ -181,9 +181,10 @@ describe("runtime kernel architecture guards", () => {
     const source = suspendedFrameResumeSource();
 
     expect(source).toContain("const resolvedOutput = resolvePublicAssistantText(response.text);");
+    expect(source).toContain("const outputViolation = finalOutputContractViolation({ text: response.text });");
     expect(source).toContain('source: "suspended_frame_resume"');
-    expect(source).toContain("Suspended-frame resume output contained internal protocol text.");
-    expect(source).toContain("if (resolvedOutput.acceptedText) {");
+    expect(source).toContain("finalOutputViolationMessage(resumedOutput.rejectionReason ?? \"empty\")");
+    expect(source).toContain("if (resolvedOutput.acceptedText && !outputViolation) {");
     expect(source).toContain("content: resolvedOutput.acceptedText");
     expect(source).not.toContain("content: response.text");
     expect(source).toContain("if (!resumed.output.acceptedText) {");

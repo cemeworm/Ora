@@ -34,6 +34,24 @@ import {
   continuationFrameAwaitingModel,
 } from "./run-continuation-dispatcher.js";
 
+function clarificationContextMessage(clarificationPatch: Record<string, unknown>): ModelMessage[] {
+  const entries = Object.entries(clarificationPatch)
+    .filter(([, value]) => value !== undefined && value !== null && String(value).trim().length > 0)
+    .slice(0, 8)
+    .map(([key, value]) => `- ${key}: ${String(value).trim().slice(0, 1000)}`);
+  if (entries.length === 0) {
+    return [];
+  }
+  return [{
+    role: "user",
+    content: [
+      "User-supplied clarification context:",
+      ...entries,
+      "Treat these clarifications as explicit constraints for the current run. Do not ignore them or replace them with assumptions.",
+    ].join("\n"),
+  }];
+}
+
 interface RunKernelExecutionServiceDeps {
   clock: () => number;
   skillRegistry: RuntimeSkillRegistry;
@@ -183,13 +201,17 @@ export class RunKernelExecutionService {
     continuationSnapshot: StateSnapshot;
     clarificationPatch: Record<string, unknown>;
     approvedActionIds: string[];
+    continuationActionIds?: string[];
     signal?: AbortSignal;
     onEvent?: (event: OraEventEnvelope, baseSeq: number) => void;
   }): Promise<StateSnapshot> {
     const baseSeq = params.continuationSnapshot.events.length;
     // Locate the tool-result entries appended during the approved-tool
     // continuation so we can remind the model what was just executed.
-    const approvedIdSet = new Set(params.approvedActionIds);
+    const recentActionIds = params.continuationActionIds?.length
+      ? params.continuationActionIds
+      : params.approvedActionIds;
+    const approvedIdSet = new Set(recentActionIds);
     const recentToolCalls = params.continuationSnapshot.toolCalls
       .filter((call) => call.actionId && approvedIdSet.has(call.actionId));
     const conversationEntries = params.continuationSnapshot.conversation;
@@ -199,6 +221,7 @@ export class RunKernelExecutionService {
         params.clarificationPatch,
         params.originalSnapshot.runId,
       ),
+      ...clarificationContextMessage(params.clarificationPatch),
       ...runtimeConversationToModelMessages(conversationEntries),
     ];
     // Prepend a carry-over context message so the model knows what tool(s)
@@ -382,6 +405,7 @@ function configForPlanDecisionResume(
     metadata: {
       ...config.metadata,
       taskIntent: "implement",
+      acceptedPlanExecutionContract: "same_run_implementation",
       acceptedPlanDecisionId: resolutions.find((resolution) => resolution.status === "accepted")?.decisionId,
       acceptedPlanRunId: decisions.find((decision) =>
         resolutions.some((resolution) => resolution.status === "accepted" && resolution.decisionId === decision.id),

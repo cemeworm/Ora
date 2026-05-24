@@ -5,6 +5,7 @@ import {
   orderedEnabledModeLayers,
   orderedEnabledModeNodes,
   strictModeStageOutputSchema,
+  hasAcceptedPlanSameRunImplementationContract,
   type ModeNodeSpec,
   type ModeSpec,
   type ModeStageSpec,
@@ -87,6 +88,10 @@ function isChinese(context: PatternExecutionContext): boolean {
 
 function isCodeDevelopmentMode(modeSpec: ModeSpec): boolean {
   return modeSpec.id === CODE_DEVELOPMENT_MODE_ID;
+}
+
+function hasAcceptedImplementationContract(input: Pick<ModeExecutionInput, "config" | "context">): boolean {
+  return hasAcceptedPlanSameRunImplementationContract(input.config.metadata, input.context.runId);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -265,6 +270,8 @@ async function executeStagedTranscriptMode(input: ModeExecutionInput): Promise<P
   const nodes = orderedEnabledModeNodes(modeSpec);
   const totalActiveNodes = nodes.length;
   const planIntent = config.metadata.taskIntent === "plan";
+  const acceptedImplementationContract = hasAcceptedImplementationContract(input);
+  const allowPlanOnlyStop = planIntent && !acceptedImplementationContract;
   initializeQueueSummary(context, modeSpec.family, totalActiveNodes);
   const stages = modeSpec.stages ?? [];
   const stagesByNode = new Map<string, ModeStageSpec[]>();
@@ -510,7 +517,7 @@ async function executeStagedTranscriptMode(input: ModeExecutionInput): Promise<P
       };
     }
 
-    if (planIntent) {
+    if (allowPlanOnlyStop) {
       const planOutput = stageOutputs.at(-1)?.content ?? asText(bag[node.id] ?? bag[node.template]);
       if (containsCompleteProposedPlan(planOutput)) {
         finishPlanModeAfterProposedPlan(context, nodes, nodes.findIndex((candidate) => candidate.id === node.id), totalActiveNodes);
@@ -693,6 +700,8 @@ export async function executeOrchestratorSubagent(input: ModeExecutionInput): Pr
   const layers = orderedEnabledModeLayers(modeSpec);
   const allNodes = layers.flat();
   const planIntent = config.metadata.taskIntent === "plan";
+  const acceptedImplementationContract = hasAcceptedImplementationContract(input);
+  const allowPlanOnlyStop = planIntent && !acceptedImplementationContract;
   const enableDynamicDelegation = modeSpec.runtimeAtoms.includes("dynamic_delegation");
   let delegationPlan: DelegationPlan | null = null;
   const skipNodeIds = new Set<string>();
@@ -701,7 +710,9 @@ export async function executeOrchestratorSubagent(input: ModeExecutionInput): Pr
   const totalActiveNodes = allNodes.length;
   initializeQueueSummary(context, modeSpec.family, totalActiveNodes);
   const bag: ExecutionBag = { prompt, ...(context.modeResume?.bag ?? {}) };
-  const resumedCompletedNodeIds = new Set(context.modeResume?.completedNodeIds ?? []);
+  const resumedCompletedNodeIds = new Set(
+    acceptedImplementationContract ? [] : (context.modeResume?.completedNodeIds ?? []),
+  );
   const resumedActiveNodeId = context.modeResume?.activeNodeId;
   if (enableDynamicDelegation && typeof bag.plan === "string") {
     delegationPlan = parseDelegationPlan(bag.plan);
@@ -862,7 +873,7 @@ export async function executeOrchestratorSubagent(input: ModeExecutionInput): Pr
         { skipNodeIds, alreadyCompletedNodeIds: resumedCompletedNodeIds, activeResumeNodeId: resumedActiveNodeId },
       );
 
-      if (planIntent && containsCompleteProposedPlan(bag.synthesis || bag.review || bag.research || bag.plan)) {
+      if (allowPlanOnlyStop && containsCompleteProposedPlan(bag.synthesis || bag.review || bag.research || bag.plan)) {
         const currentNode = layer.at(-1);
         finishPlanModeAfterProposedPlan(
           context,

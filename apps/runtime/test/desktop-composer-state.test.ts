@@ -576,6 +576,104 @@ describe("desktop composer pending-run behavior", () => {
     });
   });
 
+  it("keeps resolved clarification exchanges visible after continuation completion", () => {
+    const snapshot = {
+      runId: "run-clarify-resolved",
+      sessionId: "session-clarify-resolved",
+      turnIndex: 1,
+      status: "succeeded",
+      pattern: "orchestrator_subagent",
+      coordinationKind: "orchestrator_subagent",
+      modeId: "single_agent",
+      input: { prompt: "继续读取用户选中的文件。", createdAt: 10, context: {} },
+      config: { pattern: "orchestrator_subagent", metadata: {} },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      planList: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [
+        {
+          id: "run-clarify-resolved:evt-0",
+          runId: "run-clarify-resolved",
+          seq: 0,
+          type: "clarification.required" as const,
+          createdAt: 11,
+          pattern: "orchestrator_subagent",
+          payload: {
+            clarification: {
+              id: "clarification:file_read_target",
+              key: "file_read_target",
+              question: "请选择你要我读取的文件。",
+            },
+          },
+        },
+        {
+          id: "run-clarify-resolved:evt-1",
+          runId: "run-clarify-resolved",
+          seq: 1,
+          type: "clarification.resolved" as const,
+          createdAt: 12,
+          pattern: "orchestrator_subagent",
+          payload: {
+            clarificationId: "clarification:file_read_target",
+            key: "file_read_target",
+            answer: "src/state.tsx",
+            mode: "resume",
+          },
+        },
+      ],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: {},
+      sharedStateSummary: {},
+      busStats: {},
+      pendingClarifications: [],
+      pendingApprovals: [],
+      continuation: {
+        activeFrameId: undefined,
+        frames: [{
+          id: "run-clarify-resolved:continuation:0",
+          runId: "run-clarify-resolved",
+          status: "completed",
+          reason: "clarification_required",
+          conversationCursor: 0,
+          pendingActionIds: [],
+          pendingToolCallIds: [],
+          pendingClarificationIds: [],
+          approvedActionIds: [],
+          resolvedClarificationIds: ["clarification:file_read_target"],
+          createdAt: 11,
+          updatedAt: 12,
+        }],
+      },
+      updatedAt: 13,
+      output: { text: "已根据你的选择读取 src/state.tsx。" },
+    } as unknown as OraStateSnapshot;
+
+    const messages = adaptChatMessages([], { "run-clarify-resolved": snapshot });
+
+    expect(messages).toHaveLength(2);
+    expect(messages[1]).toMatchObject({
+      role: "assistant",
+      content: "已根据你的选择读取 src/state.tsx。",
+      isPlaceholder: false,
+    });
+    expect(messages[1]?.turn?.clarificationExchanges).toEqual([
+      expect.objectContaining({
+        id: "clarification:file_read_target",
+        question: "请选择你要我读取的文件。",
+        answer: "src/state.tsx",
+        status: "resolved",
+      }),
+    ]);
+  });
+
   it("only clears the submitted prompt when the user has not typed a new draft", () => {
     const pending = {
       ...initialWorkbenchState,

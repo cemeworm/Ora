@@ -173,6 +173,116 @@ describe("RunResumeFinalizationService", () => {
     });
   });
 
+  it("keeps clarification frame provenance through streaming terminal persistence", async () => {
+    const calls: string[] = [];
+    const original = StateSnapshotSchema.parse({
+      ...baseSnapshot(),
+      status: "interrupted",
+      pendingClarifications: [{
+        id: "clarification:scope",
+        key: "scope",
+        nodeId: "ora",
+        nodeLabel: "Ora",
+        question: "Which scope?",
+        options: [],
+        requestedAt: 1_100,
+      }],
+      continuation: {
+        activeFrameId: "run-resume-finalization:continuation:0",
+        frames: [{
+          id: "run-resume-finalization:continuation:0",
+          runId: "run-resume-finalization",
+          status: "paused",
+          reason: "clarification_required",
+          conversationCursor: 0,
+          pendingActionIds: ["action-read"],
+          pendingToolCallIds: ["tool-read"],
+          pendingClarificationIds: ["clarification:scope"],
+          approvedActionIds: [],
+          resolvedClarificationIds: [],
+          createdAt: 1_100,
+          updatedAt: 1_100,
+        }],
+      },
+      updatedAt: 1_100,
+    });
+    const terminal = StateSnapshotSchema.parse({
+      ...original,
+      status: "succeeded",
+      pendingClarifications: [],
+      updatedAt: 2_100,
+    });
+    let ledgerInput: StateSnapshot | undefined;
+    const service = new RunResumeFinalizationService({
+      withResumeResolutionEvents: (snapshot) => StateSnapshotSchema.parse({
+        ...snapshot,
+        continuation: {
+          activeFrameId: undefined,
+          frames: [{
+            ...snapshot.continuation.frames[0]!,
+            status: "completed",
+            pendingActionIds: [],
+            pendingToolCallIds: [],
+            pendingClarificationIds: [],
+            resolvedClarificationIds: ["clarification:scope"],
+            updatedAt: snapshot.updatedAt,
+          }],
+        },
+      }),
+      normalizeSnapshotForPersistence: (snapshot) => snapshot,
+      appendRunSnapshotUpdateToLedger: (snapshot) => {
+        ledgerInput = snapshot;
+        calls.push(`ledger:${snapshot.continuation.frames[0]?.reason}:${snapshot.continuation.frames[0]?.resolvedClarificationIds.join(",")}`);
+        return snapshot;
+      },
+      persistRun: () => {},
+      persistRunWithGeneratedTitle: async () => {
+        calls.push("persistTitle");
+      },
+    });
+
+    const stream = {
+      replaceSnapshot: (snapshot: StateSnapshot) => {
+        calls.push(`replace:${snapshot.continuation.frames[0]?.reason}:${snapshot.continuation.frames[0]?.resolvedClarificationIds.join(",")}`);
+        return snapshot;
+      },
+      markLedgerSynced: () => {
+        calls.push("markLedgerSynced");
+      },
+      publish: (_events: OraEventEnvelope[], snapshot: StateSnapshot) => {
+        calls.push(`publish:${snapshot.continuation.frames[0]?.reason}:${snapshot.continuation.frames[0]?.resolvedClarificationIds.join(",")}`);
+      },
+    };
+
+    const persisted = await service.persistStreamingTerminal({
+      snapshot: terminal,
+      original,
+      clarificationPatch: { scope: "staging" },
+      approvedActionIds: [],
+      stream,
+      markLedgerSynced: true,
+    });
+
+    expect(ledgerInput?.continuation.activeFrameId).toBeUndefined();
+    expect(ledgerInput?.continuation.frames[0]).toMatchObject({
+      status: "completed",
+      reason: "clarification_required",
+      resolvedClarificationIds: ["clarification:scope"],
+    });
+    expect(persisted.continuation.frames[0]).toMatchObject({
+      status: "completed",
+      reason: "clarification_required",
+      resolvedClarificationIds: ["clarification:scope"],
+    });
+    expect(calls).toEqual([
+      "ledger:clarification_required:clarification:scope",
+      "persistTitle",
+      "replace:clarification_required:clarification:scope",
+      "markLedgerSynced",
+      "publish:clarification_required:clarification:scope",
+    ]);
+  });
+
   it("downgrades terminal resume output with DSML protocol text to failed", async () => {
     const original = baseSnapshot();
     const terminal = StateSnapshotSchema.parse({

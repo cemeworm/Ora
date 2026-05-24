@@ -1,4 +1,5 @@
 import {
+  inspectProposedPlanContract,
   resolvePublicAssistantText,
   type AssistantOutputRejectionReason,
   type CompletionStopReason,
@@ -135,11 +136,7 @@ export function incompleteForcedFinalError(
   }
   const violation = finalOutputContractViolation(value);
   if (violation) {
-    return violation.reason === "internal_protocol"
-      ? "Run cannot complete: final output contains internal protocol text."
-      : violation.reason === "recovery_fallback"
-        ? "Run cannot complete: final output resolved to recovery fallback text."
-        : "Run cannot complete: final output is empty after public-output filtering.";
+    return finalOutputViolationMessage(violation.reason);
   }
   return undefined;
 }
@@ -153,12 +150,43 @@ export function finalOutputContractViolation(
   }
   const resolved = resolvePublicAssistantText(text);
   if (!resolved.isRejected) {
+    const proposedPlan = inspectProposedPlanContract(text);
+    if (proposedPlan.status === "invalid_multiple") {
+      return {
+        reason: "invalid_multiple_proposed_plans",
+        visibleText: proposedPlan.displayText,
+      };
+    }
+    if (proposedPlan.status === "invalid_malformed") {
+      return {
+        reason: "invalid_malformed_proposed_plan",
+        visibleText: proposedPlan.displayText,
+      };
+    }
     return undefined;
   }
   return {
     reason: resolved.rejectionReason ?? "empty",
     visibleText: resolved.visibleText,
   };
+}
+
+export function finalOutputViolationMessage(
+  reason: AssistantOutputRejectionReason,
+): string {
+  switch (reason) {
+    case "internal_protocol":
+      return "Run cannot complete: final output contains internal protocol text.";
+    case "recovery_fallback":
+      return "Run cannot complete: final output resolved to recovery fallback text.";
+    case "invalid_multiple_proposed_plans":
+      return "Run cannot complete: final output contains multiple complete proposed_plan blocks.";
+    case "invalid_malformed_proposed_plan":
+      return "Run cannot complete: final output contains a malformed proposed_plan block.";
+    case "empty":
+    default:
+      return "Run cannot complete: final output is empty after public-output filtering.";
+  }
 }
 
 function outputText(value: unknown): string | undefined {

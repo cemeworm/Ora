@@ -440,6 +440,60 @@ describe("executeOrchestratorSubagent plain plan intent early stop", () => {
     });
     expect(String((result.output as { text?: string }).text ?? "")).toContain("<proposed_plan>");
   });
+
+  it("does not stop on a complete proposed plan after same-run accepted implementation resume", async () => {
+    const modeSpec = createModeSpecFromPattern("orchestrator_subagent");
+    const callLog: string[] = [];
+    const context = createContext(callLog);
+    context.runId = "run-accepted";
+    const config: RunConfig = {
+      pattern: "orchestrator_subagent",
+      modeId: "orchestrator_subagent",
+      modeSelection: "manual",
+      profileIds: [],
+      skillIds: [],
+      toolIds: [],
+      approvalMode: "high_risk_only",
+      permissionMode: "auto_review",
+      patternOptions: {},
+      metadata: {
+        taskIntent: "plan",
+        acceptedPlanExecutionContract: "same_run_implementation",
+        acceptedPlanDecisionId: "decision-plan",
+        acceptedPlanRunId: "run-accepted",
+      },
+      causalInterventionLevel: "record_only",
+      deterministicSeed: "test-seed",
+    };
+
+    let decomposeCount = 0;
+    context.callAgent = async ({ agentId, title }) => {
+      callLog.push(`${agentId}:${title}`);
+      if (agentId === "ora" && title.includes("Decompose")) {
+        decomposeCount += 1;
+        return [
+          "<proposed_plan>",
+          "## Runtime status plan",
+          "1. Add shared attention projection.",
+          "2. Persist plan decision gates.",
+          "</proposed_plan>",
+        ].join("\n");
+      }
+      return `${agentId}:${title}`;
+    };
+
+    const result = await executeOrchestratorSubagent({
+      context,
+      prompt: "Continue implementing the accepted plan in the same run.",
+      config,
+      modeSpec,
+      definition: modeSpecToPatternDefinition(modeSpec),
+    });
+
+    expect(decomposeCount).toBe(1);
+    expect(callLog.length).toBeGreaterThan(1);
+    expect((result.output as { stoppedAfterProposedPlan?: boolean }).stoppedAfterProposedPlan).not.toBe(true);
+  });
 });
 
 // --- code_development hard gate ---
@@ -520,6 +574,74 @@ function codeDevHandoffJson() {
     residualRisks: [],
   });
 }
+
+describe("executeOrchestratorSubagent accepted implementation contract", () => {
+  it("does not stop staged code_development after triage emits a complete proposed plan", async () => {
+    const modeSpec = getModePreset(CODE_DEVELOPMENT_MODE_ID);
+    expect(modeSpec).toBeDefined();
+    const callLog: string[] = [];
+    const context = createContext(callLog);
+    context.runId = "run-code-dev-accepted";
+    const config: RunConfig = {
+      pattern: "orchestrator_subagent",
+      modeId: CODE_DEVELOPMENT_MODE_ID,
+      modeSelection: "manual",
+      profileIds: [],
+      skillIds: [],
+      toolIds: [],
+      approvalMode: "high_risk_only",
+      permissionMode: "auto_review",
+      patternOptions: {},
+      metadata: {
+        taskIntent: "plan",
+        acceptedPlanExecutionContract: "same_run_implementation",
+        acceptedPlanDecisionId: "decision-plan",
+        acceptedPlanRunId: "run-code-dev-accepted",
+      },
+      causalInterventionLevel: "record_only",
+      deterministicSeed: "test-seed",
+    };
+
+    context.callAgent = async ({ title }) => {
+      if (title.includes("Triage")) {
+        return JSON.stringify({
+          text: "<proposed_plan>\n1. implement\n</proposed_plan>",
+          goal: "修复 accepted plan resume",
+          successCriteria: ["进入实施"],
+          backlog: [{ id: "build-1", owner: "builder", description: "实现修复" }],
+          scopeBoundaries: ["不做无关重构"],
+          taskJournalPath: "tasks/TASK-code-dev.md",
+          targetFiles: ["src/runtime.ts"],
+          verificationPlan: [{ id: "verify-runtime", commandOrMethod: "pnpm test runtime", expectation: "通过" }],
+          riskFiles: ["src/runtime.ts"],
+          doneCriteria: ["handoff 完成"],
+        });
+      }
+      if (title.includes("Build")) {
+        return codeDevBuildJson();
+      }
+      if (title.includes("Review")) {
+        return codeDevPassReviewJson();
+      }
+      if (title.includes("Debug")) {
+        return codeDevDebugClearJson();
+      }
+      return codeDevHandoffJson();
+    };
+    context.callAgentStructured = createStructuredCallAgent(CODE_DEVELOPMENT_MODE_ID, context.callAgent);
+
+    const result = await executeOrchestratorSubagent({
+      context,
+      prompt: "Continue implementing the accepted plan in the same run.",
+      config,
+      modeSpec: modeSpec!,
+      definition: modeSpecToPatternDefinition(modeSpec!),
+    });
+
+    expect((result.output as { stoppedAfterProposedPlan?: boolean }).stoppedAfterProposedPlan).not.toBe(true);
+    expect(String((result.output as { text?: string }).text ?? "")).toContain("最终移交已完成");
+  });
+});
 
 function codeDevIncompleteHandoffJson() {
   return JSON.stringify({

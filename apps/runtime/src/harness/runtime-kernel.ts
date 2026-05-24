@@ -55,6 +55,7 @@ import {
   type CompletionStopReason,
   type CustomAgentDetail,
   getPermissionProfile,
+  inspectProposedPlanContract,
   ORA_ROOT_AGENT_ID,
   ORA_ROOT_AGENT_LABEL,
   resolvePublicAssistantText,
@@ -107,6 +108,8 @@ import { RuntimeCompletionController } from "./runtime-completion.js";
 import {
   coerceNoToolResponse as coerceNoToolResponseWithDeps,
   emitRejectedFinalToolIntent as emitRejectedFinalToolIntentWithDeps,
+  finalOutputContractViolation,
+  finalOutputViolationMessage,
   forcedFinalSystemPrompt,
   incompleteForcedFinalError,
   outputWithCompletionMetadata,
@@ -1178,24 +1181,55 @@ class KernelRuntimeContext {
       call.actionId && pendingApprovals.includes(call.actionId)
     );
     const pendingApprovalToolCallIds = pendingApprovalToolCalls.map((call) => call.id);
+    const pendingClarificationActions = params.actions.filter((action) =>
+      action.status === "running" && !action.type.startsWith("agent.")
+    );
+    const pendingClarificationActionIds = pendingClarificationActions.map((action) => action.id);
+    const pendingClarificationToolCalls = this.toolCalls.filter((call) =>
+      call.status === "running"
+      && call.actionId
+      && pendingClarificationActionIds.includes(call.actionId)
+    );
+    const pendingClarificationToolCallIds = pendingClarificationToolCalls.map((call) => call.id);
+    const continuationReason = pendingApprovals.length > 0
+      ? "approval_required" as const
+      : this.pendingClarificationCount() > 0
+        ? "clarification_required" as const
+        : undefined;
+    const continuationActionIds = continuationReason === "approval_required"
+      ? pendingApprovals
+      : continuationReason === "clarification_required"
+        ? pendingClarificationActionIds
+        : [];
+    const continuationToolCallIds = continuationReason === "approval_required"
+      ? pendingApprovalToolCallIds
+      : continuationReason === "clarification_required"
+        ? pendingClarificationToolCallIds
+        : [];
+    const continuationToolCall = continuationReason === "approval_required"
+      ? pendingApprovalToolCalls[0]
+      : continuationReason === "clarification_required"
+        ? pendingClarificationToolCalls[0]
+        : undefined;
+    const continuationAction = continuationReason === "approval_required"
+      ? pendingApprovalActions[0]
+      : continuationReason === "clarification_required"
+        ? pendingClarificationActions[0]
+        : undefined;
     const continuation = continuationForKernelSnapshot({
       previous: params.previous,
       runId: this.params.runId,
       status: params.status,
-      reason: pendingApprovals.length > 0
-        ? "approval_required"
-        : this.pendingClarificationCount() > 0
-          ? "clarification_required"
-          : undefined,
-      pendingApprovals,
-      pendingApprovalToolCallIds,
+      reason: continuationReason,
+      pendingActionIds: continuationActionIds,
+      pendingToolCallIds: continuationToolCallIds,
       pendingClarificationIds: this.pendingClarifications.map((clarification) => clarification.id),
-      agentId: pendingApprovalToolCalls[0]?.agentId ?? pendingApprovalActions[0]?.agentId,
-      nodeId: pendingApprovalToolCalls[0]?.nodeId,
-      planItemId: pendingApprovalActions[0]?.planItemId,
+      agentId: continuationToolCall?.agentId ?? continuationAction?.agentId,
+      nodeId: continuationToolCall?.nodeId,
+      planItemId: continuationAction?.planItemId,
       nodeCheckpoint: this.latestNodeCheckpoint({
-        agentId: pendingApprovalToolCalls[0]?.agentId ?? pendingApprovalActions[0]?.agentId,
-        nodeId: pendingApprovalToolCalls[0]?.nodeId,
+        agentId: continuationToolCall?.agentId ?? continuationAction?.agentId,
+        nodeId: continuationToolCall?.nodeId,
       }),
       conversationCursor: params.conversationCursor,
       now: params.now,
@@ -1559,8 +1593,8 @@ function continuationForKernelSnapshot(params: {
   runId: string;
   status: StateSnapshot["status"];
   reason?: "approval_required" | "clarification_required";
-  pendingApprovals: string[];
-  pendingApprovalToolCallIds: string[];
+  pendingActionIds: string[];
+  pendingToolCallIds: string[];
   pendingClarificationIds: string[];
   agentId?: string;
   nodeId?: string;
@@ -1606,8 +1640,8 @@ function continuationForKernelSnapshot(params: {
     status: "paused" as const,
     reason: params.reason,
     conversationCursor: params.conversationCursor,
-    pendingActionIds: params.pendingApprovals,
-    pendingToolCallIds: params.pendingApprovalToolCallIds,
+    pendingActionIds: params.pendingActionIds,
+    pendingToolCallIds: params.pendingToolCallIds,
     pendingClarificationIds: params.pendingClarificationIds,
     approvedActionIds: existing?.approvedActionIds ?? [],
     resolvedClarificationIds: existing?.resolvedClarificationIds ?? [],
@@ -4408,7 +4442,7 @@ export async function executeRuntimeKernel(
     }
     if (
       params.resultContract !== "plan_only" &&
-      /<proposed_plan>\s*[\s\S]+?\s*<\/proposed_plan>/i.test(params.resultText)
+      inspectProposedPlanContract(params.resultText).hasCompletePlan
     ) {
       throw new SpawnContractViolationError(`Sub-agent "${params.description || params.agentId}" returned a proposed plan where an executable result was required (result_contract=${params.resultContract}).`);
     }
@@ -5239,7 +5273,8 @@ export async function executeRuntimeKernel(
     });
 
     const resolvedOutput = resolvePublicAssistantText(response.text);
-    if (resolvedOutput.acceptedText) {
+    const outputViolation = finalOutputContractViolation({ text: response.text });
+    if (resolvedOutput.acceptedText && !outputViolation) {
       emit(
         "message.delta",
         {
@@ -5254,15 +5289,15 @@ export async function executeRuntimeKernel(
     } else {
       emit("completion.updated", {
         state: "internal_output_unresolved",
-        reason: resolvedOutput.rejectionReason,
+        reason: outputViolation?.reason ?? resolvedOutput.rejectionReason,
         source: "suspended_frame_resume",
-        hadSanitizedPublicText: resolvedOutput.visibleText.length > 0,
+        hadSanitizedPublicText: (outputViolation?.visibleText ?? resolvedOutput.visibleText).length > 0,
       });
     }
     emit("agent.completed", { title }, { agentId, nodeId });
     kernelRuntimeContext.deactivateAgent(agentId);
     setTopologyStatus(agentId, "done");
-    if (resolvedOutput.acceptedText) {
+    if (resolvedOutput.acceptedText && !outputViolation) {
       const memoryRecord = memoryService.remember({
         id: `${agentId}-continuation-memory`,
         namespace: ["session", projectId, resolvedModeSpec.family, "continuation", agentId],
@@ -5343,11 +5378,8 @@ export async function executeRuntimeKernel(
     }
     const resumedOutput = resumed.output;
     if (resumedOutput.isRejected) {
-      const detail = resumedOutput.rejectionReason === "internal_protocol"
-        ? "Suspended-frame resume output contained internal protocol text."
-        : resumedOutput.rejectionReason === "recovery_fallback"
-          ? "Suspended-frame resume output resolved to recovery fallback text."
-          : "Suspended-frame resume output was empty after public-output filtering.";
+      const detail = finalOutputViolationMessage(resumedOutput.rejectionReason ?? "empty")
+        .replace("Run cannot complete:", "Suspended-frame resume output");
       emit("run.failed", {
         status: "failed",
         error: detail,
@@ -5418,6 +5450,9 @@ export async function executeRuntimeKernel(
       planList: kernelRuntimeContext.planList,
       plan: planService.list(),
       todos: todoService.list(),
+      runId,
+      modeId: resolvedModeSpec.id,
+      metadata: config.metadata,
       gates: resumeGates,
     };
     try {
@@ -5779,7 +5814,7 @@ export async function executeRuntimeKernel(
     }
     if (
       config.metadata.taskIntent === "plan" &&
-      /<proposed_plan>\s*[\s\S]+?\s*<\/proposed_plan>/.test(modeOutputText(modeOutput))
+      inspectProposedPlanContract(modeOutputText(modeOutput)).status === "complete_single"
     ) {
       return modeOutput;
     }
@@ -5822,12 +5857,13 @@ export async function executeRuntimeKernel(
         },
       });
       let resolvedOutput = resolvePublicAssistantText(response.text);
-      if (resolvedOutput.isRejected && resolvedOutput.rejectionReason === "internal_protocol") {
+      const firstViolation = finalOutputContractViolation({ text: response.text });
+      if ((resolvedOutput.isRejected && resolvedOutput.rejectionReason === "internal_protocol") || firstViolation?.reason === "internal_protocol") {
         emit("completion.updated", {
           state: "internal_output_rejected",
-          reason: resolvedOutput.rejectionReason,
+          reason: firstViolation?.reason ?? resolvedOutput.rejectionReason,
           source: "ora.finalizer",
-          hadSanitizedPublicText: resolvedOutput.visibleText.length > 0,
+          hadSanitizedPublicText: (firstViolation?.visibleText ?? resolvedOutput.visibleText).length > 0,
         });
         accumulatedText = "";
         response = await invokeRunProviderStream(config, {
@@ -5858,11 +5894,12 @@ export async function executeRuntimeKernel(
           },
         });
         resolvedOutput = resolvePublicAssistantText(response.text);
+        const repairedViolation = finalOutputContractViolation({ text: response.text });
         emit("completion.updated", {
-          state: resolvedOutput.isRejected ? "internal_output_unresolved" : "internal_output_repaired",
-          reason: resolvedOutput.rejectionReason,
+          state: resolvedOutput.isRejected || Boolean(repairedViolation) ? "internal_output_unresolved" : "internal_output_repaired",
+          reason: repairedViolation?.reason ?? resolvedOutput.rejectionReason,
           source: "ora.finalizer",
-          hadSanitizedPublicText: resolvedOutput.visibleText.length > 0,
+          hadSanitizedPublicText: (repairedViolation?.visibleText ?? resolvedOutput.visibleText).length > 0,
         });
       }
       const text = resolvedOutput.acceptedText ?? (response.text.trim() || modeOutputText(modeOutput));
@@ -5903,6 +5940,7 @@ export async function executeRuntimeKernel(
   const kernelPatternExecutionContextAdapter =
     createKernelPatternExecutionContextAdapter({
       projectId,
+      runId,
       queueSummary: () => kernelRuntimeContext.queueSummary,
       sharedStateSummary: () => kernelRuntimeContext.sharedStateSummary,
       busStats: () => kernelRuntimeContext.busStats,
