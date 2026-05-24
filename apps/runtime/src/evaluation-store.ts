@@ -3292,7 +3292,18 @@ function dualReportingEnabled(spec: EvaluationSpec): boolean {
   return spec.metadata?.evalV2Reporting === true;
 }
 
+function authoritativeJudgeRecorded(attempts: readonly EvaluationAttempt[]): boolean {
+  return attempts.some((attempt) =>
+    attempt.evaluatorResults.some((result) =>
+      result.evaluatorKind === "llm_judge"
+      && result.status === "scored"
+      && typeof result.score === "number"
+    )
+  );
+}
+
 function averageScoreFromAttempts(attempts: EvaluationAttempt[]): EvaluationScore {
+  const hasAuthoritativeJudge = authoritativeJudgeRecorded(attempts);
   return EvaluationScoreSchema.parse({
     outcomeScore: roundScore(average(attempts.map((attempt) => attempt.score.outcomeScore))),
     processScore: roundScore(average(attempts.map((attempt) => attempt.score.processScore))),
@@ -3300,7 +3311,11 @@ function averageScoreFromAttempts(attempts: EvaluationAttempt[]): EvaluationScor
     safetyScore: roundScore(average(attempts.map((attempt) => attempt.score.safetyScore))),
     overallScore: roundScore(average(attempts.map((attempt) => attempt.score.overallScore))),
     judgeRationale: attempts.at(-1)?.score.judgeRationale ?? "No attempts recorded.",
-    failureTags: [...new Set(attempts.flatMap((attempt) => attempt.score.failureTags))],
+    failureTags: [...new Set(
+      attempts
+        .flatMap((attempt) => attempt.score.failureTags)
+        .filter((tag) => !(hasAuthoritativeJudge && tag === "heuristic_proxy_non_authoritative"))
+    )],
   });
 }
 
@@ -3313,12 +3328,17 @@ function averageMetricScoresFromAttempts(attempts: EvaluationAttempt[]): Evaluat
       byMetric.set(metric.metricId, existing);
     }
   }
+  const hasAuthoritativeJudge = authoritativeJudgeRecorded(attempts);
   return [...byMetric.entries()].map(([metricId, metrics]) => EvaluationMetricScoreSchema.parse({
     metricId,
     score: roundScore(average(metrics.map((metric) => metric.score))),
     passed: average(metrics.map((metric) => metric.passed ? 1 : 0)) >= 0.70,
     rationale: metrics.at(-1)?.rationale ?? "No metric attempts recorded.",
-    failureTags: [...new Set(metrics.flatMap((metric) => metric.failureTags))],
+    failureTags: [...new Set(
+      metrics
+        .flatMap((metric) => metric.failureTags)
+        .filter((tag) => !(hasAuthoritativeJudge && metricId === "llm_judge_score" && tag === "heuristic_proxy_non_authoritative"))
+    )],
     details: {
       attemptCount: metrics.length,
       passRate: roundScore(average(metrics.map((metric) => metric.passed ? 1 : 0))),
@@ -4581,7 +4601,11 @@ function llmJudgeMetricSourceFromResult(
 function effectiveCausalEpisodes(observations: EvaluationObservation): Array<Record<string, unknown>> {
   const raw = getObservationPath(observations, "run.causalInterventionEpisodes") as Array<Record<string, unknown>> | undefined;
   if (!raw || raw.length === 0) return [];
-  return raw.filter((episode) => episode.effective !== false && episode.source !== "runtime_followup");
+  const effective = raw.filter((episode) => episode.effective !== false && episode.source !== "runtime_followup");
+  if (effective.length > 0) {
+    return effective;
+  }
+  return raw.filter((episode) => episode.source !== "runtime_followup");
 }
 
 function aggregateMetricScores(metricScores: EvaluationMetricScore[], profileId: EvaluationProfileKind, runtimeFailed: boolean): EvaluationScore {

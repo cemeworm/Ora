@@ -21,6 +21,12 @@ const resolverWorkflowObjective = EvaluationObjectiveSchema.parse({
   ],
 });
 
+const causalObjective = EvaluationObjectiveSchema.parse({
+  kind: "outcome",
+  target: "run.output",
+  metrics: ["intent_resolution", "effective_intervention"],
+});
+
 const evaluationCase = EvaluationCaseSchema.parse({
   id: "case-resolver-metrics",
   input: {
@@ -210,5 +216,97 @@ describe("resolver-aware evaluation metrics", () => {
 
     expect(byId.get("atomic_tool_hops")?.passed).toBe(true);
     expect(byId.get("first_locate_success")?.passed).toBe(true);
+  });
+
+  it("falls back to router_primary episodes when no effective causal episode survives filtering", () => {
+    const causalCase = EvaluationCaseSchema.parse({
+      id: "case-causal-fallback",
+      input: { prompt: "Python 3.13 有什么新特性" },
+      expected: {
+        structured: {
+          expectedIntervention: "search_web",
+          latentGoal: "了解最新版本特性",
+        },
+      },
+      metadata: {},
+    });
+    const snapshot = makeSnapshot({
+      toolCalls: [],
+      events: [
+        {
+          id: "evt-plan",
+          runId: "run-eval-metrics",
+          seq: 1,
+          type: "causal.decision.recorded",
+          createdAt: 2,
+          pattern: "orchestrator_subagent",
+          payload: {
+            decisionId: "decision-plan",
+            source: "runtime_followup",
+            decisionKind: "plan_updated",
+            taskState: {
+              surfaceRequest: "Python 3.13 有什么新特性",
+              selectedLatentGoal: "",
+              keyUncertainties: ["上下文不足"],
+            },
+            policyDecision: {
+              goalUncertainty: 0.5,
+              factUncertainty: 0.2,
+              contextUncertainty: 0.4,
+              actionRisk: 0.1,
+              userCost: 0.3,
+              reversibility: "medium",
+              recommendedAction: "plan",
+              reason: "plan fallback",
+              wouldChangeOutcomeIfWrong: false,
+            },
+            chosenIntervention: "plan",
+            effective: true,
+            recordedAt: 2,
+          },
+        },
+        {
+          id: "evt-router",
+          runId: "run-eval-metrics",
+          seq: 2,
+          type: "causal.decision.recorded",
+          createdAt: 3,
+          pattern: "orchestrator_subagent",
+          payload: {
+            decisionId: "decision-router",
+            source: "router_primary",
+            decisionKind: "run_start",
+            taskState: {
+              surfaceRequest: "Python 3.13 有什么新特性",
+              selectedLatentGoal: "了解最新版本特性",
+              keyUncertainties: ["需要搜索最新信息"],
+            },
+            policyDecision: {
+              goalUncertainty: 0.7,
+              factUncertainty: 0.7,
+              contextUncertainty: 0.2,
+              actionRisk: 0.3,
+              userCost: 0.2,
+              reversibility: "medium",
+              recommendedAction: "clarify",
+              reason: "router picked clarify",
+              wouldChangeOutcomeIfWrong: true,
+            },
+            chosenIntervention: "clarify",
+            effective: false,
+            recordedAt: 3,
+          },
+        },
+      ],
+    });
+
+    const observations = extractEvaluationObservations(snapshot, 900);
+    const scores = scoreObjectiveMetrics(causalObjective, causalCase, observations);
+    const byId = new Map<string, (typeof scores)[number]>(scores.map((score) => [score.metricId, score]));
+
+    expect(byId.get("intent_resolution")?.failureTags).not.toContain("missing_causal_data");
+    expect(byId.get("effective_intervention")?.failureTags).toContain("wrong_intervention");
+    expect(byId.get("effective_intervention")?.rationale).toContain("search_web");
+    expect(byId.get("effective_intervention")?.rationale).toContain("clarify");
   });
 });
