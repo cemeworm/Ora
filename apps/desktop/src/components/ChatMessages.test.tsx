@@ -534,6 +534,82 @@ describe("ChatMessages bottom inset", () => {
     expect(html.match(/rounded-2xl bg-muted px-3\.5 py-2\.5/g)).toHaveLength(2);
   });
 
+  it("does not render a duplicate pending user bubble once the transcript already contains the same user turn", () => {
+    const createdAt = 1_714_000_000_000;
+    const sessionId = "session-no-duplicate-pending-user";
+    const runId = "run-no-duplicate-pending-user";
+    const prompt = "可以，开始 Phase 0。我需要精确定位所有涉及代码的当前行号和调用链。";
+    const messages = adaptRenderableChatMessages({
+      transcript: [{
+        id: `${runId}:user`,
+        sessionId,
+        runId,
+        turnIndex: 1,
+        role: "user",
+        content: prompt,
+        pattern: "orchestrator_subagent",
+        modeId: SINGLE_AGENT_MODE_ID,
+        createdAt,
+      }],
+      turnSnapshots: {
+        [runId]: {
+          runId,
+          sessionId,
+          turnIndex: 1,
+          status: "running",
+          pattern: "orchestrator_subagent",
+          modeId: SINGLE_AGENT_MODE_ID,
+          input: { prompt, createdAt, context: {} },
+          config: {
+            modeId: SINGLE_AGENT_MODE_ID,
+            pattern: "orchestrator_subagent",
+            modeSelection: "manual",
+            profileIds: ["solo_agent"],
+            providerId: "local-smoke",
+            modelRef: "local/smoke-model",
+            approvalMode: "high_risk_only",
+            patternOptions: {},
+            metadata: {},
+            deterministicSeed: "chat-messages-no-duplicate-pending-user",
+            skillIds: [],
+            toolIds: [],
+          },
+          topology: { nodes: [], edges: [] },
+          profiles: [],
+          memory: [],
+          plan: [],
+          todos: [],
+          actions: [],
+          toolCalls: [],
+          policyDecisions: [],
+          checkpoints: [],
+          events: [],
+          artifacts: [],
+          activeAgents: [],
+          queueSummary: { mode: "dag", pending: 0, inProgress: 1, completed: 0, topics: [] },
+          sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+          busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+          pendingClarifications: [],
+          pendingApprovals: [],
+          updatedAt: createdAt + 500,
+        } as unknown as OraStateSnapshot,
+      },
+      pendingRun: {
+        sessionId,
+        prompt,
+        createdAt,
+        progressText: "",
+      },
+      selectedSessionId: sessionId,
+    });
+
+    const html = renderToStaticMarkup(
+      <ChatMessages chatMessages={messages} />,
+    );
+
+    expect(html.split(prompt).length - 1).toBe(1);
+  });
+
   it("keeps mode-stage delegation inside the parent assistant turn", () => {
     const createdAt = 1_714_000_300_000;
     const sessionId = "session-chat-messages-mode-stage-inline";

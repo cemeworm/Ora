@@ -239,6 +239,80 @@ describe("desktop session view model", () => {
     expect(messages.find((message) => message.role === "assistant")?.content).toBe("Ora 是一个本地 AI 工作台。");
   });
 
+  it("drops only the pending user placeholder once the user turn is materialized but assistant output is still pending", () => {
+    const createdAt = 1_714_000_000_000;
+    const sessionId = "session-user-materialized-assistant-pending";
+    const runId = "run-user-materialized-assistant-pending";
+    const prompt = "可以，开始 Phase 0。我需要精确定位所有涉及代码的当前行号和调用链。";
+    const messages = adaptRenderableChatMessages({
+      transcript: [{
+        id: `${runId}:user`,
+        sessionId,
+        runId,
+        turnIndex: 1,
+        role: "user",
+        content: prompt,
+        pattern: "orchestrator_subagent",
+        modeId: SINGLE_AGENT_MODE_ID,
+        createdAt,
+      }],
+      turnSnapshots: {
+        [runId]: {
+          runId,
+          sessionId,
+          turnIndex: 1,
+          status: "running",
+          pattern: "orchestrator_subagent",
+          modeId: SINGLE_AGENT_MODE_ID,
+          input: { prompt, createdAt, context: {} },
+          config: {
+            modeId: SINGLE_AGENT_MODE_ID,
+            pattern: "orchestrator_subagent",
+            modeSelection: "manual",
+            profileIds: ["solo_agent"],
+            providerId: "deepseek",
+            modelRef: "deepseek-chat",
+            approvalMode: "high_risk_only",
+            patternOptions: {},
+            metadata: {},
+            deterministicSeed: "view-model-user-materialized-assistant-pending-test",
+            skillIds: [],
+            toolIds: [],
+          },
+          topology: { nodes: [], edges: [] },
+          profiles: [],
+          memory: [],
+          plan: [],
+          todos: [],
+          actions: [],
+          toolCalls: [],
+          policyDecisions: [],
+          checkpoints: [],
+          events: [],
+          artifacts: [],
+          activeAgents: [],
+          queueSummary: { mode: "dag", pending: 0, inProgress: 1, completed: 0, topics: [] },
+          sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+          busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+          pendingClarifications: [],
+          pendingApprovals: [],
+          updatedAt: createdAt + 1_000,
+        } as unknown as OraStateSnapshot,
+      },
+      pendingRun: {
+        sessionId,
+        prompt,
+        createdAt,
+        progressText: "",
+      },
+      selectedSessionId: sessionId,
+    });
+
+    expect(messages.filter((message) => message.role === "user" && message.content === prompt)).toHaveLength(1);
+    expect(messages.map((message) => message.id)).not.toContain(`${sessionId}:pending:user`);
+    expect(messages.map((message) => message.id)).toContain(`${sessionId}:pending:assistant`);
+  });
+
   it("keeps child collaboration deltas out of assistant chat messages", () => {
     const createdAt = 1_714_000_000_000;
     const runId = "run-collaboration-filter";

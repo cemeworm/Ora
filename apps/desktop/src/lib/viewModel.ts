@@ -1703,16 +1703,23 @@ export function adaptRenderableChatMessages(params: {
   if (!pendingRun || pendingRun.sessionId !== params.selectedSessionId) {
     return withAcceptedPlanDecisionTurns;
   }
-  const runAlreadyMaterialized = pendingRunAlreadyMaterialized(
+  const pendingMaterialization = pendingRunMaterialization(
     pendingRun,
     turnSnapshots,
     withAcceptedPlanDecisionTurns,
     params.transcript,
   );
-  if (runAlreadyMaterialized) {
+  if (pendingMaterialization.userVisible && pendingMaterialization.assistantVisible) {
     return withAcceptedPlanDecisionTurns;
   }
-  return [...withAcceptedPlanDecisionTurns, ...adaptPendingRunMessages(pendingRun)];
+  return [
+    ...withAcceptedPlanDecisionTurns,
+    ...adaptPendingRunMessages(pendingRun).filter((message) =>
+      message.role === "user"
+        ? !pendingMaterialization.userVisible
+        : !pendingMaterialization.assistantVisible,
+    ),
+  ];
 }
 
 function injectAcceptedPlanDecisionTurns(
@@ -1762,12 +1769,12 @@ function injectAcceptedPlanDecisionTurns(
   return next;
 }
 
-function pendingRunAlreadyMaterialized(
+function pendingRunMaterialization(
   pendingRun: PendingRunPreview,
   turnSnapshots: Record<string, OraStateSnapshot | undefined>,
   messages: readonly ChatMessage[] = [],
   transcript: readonly OraSessionTranscriptMessage[] = [],
-): boolean {
+): { userVisible: boolean; assistantVisible: boolean } {
   if (!pendingRun.runId) {
     const matchingTranscriptRunIds = new Set(
       transcript
@@ -1779,6 +1786,7 @@ function pendingRunAlreadyMaterialized(
         )
         .map((message) => message.runId),
     );
+    const userVisible = matchingTranscriptRunIds.size > 0;
     for (const snapshot of Object.values(turnSnapshots)) {
       if (
         snapshot?.sessionId === pendingRun.sessionId &&
@@ -1788,19 +1796,20 @@ function pendingRunAlreadyMaterialized(
         matchingTranscriptRunIds.add(snapshot.runId);
       }
     }
-    if (matchingTranscriptRunIds.size === 0) {
-      return false;
-    }
-    return messages.some((message) => {
+    const assistantVisible = matchingTranscriptRunIds.size > 0 && messages.some((message) => {
       if (message.role !== "assistant" || !message.content.trim()) {
         return false;
       }
       const runId = message.metadata?.runId;
       return Boolean(runId && matchingTranscriptRunIds.has(runId));
     });
+    return {
+      userVisible,
+      assistantVisible,
+    };
   }
   const snapshot = turnSnapshots[pendingRun.runId];
-  return Boolean(
+  const materialized = Boolean(
     snapshot?.sessionId === pendingRun.sessionId &&
       (
         snapshot.status === "queued" ||
@@ -1811,6 +1820,10 @@ function pendingRunAlreadyMaterialized(
         snapshot.status === "failed"
       ),
   );
+  return {
+    userVisible: materialized,
+    assistantVisible: materialized,
+  };
 }
 
 function overlayLiveMessageDeltas(
