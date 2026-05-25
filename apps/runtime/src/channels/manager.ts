@@ -1,15 +1,18 @@
 import crypto from "node:crypto";
+import path from "node:path";
 import {
   ChannelInboundMessageSchema,
   ChannelIngestParamsSchema,
   ChannelIngestResultSchema,
   ChannelOutboundMessageSchema,
+  HostFilesystemStateSchema,
   isCommentaryDeltaPayload,
   type ChannelBinding,
   type ChannelConfig,
   type ChannelInboundMessage,
   type ChannelIngestResult,
   type ChannelOutboundMessage,
+  type HostFilesystemState,
   deriveRunAttention,
   type RunEventStream,
   type RunHandle,
@@ -1058,6 +1061,7 @@ function channelRunConfig(channel: ChannelConfig): Record<string, unknown> | und
   return {
     modeSelection: "auto",
     permissionMode: "default",
+    hostFilesystem: channelHostFilesystemState(channel),
     ...existing,
     metadata: {
       taskIntentMode: "auto",
@@ -1065,6 +1069,29 @@ function channelRunConfig(channel: ChannelConfig): Record<string, unknown> | und
       ...metadata,
     },
   };
+}
+
+function channelHostFilesystemState(channel: ChannelConfig): HostFilesystemState | undefined {
+  const localReadRoots = Array.isArray(channel.config.localReadRoots)
+    ? channel.config.localReadRoots
+      .filter((value): value is string => typeof value === "string")
+      .map((value) => value.trim())
+      .filter((value) => value.length > 0 && path.isAbsolute(value))
+    : [];
+  if (localReadRoots.length === 0) {
+    return undefined;
+  }
+  return HostFilesystemStateSchema.parse({
+    grants: localReadRoots.map((rootPath) => ({
+      id: `channel-local-read:${rootPath}`,
+      rootPath,
+      label: `Channel local read root (${rootPath})`,
+      source: "user_approved",
+      capabilities: ["read", "list", "search"],
+      expiresWithRun: true,
+    })),
+    allowDynamicGrant: false,
+  });
 }
 
 function extractDeltaText(event: { type?: string; payload?: unknown }): string {

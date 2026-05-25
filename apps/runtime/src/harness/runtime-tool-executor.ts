@@ -23,7 +23,7 @@ import { selfIterationToolRuntimeFields } from "./runtime-self-iteration-tools.j
 import { shellCommandRequiresHighRisk, shellToolRuntimeFields } from "./runtime-shell-tool.js";
 import { skillToolRuntimeFields } from "./runtime-skill-tools.js";
 import { genericApprovalRequest } from "./runtime-tool-approval.js";
-import { hasHostFilesystemAccess, hasHostFilesystemCapability, isRecord, workspaceRootPath } from "./runtime-tool-utils.js";
+import { hasHostFilesystemAccess, hasHostFilesystemCapability, isRecord, normalizeHostFilesystemState, workspaceRootPath } from "./runtime-tool-utils.js";
 import { webDocumentToolRuntimeFields } from "./runtime-web-document-tools.js";
 import { computerToolRuntimeFields } from "./runtime-computer-tools.js";
 import { widgetToolRuntimeFields } from "./runtime-widget-tools.js";
@@ -697,6 +697,7 @@ export class RuntimeToolExecutor {
           ? "Workspace file tools require a selected project folder. Host file access is available only for explicitly scoped /tmp or approved host directories."
           : "Workspace file tools require a selected project folder. Host file access is unavailable unless the run received /tmp or approved host directory grants.",
       "If the user asks what tools you can use, answer from this available-tools list and the selected workspace context; do not claim you have no local tools when tools are listed here.",
+      formatHostGrantPrompt(this.hostFilesystem),
       enabledDefinitions.some((definition) => definition.requiresApprovalCopy)
         ? "For tools that can change local files, run commands, install skills, toggle skills, or call external MCP tools, include args.approvalRequest with user-facing copy in the current conversation language. Explain what you will do, what will change, why it is needed, and the risk in plain language. Do not expose internal tool ids, policy ids, action ids, or agent ids in that copy."
         : undefined,
@@ -897,6 +898,8 @@ function hostCapabilityForTool(toolId: string, hostFilesystem: HostFilesystemSta
     case "file.glob":
     case "file.grep":
       return hasHostFilesystemCapability(hostFilesystem, "search");
+    case "document.extract":
+      return hasHostFilesystemCapability(hostFilesystem, "read");
     case "file.write":
       return hasHostFilesystemCapability(hostFilesystem, "write");
     case "file.patch":
@@ -904,6 +907,20 @@ function hostCapabilityForTool(toolId: string, hostFilesystem: HostFilesystemSta
     default:
       return false;
   }
+}
+
+function formatHostGrantPrompt(hostFilesystem: HostFilesystemState | undefined): string | undefined {
+  const grants = normalizeHostFilesystemState(hostFilesystem).grants;
+  if (grants.length === 0) {
+    return undefined;
+  }
+  return [
+    "Approved host directory grants for this run:",
+    ...grants.slice(0, 8).map((grant) =>
+      `- grantId=${grant.id}; root=${grant.rootPath}; capabilities=${(grant.capabilities ?? []).join(",") || "none"}`
+    ),
+    "When there is no selected project folder, use host_grant (or host_tmp for /tmp) for local file access. document.extract can also use host_grant with an absolute path.",
+  ].join("\n");
 }
 
 function mergeAbortSignals(...signals: Array<AbortSignal | undefined>): AbortSignal | undefined {

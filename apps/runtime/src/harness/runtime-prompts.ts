@@ -215,12 +215,29 @@ export function projectInstructionsSystemPrompt(content: string): string {
   ].join("\n");
 }
 
-export function channelProjectGuidancePrompt(context: Record<string, unknown> | undefined, workspace: unknown): string | undefined {
+export function channelProjectGuidancePrompt(
+  context: Record<string, unknown> | undefined,
+  workspace: unknown,
+  hostFilesystem: { grants?: Array<{ id?: string; rootPath?: string; capabilities?: string[] }> } | undefined,
+): string | undefined {
   if (!context || context.source !== "channel") {
     return undefined;
   }
   if (workspace && typeof workspace === "object" && workspace !== null && typeof (workspace as Record<string, unknown>).rootPath === "string") {
     return undefined;
+  }
+  const readableHostRoots = Array.isArray(hostFilesystem?.grants)
+    ? hostFilesystem.grants
+      .filter((grant) => Array.isArray(grant?.capabilities) && grant.capabilities.includes("read") && typeof grant.rootPath === "string" && grant.rootPath.trim())
+      .map((grant) => grant.rootPath!.trim())
+    : [];
+  if (readableHostRoots.length > 0) {
+    return [
+      "你正在通过消息通道回复用户。当前 run 没有项目文件夹，但已经获得了显式授权的本地只读目录。",
+      "读取这些目录内的文件时，优先使用 host grant 文件工具，而不是要求用户先设置项目文件夹。",
+      `当前可读目录：${readableHostRoots.slice(0, 6).join("，")}${readableHostRoots.length > 6 ? " 等" : ""}。`,
+      "只有在需要 repo.explore、shell.execute、package.* 或项目索引上下文时，才引导用户使用 /project 设置项目文件夹。",
+    ].join("\n");
   }
   return [
     "你正在通过消息通道回复用户。要操作本地文件，用户需要先设置项目文件夹。",

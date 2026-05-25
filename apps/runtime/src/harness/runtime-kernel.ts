@@ -54,6 +54,7 @@ import {
   CausalDecisionRecordSchema,
   type CompletionStopReason,
   type CustomAgentDetail,
+  acceptedPlanExecutionContractFromMetadata,
   getPermissionProfile,
   inspectProposedPlanContract,
   ORA_ROOT_AGENT_ID,
@@ -1884,7 +1885,11 @@ export async function executeRuntimeKernel(
   const suspendedFrameDecision = suspendedFrameDispatch?.kind === "resume_suspended_node" && suspendedFrameDispatch.frame.status === "awaiting_model"
     ? suspendedFrameDispatch
     : undefined;
+  const acceptedPlanWholeRunResume =
+    acceptedPlanExecutionContractFromMetadata(config.metadata) === "same_run_implementation" &&
+    (options.resumeContext?.planDecisionResolutions ?? []).some((resolution) => resolution.status === "accepted");
   const shouldResumeSuspendedFrameInModeDriver = suspendedFrameDecision !== undefined &&
+    !acceptedPlanWholeRunResume &&
     resolvedModeSpec.family === "orchestrator_subagent" &&
     !resolvedModeSpec.stages?.length &&
     resolvedModeSpec.nodes.length > 1;
@@ -2406,7 +2411,7 @@ export async function executeRuntimeKernel(
 
   const workspaceContext = [
     workspaceSystemPrompt(input.context?.projectWorkspace),
-    channelProjectGuidancePrompt(input.context, input.context?.projectWorkspace),
+    channelProjectGuidancePrompt(input.context, input.context?.projectWorkspace, config.hostFilesystem),
   ].filter(Boolean).join("\n\n") || undefined;
 
   const projectInstructionsContext = ((): string | undefined => {
@@ -5332,7 +5337,7 @@ export async function executeRuntimeKernel(
   };
 
   const resumeSuspendedFrameIfNeeded = async (): Promise<StateSnapshot | undefined> => {
-    if (!suspendedFrameDecision || shouldResumeSuspendedFrameInModeDriver) {
+    if (!suspendedFrameDecision || shouldResumeSuspendedFrameInModeDriver || acceptedPlanWholeRunResume) {
       return undefined;
     }
 

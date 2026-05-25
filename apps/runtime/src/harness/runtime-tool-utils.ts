@@ -229,8 +229,16 @@ export function resolveFileToolTarget(params: {
   args: Record<string, unknown>;
   capability: HostFilesystemCapability;
 }): ResolvedFileToolTarget {
+  const hostState = normalizeHostFilesystemState(params.hostFilesystem);
   const scope = fileAccessScopeFromArgs(params.args);
   if (scope === "workspace") {
+    const workspaceRoot = workspaceRootPath(params.workspace);
+    if (!workspaceRoot) {
+      const readOnlyHostTarget = resolveImplicitReadOnlyHostTarget(hostState, params.args, params.capability);
+      if (readOnlyHostTarget) {
+        return readOnlyHostTarget;
+      }
+    }
     const rootPath = requireWorkspaceRoot(params.workspace);
     try {
       const absolutePath = resolveWorkspacePath(rootPath, params.args.path);
@@ -261,7 +269,6 @@ export function resolveFileToolTarget(params: {
     }
   }
 
-  const hostState = normalizeHostFilesystemState(params.hostFilesystem);
   const grant = scope === "host_grant"
     ? requireHostGrant(hostState, params.args.grantId)
     : undefined;
@@ -285,6 +292,57 @@ export function resolveFileToolTarget(params: {
 
 function fileAccessScopeFromArgs(args: Record<string, unknown>): FileAccessScope {
   return args.scope === "host_tmp" || args.scope === "host_grant" ? args.scope : "workspace";
+}
+
+function resolveImplicitReadOnlyHostTarget(
+  state: HostFilesystemState,
+  args: Record<string, unknown>,
+  capability: HostFilesystemCapability,
+): ResolvedFileToolTarget | undefined {
+  if (!isReadCapability(capability)) {
+    return undefined;
+  }
+  const requestedPath = typeof args.path === "string" && args.path.trim()
+    ? args.path.trim()
+    : undefined;
+  const grants = state.grants.filter((candidate) => grantAllowsCapability(candidate, capability));
+  if (requestedPath && path.isAbsolute(requestedPath)) {
+    const absolutePath = path.resolve(requestedPath);
+    const matchingGrant = [...grants]
+      .filter((candidate) => pathStaysInsideRoot(candidate.rootPath, absolutePath))
+      .sort((left, right) => right.rootPath.length - left.rootPath.length)[0];
+    if (!matchingGrant) {
+      return undefined;
+    }
+    return {
+      scope: "host_grant",
+      grantId: matchingGrant.id,
+      absolutePath,
+      displayPath: absolutePath,
+      anchorRootPath: matchingGrant.rootPath,
+      scopeLabel: "approved_host_directory",
+    };
+  }
+
+  if (grants.length !== 1) {
+    return undefined;
+  }
+  const onlyGrant = grants[0]!;
+  const relativeOrDefaultPath = requestedPath && requestedPath !== "."
+    ? requestedPath
+    : ".";
+  const absolutePath = path.resolve(onlyGrant.rootPath, relativeOrDefaultPath);
+  if (!pathStaysInsideRoot(onlyGrant.rootPath, absolutePath)) {
+    return undefined;
+  }
+  return {
+    scope: "host_grant",
+    grantId: onlyGrant.id,
+    absolutePath,
+    displayPath: relativeOrDefaultPath === "." ? onlyGrant.rootPath : absolutePath,
+    anchorRootPath: onlyGrant.rootPath,
+    scopeLabel: "approved_host_directory",
+  };
 }
 
 function defaultHostScopePath(

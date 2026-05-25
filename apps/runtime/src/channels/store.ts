@@ -279,25 +279,34 @@ function normalizeChannelConfig(config: ChannelConfig): ChannelConfig {
   if (config.kind === "wechat" && capabilities?.supportsStreamingUpdates !== true) {
     capabilities = { ...capabilities, supportsStreamingUpdates: true };
   }
+  const localReadRoots = Array.isArray(config.config.localReadRoots)
+    ? [...new Set(config.config.localReadRoots
+      .filter((value): value is string => typeof value === "string")
+      .map((value) => value.trim())
+      .filter((value) => value.length > 0))]
+    : [];
+  const normalizedConfig = localReadRoots.length > 0 || Array.isArray(config.config.localReadRoots)
+    ? { ...config.config, localReadRoots }
+    : config.config;
 
-  const runConfig = config.config.runConfig;
+  const runConfig = normalizedConfig.runConfig;
   if (!runConfig || typeof runConfig !== "object" || Array.isArray(runConfig)) {
-    if (capabilities !== config.capabilities) {
-      return ChannelConfigSchema.parse({ ...config, capabilities });
+    if (capabilities !== config.capabilities || normalizedConfig !== config.config) {
+      return ChannelConfigSchema.parse({ ...config, capabilities, config: normalizedConfig });
     }
     return config;
   }
   const metadata = (runConfig as Record<string, unknown>).metadata;
   if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
-    if (capabilities !== config.capabilities) {
-      return ChannelConfigSchema.parse({ ...config, capabilities });
+    if (capabilities !== config.capabilities || normalizedConfig !== config.config) {
+      return ChannelConfigSchema.parse({ ...config, capabilities, config: normalizedConfig });
     }
     return config;
   }
   const metadataRecord = metadata as Record<string, unknown>;
   if (metadataRecord.taskIntent !== "chat" || metadataRecord.taskIntentMode !== undefined) {
-    if (capabilities !== config.capabilities) {
-      return ChannelConfigSchema.parse({ ...config, capabilities });
+    if (capabilities !== config.capabilities || normalizedConfig !== config.config) {
+      return ChannelConfigSchema.parse({ ...config, capabilities, config: normalizedConfig });
     }
     return config;
   }
@@ -308,7 +317,7 @@ function normalizeChannelConfig(config: ChannelConfig): ChannelConfig {
     ...config,
     capabilities,
     config: {
-      ...config.config,
+      ...normalizedConfig,
       runConfig: {
         ...(runConfig as Record<string, unknown>),
         metadata: {

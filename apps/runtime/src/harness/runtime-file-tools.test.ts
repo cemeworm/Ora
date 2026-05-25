@@ -182,6 +182,264 @@ describe("runtime file tools", () => {
     })).rejects.toThrow("Host file grant does not allow write access.");
   });
 
+  it("implicitly routes absolute read-only paths into the most specific host grant when no workspace is selected", async () => {
+    const outerDir = fs.mkdtempSync(path.join(os.tmpdir(), "ora-channel-host-outer-"));
+    const nestedDir = path.join(outerDir, "nested");
+    fs.mkdirSync(nestedDir, { recursive: true });
+    const nestedFile = path.join(nestedDir, "note.txt");
+    fs.writeFileSync(nestedFile, "nested note", "utf8");
+    const hostFilesystem: HostFilesystemState = {
+      grants: [
+        {
+          id: `channel-local-read:${outerDir}`,
+          rootPath: outerDir,
+          label: `Channel local read root (${outerDir})`,
+          source: "user_approved",
+          capabilities: ["read", "list", "search"],
+          expiresWithRun: true,
+        },
+        {
+          id: `channel-local-read:${nestedDir}`,
+          rootPath: nestedDir,
+          label: `Channel local read root (${nestedDir})`,
+          source: "user_approved",
+          capabilities: ["read", "list", "search"],
+          expiresWithRun: true,
+        },
+      ],
+      allowDynamicGrant: false,
+    };
+
+    const readResult = await executorWithoutWorkspace(hostFilesystem).executeWithMetadata({
+      tool: "file.read",
+      args: {
+        path: nestedFile,
+      },
+    });
+
+    expect(readResult.output).toMatchObject({
+      scope: "host_grant",
+      grantId: `channel-local-read:${nestedDir}`,
+      path: nestedFile,
+      content: "nested note",
+    });
+
+    const listResult = await executorWithoutWorkspace(hostFilesystem).executeWithMetadata({
+      tool: "file.list",
+      args: {
+        path: nestedDir,
+      },
+    });
+
+    expect(listResult.output).toMatchObject({
+      scope: "host_grant",
+      grantId: `channel-local-read:${nestedDir}`,
+      path: nestedDir,
+    });
+  });
+
+  it("uses the only readable host grant for default list/glob/grep calls without a workspace", async () => {
+    const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "ora-channel-host-default-"));
+    fs.mkdirSync(path.join(rootDir, "src"), { recursive: true });
+    fs.writeFileSync(path.join(rootDir, "src", "alpha.ts"), "export const alpha = 1;\n", "utf8");
+    fs.writeFileSync(path.join(rootDir, "README.md"), "# host root\n", "utf8");
+    const hostFilesystem: HostFilesystemState = {
+      grants: [{
+        id: `channel-local-read:${rootDir}`,
+        rootPath: rootDir,
+        label: `Channel local read root (${rootDir})`,
+        source: "user_approved",
+        capabilities: ["read", "list", "search"],
+        expiresWithRun: true,
+      }],
+      allowDynamicGrant: false,
+    };
+
+    const listResult = await executorWithoutWorkspace(hostFilesystem).executeWithMetadata({
+      tool: "file.list",
+      args: {},
+    });
+
+    expect(listResult.output).toMatchObject({
+      scope: "host_grant",
+      grantId: `channel-local-read:${rootDir}`,
+      path: rootDir,
+    });
+    expect(listResult.output).toMatchObject({
+      entries: expect.arrayContaining([
+        expect.objectContaining({ name: "src", kind: "directory" }),
+        expect.objectContaining({ name: "README.md", kind: "file" }),
+      ]),
+    });
+
+    const globResult = await executorWithoutWorkspace(hostFilesystem).executeWithMetadata({
+      tool: "file.glob",
+      args: {
+        pattern: "**/*.ts",
+      },
+    });
+
+    expect(globResult.output).toMatchObject({
+      scope: "host_grant",
+      grantId: `channel-local-read:${rootDir}`,
+      path: rootDir,
+      matches: expect.arrayContaining([path.join(rootDir, "src", "alpha.ts")]),
+    });
+
+    const grepResult = await executorWithoutWorkspace(hostFilesystem).executeWithMetadata({
+      tool: "file.grep",
+      args: {
+        pattern: "alpha",
+      },
+    });
+
+    expect(grepResult.output).toMatchObject({
+      scope: "host_grant",
+      grantId: `channel-local-read:${rootDir}`,
+      path: rootDir,
+      truncated: false,
+      matches: expect.arrayContaining([
+        expect.objectContaining({
+          path: path.join(rootDir, "src", "alpha.ts"),
+          text: "export const alpha = 1;",
+        }),
+      ]),
+    });
+  });
+
+  it("supports relative host-grant paths without a workspace only when there is a single readable grant", async () => {
+    const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "ora-channel-host-relative-"));
+    fs.mkdirSync(path.join(rootDir, "src"), { recursive: true });
+    fs.writeFileSync(path.join(rootDir, "src", "beta.ts"), "export const beta = 2;\n", "utf8");
+    const hostFilesystem: HostFilesystemState = {
+      grants: [{
+        id: `channel-local-read:${rootDir}`,
+        rootPath: rootDir,
+        label: `Channel local read root (${rootDir})`,
+        source: "user_approved",
+        capabilities: ["read", "list", "search"],
+        expiresWithRun: true,
+      }],
+      allowDynamicGrant: false,
+    };
+
+    const readResult = await executorWithoutWorkspace(hostFilesystem).executeWithMetadata({
+      tool: "file.read",
+      args: {
+        path: "src/beta.ts",
+      },
+    });
+
+    expect(readResult.output).toMatchObject({
+      scope: "host_grant",
+      grantId: `channel-local-read:${rootDir}`,
+      path: path.join(rootDir, "src", "beta.ts"),
+      content: "export const beta = 2;\n",
+    });
+  });
+
+  it("does not guess among multiple readable host grants for relative paths without a workspace", async () => {
+    const firstDir = fs.mkdtempSync(path.join(os.tmpdir(), "ora-channel-host-first-"));
+    const secondDir = fs.mkdtempSync(path.join(os.tmpdir(), "ora-channel-host-second-"));
+    const hostFilesystem: HostFilesystemState = {
+      grants: [
+        {
+          id: `channel-local-read:${firstDir}`,
+          rootPath: firstDir,
+          label: `Channel local read root (${firstDir})`,
+          source: "user_approved",
+          capabilities: ["read", "list", "search"],
+          expiresWithRun: true,
+        },
+        {
+          id: `channel-local-read:${secondDir}`,
+          rootPath: secondDir,
+          label: `Channel local read root (${secondDir})`,
+          source: "user_approved",
+          capabilities: ["read", "list", "search"],
+          expiresWithRun: true,
+        },
+      ],
+      allowDynamicGrant: false,
+    };
+
+    await expect(executorWithoutWorkspace(hostFilesystem).executeWithMetadata({
+      tool: "file.glob",
+      args: {
+        pattern: "**/*.ts",
+      },
+    })).rejects.toThrow("A selected project folder is required for this tool.");
+  });
+
+  it("extracts local PDFs through host grants without a workspace", async () => {
+    const attachmentDir = fs.mkdtempSync(path.join(os.tmpdir(), "ora-document-host-grant-"));
+    const pdfPath = path.join(attachmentDir, "sample.pdf");
+    const pdfData = Buffer.from([
+      0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x34, 0x0a,
+      0x31, 0x20, 0x30, 0x20, 0x6f, 0x62, 0x6a, 0x0a,
+      0x3c, 0x3c, 0x20, 0x2f, 0x54, 0x79, 0x70, 0x65, 0x20, 0x2f, 0x43, 0x61, 0x74, 0x61, 0x6c, 0x6f, 0x67, 0x20, 0x2f, 0x50, 0x61, 0x67, 0x65, 0x73, 0x20, 0x32, 0x20, 0x30, 0x20, 0x52, 0x20, 0x3e, 0x3e, 0x0a,
+      0x65, 0x6e, 0x64, 0x6f, 0x62, 0x6a, 0x0a,
+      0x32, 0x20, 0x30, 0x20, 0x6f, 0x62, 0x6a, 0x0a,
+      0x3c, 0x3c, 0x20, 0x2f, 0x54, 0x79, 0x70, 0x65, 0x20, 0x2f, 0x50, 0x61, 0x67, 0x65, 0x73, 0x20, 0x2f, 0x4b, 0x69, 0x64, 0x73, 0x20, 0x5b, 0x33, 0x20, 0x30, 0x20, 0x52, 0x5d, 0x20, 0x2f, 0x43, 0x6f, 0x75, 0x6e, 0x74, 0x20, 0x31, 0x20, 0x3e, 0x3e, 0x0a,
+      0x65, 0x6e, 0x64, 0x6f, 0x62, 0x6a, 0x0a,
+      0x33, 0x20, 0x30, 0x20, 0x6f, 0x62, 0x6a, 0x0a,
+      0x3c, 0x3c, 0x20, 0x2f, 0x54, 0x79, 0x70, 0x65, 0x20, 0x2f, 0x50, 0x61, 0x67, 0x65, 0x20, 0x2f, 0x50, 0x61, 0x72, 0x65, 0x6e, 0x74, 0x20, 0x32, 0x20, 0x30, 0x20, 0x52, 0x20, 0x2f, 0x4d, 0x65, 0x64, 0x69, 0x61, 0x42, 0x6f, 0x78, 0x20, 0x5b, 0x30, 0x20, 0x30, 0x20, 0x33, 0x30, 0x30, 0x20, 0x31, 0x34, 0x34, 0x5d, 0x20, 0x2f, 0x43, 0x6f, 0x6e, 0x74, 0x65, 0x6e, 0x74, 0x73, 0x20, 0x34, 0x20, 0x30, 0x20, 0x52, 0x20, 0x2f, 0x52, 0x65, 0x73, 0x6f, 0x75, 0x72, 0x63, 0x65, 0x73, 0x20, 0x3c, 0x3c, 0x20, 0x2f, 0x46, 0x6f, 0x6e, 0x74, 0x20, 0x3c, 0x3c, 0x20, 0x2f, 0x46, 0x31, 0x20, 0x35, 0x20, 0x30, 0x20, 0x52, 0x20, 0x3e, 0x3e, 0x20, 0x3e, 0x3e, 0x20, 0x3e, 0x3e, 0x0a,
+      0x65, 0x6e, 0x64, 0x6f, 0x62, 0x6a, 0x0a,
+      0x34, 0x20, 0x30, 0x20, 0x6f, 0x62, 0x6a, 0x0a,
+      0x3c, 0x3c, 0x20, 0x2f, 0x4c, 0x65, 0x6e, 0x67, 0x74, 0x68, 0x20, 0x32, 0x39, 0x20, 0x3e, 0x3e, 0x0a,
+      0x73, 0x74, 0x72, 0x65, 0x61, 0x6d, 0x0a,
+      0x42, 0x54, 0x0a,
+      0x2f, 0x46, 0x31, 0x20, 0x31, 0x32, 0x20, 0x54, 0x66, 0x0a,
+      0x37, 0x32, 0x20, 0x37, 0x32, 0x20, 0x54, 0x64, 0x0a,
+      0x28, 0x48, 0x65, 0x6c, 0x6c, 0x6f, 0x20, 0x50, 0x44, 0x46, 0x29, 0x20, 0x54, 0x6a, 0x0a,
+      0x45, 0x54, 0x0a,
+      0x65, 0x6e, 0x64, 0x73, 0x74, 0x72, 0x65, 0x61, 0x6d, 0x0a,
+      0x65, 0x6e, 0x64, 0x6f, 0x62, 0x6a, 0x0a,
+      0x35, 0x20, 0x30, 0x20, 0x6f, 0x62, 0x6a, 0x0a,
+      0x3c, 0x3c, 0x20, 0x2f, 0x54, 0x79, 0x70, 0x65, 0x20, 0x2f, 0x46, 0x6f, 0x6e, 0x74, 0x20, 0x2f, 0x53, 0x75, 0x62, 0x74, 0x79, 0x70, 0x65, 0x20, 0x2f, 0x54, 0x79, 0x70, 0x65, 0x31, 0x20, 0x2f, 0x42, 0x61, 0x73, 0x65, 0x46, 0x6f, 0x6e, 0x74, 0x20, 0x2f, 0x48, 0x65, 0x6c, 0x76, 0x65, 0x74, 0x69, 0x63, 0x61, 0x20, 0x3e, 0x3e, 0x0a,
+      0x65, 0x6e, 0x64, 0x6f, 0x62, 0x6a, 0x0a,
+      0x78, 0x72, 0x65, 0x66, 0x0a,
+      0x30, 0x20, 0x36, 0x0a,
+      0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x20, 0x36, 0x35, 0x35, 0x33, 0x35, 0x20, 0x66, 0x20, 0x0a,
+      0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x31, 0x30, 0x20, 0x30, 0x30, 0x30, 0x30, 0x30, 0x20, 0x6e, 0x20, 0x0a,
+      0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x36, 0x33, 0x20, 0x30, 0x30, 0x30, 0x30, 0x30, 0x20, 0x6e, 0x20, 0x0a,
+      0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x31, 0x32, 0x32, 0x20, 0x30, 0x30, 0x30, 0x30, 0x30, 0x20, 0x6e, 0x20, 0x0a,
+      0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x32, 0x34, 0x39, 0x20, 0x30, 0x30, 0x30, 0x30, 0x30, 0x20, 0x6e, 0x20, 0x0a,
+      0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x33, 0x32, 0x37, 0x20, 0x30, 0x30, 0x30, 0x30, 0x30, 0x20, 0x6e, 0x20, 0x0a,
+      0x74, 0x72, 0x61, 0x69, 0x6c, 0x65, 0x72, 0x0a,
+      0x3c, 0x3c, 0x20, 0x2f, 0x52, 0x6f, 0x6f, 0x74, 0x20, 0x31, 0x20, 0x30, 0x20, 0x52, 0x20, 0x2f, 0x53, 0x69, 0x7a, 0x65, 0x20, 0x36, 0x20, 0x3e, 0x3e, 0x0a,
+      0x73, 0x74, 0x61, 0x72, 0x74, 0x78, 0x72, 0x65, 0x66, 0x0a,
+      0x33, 0x39, 0x37, 0x0a,
+      0x25, 0x25, 0x45, 0x4f, 0x46, 0x0a,
+    ]);
+    fs.writeFileSync(pdfPath, pdfData);
+    const hostFilesystem: HostFilesystemState = {
+      grants: [{
+        id: `channel-local-read:${attachmentDir}`,
+        rootPath: attachmentDir,
+        label: `Channel local read root (${attachmentDir})`,
+        source: "user_approved",
+        capabilities: ["read", "list", "search"],
+        expiresWithRun: true,
+      }],
+      allowDynamicGrant: false,
+    };
+
+    const result = await executorWithoutWorkspace(hostFilesystem).executeWithMetadata({
+      tool: "document.extract",
+      args: {
+        path: pdfPath,
+        format: "text",
+      },
+    });
+
+    expect(result.output).toMatchObject({
+      source: pdfPath,
+      mimeType: "application/pdf",
+      text: expect.stringContaining("Hello PDF"),
+    });
+  });
+
   it("resolves workspace package aliases from node_modules for read-only tools", async () => {
     const rootPath = tempWorkspace();
     fs.writeFileSync(path.join(rootPath, "pnpm-workspace.yaml"), "packages:\n  - packages/*\n", "utf8");
@@ -461,6 +719,8 @@ describe("runtime file tools", () => {
       ],
       properties: {
         path: expect.any(Object),
+        scope: expect.any(Object),
+        grantId: expect.any(Object),
         url: expect.any(Object),
         format: expect.any(Object),
       },

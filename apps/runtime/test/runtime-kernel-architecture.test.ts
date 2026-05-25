@@ -190,6 +190,16 @@ describe("runtime kernel architecture guards", () => {
     expect(source).toContain("if (!resumed.output.acceptedText) {");
   });
 
+  it("keeps accepted-plan whole-run resume out of suspended-frame resume paths", () => {
+    const source = readSource("src/harness/runtime-kernel.ts");
+
+    expect(source).toContain("const acceptedPlanWholeRunResume =");
+    expect(source).toContain("acceptedPlanExecutionContractFromMetadata(config.metadata) === \"same_run_implementation\"");
+    expect(source).toContain("(options.resumeContext?.planDecisionResolutions ?? []).some((resolution) => resolution.status === \"accepted\")");
+    expect(source).toContain("!acceptedPlanWholeRunResume &&");
+    expect(source).toContain("shouldResumeSuspendedFrameInModeDriver || acceptedPlanWholeRunResume");
+  });
+
   it("freezes the explicit KernelRunner dependency surface as narrow runner-facing groups", () => {
     const source = readSource("src/harness/runtime-kernel.ts");
     const depsSource = kernelRunnerDepsSource();

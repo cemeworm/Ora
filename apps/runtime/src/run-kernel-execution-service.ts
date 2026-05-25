@@ -338,6 +338,15 @@ function shouldResumeAcceptedPlanImplementationFromWholeRun(
     && (planDecisionResolutions ?? []).some((resolution) => resolution.status === "accepted");
 }
 
+export function shouldBypassSuspendedFrameResumeForAcceptedPlan(params: {
+  config: RunConfig;
+  planDecisionResolutions?: Array<{ decisionId: string; status: "accepted" | "declined" }>;
+  resumeSnapshot?: StateSnapshot;
+}): boolean {
+  return params.resumeSnapshot === undefined
+    && shouldResumeAcceptedPlanImplementationFromWholeRun(params.config, params.planDecisionResolutions);
+}
+
 /** Symbolic marker for diagnostic_failure errors, so upstream
  *  callers can identify them without matching on error messages. */
 export const DIAGNOSTIC_FAILURE_SYMBOL: unique symbol = Symbol.for("ora.DiagnosticFailure");
