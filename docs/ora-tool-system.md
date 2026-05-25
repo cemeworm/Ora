@@ -238,6 +238,20 @@ interface RuntimeToolDefinition<TContext, TArgs, TResult> {
 ### 容易误解的点
 
 - `ToolDescriptor.riskLevel` 是**静态分类**（safe/low_risk/requires_approval），用于 PermissionProfile 矩阵匹配；`RuntimeToolDefinition.riskLevel()` 是**动态评估**，可以基于实际参数调整风险。
+
+### 3.4 Workspace 与 Host Grant 的权限分层
+
+Ora 本地文件访问现在明确分成两层权威：
+
+- `workspace`：选中的项目根目录。`repo.explore`、`shell.execute`、package 系列工具都建立在这层 authority 上。
+- `hostFilesystem grants`：显式授权的宿主机目录能力。它只给文件类工具提供附加边界，不会把 run 自动升级成 Project session。
+
+这层分离有两个直接结果：
+
+- 没有选中项目文件夹时，`file.read` / `file.list` / `file.glob` / `file.grep` / `document.extract` 仍然可以通过 `host_grant` 或 `host_tmp` 读取本地文件。
+- `shell.execute`、`repo.explore`、写工具是否可用，仍然取决于 workspace authority，不会因为存在 host grant 就被顺带放开。
+
+`document.extract` 与 `file.*` 现在共享同一套 scope 语义：`workspace` 用项目相对路径，`host_grant` 与 `host_tmp` 用绝对路径；其中 `host_grant` 还需要对应的 `grantId`。
 - `ActionRiskLevel`（low/medium/high）是行动级的三级风险，与 `ToolRiskLevel` 是不同粒度的概念。当前代码中 level 为 `high` 才会触发 approval gate。
 - ToolDescriptor 和 RuntimeToolDefinition 仍是两层合约：shared descriptor 保持稳定，runtime definition 已吸收 V2 字段。后续内聚重点是让更多工具真正消费 `resultPreview` / `prepareArguments` / continuation hooks。
 

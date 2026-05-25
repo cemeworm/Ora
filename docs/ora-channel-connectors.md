@@ -105,6 +105,13 @@ ChannelConfig {
 }
 ```
 
+对 channel 来说，`config` 里现在还有一个与本地文件访问直接相关的高层字段：`localReadRoots: string[]`。它表示“这个渠道允许 agent 只读访问哪些宿主机绝对路径目录”。这里故意不直接持久化底层 `grantId/capabilities/source`，而是只保存用户可理解的目录列表；真正的 `hostFilesystem grants` 在 run 启动时由 `ChannelManager` 派生。
+
+这个设计有两个边界必须同时成立：
+
+- 非 Project channel session 可以读取这些显式授权目录下的文件，包括 `document.extract` 读取本地 PDF。
+- 这些授权不会让 session 自动获得项目 authority；`repo.explore`、`shell.execute`、package 工具和项目外写权限仍然保持关闭。
+
 敏感字段（token、secret、password 等）在通过 API 读出时会被 `ChannelStore.redactConfig` 替换为 `[redacted]`。
 
 **ChannelInboundMessage**，入站统一消息。所有外部消息经过各自的 `normalizeXxxMessage` 函数映射为此结构：
@@ -391,6 +398,8 @@ webhook 路径的认证分派逻辑：`http_webhook` 走 `validateHttpWebhookAut
 **Binding 不是用户账号**。一个外部 chat 只有一个 binding，但多个外部 user 可能在同一个 chat 里。`externalUserId` 仅用于 metadata 记录，不参与权限判断。
 
 **普通消息不会偷偷改项目绑定。** 现在的 channel 主路径不再根据自然语言内容自动 project auto-bind。用户如果只是继续聊天，系统只会复用当前 session 的已绑定项目；如果没有绑定，就继续在无项目上下文下运行。
+
+**无 Project 不等于无本地文件。** 现在 channel run 即使没有绑定项目，也可以通过 `localReadRoots` 派生出的只读 host grants 访问显式授权目录。运行时会把这些目录暴露给文件类工具，并在 system prompt 中明确提示这是 host grant，而不是 project workspace。
 
 **HTTP server 是 webhook 入口，不是 API 网关**。`/channels/:id/webhook` 只服务外部平台的回调。Ora 自身的管理 API（创建/启停 channel 等）走另一个 JSON-RPC 通道。
 
