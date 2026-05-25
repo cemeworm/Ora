@@ -2983,6 +2983,138 @@ describe("Session thread contracts", () => {
     });
   });
 
+  it("ignores plan-stage terminal events when accepted same-run resume has started", () => {
+    expect(deriveAcceptedPlanResumeProjection({
+      currentRunId: "run-1",
+      pendingDecision: { decisionId: "decision-1", status: "accepted" },
+      acceptedDecisionId: "decision-1",
+      snapshot: StateSnapshotSchema.parse({
+        runId: "run-1",
+        sessionId: "session-1",
+        turnIndex: 1,
+        status: "running",
+        pattern: "orchestrator_subagent",
+        input: { prompt: "Implement the plan.", context: {}, createdAt: 1000 },
+        config: RunConfigSchema.parse({}),
+        topology: { nodes: [], edges: [] },
+        profiles: [],
+        memory: [],
+        plan: [],
+        actions: [],
+        policyDecisions: [],
+        checkpoints: [],
+        events: [
+          {
+            id: "run-1:evt-plan-terminal",
+            runId: "run-1",
+            seq: 1,
+            type: "run.done",
+            createdAt: 1001,
+            pattern: "orchestrator_subagent",
+            payload: { status: "succeeded", output: { text: "<proposed_plan>Plan</proposed_plan>" } },
+          },
+          {
+            id: "run-1:evt-resumed",
+            runId: "run-1",
+            seq: 2,
+            type: "run.resumed",
+            createdAt: 1003,
+            pattern: "orchestrator_subagent",
+            payload: { reason: "Confirmed. Continuing." },
+          },
+        ],
+        artifacts: [],
+        activeAgents: [],
+        queueSummary: { mode: "dag", pending: 0, inProgress: 1, completed: 0, topics: [] },
+        sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+        busStats: {},
+        pendingApprovals: [],
+        pendingClarifications: [],
+        planDecisions: [{
+          id: "decision-1",
+          runId: "run-1",
+          sessionId: "session-1",
+          status: "accepted",
+          createdAt: 1001,
+          resolvedAt: 1002,
+        }],
+        updatedAt: 1003,
+      }),
+    })).toMatchObject({
+      phase: "resumed_running",
+      sameRun: true,
+      decisionId: "decision-1",
+      hasResumeStartEvidence: true,
+      hasTerminalEvidence: false,
+    });
+  });
+
+  it("treats terminal events after accepted same-run resume as resume_terminal", () => {
+    expect(deriveAcceptedPlanResumeProjection({
+      currentRunId: "run-1",
+      pendingDecision: { decisionId: "decision-1", status: "accepted" },
+      acceptedDecisionId: "decision-1",
+      snapshot: StateSnapshotSchema.parse({
+        runId: "run-1",
+        sessionId: "session-1",
+        turnIndex: 1,
+        status: "succeeded",
+        pattern: "orchestrator_subagent",
+        input: { prompt: "Implement the plan.", context: {}, createdAt: 1000 },
+        config: RunConfigSchema.parse({}),
+        topology: { nodes: [], edges: [] },
+        profiles: [],
+        memory: [],
+        plan: [],
+        actions: [],
+        policyDecisions: [],
+        checkpoints: [],
+        events: [
+          {
+            id: "run-1:evt-resumed",
+            runId: "run-1",
+            seq: 1,
+            type: "run.resumed",
+            createdAt: 1003,
+            pattern: "orchestrator_subagent",
+            payload: { reason: "Confirmed. Continuing." },
+          },
+          {
+            id: "run-1:evt-terminal",
+            runId: "run-1",
+            seq: 2,
+            type: "run.done",
+            createdAt: 1004,
+            pattern: "orchestrator_subagent",
+            payload: { status: "succeeded", output: { text: "Implemented." } },
+          },
+        ],
+        artifacts: [],
+        activeAgents: [],
+        queueSummary: { mode: "dag", pending: 0, inProgress: 0, completed: 1, topics: [] },
+        sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+        busStats: {},
+        pendingApprovals: [],
+        pendingClarifications: [],
+        planDecisions: [{
+          id: "decision-1",
+          runId: "run-1",
+          sessionId: "session-1",
+          status: "accepted",
+          createdAt: 1001,
+          resolvedAt: 1002,
+        }],
+        updatedAt: 1004,
+      }),
+    })).toMatchObject({
+      phase: "resume_terminal",
+      sameRun: true,
+      decisionId: "decision-1",
+      hasResumeStartEvidence: true,
+      hasTerminalEvidence: true,
+    });
+  });
+
   it("accepts session create params and session summaries", () => {
     const createParams = SessionCreateParamsSchema.parse({ projectId: "ora-mvp" });
     const summary = SessionSummarySchema.parse({

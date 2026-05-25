@@ -1851,15 +1851,20 @@ export function deriveAcceptedPlanResumeProjection(params: {
     acceptedDecision &&
     acceptedDecision.id === matchedAcceptedDecisionId,
   );
-  const resumeStartFromEvents = Boolean(snapshot?.events?.some((event) => event.type === "run.resumed"));
+  const resumeStartEvent = latestResumeStartEventAfterDecision(
+    snapshot?.events ?? [],
+    acceptedDecision?.resolvedAt,
+  );
+  const resumeStartFromEvents = Boolean(resumeStartEvent);
   const runningFromSnapshot = snapshot?.status === "running" || snapshot?.status === "queued";
   const hasResumeStartEvidence = resumeStartFromEvents || Boolean(runningFromSnapshot);
-  const hasTerminalEventEvidence = Boolean(snapshot?.events?.some((event) =>
-    event.type === "run.done" ||
-    event.type === "run.failed" ||
-    event.type === "run.cancelled" ||
-    event.type === "recovery.exhausted"));
-  const terminalFromStatus = Boolean(snapshot && (snapshot.status === "succeeded" || snapshot.status === "failed" || snapshot.status === "cancelled"));
+  const hasTerminalEventEvidence = Boolean(resumeStartEvent && snapshot?.events?.some((event) =>
+    isAcceptedResumeTerminalEvent(event) && eventHappenedAfter(event, resumeStartEvent)));
+  const terminalFromStatus = Boolean(
+    hasResumeStartEvidence &&
+    snapshot &&
+    (snapshot.status === "succeeded" || snapshot.status === "failed" || snapshot.status === "cancelled")
+  );
   const hasTerminalEvidence = hasTerminalEventEvidence || terminalFromStatus;
 
   if (acceptedDecisionMatches && sameRun) {
@@ -1905,6 +1910,48 @@ export function deriveAcceptedPlanResumeProjection(params: {
     blocksHydrationTerminalFallback: false,
     evidence: "none",
   };
+}
+
+function latestResumeStartEventAfterDecision(
+  events: readonly Pick<StateSnapshot["events"][number], "type" | "seq" | "createdAt">[],
+  resolvedAt: number | undefined,
+): Pick<StateSnapshot["events"][number], "type" | "seq" | "createdAt"> | undefined {
+  return events
+    .filter((event) =>
+      event.type === "run.resumed" &&
+      (resolvedAt === undefined || event.createdAt >= resolvedAt)
+    )
+    .sort(compareEventOrder)
+    .at(-1);
+}
+
+function isAcceptedResumeTerminalEvent(
+  event: Pick<StateSnapshot["events"][number], "type">,
+): boolean {
+  return event.type === "run.done" ||
+    event.type === "run.failed" ||
+    event.type === "run.cancelled" ||
+    event.type === "recovery.exhausted";
+}
+
+function eventHappenedAfter(
+  event: Pick<StateSnapshot["events"][number], "seq" | "createdAt">,
+  reference: Pick<StateSnapshot["events"][number], "seq" | "createdAt">,
+): boolean {
+  if (event.seq !== reference.seq) {
+    return event.seq > reference.seq;
+  }
+  return event.createdAt > reference.createdAt;
+}
+
+function compareEventOrder(
+  left: Pick<StateSnapshot["events"][number], "seq" | "createdAt">,
+  right: Pick<StateSnapshot["events"][number], "seq" | "createdAt">,
+): number {
+  if (left.seq !== right.seq) {
+    return left.seq - right.seq;
+  }
+  return left.createdAt - right.createdAt;
 }
 
 export function deriveSnapshotGateProjection(snapshot: StateSnapshot, options: GateProjectionOptions = {}): GateProjection | undefined {

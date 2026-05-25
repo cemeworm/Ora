@@ -1,4 +1,8 @@
-import type { OraEventEnvelope, StateSnapshot } from "@cemeworm/shared";
+import {
+  acceptedPlanExecutionContractFromMetadata,
+  type OraEventEnvelope,
+  type StateSnapshot,
+} from "@cemeworm/shared";
 import { assertRunCanBecomeTerminal, deriveTerminalStateAssertionFromSnapshot, TerminalStateIntegrityError } from "./harness/runtime-completion-guards.js";
 import { finalOutputContractViolation } from "./harness/runtime-output.js";
 
@@ -56,6 +60,42 @@ function downgradeToFailed(
   };
 }
 
+function inheritAcceptedPlanDecisionFacts(
+  snapshot: StateSnapshot,
+  original: StateSnapshot,
+): StateSnapshot {
+  const isAcceptedSameRunResume =
+    acceptedPlanExecutionContractFromMetadata(snapshot.config.metadata) === "same_run_implementation" ||
+    original.planDecisions.some((decision) => decision.status === "accepted");
+  if (!isAcceptedSameRunResume || original.planDecisions.length === 0) {
+    return snapshot;
+  }
+
+  const mergedById = new Map(original.planDecisions.map((decision) => [decision.id, decision]));
+  for (const decision of snapshot.planDecisions) {
+    mergedById.set(decision.id, decision);
+  }
+
+  const acceptedDecisionId = typeof snapshot.config.metadata.acceptedPlanDecisionId === "string"
+    ? snapshot.config.metadata.acceptedPlanDecisionId
+    : undefined;
+  if (acceptedDecisionId) {
+    const acceptedDecision = mergedById.get(acceptedDecisionId);
+    if (acceptedDecision && acceptedDecision.status !== "accepted") {
+      mergedById.set(acceptedDecisionId, {
+        ...acceptedDecision,
+        status: "accepted",
+        resolvedAt: acceptedDecision.resolvedAt ?? snapshot.updatedAt,
+      });
+    }
+  }
+
+  return {
+    ...snapshot,
+    planDecisions: [...mergedById.values()],
+  };
+}
+
 export class RunResumeFinalizationService {
   constructor(private readonly deps: RunResumeFinalizationServiceDeps) {}
 
@@ -66,11 +106,14 @@ export class RunResumeFinalizationService {
     approvedActionIds: string[];
   }): StateSnapshot {
     return this.deps.normalizeSnapshotForPersistence(
-      this.deps.withResumeResolutionEvents(
-        params.snapshot,
+      inheritAcceptedPlanDecisionFacts(
+        this.deps.withResumeResolutionEvents(
+          params.snapshot,
+          params.original,
+          params.clarificationPatch,
+          params.approvedActionIds,
+        ),
         params.original,
-        params.clarificationPatch,
-        params.approvedActionIds,
       ),
     );
   }

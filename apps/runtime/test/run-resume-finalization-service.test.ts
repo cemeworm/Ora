@@ -283,6 +283,104 @@ describe("RunResumeFinalizationService", () => {
     ]);
   });
 
+  it("inherits accepted plan decision facts when kernel terminal snapshot omits planDecisions", async () => {
+    const original = StateSnapshotSchema.parse({
+      ...baseSnapshot(),
+      status: "running",
+      config: {
+        ...baseSnapshot().config,
+        metadata: {
+          taskIntent: "implement",
+          acceptedPlanExecutionContract: "same_run_implementation",
+          acceptedPlanDecisionId: "decision-plan",
+          acceptedPlanRunId: "run-resume-finalization",
+        },
+      },
+      planDecisions: [{
+        id: "decision-plan",
+        runId: "run-resume-finalization",
+        sessionId: "session-resume-finalization",
+        status: "accepted",
+        planContent: "Implement the accepted plan.",
+        planSourceRunId: "run-resume-finalization",
+        createdAt: 1_100,
+        resolvedAt: 1_200,
+      }],
+      updatedAt: 1_200,
+    });
+    const terminal = StateSnapshotSchema.parse({
+      ...original,
+      status: "succeeded",
+      actions: [{
+        id: "run-resume-finalization:action-write",
+        runId: "run-resume-finalization",
+        type: "file.write",
+        riskLevel: "high",
+        status: "succeeded",
+        input: {},
+        artifactIds: [],
+      }],
+      events: [
+        ...original.events,
+        OraEventEnvelopeSchema.parse({
+          id: "run-resume-finalization:resumed",
+          runId: original.runId,
+          seq: original.events.length,
+          type: "run.resumed",
+          createdAt: 1_300,
+          pattern: original.pattern,
+          payload: { reason: "Plan accepted." },
+        }),
+        OraEventEnvelopeSchema.parse({
+          id: "run-resume-finalization:done",
+          runId: original.runId,
+          seq: original.events.length + 1,
+          type: "run.done",
+          createdAt: 2_100,
+          pattern: original.pattern,
+          payload: {
+            status: "succeeded",
+            output: { text: "Implemented accepted plan." },
+          },
+        }),
+      ],
+      planDecisions: [],
+      output: { text: "Implemented accepted plan." },
+      updatedAt: 2_100,
+    });
+    let ledgerInput: StateSnapshot | undefined;
+    const service = new RunResumeFinalizationService({
+      withResumeResolutionEvents: (snapshot) => snapshot,
+      normalizeSnapshotForPersistence: (snapshot) => snapshot,
+      appendRunSnapshotUpdateToLedger: (snapshot) => {
+        ledgerInput = snapshot;
+        return snapshot;
+      },
+      persistRun: () => {},
+      persistRunWithGeneratedTitle: async () => {},
+    });
+
+    const persisted = await service.persistStreamingTerminal({
+      snapshot: terminal,
+      original,
+      clarificationPatch: {},
+      approvedActionIds: [],
+      stream: {
+        replaceSnapshot: (snapshot) => snapshot,
+        markLedgerSynced: () => {},
+        publish: () => {},
+      },
+    });
+
+    expect(persisted.status).toBe("succeeded");
+    expect(persisted.error).toBeUndefined();
+    expect(ledgerInput?.planDecisions).toEqual([expect.objectContaining({
+      id: "decision-plan",
+      status: "accepted",
+      planContent: "Implement the accepted plan.",
+    })]);
+  });
+
   it("downgrades terminal resume output with DSML protocol text to failed", async () => {
     const original = baseSnapshot();
     const terminal = StateSnapshotSchema.parse({
