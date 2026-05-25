@@ -1,33 +1,55 @@
 import {
   ArrowUp,
-  BrainCircuit,
   Bot,
-  Check,
-  Sparkles,
+  BrainCircuit,
   ClipboardList,
   FileText,
   LoaderCircle,
-  PanelTop,
   MessagesSquare,
   Paperclip,
+  PanelTop,
   Play,
   Rocket,
   Shield,
+  Sparkles,
   Square,
   Unlock,
   X,
 } from "lucide-react";
 import {
+  $createParagraphNode,
+  $getNodeByKey,
+  $getRoot,
+  $getSelection,
+  $isElementNode,
+  $isLineBreakNode,
+  $isRangeSelection,
+  $isTextNode,
+  COMMAND_PRIORITY_HIGH,
+  KEY_BACKSPACE_COMMAND,
+  KEY_DELETE_COMMAND,
+  KEY_ENTER_COMMAND,
+  type LexicalEditor,
+  type LexicalNode,
+  type NodeKey,
+} from "lexical";
+import { HistoryPlugin } from "@lexical/react/LexicalHistoryPlugin";
+import { ContentEditable } from "@lexical/react/LexicalContentEditable";
+import { LexicalComposer } from "@lexical/react/LexicalComposer";
+import { LexicalErrorBoundary } from "@lexical/react/LexicalErrorBoundary";
+import { useLexicalComposerContext } from "@lexical/react/LexicalComposerContext";
+import { OnChangePlugin } from "@lexical/react/LexicalOnChangePlugin";
+import { PlainTextPlugin } from "@lexical/react/LexicalPlainTextPlugin";
+import {
   type CompositionEvent,
-  type FormEvent,
   Fragment,
+  type KeyboardEvent,
+  type ReactNode,
   useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
-  type KeyboardEvent,
-  type ReactNode,
 } from "react";
 import { Button } from "./ui/button";
 import { Dialog, DialogContent } from "./ui/dialog";
@@ -57,6 +79,12 @@ import {
   CHAT_SURFACE_OVERLAY_SCROLLBAR_PADDING_CLASS,
   CHAT_SURFACE_VIEWPORT_GUTTER_CLASS,
 } from "./chatSurfaceLayout";
+import {
+  $createComposerChipNode,
+  $isComposerChipNode,
+  ComposerChipNode,
+} from "./chatInput/ComposerChipNode";
+import { $createComposerTextNode, ComposerTextNode } from "./chatInput/ComposerTextNode";
 
 type SkillDescriptor = OraSkillRegistry["skills"][number];
 
@@ -118,6 +146,46 @@ interface ChatInputProps {
   onStartRun: () => void;
   onStopRun: () => void;
 }
+
+type ComposerEditableMetrics = Pick<
+  HTMLElement,
+  "clientHeight" | "scrollHeight" | "scrollLeft" | "scrollTop" | "style"
+>;
+
+type ComposerEditableScrollTarget = Pick<
+  HTMLElement,
+  "clientHeight" | "scrollHeight" | "scrollTop"
+> & {
+  getBoundingClientRect: () => Pick<DOMRect, "bottom">;
+};
+
+type ComposerSelectionPoint = {
+  segmentId: string;
+  offset: number;
+};
+
+type ComposerSelectionBookmark = {
+  start: ComposerSelectionPoint;
+  end: ComposerSelectionPoint;
+};
+
+type SlashTriggerContext = {
+  nodeKey: NodeKey;
+  caretOffset: number;
+  replaceStartOffset: number;
+  rawText: string;
+  query: string;
+};
+
+type EditorProjection = {
+  prompt: string;
+  skillIds: string[];
+  contextIds: string[];
+  slashContext: SlashTriggerContext | null;
+};
+
+const COMPOSER_BOTTOM_SAFE_AREA_PX = 72;
+const COMPOSER_UNDO_DEBOUNCE_MS = 800;
 
 export function getComposerInteractivity({
   composerPrompt,
@@ -181,210 +249,30 @@ export function getContextRingState({
   };
 }
 
-type ComposerEditableMetrics = Pick<
-  HTMLElement,
-  "clientHeight" | "scrollHeight" | "scrollLeft" | "scrollTop" | "style"
->;
-
-type ComposerEditableScrollTarget = Pick<
-  HTMLElement,
-  "clientHeight" | "scrollHeight" | "scrollTop"
-> & {
-  getBoundingClientRect: () => Pick<DOMRect, "bottom">;
-};
-
-const COMPOSER_ZWSP = "\u200b";
-const COMPOSER_BOTTOM_SAFE_AREA_PX = 72;
-const COMPOSER_TEXT_INPUT_TYPES = new Set([
-  "insertCompositionText",
-  "insertFromPaste",
-  "insertLineBreak",
-  "insertParagraph",
-  "insertText",
-]);
-
-const COMPOSER_UNDO_DEBOUNCE_MS = 800;
-
-type ComposerTextSegment = {
-  id: string;
-  kind: "text";
-  text: string;
-};
-
-type ComposerSkillChipSegment = {
-  id: string;
-  kind: "skill-chip";
-  skillId: string;
-  label: string;
-};
-
-type ComposerContextChipSegment = {
-  id: string;
-  kind: "context-chip";
-  chipId: string;
-  label: string;
-  tone?: ChatInputContextChip["tone"];
-};
-
-type ComposerSegment =
-  | ComposerTextSegment
-  | ComposerSkillChipSegment
-  | ComposerContextChipSegment;
-
-type ComposerSelectionPoint = {
-  segmentId: string;
-  offset: number;
-};
-
-type ComposerSelectionBookmark = {
-  start: ComposerSelectionPoint;
-  end: ComposerSelectionPoint;
-};
-
-type ComposerSelectionLineInfo = {
-  segmentId: string;
-  segmentIndex: number;
-  lineStart: number;
-  lineText: string;
-  caretOffset: number;
-};
-
-type ComposerChipDescriptor =
-  | {
-      key: string;
-      kind: "skill-chip";
-      skillId: string;
-      label: string;
-    }
-  | {
-      key: string;
-      kind: "context-chip";
-      chipId: string;
-      label: string;
-      tone?: ChatInputContextChip["tone"];
-    };
-
-let composerSegmentSeq = 0;
-
-function nextComposerSegmentId() {
-  composerSegmentSeq += 1;
-  return `composer-segment-${composerSegmentSeq}`;
-}
-
-function createTextSegment(
-  text = "",
-  id = nextComposerSegmentId(),
-): ComposerTextSegment {
-  return { id, kind: "text", text };
-}
-
-function sanitizeEditableText(value: string) {
-  return value.replaceAll(COMPOSER_ZWSP, "");
-}
-
-function skillChipKey(skillId: string) {
-  return `skill:${skillId}`;
-}
-
-function contextChipKey(chipId: string) {
-  return `context:${chipId}`;
-}
-
-function skillChipDescriptor(skill: SkillDescriptor): ComposerChipDescriptor {
-  return {
-    key: skillChipKey(skill.id),
-    kind: "skill-chip",
-    skillId: skill.id,
-    label: skill.name,
-  };
-}
-
-function contextChipDescriptor(
-  chip: ChatInputContextChip,
-): ComposerChipDescriptor {
-  return {
-    key: contextChipKey(chip.id),
-    kind: "context-chip",
-    chipId: chip.id,
-    label: chip.label,
-    tone: chip.tone,
-  };
-}
-
-function composerSegmentSignature(segments: ComposerSegment[]) {
-  return JSON.stringify(
-    segments.map((segment) => {
-      if (segment.kind === "text") {
-        return ["text", segment.id, segment.text];
-      }
-      if (segment.kind === "skill-chip") {
-        return ["skill", segment.id, segment.skillId, segment.label];
-      }
-      return [
-        "context",
-        segment.id,
-        segment.chipId,
-        segment.label,
-        segment.tone ?? "",
-      ];
-    }),
-  );
-}
-
 function arraysEqual<T>(left: T[], right: T[]) {
   return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
-function normalizeComposerSegments(segments: ComposerSegment[]) {
-  const normalized: ComposerSegment[] = [];
-  const appendText = (text: string, id?: string) => {
-    const previous = normalized[normalized.length - 1];
-    if (previous?.kind === "text") {
-      previous.text += text;
-      return;
-    }
-    normalized.push(createTextSegment(text, id));
-  };
-
-  for (const segment of segments) {
-    if (segment.kind === "text") {
-      appendText(segment.text, segment.id);
-      continue;
-    }
-    if (
-      normalized.length === 0 ||
-      normalized[normalized.length - 1]?.kind !== "text"
-    ) {
-      normalized.push(createTextSegment(""));
-    }
-    normalized.push(segment);
-  }
-
-  if (normalized.length === 0) {
-    return [createTextSegment("")];
-  }
-  if (normalized[normalized.length - 1]?.kind !== "text") {
-    normalized.push(createTextSegment(""));
-  }
-
-  return normalized.reduce<ComposerSegment[]>((acc, segment) => {
-    const previous = acc[acc.length - 1];
-    if (segment.kind === "text" && previous?.kind === "text") {
-      previous.text += segment.text;
-      return acc;
-    }
-    acc.push(
-      segment.kind === "text"
-        ? { ...segment }
-        : segment.kind === "skill-chip"
-          ? { ...segment }
-          : { ...segment },
-    );
-    return acc;
-  }, []);
+function buildSeedToken({
+  sessionId,
+  composerPrompt,
+  selectedSkills,
+  contextChips,
+}: {
+  sessionId: string;
+  composerPrompt: string;
+  selectedSkills: SkillDescriptor[];
+  contextChips: ChatInputContextChip[];
+}) {
+  return JSON.stringify({
+    sessionId,
+    composerPrompt,
+    skills: selectedSkills.map((skill) => [skill.id, skill.name]),
+    contexts: contextChips.map((chip) => [chip.id, chip.label, chip.tone ?? ""]),
+  });
 }
 
-function buildComposerSegments({
+function buildContentSnapshot({
   composerPrompt,
   selectedSkills,
   contextChips,
@@ -393,181 +281,573 @@ function buildComposerSegments({
   selectedSkills: SkillDescriptor[];
   contextChips: ChatInputContextChip[];
 }) {
-  return normalizeComposerSegments([
-    ...contextChips.map((chip) => ({
-      id: nextComposerSegmentId(),
-      kind: "context-chip" as const,
-      chipId: chip.id,
-      label: chip.label,
-      tone: chip.tone,
-    })),
-    ...selectedSkills.map((skill) => ({
-      id: nextComposerSegmentId(),
-      kind: "skill-chip" as const,
-      skillId: skill.id,
-      label: skill.name,
-    })),
-    createTextSegment(composerPrompt),
-  ]);
-}
-
-function setComposerPromptOnSegments(segments: ComposerSegment[], prompt: string) {
-  return normalizeComposerSegments([
-    ...segments.filter((segment) => segment.kind !== "text"),
-    createTextSegment(prompt),
-  ]);
-}
-
-function reconcileComposerSegments({
-  segments,
-  composerPrompt,
-  selectedSkills,
-  contextChips,
-}: {
-  segments: ComposerSegment[];
-  composerPrompt: string;
-  selectedSkills: SkillDescriptor[];
-  contextChips: ChatInputContextChip[];
-}) {
-  const desiredDescriptors = [
-    ...contextChips.map(contextChipDescriptor),
-    ...selectedSkills.map(skillChipDescriptor),
-  ];
-  const desiredByKey = new Map(
-    desiredDescriptors.map((descriptor) => [descriptor.key, descriptor]),
-  );
-  const seenKeys = new Set<string>();
-
-  const preserved: ComposerSegment[] = [];
-  for (const segment of segments) {
-    if (segment.kind === "text") {
-      preserved.push({ ...segment });
-      continue;
-    }
-    const key =
-      segment.kind === "skill-chip"
-        ? skillChipKey(segment.skillId)
-        : contextChipKey(segment.chipId);
-    const descriptor = desiredByKey.get(key);
-    if (!descriptor) {
-      continue;
-    }
-    seenKeys.add(key);
-    preserved.push(
-      descriptor.kind === "skill-chip"
-        ? {
-            ...segment,
-            kind: "skill-chip",
-            skillId: descriptor.skillId,
-            label: descriptor.label,
-          }
-        : {
-            ...segment,
-            kind: "context-chip",
-            chipId: descriptor.chipId,
-            label: descriptor.label,
-            tone: descriptor.tone,
-          },
-    );
-  }
-
-  const trailingText =
-    preserved[preserved.length - 1]?.kind === "text"
-      ? (preserved.pop() as ComposerTextSegment)
-      : createTextSegment("");
-  const nextSegments = [
-    ...preserved,
-    ...desiredDescriptors
-      .filter((descriptor) => !seenKeys.has(descriptor.key))
-      .map((descriptor) =>
-        descriptor.kind === "skill-chip"
-          ? ({
-              id: nextComposerSegmentId(),
-              kind: "skill-chip",
-              skillId: descriptor.skillId,
-              label: descriptor.label,
-            } as ComposerSkillChipSegment)
-          : ({
-              id: nextComposerSegmentId(),
-              kind: "context-chip",
-              chipId: descriptor.chipId,
-              label: descriptor.label,
-              tone: descriptor.tone,
-            } as ComposerContextChipSegment),
-      ),
-    trailingText,
-  ];
-  const normalized = normalizeComposerSegments(nextSegments);
-  return segmentsToPrompt(normalized) === composerPrompt
-    ? normalized
-    : setComposerPromptOnSegments(normalized, composerPrompt);
-}
-
-function segmentsToPrompt(segments: ComposerSegment[]) {
-  return segments
-    .filter((segment): segment is ComposerTextSegment => segment.kind === "text")
-    .map((segment) => segment.text)
-    .join("");
-}
-
-function skillIdsFromSegments(segments: ComposerSegment[]) {
-  return segments
-    .filter(
-      (segment): segment is ComposerSkillChipSegment =>
-        segment.kind === "skill-chip",
-    )
-    .map((segment) => segment.skillId);
-}
-
-function contextIdsFromSegments(segments: ComposerSegment[]) {
-  return segments
-    .filter(
-      (segment): segment is ComposerContextChipSegment =>
-        segment.kind === "context-chip",
-    )
-    .map((segment) => segment.chipId);
-}
-
-function isSelectionCollapsed(bookmark: ComposerSelectionBookmark | null) {
-  return Boolean(
-    bookmark &&
-      bookmark.start.segmentId === bookmark.end.segmentId &&
-      bookmark.start.offset === bookmark.end.offset,
-  );
-}
-
-function findTextSegmentIndexById(
-  segments: ComposerSegment[],
-  segmentId: string,
-) {
-  return segments.findIndex(
-    (segment) => segment.kind === "text" && segment.id === segmentId,
-  );
-}
-
-function getSelectionLineInfo(
-  segments: ComposerSegment[],
-  bookmark: ComposerSelectionBookmark | null,
-): ComposerSelectionLineInfo | null {
-  if (!bookmark || !isSelectionCollapsed(bookmark)) {
-    return null;
-  }
-  const segmentIndex = findTextSegmentIndexById(segments, bookmark.end.segmentId);
-  if (segmentIndex < 0) {
-    return null;
-  }
-  const segment = segments[segmentIndex] as ComposerTextSegment;
-  const caretOffset = Math.max(0, Math.min(bookmark.end.offset, segment.text.length));
-  const beforeCursor = segment.text.slice(0, caretOffset);
-  const lastNewline = beforeCursor.lastIndexOf("\n");
-  const lineStart = lastNewline + 1;
   return {
-    segmentId: segment.id,
-    segmentIndex,
-    lineStart,
-    lineText: segment.text.slice(lineStart, caretOffset),
-    caretOffset,
+    prompt: composerPrompt,
+    skillIds: selectedSkills.map((skill) => skill.id),
+    contextIds: contextChips.map((chip) => chip.id),
   };
+}
+
+function buildInitialProjection({
+  composerPrompt,
+  selectedSkills,
+  contextChips,
+}: {
+  composerPrompt: string;
+  selectedSkills: SkillDescriptor[];
+  contextChips: ChatInputContextChip[];
+}): EditorProjection {
+  return {
+    prompt: composerPrompt,
+    skillIds: selectedSkills.map((skill) => skill.id),
+    contextIds: contextChips.map((chip) => chip.id),
+    slashContext: null,
+  };
+}
+
+function populateEditorFromSeed({
+  composerPrompt,
+  selectedSkills,
+  contextChips,
+}: {
+  composerPrompt: string;
+  selectedSkills: SkillDescriptor[];
+  contextChips: ChatInputContextChip[];
+}) {
+  const root = $getRoot();
+  root.clear();
+  const lines = composerPrompt.split("\n");
+  const firstParagraph = $createParagraphNode();
+  root.append(firstParagraph);
+  for (const chip of contextChips) {
+    firstParagraph.append(
+      $createComposerChipNode({
+        chipId: chip.id,
+        chipKind: "context",
+        label: chip.label,
+        tone: chip.tone,
+      }),
+    );
+  }
+  for (const skill of selectedSkills) {
+    firstParagraph.append(
+      $createComposerChipNode({
+        chipId: skill.id,
+        chipKind: "skill",
+        label: skill.name,
+      }),
+    );
+  }
+  firstParagraph.append($createComposerTextNode(lines[0] ?? ""));
+  for (const line of lines.slice(1)) {
+    const paragraph = $createParagraphNode();
+    paragraph.append($createComposerTextNode(line));
+    root.append(paragraph);
+  }
+}
+
+function collectNodes(
+  node: LexicalNode,
+  sink: {
+    promptParts: string[];
+    skillIds: string[];
+    contextIds: string[];
+  },
+) {
+  if ($isLineBreakNode(node)) {
+    sink.promptParts.push("\n");
+    return;
+  }
+  if ($isComposerChipNode(node)) {
+    if (node.getChipKind() === "skill") {
+      sink.skillIds.push(node.getChipId());
+    } else {
+      sink.contextIds.push(node.getChipId());
+    }
+    return;
+  }
+  if ($isTextNode(node)) {
+    sink.promptParts.push(node.getTextContent());
+    return;
+  }
+  if ($isElementNode(node)) {
+    for (const child of node.getChildren()) {
+      collectNodes(child, sink);
+    }
+  }
+}
+
+function slashContextFromSelection(): SlashTriggerContext | null {
+  const selection = $getSelection();
+  if (!$isRangeSelection(selection) || !selection.isCollapsed()) {
+    return null;
+  }
+
+  const anchorNode = selection.anchor.getNode();
+  const anchorOffset = selection.anchor.offset;
+  if ($isTextNode(anchorNode) && !$isComposerChipNode(anchorNode)) {
+    return buildSlashTriggerContext(
+      anchorNode as ComposerTextNode,
+      anchorOffset,
+    );
+  }
+
+  if ($isTextNode(anchorNode) && !$isComposerChipNode(anchorNode)) {
+    return null;
+  }
+
+  if (!$isElementNode(anchorNode)) {
+    return null;
+  }
+
+  const candidates: Array<{
+    textNode: ComposerTextNode;
+    caretOffset: number;
+  }> = [];
+
+  const previousChild =
+    anchorOffset > 0 ? anchorNode.getChildAtIndex(anchorOffset - 1) : null;
+  const previousTextNode = findBoundaryTextNode(previousChild, "end");
+  if (previousTextNode) {
+    candidates.push({
+      textNode: previousTextNode,
+      caretOffset: previousTextNode.getTextContentSize(),
+    });
+  }
+
+  const nextChild = anchorNode.getChildAtIndex(anchorOffset);
+  const nextTextNode = findBoundaryTextNode(nextChild, "start");
+  if (nextTextNode) {
+    candidates.push({
+      textNode: nextTextNode,
+      caretOffset: 0,
+    });
+  }
+
+  for (const candidate of candidates) {
+    const slashContext = buildSlashTriggerContext(
+      candidate.textNode,
+      candidate.caretOffset,
+    );
+    if (slashContext) {
+      return slashContext;
+    }
+  }
+
+  return null;
+}
+
+function findBoundaryTextNode(
+  node: LexicalNode | null,
+  direction: "start" | "end",
+): ComposerTextNode | null {
+  if (!node) {
+    return null;
+  }
+  if ($isTextNode(node) && !$isComposerChipNode(node)) {
+    return node as ComposerTextNode;
+  }
+  if (!$isElementNode(node)) {
+    return null;
+  }
+
+  const children = node.getChildren();
+  const orderedChildren =
+    direction === "start" ? children : [...children].reverse();
+  for (const child of orderedChildren) {
+    const textNode = findBoundaryTextNode(child, direction);
+    if (textNode) {
+      return textNode;
+    }
+  }
+  return null;
+}
+
+function getPrefixSinceSlashBoundary(
+  textNode: ComposerTextNode,
+) {
+  const parent = textNode.getParent();
+  if (!$isElementNode(parent)) {
+    return "";
+  }
+
+  let prefix = "";
+  for (const child of parent.getChildren()) {
+    if (child.is(textNode)) {
+      break;
+    }
+    if ($isLineBreakNode(child)) {
+      prefix = "";
+      continue;
+    }
+    if ($isComposerChipNode(child)) {
+      prefix = child.getChipKind() === "skill" ? "" : `${prefix}\u0000`;
+      continue;
+    }
+    if ($isTextNode(child)) {
+      const text = child.getTextContent();
+      const lastNewline = text.lastIndexOf("\n");
+      if (lastNewline >= 0) {
+        prefix = text.slice(lastNewline + 1);
+      } else {
+        prefix += text;
+      }
+    }
+  }
+  return prefix;
+}
+
+function buildSlashTriggerContext(
+  textNode: ComposerTextNode,
+  caretOffset: number,
+): SlashTriggerContext | null {
+  const textBeforeCaret = textNode.getTextContent().slice(0, caretOffset);
+  const localBoundaryOffset = textBeforeCaret.lastIndexOf("\n") + 1;
+  const textSinceLocalBoundary = textBeforeCaret.slice(localBoundaryOffset);
+  const prefixBeforeNode =
+    localBoundaryOffset > 0 ? "" : getPrefixSinceSlashBoundary(textNode);
+  const candidateText = `${prefixBeforeNode}${textSinceLocalBoundary}`;
+  const leadingWhitespaceLength =
+    candidateText.match(/^\s*/)?.[0].length ?? 0;
+
+  if (candidateText.slice(leadingWhitespaceLength, leadingWhitespaceLength + 1) !== "/") {
+    return null;
+  }
+
+  const slashOffsetInNode = textSinceLocalBoundary.lastIndexOf("/");
+  if (slashOffsetInNode < 0) {
+    return null;
+  }
+
+  const rawText = candidateText.slice(leadingWhitespaceLength);
+  return {
+    nodeKey: textNode.getKey(),
+    caretOffset,
+    replaceStartOffset: localBoundaryOffset + slashOffsetInNode,
+    rawText,
+    query: rawText.slice(1).trim().toLowerCase(),
+  };
+}
+
+function readEditorProjection(): EditorProjection {
+  const root = $getRoot();
+  const promptParts: string[] = [];
+  const skillIds: string[] = [];
+  const contextIds: string[] = [];
+  const children = root.getChildren();
+  children.forEach((child, index) => {
+    if (index > 0) {
+      promptParts.push("\n");
+    }
+    collectNodes(child, { promptParts, skillIds, contextIds });
+  });
+  return {
+    prompt: promptParts.join("").replaceAll("\u200b", ""),
+    skillIds,
+    contextIds,
+    slashContext: slashContextFromSelection(),
+  };
+}
+
+function getLastComposerParagraph() {
+  const root = $getRoot();
+  const existing = root.getLastChild();
+  if ($isElementNode(existing)) {
+    return existing;
+  }
+  root.clear();
+  const paragraph = $createParagraphNode();
+  root.append(paragraph);
+  return paragraph;
+}
+
+function ensureParagraphTextNode(paragraph: LexicalNode) {
+  if (!$isElementNode(paragraph)) {
+    const textNode = $createComposerTextNode("");
+    const root = $getRoot();
+    const fallbackParagraph = $createParagraphNode();
+    fallbackParagraph.append(textNode);
+    root.append(fallbackParagraph);
+    return textNode;
+  }
+  const children = paragraph.getChildren();
+  for (let index = children.length - 1; index >= 0; index -= 1) {
+    const child = children[index];
+    if ($isTextNode(child) && !$isComposerChipNode(child)) {
+      return child as ComposerTextNode;
+    }
+  }
+  const textNode = $createComposerTextNode("");
+  paragraph.append(textNode);
+  return textNode;
+}
+
+function ensureTrailingComposerTextNode() {
+  return ensureParagraphTextNode(getLastComposerParagraph());
+}
+
+function ensureParagraphShape(paragraph: LexicalNode | null) {
+  if (!$isElementNode(paragraph)) {
+    return null;
+  }
+  return ensureParagraphTextNode(paragraph);
+}
+
+function selectParagraphStart(paragraph: LexicalNode | null) {
+  if (!$isElementNode(paragraph)) {
+    return;
+  }
+  const firstTextNode = findBoundaryTextNode(
+    paragraph.getFirstChild(),
+    "start",
+  );
+  if (firstTextNode) {
+    firstTextNode.select(0, 0);
+    return;
+  }
+  paragraph.select(0, 0);
+}
+
+function moveNodesIntoParagraph(
+  startNode: LexicalNode | null,
+  targetParagraph: ReturnType<typeof $createParagraphNode>,
+) {
+  let current = startNode;
+  while (current) {
+    const next = current.getNextSibling();
+    targetParagraph.append(current);
+    current = next;
+  }
+}
+
+function mergeParagraphBoundary(
+  anchorNode: LexicalNode,
+  isBackward: boolean,
+) {
+  if (!$isElementNode(anchorNode)) {
+    return false;
+  }
+
+  const sourceParagraph = isBackward
+    ? anchorNode
+    : anchorNode.getNextSibling();
+  const targetParagraph = isBackward
+    ? anchorNode.getPreviousSibling()
+    : anchorNode;
+
+  if (!$isElementNode(sourceParagraph) || !$isElementNode(targetParagraph)) {
+    return false;
+  }
+
+  const caretNode = ensureParagraphTextNode(
+    targetParagraph,
+  );
+  const caretOffset = caretNode.getTextContentSize();
+  while (sourceParagraph.getFirstChild()) {
+    targetParagraph.append(sourceParagraph.getFirstChild()!);
+  }
+  sourceParagraph.remove();
+  caretNode.select(caretOffset, caretOffset);
+  return true;
+}
+
+function splitParagraphAtSelection() {
+  const selection = $getSelection();
+  if (!$isRangeSelection(selection)) {
+    return false;
+  }
+
+  const anchorNode = selection.anchor.getNode();
+  const anchorOffset = selection.anchor.offset;
+
+  if ($isTextNode(anchorNode) && !$isComposerChipNode(anchorNode)) {
+    const paragraph = anchorNode.getTopLevelElementOrThrow();
+    if (!$isElementNode(paragraph)) {
+      return false;
+    }
+
+    const newParagraph = $createParagraphNode();
+    paragraph.insertAfter(newParagraph);
+
+    const textNode = anchorNode as ComposerTextNode;
+    if (anchorOffset < textNode.getTextContentSize()) {
+      const splitNodes = textNode.splitText(anchorOffset);
+      const trailingNode = splitNodes[1] ?? null;
+      moveNodesIntoParagraph(trailingNode, newParagraph);
+    } else {
+      moveNodesIntoParagraph(textNode.getNextSibling(), newParagraph);
+    }
+
+    selectParagraphStart(newParagraph);
+    return true;
+  }
+
+  if ($isComposerChipNode(anchorNode)) {
+    const paragraph = anchorNode.getTopLevelElementOrThrow();
+    if (!$isElementNode(paragraph)) {
+      return false;
+    }
+
+    const newParagraph = $createParagraphNode();
+    paragraph.insertAfter(newParagraph);
+    moveNodesIntoParagraph(anchorNode.getNextSibling(), newParagraph);
+    selectParagraphStart(newParagraph);
+    return true;
+  }
+
+  if ($isElementNode(anchorNode)) {
+    const paragraph = anchorNode.getTopLevelElementOrThrow();
+    if (!$isElementNode(paragraph) || !anchorNode.is(paragraph)) {
+      return false;
+    }
+
+    const newParagraph = $createParagraphNode();
+    paragraph.insertAfter(newParagraph);
+    moveNodesIntoParagraph(paragraph.getChildAtIndex(anchorOffset), newParagraph);
+    selectParagraphStart(newParagraph);
+    return true;
+  }
+
+  return false;
+}
+
+function finalizeDeletionFallback() {
+  const trailingTextNode = ensureTrailingComposerTextNode();
+  const selection = $getSelection();
+  if (!$isRangeSelection(selection)) {
+    trailingTextNode.select(
+      trailingTextNode.getTextContentSize(),
+      trailingTextNode.getTextContentSize(),
+    );
+  }
+}
+
+function deleteTextCharacterBoundary(
+  textNode: ComposerTextNode,
+  isBackward: boolean,
+) {
+  const textLength = textNode.getTextContentSize();
+  if (textLength === 0) {
+    return false;
+  }
+  if (isBackward) {
+    textNode.spliceText(textLength - 1, 1, "", true);
+  } else {
+    textNode.spliceText(0, 1, "", false);
+    textNode.select(0, 0);
+  }
+  return true;
+}
+
+function deleteSiblingBoundary(
+  node: LexicalNode,
+  isBackward: boolean,
+  fallbackTextNode?: ComposerTextNode,
+) {
+  const sibling = isBackward ? node.getPreviousSibling() : node.getNextSibling();
+  if (!sibling) {
+    const parent = node.getParent();
+    return parent ? mergeParagraphBoundary(parent, isBackward) : false;
+  }
+  if ($isComposerChipNode(sibling)) {
+    sibling.remove();
+    if (fallbackTextNode) {
+      const offset = isBackward ? 0 : fallbackTextNode.getTextContentSize();
+      fallbackTextNode.select(offset, offset);
+    }
+    return true;
+  }
+  if ($isTextNode(sibling) && !$isComposerChipNode(sibling)) {
+    return deleteTextCharacterBoundary(sibling as ComposerTextNode, isBackward);
+  }
+  return false;
+}
+
+function handleCollapsedDeletion(isBackward: boolean) {
+  const selection = $getSelection();
+  if (!$isRangeSelection(selection)) {
+    return false;
+  }
+
+  const anchorNode = selection.anchor.getNode();
+  const anchorOffset = selection.anchor.offset;
+
+  if ($isTextNode(anchorNode) && !$isComposerChipNode(anchorNode)) {
+    const textNode = anchorNode as ComposerTextNode;
+    const textLength = textNode.getTextContentSize();
+    if (isBackward && anchorOffset > 0) {
+      textNode.spliceText(anchorOffset - 1, 1, "", true);
+      return true;
+    }
+    if (!isBackward && anchorOffset < textLength) {
+      textNode.spliceText(anchorOffset, 1, "", true);
+      return true;
+    }
+    return deleteSiblingBoundary(textNode, isBackward, textNode);
+  }
+
+  if ($isComposerChipNode(anchorNode)) {
+    const paragraph = anchorNode.getParent();
+    const index = anchorNode.getIndexWithinParent();
+    anchorNode.remove();
+    if ($isElementNode(paragraph)) {
+      ensureParagraphShape(paragraph);
+      const nextOffset = isBackward ? Math.max(0, index - 1) : index;
+      paragraph.select(nextOffset, nextOffset);
+    }
+    return true;
+  }
+
+  if ($isElementNode(anchorNode)) {
+    const childIndex = isBackward ? anchorOffset - 1 : anchorOffset;
+    const child = anchorNode.getChildAtIndex(childIndex);
+    if (!child) {
+      return mergeParagraphBoundary(anchorNode, isBackward) || true;
+    }
+    if ($isComposerChipNode(child)) {
+      child.remove();
+      ensureParagraphShape(anchorNode);
+      const nextOffset = isBackward
+        ? Math.max(0, anchorOffset - 1)
+        : anchorOffset;
+      anchorNode.select(nextOffset, nextOffset);
+      return true;
+    }
+    if ($isTextNode(child) && !$isComposerChipNode(child)) {
+      const textNode = child as ComposerTextNode;
+      const textLength = textNode.getTextContentSize();
+      if (textLength === 0) {
+        return deleteSiblingBoundary(textNode, isBackward, textNode);
+      }
+      if (isBackward) {
+        textNode.spliceText(textLength - 1, 1, "", true);
+      } else {
+        textNode.spliceText(0, 1, "", false);
+        textNode.select(0, 0);
+      }
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function handleDeleteCommand(isBackward: boolean) {
+  const selection = $getSelection();
+  if (!$isRangeSelection(selection)) {
+    finalizeDeletionFallback();
+    return true;
+  }
+
+  if (!selection.isCollapsed()) {
+    selection.removeText();
+    finalizeDeletionFallback();
+    return true;
+  }
+
+  handleCollapsedDeletion(isBackward);
+  finalizeDeletionFallback();
+  return true;
 }
 
 function resizeComposerTextarea(target: ComposerEditableMetrics) {
@@ -659,36 +939,18 @@ export function getCurrentLineInfo(text: string, cursor: number) {
   return { lineStart, lineText };
 }
 
-function findDirectComposerChild(root: HTMLElement, node: Node | null) {
-  let current = node;
-  while (current && current.parentNode !== root) {
-    current = current.parentNode;
-  }
-  return current;
-}
-
-function getTextSpanSelectionOffset(
-  textElement: HTMLElement,
-  container: Node,
-  offset: number,
-) {
+function findTextOffset(textElement: HTMLElement, container: Node, offset: number) {
   const range = document.createRange();
   range.selectNodeContents(textElement);
   try {
     range.setEnd(container, offset);
   } catch {
-    return sanitizeEditableText(textElement.textContent ?? "").length;
+    return (textElement.textContent ?? "").length;
   }
-  return Math.min(
-    sanitizeEditableText(range.toString()).length,
-    sanitizeEditableText(textElement.textContent ?? "").length,
-  );
+  return Math.min(range.toString().length, (textElement.textContent ?? "").length);
 }
 
-function findNearestTextSegmentPoint(
-  root: HTMLElement,
-  childIndex: number,
-): ComposerSelectionPoint | null {
+function findNearestTextElement(root: HTMLElement, childIndex: number) {
   for (let index = childIndex; index < root.childNodes.length; index += 1) {
     const candidate = root.childNodes[index];
     if (
@@ -709,11 +971,10 @@ function findNearestTextSegmentPoint(
     ) {
       return {
         segmentId: candidate.dataset.segmentId,
-        offset: sanitizeEditableText(candidate.textContent ?? "").length,
+        offset: (candidate.textContent ?? "").length,
       };
     }
   }
-
   return null;
 }
 
@@ -722,28 +983,124 @@ function captureSelectionPoint(
   container: Node,
   offset: number,
 ): ComposerSelectionPoint | null {
-  const directChild = container === root ? null : findDirectComposerChild(root, container);
   if (container === root) {
-    return findNearestTextSegmentPoint(root, offset);
+    return findNearestTextElement(root, offset);
+  }
+  let current: Node | null = container;
+  while (current && current.parentNode !== root) {
+    current = current.parentNode;
   }
   if (
-    directChild instanceof HTMLElement &&
-    directChild.dataset.segmentKind === "text" &&
-    directChild.dataset.segmentId
+    current instanceof HTMLElement &&
+    current.dataset.segmentKind === "text" &&
+    current.dataset.segmentId
   ) {
     return {
-      segmentId: directChild.dataset.segmentId,
-      offset: getTextSpanSelectionOffset(directChild, container, offset),
+      segmentId: current.dataset.segmentId,
+      offset: findTextOffset(current, container, offset),
     };
   }
-  if (directChild) {
-    const childIndex = Array.from(root.childNodes).indexOf(
-      directChild as ChildNode,
-    );
-    const boundaryOffset = directChild === container ? childIndex + offset : childIndex;
-    return findNearestTextSegmentPoint(root, Math.max(0, boundaryOffset));
+  if (current) {
+    const childIndex = Array.from(root.childNodes).indexOf(current as ChildNode);
+    return findNearestTextElement(root, Math.max(0, childIndex + offset));
   }
   return null;
+}
+
+export function restoreSelectionBookmark(
+  root: HTMLElement,
+  bookmark: ComposerSelectionBookmark | null,
+) {
+  if (!bookmark) {
+    return;
+  }
+  const start = root.querySelector<HTMLElement>(
+    `[data-segment-id="${bookmark.start.segmentId}"]`,
+  );
+  const end = root.querySelector<HTMLElement>(
+    `[data-segment-id="${bookmark.end.segmentId}"]`,
+  );
+  if (!start || !end) {
+    return;
+  }
+  try {
+    const range = document.createRange();
+    const startNode = start.firstChild ?? start;
+    const endNode = end.firstChild ?? end;
+    range.setStart(startNode, Math.min(bookmark.start.offset, startNode.textContent?.length ?? 0));
+    range.setEnd(endNode, Math.min(bookmark.end.offset, endNode.textContent?.length ?? 0));
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+  } catch {
+    // Best effort helper for tests and DOM edge-case validation.
+  }
+}
+
+function syncDomSelectionToLexicalState(
+  root: HTMLElement | null,
+  editor: LexicalEditor | null,
+) {
+  if (!root || !editor) {
+    return;
+  }
+
+  editor.getEditorState().read(() => {
+    const selection = $getSelection();
+    if (!$isRangeSelection(selection) || !selection.isCollapsed()) {
+      return;
+    }
+
+    const anchorNode = selection.anchor.getNode();
+    let targetNode: Node | null = null;
+    let targetOffset = 0;
+
+    if ($isTextNode(anchorNode) && !$isComposerChipNode(anchorNode)) {
+      const target = root.querySelector<HTMLElement>(
+        `[data-segment-id="${anchorNode.getKey()}"]`,
+      );
+      targetNode = target?.firstChild ?? target ?? null;
+      targetOffset = Math.min(
+        selection.anchor.offset,
+        targetNode?.textContent?.length ?? 0,
+      );
+    } else if ($isElementNode(anchorNode)) {
+      const child = anchorNode.getChildAtIndex(selection.anchor.offset);
+      const boundaryTextNode =
+        findBoundaryTextNode(child, "start") ??
+        findBoundaryTextNode(
+          selection.anchor.offset > 0
+            ? anchorNode.getChildAtIndex(selection.anchor.offset - 1)
+            : null,
+          "end",
+        );
+      if (boundaryTextNode) {
+        const target = root.querySelector<HTMLElement>(
+          `[data-segment-id="${boundaryTextNode.getKey()}"]`,
+        );
+        targetNode = target?.firstChild ?? target ?? null;
+        targetOffset =
+          boundaryTextNode.getKey() === child?.getKey()
+            ? 0
+            : boundaryTextNode.getTextContentSize();
+      }
+    }
+
+    if (!targetNode) {
+      return;
+    }
+
+    try {
+      const range = document.createRange();
+      range.setStart(targetNode, targetOffset);
+      range.collapse(true);
+      const domSelection = window.getSelection();
+      domSelection?.removeAllRanges();
+      domSelection?.addRange(range);
+    } catch {
+      // Best effort sync for host DOM selection after structural editor edits.
+    }
+  });
 }
 
 function captureSelectionBookmark(root: HTMLElement) {
@@ -770,149 +1127,75 @@ function captureSelectionBookmark(root: HTMLElement) {
   return { start, end };
 }
 
-function restoreSelectionPoint(root: HTMLElement, point: ComposerSelectionPoint) {
-  const textElement = root.querySelector<HTMLElement>(
-    `[data-segment-id="${point.segmentId}"][data-segment-kind="text"]`,
-  );
-  if (!textElement) {
-    return null;
-  }
-  const textNodes = Array.from(textElement.childNodes).filter(
-    (node): node is Text => node.nodeType === Node.TEXT_NODE,
-  );
-  if (textNodes.length === 0) {
-    // WebKit may leave a placeholder <br> inside an empty contentEditable span.
-    // Restore against the wrapper element instead of the placeholder node.
-    return { node: textElement, offset: 0 };
-  }
+function EditorHandlePlugin({
+  onReady,
+}: {
+  onReady: (editor: LexicalEditor) => void;
+}) {
+  const [editor] = useLexicalComposerContext();
 
-  const clampedOffset = Math.max(0, point.offset);
-  let remaining = clampedOffset;
-  let lastContentNode: Text | null = null;
+  useEffect(() => {
+    onReady(editor);
+  }, [editor, onReady]);
 
-  for (const textNode of textNodes) {
-    const rawText = textNode.textContent ?? "";
-    const sanitizedLength = sanitizeEditableText(rawText).length;
-    if (sanitizedLength === 0) {
-      continue;
-    }
-    lastContentNode = textNode;
-    if (remaining <= sanitizedLength) {
-      return {
-        node: textNode,
-        offset: rawOffsetFromSanitizedOffset(rawText, remaining),
-      };
-    }
-    remaining -= sanitizedLength;
-  }
-
-  if (!lastContentNode) {
-    return { node: textNodes[0], offset: 0 };
-  }
-
-  return {
-    node: lastContentNode,
-    offset: rawOffsetFromSanitizedOffset(
-      lastContentNode.textContent ?? "",
-      sanitizeEditableText(lastContentNode.textContent ?? "").length,
-    ),
-  };
+  return null;
 }
 
-function rawOffsetFromSanitizedOffset(rawText: string, sanitizedOffset: number) {
-  if (sanitizedOffset <= 0) {
-    return 0;
-  }
-  let visibleCount = 0;
-  for (let index = 0; index < rawText.length; index += 1) {
-    if (rawText[index] === COMPOSER_ZWSP) {
-      continue;
-    }
-    visibleCount += 1;
-    if (visibleCount === sanitizedOffset) {
-      return index + 1;
-    }
-  }
-  return rawText.length;
-}
+function EditorEnterPlugin({
+  onEnter,
+  onShiftEnter,
+  isComposing,
+}: {
+  onEnter: () => boolean;
+  onShiftEnter: () => boolean;
+  isComposing: () => boolean;
+}) {
+  const [editor] = useLexicalComposerContext();
 
-export function restoreSelectionBookmark(
-  root: HTMLElement,
-  bookmark: ComposerSelectionBookmark | null,
-) {
-  if (!bookmark) {
-    return;
-  }
-  const start = restoreSelectionPoint(root, bookmark.start);
-  const end = restoreSelectionPoint(root, bookmark.end);
-  if (!start || !end) {
-    return;
-  }
-  try {
-    const range = document.createRange();
-    range.setStart(start.node, start.offset);
-    range.setEnd(end.node, end.offset);
-    const selection = window.getSelection();
-    selection?.removeAllRanges();
-    selection?.addRange(range);
-  } catch {
-    // Selection restore is a best-effort UX enhancement and must never take
-    // down the composer when the browser provides an unexpected placeholder DOM.
-  }
-}
-
-function serializeEditableNode(
-  node: Node,
-  segments: ComposerSegment[],
-): ComposerSegment[] {
-  if (node.nodeType === Node.TEXT_NODE) {
-    return [createTextSegment(sanitizeEditableText(node.textContent ?? ""))];
-  }
-  if (!(node instanceof HTMLElement)) {
-    return [];
-  }
-  const kind = node.dataset.segmentKind;
-  if (kind === "text") {
-    return [
-      createTextSegment(
-        sanitizeEditableText(node.textContent ?? ""),
-        node.dataset.segmentId,
+  useEffect(
+    () =>
+      editor.registerCommand(
+        KEY_ENTER_COMMAND,
+        (event) => {
+          if (isComposing() || event?.isComposing) {
+            return true;
+          }
+          event?.preventDefault();
+          if (event?.shiftKey) {
+            return onShiftEnter();
+          }
+          return onEnter();
+        },
+        COMMAND_PRIORITY_HIGH,
       ),
-    ];
-  }
-  if (kind === "skill-chip") {
-    const segment = segments.find(
-      (candidate): candidate is ComposerSkillChipSegment =>
-        candidate.kind === "skill-chip" &&
-        candidate.skillId === node.dataset.skillId,
-    );
-    return segment ? [{ ...segment }] : [];
-  }
-  if (kind === "context-chip") {
-    const segment = segments.find(
-      (candidate): candidate is ComposerContextChipSegment =>
-        candidate.kind === "context-chip" &&
-        candidate.chipId === node.dataset.chipId,
-    );
-    return segment ? [{ ...segment }] : [];
-  }
-  if (node.tagName === "BR") {
-    return [createTextSegment("\n")];
-  }
-  return Array.from(node.childNodes).flatMap((child) =>
-    serializeEditableNode(child, segments),
+    [editor, isComposing, onEnter, onShiftEnter],
   );
+
+  return null;
 }
 
-function parseComposerEditorSegments(
-  root: HTMLElement,
-  currentSegments: ComposerSegment[],
-) {
-  return normalizeComposerSegments(
-    Array.from(root.childNodes).flatMap((child) =>
-      serializeEditableNode(child, currentSegments),
-    ),
-  );
+function EditorDeletePlugin() {
+  const [editor] = useLexicalComposerContext();
+
+  useEffect(() => {
+    const unregisterBackspace = editor.registerCommand(
+      KEY_BACKSPACE_COMMAND,
+      () => handleDeleteCommand(true),
+      COMMAND_PRIORITY_HIGH,
+    );
+    const unregisterDelete = editor.registerCommand(
+      KEY_DELETE_COMMAND,
+      () => handleDeleteCommand(false),
+      COMMAND_PRIORITY_HIGH,
+    );
+
+    return () => {
+      unregisterBackspace();
+      unregisterDelete();
+    };
+  }, [editor]);
+
+  return null;
 }
 
 export function ChatInput({
@@ -973,17 +1256,47 @@ export function ChatInput({
     () => translateCopy(language, placeholder),
     [language, placeholder],
   );
+  const externallySelectedSkills = useMemo(
+    () =>
+      selectedSkillIds
+        .map((skillId) =>
+          skillOptions.find(
+            (skill) => skill.id === skillId || skill.name === skillId,
+          ),
+        )
+        .filter((skill): skill is SkillDescriptor => Boolean(skill)),
+    [selectedSkillIds, skillOptions],
+  );
 
+  const [editorRevision, setEditorRevision] = useState(0);
+  const [editorProjection, setEditorProjection] = useState<EditorProjection>(() =>
+    buildInitialProjection({
+      composerPrompt,
+      selectedSkills: externallySelectedSkills,
+      contextChips,
+    }),
+  );
   const overlayRef = useRef<HTMLDivElement>(null);
-  const editorRef = useRef<HTMLDivElement>(null);
+  const editorRootRef = useRef<HTMLDivElement | null>(null);
+  const editorApiRef = useRef<LexicalEditor | null>(null);
   const lastOverlayHeightRef = useRef<number | undefined>(undefined);
   const shouldScrollPastedTextRef = useRef(false);
-  const skillPickerRef = useRef<HTMLDivElement>(null);
-  const pendingSelectionRef = useRef<ComposerSelectionBookmark | null>(null);
   const previousHideComposerRef = useRef(false);
-  const sessionIdRef = useRef(sessionId);
-  const isComposingRef = useRef(false);
-  const [hasPendingUserInput, setHasPendingUserInput] = useState(false);
+  const lastExportedRef = useRef(
+    buildContentSnapshot({
+      composerPrompt,
+      selectedSkills: externallySelectedSkills,
+      contextChips,
+    }),
+  );
+  const lastAppliedSeedTokenRef = useRef(
+    buildSeedToken({
+      sessionId,
+      composerPrompt,
+      selectedSkills: externallySelectedSkills,
+      contextChips,
+    }),
+  );
   const [openPicker, setOpenPicker] = useState<
     | "pattern"
     | "provider"
@@ -997,51 +1310,22 @@ export function ChatInput({
   const [skillPickerIndex, setSkillPickerIndex] = useState(0);
   const [previewImage, setPreviewImage] =
     useState<ComposerImageAttachment | null>(null);
-  const externallySelectedSkills = useMemo(
-    () =>
-      selectedSkillIds
-        .map((skillId) =>
-          skillOptions.find(
-            (skill) => skill.id === skillId || skill.name === skillId,
-          ),
-        )
-        .filter((skill): skill is SkillDescriptor => Boolean(skill)),
-    [selectedSkillIds, skillOptions],
-  );
-  const [segments, setSegments] = useState<ComposerSegment[]>(() =>
-    buildComposerSegments({
-      composerPrompt,
-      selectedSkills: externallySelectedSkills,
-      contextChips,
-    }),
-  );
-  const undoStackRef = useRef<ComposerSegment[][]>([]);
-  const redoStackRef = useRef<ComposerSegment[][]>([]);
-  const lastUndoSnapshotTimeRef = useRef<number>(0);
-  const [selectionBookmark, setSelectionBookmark] =
-    useState<ComposerSelectionBookmark | null>(null);
-  const plainTextPrompt = useMemo(() => segmentsToPrompt(segments), [segments]);
+  const [hasPendingUserInput, setHasPendingUserInput] = useState(false);
+  const isComposingRef = useRef(false);
+  const contextChipMapRef = useRef(new Map<string, ChatInputContextChip>());
+
+  contextChipMapRef.current = new Map(contextChips.map((chip) => [chip.id, chip]));
+
+  const plainTextPrompt = editorProjection.prompt;
   const selectedSkillIdSet = useMemo(
-    () => new Set(skillIdsFromSegments(segments)),
-    [segments],
+    () => new Set(editorProjection.skillIds),
+    [editorProjection.skillIds],
   );
-  const selectionLineInfo = useMemo(
-    () => getSelectionLineInfo(segments, selectionBookmark),
-    [segments, selectionBookmark],
-  );
-  const slashQuery =
-    selectionLineInfo?.lineText.startsWith("/")
-      ? selectionLineInfo.lineText.slice(1).trim().toLowerCase()
-      : "";
+  const slashQuery = editorProjection.slashContext?.query ?? "";
   const interactivity = getComposerInteractivity({
     composerPrompt: plainTextPrompt,
     runInteractionState,
   });
-  const showComposerPlaceholder =
-    plainTextPrompt.length === 0 &&
-    !runInteractionState.isProcessing &&
-    !isComposingRef.current &&
-    !hasPendingUserInput;
   const filteredSkillOptions = useMemo(() => {
     return skillOptions
       .filter((skill) => skill.enabled)
@@ -1070,15 +1354,12 @@ export function ChatInput({
     filteredSkillOptions.length - visibleSkillOptions.length;
   const showSkillPicker =
     openPicker === "skills" &&
-    Boolean(selectionLineInfo?.lineText.startsWith("/")) &&
+    Boolean(editorProjection.slashContext) &&
     filteredSkillOptions.length > 0;
   const hasFileChips =
     projectFileAttachments.length > 0 ||
     localFileAttachments.length > 0 ||
     imageAttachments.length > 0;
-  const hasInlineContextChips = segments.some(
-    (segment) => segment.kind !== "text",
-  );
   const showApprovalTray =
     approvalActions.length > 0 && Boolean(onApprove && onCancelApproval);
   const { showClarificationTray, showPlanDecisionTray, hideComposer } =
@@ -1093,36 +1374,45 @@ export function ChatInput({
     });
 
   useEffect(() => {
-    if (sessionIdRef.current !== sessionId) {
-      sessionIdRef.current = sessionId;
-      pendingSelectionRef.current = null;
-      setHasPendingUserInput(false);
-      setSelectionBookmark(null);
-      undoStackRef.current = [];
-      redoStackRef.current = [];
-      lastUndoSnapshotTimeRef.current = 0;
-      setPreviewImage(null);
-      setSegments(
-        buildComposerSegments({
-          composerPrompt,
-          selectedSkills: externallySelectedSkills,
-          contextChips,
-        }),
-      );
+    const incomingSnapshot = buildContentSnapshot({
+      composerPrompt,
+      selectedSkills: externallySelectedSkills,
+      contextChips,
+    });
+    const incomingSeedToken = buildSeedToken({
+      sessionId,
+      composerPrompt,
+      selectedSkills: externallySelectedSkills,
+      contextChips,
+    });
+    const shouldReset =
+      sessionId !== JSON.parse(lastAppliedSeedTokenRef.current).sessionId ||
+      composerPrompt !== lastExportedRef.current.prompt ||
+      !arraysEqual(incomingSnapshot.skillIds, lastExportedRef.current.skillIds) ||
+      !arraysEqual(
+        incomingSnapshot.contextIds,
+        lastExportedRef.current.contextIds,
+      ) ||
+      incomingSeedToken !== lastAppliedSeedTokenRef.current;
+
+    if (!shouldReset) {
       return;
     }
 
-    setSegments((current) => {
-      const next = reconcileComposerSegments({
-        segments: current,
+    lastAppliedSeedTokenRef.current = incomingSeedToken;
+    lastExportedRef.current = incomingSnapshot;
+    setEditorProjection(
+      buildInitialProjection({
         composerPrompt,
         selectedSkills: externallySelectedSkills,
         contextChips,
-      });
-      return composerSegmentSignature(next) === composerSegmentSignature(current)
-        ? current
-        : next;
-    });
+      }),
+    );
+    setHasPendingUserInput(false);
+    setOpenPicker((current) => (current === "skills" ? undefined : current));
+    setSkillListExpanded(false);
+    setSkillPickerIndex(0);
+    setEditorRevision((current) => current + 1);
   }, [sessionId, composerPrompt, externallySelectedSkills, contextChips]);
 
   useEffect(() => {
@@ -1140,12 +1430,8 @@ export function ChatInput({
   }, [imageAttachments, previewImage]);
 
   useLayoutEffect(() => {
-    const target = editorRef.current;
+    const target = editorRootRef.current;
     if (!target) return;
-    if (pendingSelectionRef.current && !isComposingRef.current) {
-      restoreSelectionBookmark(target, pendingSelectionRef.current);
-      pendingSelectionRef.current = null;
-    }
     resizeComposerTextarea(target);
     target.scrollLeft = 0;
     if (shouldScrollPastedTextRef.current) {
@@ -1155,11 +1441,11 @@ export function ChatInput({
       target.scrollTop = 0;
     }
     scrollComposerCaretIntoSafeView(target);
-  }, [plainTextPrompt, segments, sessionId]);
+  }, [plainTextPrompt, editorRevision]);
 
   useEffect(() => {
     if (previousHideComposerRef.current && !hideComposer) {
-      window.requestAnimationFrame(() => editorRef.current?.focus());
+      window.requestAnimationFrame(() => editorRootRef.current?.focus());
     }
     previousHideComposerRef.current = hideComposer;
   }, [hideComposer]);
@@ -1203,7 +1489,7 @@ export function ChatInput({
 
   useEffect(() => {
     const shouldShowSkills =
-      Boolean(selectionLineInfo?.lineText.startsWith("/")) &&
+      Boolean(editorProjection.slashContext) &&
       filteredSkillOptions.length > 0;
     if (shouldShowSkills) {
       setOpenPicker((current) =>
@@ -1215,341 +1501,50 @@ export function ChatInput({
       setOpenPicker(undefined);
       setSkillListExpanded(false);
     }
-  }, [filteredSkillOptions.length, openPicker, selectionLineInfo]);
+  }, [filteredSkillOptions.length, openPicker, editorProjection.slashContext]);
 
-  useEffect(() => {
-    if (!showSkillPicker) return;
-    const container = skillPickerRef.current;
-    if (!container) return;
-    const target = container.children[skillPickerIndex] as
-      | HTMLElement
-      | undefined;
-    if (target && typeof target.scrollIntoView === "function") {
-      target.scrollIntoView({ block: "nearest" });
-    }
-  }, [skillPickerIndex, showSkillPicker]);
-
-  function pushUndoSegmentsSnapshot(currentSegments: ComposerSegment[]) {
-    const now = Date.now();
-    if (now - lastUndoSnapshotTimeRef.current < COMPOSER_UNDO_DEBOUNCE_MS) {
-      return;
-    }
-    lastUndoSnapshotTimeRef.current = now;
-    const snapshot = JSON.parse(JSON.stringify(currentSegments)) as ComposerSegment[];
-    undoStackRef.current.push(snapshot);
-    if (undoStackRef.current.length > 50) {
-      undoStackRef.current.shift();
-    }
-    redoStackRef.current = [];
-  }
-
-  function applySegmentChange(
-    nextSegments: ComposerSegment[],
-    options: { focus?: boolean; selection?: ComposerSelectionBookmark | null; skipUndoSnapshot?: boolean } = {},
-  ) {
-    if (!options.skipUndoSnapshot) {
-      pushUndoSegmentsSnapshot(segments);
-    }
-    const normalized = normalizeComposerSegments(nextSegments);
-    const previousPrompt = segmentsToPrompt(segments);
-    const nextPrompt = segmentsToPrompt(normalized);
-    const previousSkillIds = skillIdsFromSegments(segments);
-    const nextSkillIds = skillIdsFromSegments(normalized);
-    const nextContextIds = new Set(contextIdsFromSegments(normalized));
-
-    pendingSelectionRef.current = options.selection ?? null;
-    setSelectionBookmark(options.selection ?? null);
-    setSegments(normalized);
-    if (nextPrompt.length > 0 || !isComposingRef.current) {
+  function syncProjection(nextProjection: EditorProjection) {
+    const previous = lastExportedRef.current;
+    const nextSelectedSkills = nextProjection.skillIds
+      .map((skillId) =>
+        skillOptions.find(
+          (skill) => skill.id === skillId || skill.name === skillId,
+        ),
+      )
+      .filter((skill): skill is SkillDescriptor => Boolean(skill));
+    const nextContextChips = nextProjection.contextIds
+      .map((contextId) => contextChipMapRef.current.get(contextId))
+      .filter((chip): chip is ChatInputContextChip => Boolean(chip));
+    setEditorProjection(nextProjection);
+    if (nextProjection.prompt.length > 0 || !isComposingRef.current) {
       setHasPendingUserInput(false);
     }
-
-    if (nextPrompt !== previousPrompt) {
-      onPromptChange(nextPrompt);
-    }
-    if (!arraysEqual(previousSkillIds, nextSkillIds)) {
-      onSelectedSkillIdsChange([...new Set(nextSkillIds)]);
-    }
-    for (const contextId of contextIdsFromSegments(segments)) {
-      if (!nextContextIds.has(contextId)) {
-        contextChips.find((chip) => chip.id === contextId)?.onRemove?.();
-      }
-    }
-    if (options.focus) {
-      window.requestAnimationFrame(() => editorRef.current?.focus());
-    }
-  }
-
-  function refreshSelectionState() {
-    const editor = editorRef.current;
-    if (!editor) return;
-    setSelectionBookmark(captureSelectionBookmark(editor));
-  }
-
-  function parseAndCommitEditorState() {
     if (isComposingRef.current) {
       return;
     }
-    const editor = editorRef.current;
-    if (!editor) return;
-    const nextBookmark = captureSelectionBookmark(editor);
-    const nextSegments = parseComposerEditorSegments(editor, segments);
-    applySegmentChange(nextSegments, { selection: nextBookmark });
-  }
 
-  function insertTextAtSelection(text: string) {
-    const editor = editorRef.current;
-    const selection = window.getSelection();
-    if (!editor || !selection || selection.rangeCount === 0) {
-      return;
-    }
-    const range = selection.getRangeAt(0);
-    if (!editor.contains(range.commonAncestorContainer)) {
-      return;
-    }
-    range.deleteContents();
-    const textNode = document.createTextNode(text);
-    range.insertNode(textNode);
-    range.setStartAfter(textNode);
-    range.collapse(true);
-    selection.removeAllRanges();
-    selection.addRange(range);
-    parseAndCommitEditorState();
-  }
-
-  function handleCompositionStart() {
-    isComposingRef.current = true;
-    setHasPendingUserInput(true);
-  }
-
-  function handleCompositionEnd(_e: CompositionEvent<HTMLDivElement>) {
-    isComposingRef.current = false;
-    window.requestAnimationFrame(() => {
-      refreshSelectionState();
-      parseAndCommitEditorState();
+    lastExportedRef.current = {
+      prompt: nextProjection.prompt,
+      skillIds: nextProjection.skillIds,
+      contextIds: nextProjection.contextIds,
+    };
+    lastAppliedSeedTokenRef.current = buildSeedToken({
+      sessionId,
+      composerPrompt: nextProjection.prompt,
+      selectedSkills: nextSelectedSkills,
+      contextChips: nextContextChips,
     });
-  }
-
-  function handleBeforeInput(e: FormEvent<HTMLDivElement>) {
-    const nativeEvent = e.nativeEvent as InputEvent;
-    if (COMPOSER_TEXT_INPUT_TYPES.has(nativeEvent.inputType ?? "")) {
-      setHasPendingUserInput(true);
+    if (nextProjection.prompt !== previous.prompt) {
+      onPromptChange(nextProjection.prompt);
     }
-  }
-
-  function handleBlur() {
-    if (!plainTextPrompt) {
-      setHasPendingUserInput(false);
+    if (!arraysEqual(previous.skillIds, nextProjection.skillIds)) {
+      onSelectedSkillIdsChange([...new Set(nextProjection.skillIds)]);
     }
-  }
-
-  function markPendingInputFromKeyDown(e: KeyboardEvent<HTMLDivElement>) {
-    if (
-      e.metaKey ||
-      e.ctrlKey ||
-      e.altKey ||
-      e.key.length !== 1 ||
-      e.nativeEvent.isComposing ||
-      isComposingRef.current
-    ) {
-      return;
-    }
-    setHasPendingUserInput(true);
-  }
-
-  function removeBoundaryChip(direction: "backward" | "forward") {
-    if (!selectionLineInfo) {
-      return false;
-    }
-
-    const textSegment = segments[
-      selectionLineInfo.segmentIndex
-    ] as ComposerTextSegment;
-    if (direction === "backward") {
-      if (selectionLineInfo.caretOffset !== 0 || selectionLineInfo.segmentIndex < 2) {
-        return false;
+    for (const contextId of previous.contextIds) {
+      if (!nextProjection.contextIds.includes(contextId)) {
+        contextChipMapRef.current.get(contextId)?.onRemove?.();
       }
-      const previousChip = segments[selectionLineInfo.segmentIndex - 1];
-      const previousText = segments[
-        selectionLineInfo.segmentIndex - 2
-      ] as ComposerTextSegment | undefined;
-      if (!previousChip || previousChip.kind === "text" || !previousText) {
-        return false;
-      }
-
-      const mergedText: ComposerTextSegment = {
-        ...textSegment,
-        text: previousText.text + textSegment.text,
-      };
-      applySegmentChange(
-        [
-          ...segments.slice(0, selectionLineInfo.segmentIndex - 2),
-          mergedText,
-          ...segments.slice(selectionLineInfo.segmentIndex + 1),
-        ],
-        {
-          focus: true,
-          selection: {
-            start: {
-              segmentId: mergedText.id,
-              offset: previousText.text.length,
-            },
-            end: {
-              segmentId: mergedText.id,
-              offset: previousText.text.length,
-            },
-          },
-        },
-      );
-      return true;
     }
-
-    if (
-      selectionLineInfo.caretOffset !== textSegment.text.length ||
-      selectionLineInfo.segmentIndex > segments.length - 3
-    ) {
-      return false;
-    }
-    const nextChip = segments[selectionLineInfo.segmentIndex + 1];
-    const nextText = segments[
-      selectionLineInfo.segmentIndex + 2
-    ] as ComposerTextSegment | undefined;
-    if (!nextChip || nextChip.kind === "text" || !nextText) {
-      return false;
-    }
-
-    const mergedText: ComposerTextSegment = {
-      ...textSegment,
-      text: textSegment.text + nextText.text,
-    };
-    applySegmentChange(
-      [
-        ...segments.slice(0, selectionLineInfo.segmentIndex),
-        mergedText,
-        ...segments.slice(selectionLineInfo.segmentIndex + 3),
-      ],
-      {
-        focus: true,
-        selection: {
-          start: {
-            segmentId: mergedText.id,
-            offset: textSegment.text.length,
-          },
-          end: {
-            segmentId: mergedText.id,
-            offset: textSegment.text.length,
-          },
-        },
-      },
-    );
-    return true;
-  }
-
-  function removeFinalCharacterFromTextSegment(
-    direction: "backward" | "forward",
-  ) {
-    if (!selectionLineInfo) {
-      return false;
-    }
-
-    const textSegment = segments[
-      selectionLineInfo.segmentIndex
-    ] as ComposerTextSegment;
-    if (textSegment.text.length !== 1) {
-      return false;
-    }
-
-    const isBackwardDelete =
-      direction === "backward" && selectionLineInfo.caretOffset === 1;
-    const isForwardDelete =
-      direction === "forward" && selectionLineInfo.caretOffset === 0;
-    if (!isBackwardDelete && !isForwardDelete) {
-      return false;
-    }
-
-    const emptiedTextSegment: ComposerTextSegment = {
-      ...textSegment,
-      text: "",
-    };
-    applySegmentChange(
-      [
-        ...segments.slice(0, selectionLineInfo.segmentIndex),
-        emptiedTextSegment,
-        ...segments.slice(selectionLineInfo.segmentIndex + 1),
-      ],
-      {
-        focus: true,
-        selection: {
-          start: { segmentId: emptiedTextSegment.id, offset: 0 },
-          end: { segmentId: emptiedTextSegment.id, offset: 0 },
-        },
-      },
-    );
-    return true;
-  }
-
-  function removeExpandedSelection() {
-    if (!selectionBookmark || isSelectionCollapsed(selectionBookmark)) {
-      return false;
-    }
-
-    const startSegmentIndex = findTextSegmentIndexById(
-      segments,
-      selectionBookmark.start.segmentId,
-    );
-    const endSegmentIndex = findTextSegmentIndexById(
-      segments,
-      selectionBookmark.end.segmentId,
-    );
-    if (startSegmentIndex < 0 || endSegmentIndex < 0) {
-      return false;
-    }
-
-    const [fromIndex, toIndex] =
-      startSegmentIndex <= endSegmentIndex
-        ? [startSegmentIndex, endSegmentIndex]
-        : [endSegmentIndex, startSegmentIndex];
-    const fromPoint =
-      fromIndex === startSegmentIndex
-        ? selectionBookmark.start
-        : selectionBookmark.end;
-    const toPoint =
-      toIndex === endSegmentIndex
-        ? selectionBookmark.end
-        : selectionBookmark.start;
-
-    const startSegment = segments[fromIndex] as ComposerTextSegment;
-    const endSegment = segments[toIndex] as ComposerTextSegment;
-    const startOffset = Math.max(
-      0,
-      Math.min(fromPoint.offset, startSegment.text.length),
-    );
-    const endOffset = Math.max(
-      0,
-      Math.min(toPoint.offset, endSegment.text.length),
-    );
-    const mergedText: ComposerTextSegment = {
-      ...startSegment,
-      text:
-        startSegment.text.slice(0, startOffset) +
-        endSegment.text.slice(endOffset),
-    };
-
-    applySegmentChange(
-      [
-        ...segments.slice(0, fromIndex),
-        mergedText,
-        ...segments.slice(toIndex + 1),
-      ],
-      {
-        focus: true,
-        selection: {
-          start: { segmentId: mergedText.id, offset: startOffset },
-          end: { segmentId: mergedText.id, offset: startOffset },
-        },
-      },
-    );
-    return true;
   }
 
   function confirmSkillPickerSelection() {
@@ -1566,42 +1561,87 @@ export function ChatInput({
     }
   }
 
-  function handleKeyDown(e: KeyboardEvent<HTMLDivElement>) {
-    markPendingInputFromKeyDown(e);
-    if (isComposingRef.current || e.nativeEvent.isComposing) {
+  function selectSkill(skill: SkillDescriptor) {
+    const editor = editorApiRef.current;
+    const slashContext = editorProjection.slashContext;
+    if (!editor || !slashContext) {
       return;
     }
-    // Undo: Cmd+Z / Ctrl+Z
-    if ((e.metaKey || e.ctrlKey) && e.key === "z" && !e.shiftKey) {
-      e.preventDefault();
-      if (undoStackRef.current.length === 0) return;
-      const currentSnapshot = JSON.parse(JSON.stringify(segments)) as ComposerSegment[];
-      redoStackRef.current.push(currentSnapshot);
-      const restored = undoStackRef.current.pop()!;
-      applySegmentChange(restored, { focus: true, skipUndoSnapshot: true });
+    editor.update(
+      () => {
+        const node = $getNodeByKey(slashContext.nodeKey);
+        if (!$isTextNode(node) || $isComposerChipNode(node)) {
+          return;
+        }
+        const text = node.getTextContent();
+        const beforeLine = text.slice(0, slashContext.replaceStartOffset);
+        const rawTrailing = text
+          .slice(slashContext.caretOffset)
+          .replace(/^\s+/, "");
+        const trailingText =
+          rawTrailing.length === 0
+            ? " "
+            : rawTrailing.startsWith(" ")
+              ? rawTrailing
+              : ` ${rawTrailing}`;
+
+        const chipNode = $createComposerChipNode({
+          chipId: skill.id,
+          chipKind: "skill",
+          label: skill.name,
+        });
+        const nextTextNode = $createComposerTextNode(trailingText);
+
+        if (beforeLine.length > 0) {
+          node.setTextContent(beforeLine);
+          node.insertAfter(chipNode);
+        } else {
+          node.replace(chipNode);
+        }
+        chipNode.insertAfter(nextTextNode);
+        const trailingCaretOffset =
+          trailingText.startsWith(" ") && trailingText.length > 0 ? 1 : 0;
+        nextTextNode.select(trailingCaretOffset, trailingCaretOffset);
+      },
+      { discrete: true },
+    );
+    setOpenPicker(undefined);
+    setSkillListExpanded(false);
+    window.requestAnimationFrame(() => {
+      syncDomSelectionToLexicalState(
+        editorRootRef.current,
+        editorApiRef.current,
+      );
+      editorRootRef.current?.focus();
+    });
+  }
+
+  function handleEditorKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    if (
+      !event.metaKey &&
+      !event.ctrlKey &&
+      !event.altKey &&
+      event.key.length === 1 &&
+      !event.nativeEvent.isComposing &&
+      !isComposingRef.current
+    ) {
+      setHasPendingUserInput(true);
+    }
+
+    if (isComposingRef.current || event.nativeEvent.isComposing) {
       return;
     }
 
-    // Redo: Cmd+Shift+Z / Ctrl+Shift+Z
-    if ((e.metaKey || e.ctrlKey) && e.key === "z" && e.shiftKey) {
-      e.preventDefault();
-      if (redoStackRef.current.length === 0) return;
-      const currentSnapshot = JSON.parse(JSON.stringify(segments)) as ComposerSegment[];
-      undoStackRef.current.push(currentSnapshot);
-      const restored = redoStackRef.current.pop()!;
-      applySegmentChange(restored, { focus: true, skipUndoSnapshot: true });
-      return;
-    }
-
-    if (e.key === "Tab" && !e.shiftKey) {
-      e.preventDefault();
+    if (event.key === "Tab" && !event.shiftKey) {
+      event.preventDefault();
       if (openPicker === "skills") {
         confirmSkillPickerSelection();
       }
       return;
     }
-    if (e.key === "Tab" && e.shiftKey) {
-      e.preventDefault();
+
+    if (event.key === "Tab" && event.shiftKey) {
+      event.preventDefault();
       const nextIntent: TaskIntent =
         taskIntent === "chat" ? "plan"
         : taskIntent === "plan" ? "implement"
@@ -1609,42 +1649,13 @@ export function ChatInput({
       onTaskIntentChange(nextIntent);
       return;
     }
-    if (
-      (e.key === "Backspace" || e.key === "Delete") &&
-      !isSelectionCollapsed(selectionBookmark)
-    ) {
-      if (removeExpandedSelection()) {
-        e.preventDefault();
-        return;
-      }
-    }
-    if (e.key === "Backspace" && isSelectionCollapsed(selectionBookmark)) {
-      if (removeBoundaryChip("backward")) {
-        e.preventDefault();
-        return;
-      }
-      if (removeFinalCharacterFromTextSegment("backward")) {
-        e.preventDefault();
-        return;
-      }
-    }
-    if (e.key === "Delete" && isSelectionCollapsed(selectionBookmark)) {
-      if (removeBoundaryChip("forward")) {
-        e.preventDefault();
-        return;
-      }
-      if (removeFinalCharacterFromTextSegment("forward")) {
-        e.preventDefault();
-        return;
-      }
-    }
 
-    if (e.key === "Escape" && openPicker === "skills") {
+    if (event.key === "Escape" && openPicker === "skills") {
       setOpenPicker(undefined);
       return;
     }
-    if (e.key === "ArrowDown" && openPicker === "skills") {
-      e.preventDefault();
+    if (event.key === "ArrowDown" && openPicker === "skills") {
+      event.preventDefault();
       const maxIndex =
         hiddenSkillCount > 0
           ? visibleSkillOptions.length
@@ -1652,8 +1663,8 @@ export function ChatInput({
       setSkillPickerIndex((prev) => (prev >= maxIndex ? 0 : prev + 1));
       return;
     }
-    if (e.key === "ArrowUp" && openPicker === "skills") {
-      e.preventDefault();
+    if (event.key === "ArrowUp" && openPicker === "skills") {
+      event.preventDefault();
       const maxIndex =
         hiddenSkillCount > 0
           ? visibleSkillOptions.length
@@ -1661,67 +1672,49 @@ export function ChatInput({
       setSkillPickerIndex((prev) => (prev <= 0 ? maxIndex : prev - 1));
       return;
     }
-    if (e.key === "Enter" && openPicker === "skills") {
-      e.preventDefault();
-      confirmSkillPickerSelection();
+    if (event.key === "Enter" && openPicker === "skills") {
+      event.preventDefault();
       return;
-    }
-    if (e.key === "Enter" && e.shiftKey) {
-      e.preventDefault();
-      insertTextAtSelection("\n");
-      return;
-    }
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      if (runInteractionState.isProcessing) {
-        onStopRun();
-        return;
-      }
-      if (interactivity.canSubmit) {
-        onStartRun();
-      }
     }
   }
 
-  function selectSkill(skill: SkillDescriptor) {
-    if (!selectionLineInfo) {
-      return;
+  function handleEnterCommand() {
+    if (openPicker === "skills") {
+      confirmSkillPickerSelection();
+      return true;
     }
-    const currentTextSegment = segments[
-      selectionLineInfo.segmentIndex
-    ] as ComposerTextSegment;
-    const leadingText = createTextSegment(
-      currentTextSegment.text.slice(0, selectionLineInfo.lineStart),
-      currentTextSegment.id,
-    );
-    const trailingText = createTextSegment(
-      currentTextSegment.text.slice(selectionLineInfo.caretOffset),
-    );
-    const nextSkillSegment: ComposerSkillChipSegment = {
-      id: nextComposerSegmentId(),
-      kind: "skill-chip",
-      skillId: skill.id,
-      label: skill.name,
-    };
+    if (runInteractionState.isProcessing) {
+      onStopRun();
+      return true;
+    }
+    if (interactivity.canSubmit) {
+      onStartRun();
+      return true;
+    }
+    return true;
+  }
 
-    applySegmentChange(
-      [
-        ...segments.slice(0, selectionLineInfo.segmentIndex),
-        leadingText,
-        nextSkillSegment,
-        trailingText,
-        ...segments.slice(selectionLineInfo.segmentIndex + 1),
-      ],
-      {
-        focus: true,
-        selection: {
-          start: { segmentId: trailingText.id, offset: 0 },
-          end: { segmentId: trailingText.id, offset: 0 },
-        },
+  function handleShiftEnterCommand() {
+    editorApiRef.current?.update(
+      () => {
+        const selection = $getSelection();
+        if (!$isRangeSelection(selection)) {
+          return;
+        }
+        if (!selection.isCollapsed()) {
+          selection.removeText();
+        }
+        if (!splitParagraphAtSelection()) {
+          selection.insertParagraph();
+          const root = $getRoot();
+          for (const child of root.getChildren()) {
+            ensureParagraphShape(child);
+          }
+        }
       },
+      { discrete: true },
     );
-    setOpenPicker(undefined);
-    setSkillListExpanded(false);
+    return true;
   }
 
   const modeTriggerLabel =
@@ -1769,6 +1762,27 @@ export function ChatInput({
     },
   ];
 
+  const initialConfig = useMemo(
+    () => ({
+      namespace: "ora-chat-input",
+      editable: true,
+      nodes: [ComposerChipNode, ComposerTextNode],
+      onError: (error: Error) => {
+        throw error;
+      },
+      editorState: (editor: LexicalEditor) => {
+        editor.update(() => {
+          populateEditorFromSeed({
+            composerPrompt,
+            selectedSkills: externallySelectedSkills,
+            contextChips,
+          });
+        });
+      },
+    }),
+    [composerPrompt, contextChips, externallySelectedSkills],
+  );
+
   return (
     <div
       ref={overlayRef}
@@ -1791,10 +1805,7 @@ export function ChatInput({
           )}
         >
           {showSkillPicker && (
-            <div
-              ref={skillPickerRef}
-              className="pointer-events-auto absolute bottom-full left-3 z-50 mb-2 max-h-[min(32rem,calc(100vh-12rem))] w-[min(26rem,calc(100%-1.5rem))] overflow-y-auto rounded-xl border border-border bg-popover p-1.5 text-popover-foreground shadow-lift"
-            >
+            <div className="pointer-events-auto absolute bottom-full left-3 z-50 mb-2 max-h-[min(32rem,calc(100vh-12rem))] w-[min(26rem,calc(100%-1.5rem))] overflow-y-auto rounded-xl border border-border bg-popover p-1.5 text-popover-foreground shadow-lift">
               {visibleSkillOptions.map((skill, idx) => (
                 <button
                   key={skill.id}
@@ -1836,577 +1847,568 @@ export function ChatInput({
               )}
             </div>
           )}
-        {planSteps.length > 0 ? (
-          <div className="pointer-events-auto">
-            <PlanStepsTray planSteps={planSteps} />
-          </div>
-        ) : null}
-        {showApprovalTray ? (
-          <div className="pointer-events-auto mb-2">
-            <ApprovalRequestCard
-              actions={approvalActions}
-              onResume={onApprove!}
-              onCancel={onCancelApproval!}
-              disabled={approvalDisabled}
-            />
-          </div>
-        ) : null}
-        {showClarificationTray ? (
-          <div className="pointer-events-auto mb-2">
-            <ClarificationPanel
-              pendingClarifications={clarificationQuestions}
-              onSubmitAll={onSubmitAllClarifications!}
-              disabled={isLoading}
-            />
-          </div>
-        ) : null}
-        {showPlanDecisionTray ? (
-          <div className="pointer-events-auto mb-2">
-            <PlanDecisionPanel
-              onConfirm={onConfirmPlanDecision!}
-              onDecline={onDeclinePlanDecision!}
-              disabled={isLoading}
-            />
-          </div>
-        ) : null}
-        {hideComposer ? null : (
-          <div
-            data-testid="chat-input-surface-card"
-            className={cn(
-              "pointer-events-auto w-full rounded-2xl border bg-card/96 shadow-lift backdrop-blur-sm transition-[background-color,border-color,box-shadow] duration-300",
-              isDragOver
-                ? "border-amber-200 ring-2 ring-amber-200/50"
-                : "border-border",
-            )}
-            onDragOver={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              if (!isDragOver) setIsDragOver(true);
-            }}
-            onDragLeave={(e) => {
-              if (e.currentTarget.contains(e.relatedTarget as Node)) return;
-              setIsDragOver(false);
-            }}
-            onDrop={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              setIsDragOver(false);
-              const files = e.dataTransfer.files;
-              if (files.length > 0 && onFilesDropped) {
-                onFilesDropped(files);
-              }
-            }}
-          >
+          {planSteps.length > 0 ? (
+            <div className="pointer-events-auto">
+              <PlanStepsTray planSteps={planSteps} />
+            </div>
+          ) : null}
+          {showApprovalTray ? (
+            <div className="pointer-events-auto mb-2">
+              <ApprovalRequestCard
+                actions={approvalActions}
+                onResume={onApprove!}
+                onCancel={onCancelApproval!}
+                disabled={approvalDisabled}
+              />
+            </div>
+          ) : null}
+          {showClarificationTray ? (
+            <div className="pointer-events-auto mb-2">
+              <ClarificationPanel
+                pendingClarifications={clarificationQuestions}
+                onSubmitAll={onSubmitAllClarifications!}
+                disabled={isLoading}
+              />
+            </div>
+          ) : null}
+          {showPlanDecisionTray ? (
+            <div className="pointer-events-auto mb-2">
+              <PlanDecisionPanel
+                onConfirm={onConfirmPlanDecision!}
+                onDecline={onDeclinePlanDecision!}
+                disabled={isLoading}
+              />
+            </div>
+          ) : null}
+          {hideComposer ? null : (
             <div
+              data-testid="chat-input-surface-card"
               className={cn(
-                "relative",
-                hasFileChips ? "min-h-[156px]" : "min-h-[96px]",
+                "pointer-events-auto w-full rounded-2xl border bg-card/96 shadow-lift backdrop-blur-sm transition-[background-color,border-color,box-shadow] duration-300",
+                isDragOver
+                  ? "border-amber-200 ring-2 ring-amber-200/50"
+                  : "border-border",
               )}
+              onDragOver={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (!isDragOver) setIsDragOver(true);
+              }}
+              onDragLeave={(e) => {
+                if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+                setIsDragOver(false);
+              }}
+              onDrop={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setIsDragOver(false);
+                const files = e.dataTransfer.files;
+                if (files.length > 0 && onFilesDropped) {
+                  onFilesDropped(files);
+                }
+              }}
             >
-              {hasFileChips && (
-                <div
-                  data-testid="composer-attachment-rail"
-                  className="absolute left-3 right-3 top-3 z-10 flex max-h-16 flex-wrap items-center gap-1.5 overflow-y-auto pr-1"
-                >
-                  {projectFileAttachments.map((file) => (
-                    <button
-                      key={`${file.projectId}:${file.path}`}
-                      type="button"
-                      onClick={() => onRemoveProjectFileAttachment(file.path)}
-                      className="inline-flex h-7 max-w-[240px] items-center gap-1.5 rounded-full border border-border bg-background/80 px-2.5 text-xs font-medium text-muted-foreground shadow-[0_1px_2px_rgba(23,23,23,0.04)] transition hover:bg-accent hover:text-accent-foreground active:scale-95"
-                      title={`Remove ${file.path}`}
-                    >
-                      <FileText size={12} />
-                      <span className="truncate text-foreground">
-                        {file.name}
-                      </span>
-                      <X size={11} />
-                    </button>
-                  ))}
-                  {localFileAttachments.map((file) => (
-                    <button
-                      key={`local:${file.path}`}
-                      type="button"
-                      onClick={() => onRemoveLocalFileAttachment(file.path)}
-                      className="inline-flex h-7 max-w-[240px] items-center gap-1.5 rounded-full border border-border bg-background/80 px-2.5 text-xs font-medium text-muted-foreground shadow-[0_1px_2px_rgba(23,23,23,0.04)] transition hover:bg-accent hover:text-accent-foreground active:scale-95"
-                      title={`Remove ${file.path}`}
-                    >
-                      <FileText size={12} />
-                      <span className="truncate text-foreground">
-                        {file.name}
-                      </span>
-                      <X size={11} />
-                    </button>
-                  ))}
-                  {imageAttachments.map((img) => (
-                    <div
-                      key={`image:${img.name}`}
-                      className="inline-flex h-7 max-w-[240px] items-stretch overflow-hidden rounded-full border border-border bg-background/80 text-xs font-medium text-muted-foreground shadow-[0_1px_2px_rgba(23,23,23,0.04)]"
-                    >
+              <div
+                className={cn(
+                  "relative",
+                  hasFileChips ? "min-h-[156px]" : "min-h-[96px]",
+                )}
+              >
+                {hasFileChips && (
+                  <div
+                    data-testid="composer-attachment-rail"
+                    className="absolute left-3 right-3 top-3 z-10 flex max-h-16 flex-wrap items-center gap-1.5 overflow-y-auto pr-1"
+                  >
+                    {projectFileAttachments.map((file) => (
                       <button
+                        key={`${file.projectId}:${file.path}`}
                         type="button"
-                        onClick={() => setPreviewImage(img)}
-                        className="inline-flex min-w-0 flex-1 items-center gap-1.5 pl-1 pr-1.5 transition hover:bg-accent hover:text-accent-foreground"
-                        title={`Preview ${img.name}`}
-                        aria-label={`Preview ${img.name}`}
+                        onClick={() => onRemoveProjectFileAttachment(file.path)}
+                        className="inline-flex h-7 max-w-[240px] items-center gap-1.5 rounded-full border border-border bg-background/80 px-2.5 text-xs font-medium text-muted-foreground shadow-[0_1px_2px_rgba(23,23,23,0.04)] transition hover:bg-accent hover:text-accent-foreground active:scale-95"
+                        title={`Remove ${file.path}`}
                       >
-                        <img
-                          src={img.dataUrl}
-                          alt={img.name}
-                          className="h-5 w-5 rounded-full object-cover"
-                        />
+                        <FileText size={12} />
                         <span className="truncate text-foreground">
-                          {img.name}
+                          {file.name}
                         </span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          onRemoveImageAttachment(img.name);
-                        }}
-                        className="flex h-7 w-7 shrink-0 items-center justify-center transition hover:bg-accent hover:text-accent-foreground active:scale-95"
-                        title={`Remove ${img.name}`}
-                        aria-label={`Remove ${img.name}`}
-                      >
                         <X size={11} />
                       </button>
-                    </div>
-                  ))}
-                </div>
-              )}
-              <div
-                ref={editorRef}
-                contentEditable={interactivity.canEditText}
-                suppressContentEditableWarning
-                role="textbox"
-                aria-multiline="true"
-                data-testid="chat-input-editor"
-                className={cn(
-                  "max-h-[220px] w-full overflow-y-auto bg-transparent px-4 text-sm leading-5 outline-none",
-                  "whitespace-pre-wrap break-words",
-                  interactivity.canEditText
-                    ? "cursor-text"
-                    : "cursor-not-allowed opacity-60",
-                  hasFileChips ? "min-h-[124px] pt-14" : "min-h-[96px] pt-4",
-                )}
-                style={{
-                  height: "auto",
-                  paddingBottom: `${COMPOSER_BOTTOM_SAFE_AREA_PX}px`,
-                }}
-                onBeforeInput={handleBeforeInput}
-                onInput={parseAndCommitEditorState}
-                onCompositionStart={handleCompositionStart}
-                onCompositionEnd={handleCompositionEnd}
-                onKeyDown={handleKeyDown}
-                onKeyUp={refreshSelectionState}
-                onMouseUp={refreshSelectionState}
-                onFocus={refreshSelectionState}
-                onBlur={handleBlur}
-                onPaste={(e) => {
-                  const items = e.clipboardData?.items;
-                  if (items) {
-                    const imageItems: File[] = [];
-                    for (const item of items) {
-                      if (
-                        item.kind === "file" &&
-                        item.type.startsWith("image/")
-                      ) {
-                        const file = item.getAsFile();
-                        if (file) imageItems.push(file);
-                      }
-                    }
-                    if (imageItems.length > 0) {
-                      e.preventDefault();
-                      let pasteSeq = 0;
-                      for (const file of imageItems) {
-                        const reader = new FileReader();
-                        const seq = pasteSeq++;
-                        reader.onload = () => {
-                          onAddImageAttachment({
-                            dataUrl: reader.result as string,
-                            mimeType: file.type,
-                            name:
-                              file.name ||
-                              `screenshot-${Date.now()}-${seq}.png`,
-                            sizeBytes: file.size,
-                          });
-                        };
-                        reader.readAsDataURL(file);
-                      }
-                      return;
-                    }
-                  }
-
-                  const text = e.clipboardData?.getData("text/plain") ?? "";
-                  if (!text) {
-                    return;
-                  }
-                  e.preventDefault();
-                  setHasPendingUserInput(true);
-                  shouldScrollPastedTextRef.current = true;
-                  insertTextAtSelection(text);
-                }}
-              >
-                {segments.map((segment, index) => {
-                  if (segment.kind === "text") {
-                    const placeholderText =
-                      showComposerPlaceholder &&
-                      index === segments.length - 1
-                        ? localizedPlaceholder
-                        : undefined;
-                    return (
-                      <span
-                        key={segment.id}
-                        data-segment-kind="text"
-                        data-segment-id={segment.id}
-                        data-placeholder={placeholderText}
-                        className={cn(
-                          "inline whitespace-pre-wrap break-words",
-                          placeholderText &&
-                            "after:pointer-events-none after:text-muted-foreground after:content-[attr(data-placeholder)]",
-                        )}
-                      >
-                        {segment.text || COMPOSER_ZWSP}
-                      </span>
-                    );
-                  }
-
-                  if (segment.kind === "context-chip") {
-                    return (
-                      <span
-                        key={segment.id}
-                        data-segment-kind="context-chip"
-                        data-chip-id={segment.chipId}
-                        contentEditable={false}
-                        className={cn(
-                          "mx-0.5 inline-flex max-w-[220px] items-center gap-1 rounded-full border px-2 py-0.5 align-baseline text-sm font-medium",
-                          segment.tone === "widget"
-                            ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-                            : "border-border bg-background/80 text-muted-foreground",
-                        )}
-                      >
-                        <PanelTop size={14} />
-                        <span className="truncate">{segment.label}</span>
-                      </span>
-                    );
-                  }
-
-                  return (
-                    <span
-                      key={segment.id}
-                      data-segment-kind="skill-chip"
-                      data-skill-id={segment.skillId}
-                      contentEditable={false}
-                      className="mx-0.5 inline-flex max-w-[220px] items-center gap-1 rounded-full border border-violet-200 bg-violet-50 px-2 py-0.5 align-baseline text-sm font-medium text-violet-700"
-                    >
-                      <Sparkles size={14} />
-                      <span className="truncate">{segment.label}</span>
-                    </span>
-                  );
-                })}
-              </div>
-              <div className="absolute bottom-2 left-2 right-2 flex items-center justify-between gap-2">
-                <div className="flex min-w-0 items-center gap-1">
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon-sm"
-                    onClick={onOpenLocalFiles}
-                    title="载入本地文件"
-                  >
-                    <Paperclip size={14} />
-                  </Button>
-                  <Picker
-                    open={openPicker === "taskIntent"}
-                    onOpenChange={(open) =>
-                      setOpenPicker(open ? "taskIntent" : undefined)
-                    }
-                    trigger={
-                      <>
-                        {taskIntentOptions.find((o) => o.value === taskIntent)
-                          ?.icon ?? <Play size={13} />}
-                        <span className="hidden xl:inline">任务</span>
-                        <span className="max-w-[100px] truncate text-foreground">
-                          {taskIntentOptions.find((o) => o.value === taskIntent)
-                            ?.label ?? "实施"}
-                        </span>
-                      </>
-                    }
-                    widthClassName="w-60"
-                  >
-                    {taskIntentOptions.map((option) => (
+                    ))}
+                    {localFileAttachments.map((file) => (
                       <button
-                        key={option.value}
+                        key={`local:${file.path}`}
                         type="button"
-                        onClick={() => {
-                          onTaskIntentChange(option.value);
-                          setOpenPicker(undefined);
-                        }}
-                        className={cn(
-                          "w-full rounded-md px-3 py-2 text-left transition hover:bg-accent",
-                          taskIntent === option.value &&
-                            "bg-accent text-accent-foreground",
-                        )}
+                        onClick={() => onRemoveLocalFileAttachment(file.path)}
+                        className="inline-flex h-7 max-w-[240px] items-center gap-1.5 rounded-full border border-border bg-background/80 px-2.5 text-xs font-medium text-muted-foreground shadow-[0_1px_2px_rgba(23,23,23,0.04)] transition hover:bg-accent hover:text-accent-foreground active:scale-95"
+                        title={`Remove ${file.path}`}
                       >
-                        <div className="flex items-center gap-2 text-xs font-medium">
-                          {option.icon}
-                          <span>{option.label}</span>
-                        </div>
-                        <div className="mt-1 line-clamp-1 text-[11px] text-muted-foreground">
-                          {option.description}
-                        </div>
+                        <FileText size={12} />
+                        <span className="truncate text-foreground">
+                          {file.name}
+                        </span>
+                        <X size={11} />
                       </button>
                     ))}
-                  </Picker>
-                  <Picker
-                    open={openPicker === "permissionMode"}
-                    onOpenChange={(open) =>
-                      setOpenPicker(open ? "permissionMode" : undefined)
-                    }
-                    trigger={
-                      <>
-                        {permissionModeOptions.find(
-                          (o) => o.value === permissionMode,
-                        )?.icon ?? <Shield size={13} />}
-                        <span className="hidden xl:inline">权限</span>
-                        <span className="max-w-[100px] truncate text-foreground">
-                          {permissionModeOptions.find(
-                            (o) => o.value === permissionMode,
-                          )?.label ?? "默认"}
-                        </span>
-                      </>
-                    }
-                  >
-                    {permissionModeOptions.map((option) => (
-                      <button
-                        key={option.value}
-                        type="button"
-                        onClick={() => {
-                          onPermissionModeChange(option.value);
-                          setOpenPicker(undefined);
-                        }}
-                        className={cn(
-                          "w-full rounded-md px-3 py-2 text-left transition hover:bg-accent",
-                          permissionMode === option.value &&
-                            "bg-accent text-accent-foreground",
-                        )}
+                    {imageAttachments.map((img) => (
+                      <div
+                        key={`image:${img.name}`}
+                        className="inline-flex h-7 max-w-[240px] items-stretch overflow-hidden rounded-full border border-border bg-background/80 text-xs font-medium text-muted-foreground shadow-[0_1px_2px_rgba(23,23,23,0.04)]"
                       >
-                        <div className="flex items-center gap-2 text-xs font-medium">
-                          {option.icon}
-                          <span>{option.label}</span>
-                        </div>
-                        <div className="mt-1 line-clamp-1 text-[11px] text-muted-foreground">
-                          {option.description}
-                        </div>
-                      </button>
-                    ))}
-                  </Picker>
-
-                  {selectedCustomAgentId && (
-                    <button
-                      type="button"
-                      onClick={onClearSelectedCustomAgent}
-                      className="flex h-7 max-w-[260px] items-center gap-1.5 whitespace-nowrap rounded-full border border-border bg-background/70 px-2.5 text-xs text-muted-foreground transition hover:bg-accent hover:text-accent-foreground"
-                      title={`Clear custom agent ${selectedCustomAgentId}`}
-                    >
-                      <Bot size={13} />
-                      <span className="hidden xl:inline">Agent</span>
-                      <span className="max-w-[140px] truncate text-foreground">
-                        {selectedCustomAgentId}
-                      </span>
-                      <X size={12} />
-                    </button>
-                  )}
-                  <Picker
-                    open={openPicker === "pattern"}
-                    onOpenChange={(open) =>
-                      setOpenPicker(open ? "pattern" : undefined)
-                    }
-                    trigger={
-                      <>
-                        {selectedModeSelection === "auto" ? (
-                          <BrainCircuit size={13} />
-                        ) : (
-                          <Rocket size={13} />
-                        )}
-                        <span className="hidden xl:inline">模式</span>
-                        <span className="max-w-[150px] truncate text-foreground">
-                          {modeTriggerLabel}
-                        </span>
-                      </>
-                    }
-                  >
-                    <button
-                      type="button"
-                      onClick={() => {
-                        onModeSelectionChange("auto");
-                        setOpenPicker(undefined);
-                      }}
-                      className={cn(
-                        "w-full rounded-md px-3 py-2 text-left transition hover:bg-accent",
-                        selectedModeSelection === "auto" &&
-                          "bg-accent text-accent-foreground",
-                      )}
-                    >
-                      <div className="flex items-center justify-between gap-2 text-xs font-medium">
-                        <span>自动</span>
-                        <span className="rounded-full border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                          路由
-                        </span>
-                      </div>
-                      <div className="mt-1 line-clamp-1 text-[11px] text-muted-foreground">
-                        由 Ora 从当前模式列表中自动选择最适合本轮的 模式。
-                      </div>
-                    </button>
-                    {modeOptions.map((mode) => (
-                      <button
-                        key={mode.id}
-                        type="button"
-                        onClick={() => {
-                          onModeChange(mode.id);
-                          onModeSelectionChange("manual");
-                          setOpenPicker(undefined);
-                        }}
-                        className={cn(
-                          "w-full rounded-md px-3 py-2 text-left transition hover:bg-accent",
-                          selectedModeSelection === "manual" &&
-                            activeMode?.id === mode.id &&
-                            "bg-accent text-accent-foreground",
-                        )}
-                      >
-                        <div className="flex items-center justify-between gap-2 text-xs font-medium">
-                          <span>{mode.label}</span>
-                        </div>
-                        <div className="mt-1 line-clamp-1 text-[11px] text-muted-foreground">
-                          {mode.summary}
-                        </div>
-                      </button>
-                    ))}
-                  </Picker>
-                  <Picker
-                    open={openPicker === "provider"}
-                    onOpenChange={(open) =>
-                      setOpenPicker(open ? "provider" : undefined)
-                    }
-                    widthClassName="w-80"
-                    trigger={
-                      <>
-                        <Bot size={13} />
-                        <span className="hidden xl:inline">模型</span>
-                        <span className="max-w-[140px] truncate text-foreground">
-                          {activeProvider?.modelId ?? "No model"}
-                        </span>
-                      </>
-                    }
-                  >
-                    {providerOptions.length > 0 ? (
-                      providerOptions.map((provider) => (
                         <button
-                          key={provider.id}
+                          type="button"
+                          onClick={() => setPreviewImage(img)}
+                          className="inline-flex min-w-0 flex-1 items-center gap-1.5 pl-1 pr-1.5 transition hover:bg-accent hover:text-accent-foreground"
+                          title={`Preview ${img.name}`}
+                          aria-label={`Preview ${img.name}`}
+                        >
+                          <img
+                            src={img.dataUrl}
+                            alt={img.name}
+                            className="h-5 w-5 rounded-full object-cover"
+                          />
+                          <span className="truncate text-foreground">
+                            {img.name}
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            onRemoveImageAttachment(img.name);
+                          }}
+                          className="flex h-7 w-7 shrink-0 items-center justify-center transition hover:bg-accent hover:text-accent-foreground active:scale-95"
+                          title={`Remove ${img.name}`}
+                          aria-label={`Remove ${img.name}`}
+                        >
+                          <X size={11} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <LexicalComposer key={editorRevision} initialConfig={initialConfig}>
+                  <PlainTextPlugin
+                    contentEditable={
+                      <ContentEditable
+                        ref={editorRootRef}
+                        role="textbox"
+                        aria-multiline="true"
+                        data-testid="chat-input-editor"
+                        className={cn(
+                          "max-h-[220px] w-full overflow-y-auto bg-transparent px-4 text-sm leading-5 outline-none",
+                          "whitespace-pre-wrap break-words",
+                          "[&_p]:m-0",
+                          interactivity.canEditText
+                            ? "cursor-text"
+                            : "cursor-not-allowed opacity-60",
+                          hasFileChips ? "min-h-[140px] pt-14" : "min-h-[112px] pt-5",
+                        )}
+                        style={{
+                          height: "auto",
+                          paddingBottom: `${COMPOSER_BOTTOM_SAFE_AREA_PX}px`,
+                        }}
+                        onKeyDown={handleEditorKeyDown}
+                        onCompositionStart={() => {
+                          isComposingRef.current = true;
+                          setHasPendingUserInput(true);
+                        }}
+                        onCompositionEnd={(_event: CompositionEvent<HTMLDivElement>) => {
+                          isComposingRef.current = false;
+                          editorApiRef.current?.update(() => {
+                            syncProjection(readEditorProjection());
+                          });
+                          window.requestAnimationFrame(() => {
+                            scrollComposerCaretIntoSafeView(
+                              editorRootRef.current as ComposerEditableScrollTarget,
+                            );
+                          });
+                        }}
+                        onBlur={() => {
+                          if (!plainTextPrompt) {
+                            setHasPendingUserInput(false);
+                          }
+                        }}
+                        onPaste={(event) => {
+                          const items = event.clipboardData?.items;
+                          if (items) {
+                            const imageItems: File[] = [];
+                            for (const item of items) {
+                              if (
+                                item.kind === "file" &&
+                                item.type.startsWith("image/")
+                              ) {
+                                const file = item.getAsFile();
+                                if (file) imageItems.push(file);
+                              }
+                            }
+                            if (imageItems.length > 0) {
+                              event.preventDefault();
+                              let pasteSeq = 0;
+                              for (const file of imageItems) {
+                                const reader = new FileReader();
+                                const seq = pasteSeq++;
+                                reader.onload = () => {
+                                  onAddImageAttachment({
+                                    dataUrl: reader.result as string,
+                                    mimeType: file.type,
+                                    name:
+                                      file.name ||
+                                      `screenshot-${Date.now()}-${seq}.png`,
+                                    sizeBytes: file.size,
+                                  });
+                                };
+                                reader.readAsDataURL(file);
+                              }
+                              return;
+                            }
+                          }
+                          shouldScrollPastedTextRef.current = true;
+                          setHasPendingUserInput(true);
+                        }}
+                      />
+                    }
+                    placeholder={
+                      <div className="pointer-events-none absolute left-4 top-4 text-sm text-muted-foreground">
+                        {!runInteractionState.isProcessing &&
+                        !isComposingRef.current &&
+                        !hasPendingUserInput &&
+                        plainTextPrompt.length === 0
+                          ? localizedPlaceholder
+                          : null}
+                      </div>
+                    }
+                    ErrorBoundary={LexicalErrorBoundary}
+                  />
+                  <HistoryPlugin delay={COMPOSER_UNDO_DEBOUNCE_MS} />
+                  <OnChangePlugin
+                    ignoreHistoryMergeTagChange={false}
+                    ignoreSelectionChange={false}
+                    onChange={(editorState) => {
+                      editorState.read(() => {
+                        syncProjection(readEditorProjection());
+                      });
+                    }}
+                  />
+                  <EditorHandlePlugin
+                    onReady={(editor) => {
+                      editorApiRef.current = editor;
+                      if (editorRootRef.current) {
+                        (
+                          editorRootRef.current as HTMLDivElement & {
+                            __oraLexicalEditor?: LexicalEditor;
+                          }
+                        ).__oraLexicalEditor = editor;
+                      }
+                    }}
+                  />
+                  <EditorEnterPlugin
+                    onEnter={handleEnterCommand}
+                    onShiftEnter={handleShiftEnterCommand}
+                    isComposing={() => isComposingRef.current}
+                  />
+                  <EditorDeletePlugin />
+                </LexicalComposer>
+                <div className="absolute bottom-2 left-2 right-2 flex items-center justify-between gap-2">
+                  <div className="flex min-w-0 items-center gap-1">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon-sm"
+                      onClick={onOpenLocalFiles}
+                      title="载入本地文件"
+                    >
+                      <Paperclip size={14} />
+                    </Button>
+                    <Picker
+                      open={openPicker === "taskIntent"}
+                      onOpenChange={(open) =>
+                        setOpenPicker(open ? "taskIntent" : undefined)
+                      }
+                      trigger={
+                        <>
+                          {taskIntentOptions.find((o) => o.value === taskIntent)
+                            ?.icon ?? <Play size={13} />}
+                          <span className="hidden xl:inline">任务</span>
+                          <span className="max-w-[100px] truncate text-foreground">
+                            {taskIntentOptions.find((o) => o.value === taskIntent)
+                              ?.label ?? "实施"}
+                          </span>
+                        </>
+                      }
+                      widthClassName="w-60"
+                    >
+                      {taskIntentOptions.map((option) => (
+                        <button
+                          key={option.value}
                           type="button"
                           onClick={() => {
-                            onProviderChange(provider.id);
+                            onTaskIntentChange(option.value);
                             setOpenPicker(undefined);
                           }}
                           className={cn(
                             "w-full rounded-md px-3 py-2 text-left transition hover:bg-accent",
-                            activeProvider?.id === provider.id &&
+                            taskIntent === option.value &&
                               "bg-accent text-accent-foreground",
                           )}
                         >
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="truncate text-xs font-medium">
-                              {provider.label}
-                            </span>
-                            <span className="rounded-full border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                              {provider.type}
-                            </span>
+                          <div className="flex items-center gap-2 text-xs font-medium">
+                            {option.icon}
+                            <span>{option.label}</span>
                           </div>
-                          <div className="mt-1 truncate font-mono text-[11px] text-muted-foreground">
-                            {provider.modelId}
+                          <div className="mt-1 line-clamp-1 text-[11px] text-muted-foreground">
+                            {option.description}
                           </div>
                         </button>
-                      ))
-                    ) : (
-                      <div className="px-3 py-2 text-xs leading-5 text-muted-foreground">
-                        No configured model providers. Add a provider key in
-                        Settings.
-                      </div>
+                      ))}
+                    </Picker>
+                    <Picker
+                      open={openPicker === "permissionMode"}
+                      onOpenChange={(open) =>
+                        setOpenPicker(open ? "permissionMode" : undefined)
+                      }
+                      trigger={
+                        <>
+                          {permissionModeOptions.find(
+                            (o) => o.value === permissionMode,
+                          )?.icon ?? <Shield size={13} />}
+                          <span className="hidden xl:inline">权限</span>
+                          <span className="max-w-[100px] truncate text-foreground">
+                            {permissionModeOptions.find(
+                              (o) => o.value === permissionMode,
+                            )?.label ?? "默认"}
+                          </span>
+                        </>
+                      }
+                    >
+                      {permissionModeOptions.map((option) => (
+                        <button
+                          key={option.value}
+                          type="button"
+                          onClick={() => {
+                            onPermissionModeChange(option.value);
+                            setOpenPicker(undefined);
+                          }}
+                          className={cn(
+                            "w-full rounded-md px-3 py-2 text-left transition hover:bg-accent",
+                            permissionMode === option.value &&
+                              "bg-accent text-accent-foreground",
+                          )}
+                        >
+                          <div className="flex items-center gap-2 text-xs font-medium">
+                            {option.icon}
+                            <span>{option.label}</span>
+                          </div>
+                          <div className="mt-1 line-clamp-1 text-[11px] text-muted-foreground">
+                            {option.description}
+                          </div>
+                        </button>
+                      ))}
+                    </Picker>
+
+                    {selectedCustomAgentId && (
+                      <button
+                        type="button"
+                        onClick={onClearSelectedCustomAgent}
+                        className="flex h-7 max-w-[260px] items-center gap-1.5 whitespace-nowrap rounded-full border border-border bg-background/70 px-2.5 text-xs text-muted-foreground transition hover:bg-accent hover:text-accent-foreground"
+                        title={`Clear custom agent ${selectedCustomAgentId}`}
+                      >
+                        <Bot size={13} />
+                        <span className="hidden xl:inline">Agent</span>
+                        <span className="max-w-[140px] truncate text-foreground">
+                          {selectedCustomAgentId}
+                        </span>
+                        <X size={12} />
+                      </button>
                     )}
-                  </Picker>
-                  {showContextRing && (
-                    <ContextRing
-                      activeTokens={activeTokens}
-                      contextPct={contextPct}
-                      contextWindowLabel={contextWindowLabel}
-                    />
-                  )}
+                    <Picker
+                      open={openPicker === "pattern"}
+                      onOpenChange={(open) =>
+                        setOpenPicker(open ? "pattern" : undefined)
+                      }
+                      trigger={
+                        <>
+                          {selectedModeSelection === "auto" ? (
+                            <BrainCircuit size={13} />
+                          ) : (
+                            <Rocket size={13} />
+                          )}
+                          <span className="hidden xl:inline">模式</span>
+                          <span className="max-w-[150px] truncate text-foreground">
+                            {modeTriggerLabel}
+                          </span>
+                        </>
+                      }
+                    >
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onModeSelectionChange("auto");
+                          setOpenPicker(undefined);
+                        }}
+                        className={cn(
+                          "w-full rounded-md px-3 py-2 text-left transition hover:bg-accent",
+                          selectedModeSelection === "auto" &&
+                            "bg-accent text-accent-foreground",
+                        )}
+                      >
+                        <div className="flex items-center justify-between gap-2 text-xs font-medium">
+                          <span>自动</span>
+                          <span className="rounded-full border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                            路由
+                          </span>
+                        </div>
+                        <div className="mt-1 line-clamp-1 text-[11px] text-muted-foreground">
+                          由 Ora 从当前模式列表中自动选择最适合本轮的 模式。
+                        </div>
+                      </button>
+                      {modeOptions.map((mode) => (
+                        <button
+                          key={mode.id}
+                          type="button"
+                          onClick={() => {
+                            onModeChange(mode.id);
+                            onModeSelectionChange("manual");
+                            setOpenPicker(undefined);
+                          }}
+                          className={cn(
+                            "w-full rounded-md px-3 py-2 text-left transition hover:bg-accent",
+                            selectedModeSelection === "manual" &&
+                              activeMode?.id === mode.id &&
+                              "bg-accent text-accent-foreground",
+                          )}
+                        >
+                          <div className="flex items-center justify-between gap-2 text-xs font-medium">
+                            <span>{mode.label}</span>
+                          </div>
+                          <div className="mt-1 line-clamp-1 text-[11px] text-muted-foreground">
+                            {mode.summary}
+                          </div>
+                        </button>
+                      ))}
+                    </Picker>
+                    <Picker
+                      open={openPicker === "provider"}
+                      onOpenChange={(open) =>
+                        setOpenPicker(open ? "provider" : undefined)
+                      }
+                      widthClassName="w-80"
+                      trigger={
+                        <>
+                          <Bot size={13} />
+                          <span className="hidden xl:inline">模型</span>
+                          <span className="max-w-[140px] truncate text-foreground">
+                            {activeProvider?.modelId ?? "No model"}
+                          </span>
+                        </>
+                      }
+                    >
+                      {providerOptions.length > 0 ? (
+                        providerOptions.map((provider) => (
+                          <button
+                            key={provider.id}
+                            type="button"
+                            onClick={() => {
+                              onProviderChange(provider.id);
+                              setOpenPicker(undefined);
+                            }}
+                            className={cn(
+                              "w-full rounded-md px-3 py-2 text-left transition hover:bg-accent",
+                              activeProvider?.id === provider.id &&
+                                "bg-accent text-accent-foreground",
+                            )}
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="truncate text-xs font-medium">
+                                {provider.label}
+                              </span>
+                              <span className="rounded-full border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                                {provider.type}
+                              </span>
+                            </div>
+                            <div className="mt-1 truncate font-mono text-[11px] text-muted-foreground">
+                              {provider.modelId}
+                            </div>
+                          </button>
+                        ))
+                      ) : (
+                        <div className="px-3 py-2 text-xs leading-5 text-muted-foreground">
+                          No configured model providers. Add a provider key in
+                          Settings.
+                        </div>
+                      )}
+                    </Picker>
+                    {showContextRing && (
+                      <ContextRing
+                        activeTokens={activeTokens}
+                        contextPct={contextPct}
+                        contextWindowLabel={contextWindowLabel}
+                      />
+                    )}
+                  </div>
+                  <Button
+                    type="button"
+                    size="icon"
+                    variant="outline"
+                    className="rounded-full"
+                    onClick={
+                      runInteractionState.isProcessing ? onStopRun : onStartRun
+                    }
+                    disabled={
+                      !runInteractionState.isProcessing &&
+                      !interactivity.canSubmit
+                    }
+                    title={
+                      runInteractionState.isProcessing
+                        ? "Stop run"
+                        : "Send message"
+                    }
+                  >
+                    {runInteractionState.isProcessing ? (
+                      <Square size={14} />
+                    ) : isLoading ? (
+                      <LoaderCircle size={16} className="animate-spin" />
+                    ) : (
+                      <ArrowUp size={16} />
+                    )}
+                  </Button>
                 </div>
-                <Button
-                  type="button"
-                  size="icon"
-                  variant="outline"
-                  className="rounded-full"
-                  onClick={
-                    runInteractionState.isProcessing ? onStopRun : onStartRun
-                  }
-                  disabled={
-                    !runInteractionState.isProcessing &&
-                    !interactivity.canSubmit
-                  }
-                  title={
-                    runInteractionState.isProcessing
-                      ? "Stop run"
-                      : "Send message"
-                  }
-                >
-                  {runInteractionState.isProcessing ? (
-                    <Square size={14} />
-                  ) : isLoading ? (
-                    <LoaderCircle size={16} className="animate-spin" />
-                  ) : (
-                    <ArrowUp size={16} />
-                  )}
-                </Button>
               </div>
             </div>
-          </div>
-        )}
-        <Dialog
-          open={Boolean(previewImage)}
-          onOpenChange={(open) => {
-            if (!open) {
-              setPreviewImage(null);
-            }
-          }}
-        >
-          <DialogContent
-            className="relative max-h-[calc(100vh-2rem)] max-w-[calc(100vw-2rem)] border-0 bg-transparent p-0 shadow-none"
-            data-testid="composer-image-preview-dialog"
+          )}
+          <Dialog
+            open={Boolean(previewImage)}
+            onOpenChange={(open) => {
+              if (!open) {
+                setPreviewImage(null);
+              }
+            }}
           >
-            {previewImage ? (
-              <div className="relative">
-                <button
-                  type="button"
-                  onClick={() => setPreviewImage(null)}
-                  aria-label="Close image preview"
-                  className="absolute right-3 top-3 z-10 inline-flex h-10 w-10 items-center justify-center rounded-full border border-white/20 bg-black/55 text-white shadow-lg transition hover:bg-black/70 active:scale-95"
-                >
-                  <X size={16} />
-                </button>
-                <img
-                  src={previewImage.dataUrl}
-                  alt={previewImage.name}
-                  className="max-h-[calc(100vh-2rem)] max-w-[calc(100vw-2rem)] rounded-xl object-contain"
-                />
-              </div>
-            ) : null}
-          </DialogContent>
-        </Dialog>
-        <p className="pb-3 pt-2 text-center text-[11px] text-muted-foreground">
-          Ora may be wrong, check the results before adoption.
-        </p>
+            <DialogContent
+              className="relative max-h-[calc(100vh-2rem)] max-w-[calc(100vw-2rem)] border-0 bg-transparent p-0 shadow-none"
+              data-testid="composer-image-preview-dialog"
+            >
+              {previewImage ? (
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setPreviewImage(null)}
+                    aria-label="Close image preview"
+                    className="absolute right-3 top-3 z-10 inline-flex h-10 w-10 items-center justify-center rounded-full border border-white/20 bg-black/55 text-white shadow-lg transition hover:bg-black/70 active:scale-95"
+                  >
+                    <X size={16} />
+                  </button>
+                  <img
+                    src={previewImage.dataUrl}
+                    alt={previewImage.name}
+                    className="max-h-[calc(100vh-2rem)] max-w-[calc(100vw-2rem)] rounded-xl object-contain"
+                  />
+                </div>
+              ) : null}
+            </DialogContent>
+          </Dialog>
+          <p className="pb-3 pt-2 text-center text-[11px] text-muted-foreground">
+            Ora may be wrong, check the results before adoption.
+          </p>
         </div>
       </div>
     </div>
