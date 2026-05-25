@@ -2,6 +2,8 @@ import type { SearchProviderConfig, WebSearchResult } from "@cemeworm/shared";
 import type { McpSearchClient, SearchProvider, SearchProviderResponse, SearchQuery } from "./types.js";
 import { normalizeSearchResults, providerLimit } from "./utils.js";
 
+const DEFAULT_MCP_SEARCH_SERVER_ID = "anysearch";
+
 export class McpSearchProvider implements SearchProvider {
   readonly id = "mcp" as const;
 
@@ -11,10 +13,7 @@ export class McpSearchProvider implements SearchProvider {
   ) {}
 
   async search(input: SearchQuery): Promise<SearchProviderResponse> {
-    const serverId = this.config?.mcpServerId;
-    if (!serverId) {
-      throw new Error("web.search MCP provider requires searchProvider.mcpServerId.");
-    }
+    const serverId = this.config?.mcpServerId ?? DEFAULT_MCP_SEARCH_SERVER_ID;
     const toolName = this.config?.mcpToolName ?? "search";
     const limit = providerLimit(this.config, input);
     const payload = await this.client.callTool(serverId, toolName, { query: input.query, limit });

@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { PDFParse } from "pdf-parse";
 import type { RuntimeToolDefinition } from "./capability-registries.js";
-import type { ResolvedToolLimits, RuntimeToolExecutionContext } from "./runtime-tool-executor.js";
+import { runtimeSearchFingerprint, type ResolvedToolLimits, type RuntimeToolExecutionContext } from "./runtime-tool-executor.js";
 import type { SearchProvider } from "./search-providers/index.js";
 import {
   parseHttpUrl,
@@ -33,6 +33,10 @@ export function webDocumentToolRuntimeFields(toolId: string): Partial<RuntimeToo
         actionRiskLevel: (_args, context) => context.searchProvider.id === "mcp" ? "high" : "low",
         execute: async (args, context) => {
           checkAborted(context.signal, "web.search");
+          const fingerprint = runtimeSearchFingerprint({ tool: "web.search", args });
+          if (fingerprint && context.searchSuppression?.suppressedQueries.has(fingerprint)) {
+            throw new Error("web.search is temporarily suppressed after repeated remote search failures.");
+          }
           return { output: await searchWithProvider(context.searchProvider, args) };
         },
       };

@@ -10,6 +10,12 @@ import {
   extractRuntimeToolCallFromText,
 } from "../src/harness/runtime-tool-executor.js";
 import { RuntimeSkillRegistry, RuntimeToolRegistry } from "../src/harness/capability-registries.js";
+import {
+  createRuntimeSearchSuppressionState,
+  recordRuntimeSearchFailure,
+  restoreRuntimeSearchSuppressionState,
+  serializeRuntimeSearchSuppressionState,
+} from "../src/harness/runtime-search-suppression.js";
 import { PackageManager } from "../src/package-manager.js";
 
 const cleanupPaths: string[] = [];
@@ -1690,6 +1696,31 @@ describe("RuntimeToolExecutor", () => {
     expect(result.results[0]?.title).toBe("Brave Env Result");
   });
 
+  it("defaults fresh web.search runs to the built-in AnySearch MCP provider", async () => {
+    const { workspace } = createWorkspace();
+    const requests: string[] = [];
+    const executor = new RuntimeToolExecutor({
+      workspace,
+      toolDescriptors: MVP_TOOLS,
+      fetchImpl: (async (input) => {
+        requests.push(String(input));
+        return jsonResponse({ result: { results: [{ title: "Default AnySearch Result", url: "https://example.com/default-anysearch" }] } });
+      }) as typeof fetch,
+    });
+
+    const result = await executor.execute({ tool: "web.search", args: { query: "ora default search", limit: 1 } }) as {
+      providerId: string;
+      results: Array<{ title: string; url: string }>;
+    };
+
+    expect(result.providerId).toBe("mcp");
+    expect(result.results[0]).toMatchObject({
+      title: "Default AnySearch Result",
+      url: "https://example.com/default-anysearch",
+    });
+    expect(requests[0]).toBe("https://api.anysearch.com/mcp");
+  });
+
 
   it("handles web.search provider key, timeout, and malformed response edges", async () => {
     const missingKeyExecutor = new RuntimeToolExecutor({
@@ -1745,6 +1776,117 @@ describe("RuntimeToolExecutor", () => {
       url: "https://example.com/docs",
       snippet: "Example snippet",
     });
+  });
+
+  it("uses the built-in AnySearch MCP server without requiring a local config file", async () => {
+    const { workspace } = createWorkspace();
+    const requests: Array<{ method: string; headers: HeadersInit | undefined }> = [];
+    const executor = new RuntimeToolExecutor({
+      workspace,
+      toolDescriptors: MVP_TOOLS,
+      fetchImpl: (async (input, init) => {
+        requests.push({ method: String(input), headers: init?.headers });
+        return jsonResponse({ result: { results: [{ title: "AnySearch Result", url: "https://example.com/anysearch", snippet: "snippet" }] } });
+      }) as typeof fetch,
+      searchProviderConfig: { id: "mcp", mcpServerId: "anysearch", mcpToolName: "search" },
+    });
+
+    const result = await executor.execute({ tool: "web.search", args: { query: "ora search", limit: 1 } }) as {
+      providerId: string;
+      results: Array<{ title: string; url: string; snippet?: string }>;
+    };
+
+    expect(result.providerId).toBe("mcp");
+    expect(result.results[0]).toMatchObject({
+      title: "AnySearch Result",
+      url: "https://example.com/anysearch",
+      snippet: "snippet",
+    });
+    expect(requests[0]?.method).toBe("https://api.anysearch.com/mcp");
+  });
+
+  it("attaches the AnySearch API key when present", async () => {
+    const originalKey = process.env.ANYSEARCH_API_KEY;
+    process.env.ANYSEARCH_API_KEY = "anysearch-key";
+    const { workspace } = createWorkspace();
+    const headers: Record<string, string> = {};
+    const executor = new RuntimeToolExecutor({
+      workspace,
+      toolDescriptors: MVP_TOOLS,
+      fetchImpl: (async (_input, init) => {
+        for (const [key, value] of Object.entries(init?.headers ?? {})) {
+          headers[key.toLowerCase()] = String(value);
+        }
+        return jsonResponse({ result: { results: [{ title: "AnySearch Result", url: "https://example.com/anysearch" }] } });
+      }) as typeof fetch,
+      searchProviderConfig: { id: "mcp", mcpServerId: "anysearch", mcpToolName: "search" },
+    });
+
+    try {
+      await executor.execute({ tool: "web.search", args: { query: "ora search", limit: 1 } });
+    } finally {
+      if (originalKey === undefined) {
+        delete process.env.ANYSEARCH_API_KEY;
+      } else {
+        process.env.ANYSEARCH_API_KEY = originalKey;
+      }
+    }
+
+    expect(headers.authorization).toBe("Bearer anysearch-key");
+  });
+
+  it("suppresses only the matching web.search fingerprint after the shared suppression state is tripped", async () => {
+    const { workspace } = createWorkspace();
+    const searchSuppression = {
+      runId: "run-1",
+      nodeFailures: new Map<string, number>(),
+      runFailures: new Map<string, number>(),
+      suppressedQueries: new Set<string>(["web.search:ora docs:default"]),
+    };
+    const executor = new RuntimeToolExecutor({
+      workspace,
+      toolDescriptors: MVP_TOOLS,
+      searchSuppression,
+      searchProvider: {
+        id: "brave",
+        search: async () => ({ providerId: "brave", results: [] }),
+      } as never,
+    });
+
+    expect(executor.enabledToolIds(["web.search"])).toEqual(["web.search"]);
+    await expect(executor.execute({ tool: "web.search", args: { query: "ora docs" } })).rejects.toThrow("temporarily suppressed");
+    await expect(executor.execute({ tool: "web.search", args: { query: "other docs" } })).resolves.toMatchObject({
+      providerId: "brave",
+      results: [],
+    });
+  });
+
+  it("does not suppress web.search before the configured threshold is reached", () => {
+    const state = createRuntimeSearchSuppressionState("run-threshold");
+    const fingerprint = "web.search:ora docs:default";
+
+    expect(recordRuntimeSearchFailure(state, fingerprint, "node")).toBe(1);
+    expect(recordRuntimeSearchFailure(state, fingerprint, "run")).toBe(1);
+    expect(recordRuntimeSearchFailure(state, fingerprint, "node")).toBe(2);
+    expect(recordRuntimeSearchFailure(state, fingerprint, "run")).toBe(2);
+    expect(state.suppressedQueries.has(fingerprint)).toBe(false);
+
+    expect(recordRuntimeSearchFailure(state, fingerprint, "node")).toBe(3);
+    expect(state.suppressedQueries.has(fingerprint)).toBe(true);
+  });
+
+  it("round-trips web.search suppression state through snapshot metadata", () => {
+    const original = createRuntimeSearchSuppressionState("run-2");
+    original.nodeFailures.set("web.search:ora docs:default", 2);
+    original.runFailures.set("web.search:ora docs:default", 4);
+    original.suppressedQueries.add("web.search:ora docs:default");
+
+    const serialized = serializeRuntimeSearchSuppressionState(original);
+    const restored = createRuntimeSearchSuppressionState("run-2");
+    expect(restoreRuntimeSearchSuppressionState(restored, serialized)).toBe(true);
+    expect(restored.nodeFailures.get("web.search:ora docs:default")).toBe(2);
+    expect(restored.runFailures.get("web.search:ora docs:default")).toBe(4);
+    expect(restored.suppressedQueries.has("web.search:ora docs:default")).toBe(true);
   });
 
   it("discovers, calls, reads resources, and searches from a configured stdio MCP server", async () => {

@@ -10,6 +10,10 @@ import { clarificationToolRuntimeFields } from "./runtime-clarification-tool.js"
 import { fileToolRuntimeFields } from "./runtime-file-tools.js";
 import { repoExploreToolRuntimeFields } from "./runtime-repo-explore-tool.js";
 import { createSearchProvider, type SearchProvider } from "./search-providers/index.js";
+import {
+  runtimeSearchSuppressionBlockReason,
+  type RuntimeSearchSuppressionState,
+} from "./runtime-search-suppression.js";
 import { mcpToolRuntimeFields, callMcpTool as callRuntimeMcpTool } from "./runtime-mcp-tools.js";
 import { modeToolRuntimeFields } from "./runtime-mode-tools.js";
 import { packageToolRuntimeFields } from "./runtime-package-tools.js";
@@ -110,6 +114,17 @@ export interface RuntimeToolCall {
   args: Record<string, unknown>;
 }
 
+export function runtimeSearchFingerprint(call: RuntimeToolCall): string | undefined {
+  if (call.tool !== "web.search") {
+    return undefined;
+  }
+  const query = typeof call.args.query === "string" ? call.args.query.trim().replace(/\s+/g, " ").toLowerCase() : "";
+  const limit = typeof call.args.limit === "number" && Number.isInteger(call.args.limit) && call.args.limit > 0
+    ? call.args.limit
+    : (typeof call.args.limit === "string" && /^\d+$/.test(call.args.limit.trim()) ? Number(call.args.limit.trim()) : undefined);
+  return query ? `${call.tool}:${query}:${limit ?? "default"}` : undefined;
+}
+
 export interface RuntimeFileChangeMetadata {
   kind: "file_change";
   path: string;
@@ -156,6 +171,8 @@ export interface RuntimeToolExecutionContext {
   signal?: AbortSignal;
   /** Read-only turn context for the active run, including selected widget context. */
   turnContext?: Record<string, unknown>;
+  /** Run-scoped web search suppression state shared across tool execution and recovery. */
+  searchSuppression?: RuntimeSearchSuppressionState;
   /** Workspace operations adapter — pluggable backend for file/shell operations. */
   operations: WorkspaceOperations;
   /** Spawn a sub-agent and run it to completion. Returns the agent's text output. */
@@ -205,6 +222,7 @@ export interface RuntimeToolExecutionOptions {
   clarificationAnswer?: RuntimeToolExecutionContext["clarificationAnswer"];
   ensureClarification?: RuntimeToolExecutionContext["ensureClarification"];
   signal?: AbortSignal;
+  shouldBlockSearch?: (call: RuntimeToolCall) => string | undefined;
 }
 
 export interface RuntimePreToolPolicyRequest {
@@ -267,6 +285,7 @@ export interface RuntimeToolExecutorOptions {
   postToolPolicyHooks?: RuntimePostToolPolicyHook[];
   signal?: AbortSignal;
   turnContext?: Record<string, unknown>;
+  searchSuppression?: RuntimeSearchSuppressionState;
   workspaceOperations?: WorkspaceOperations;
   computerBackendManager?: ComputerBackendManager;
 }
@@ -535,6 +554,7 @@ export class RuntimeToolExecutor {
   private readonly postToolPolicyHooks: RuntimePostToolPolicyHook[];
   private readonly signal?: AbortSignal;
   private readonly turnContext?: Record<string, unknown>;
+  private readonly searchSuppression?: RuntimeSearchSuppressionState;
   private readonly workspaceOperations: WorkspaceOperations;
   private readonly computerBackendManager?: ComputerBackendManager;
   private readonly hostFilesystem?: HostFilesystemState;
@@ -559,6 +579,7 @@ export class RuntimeToolExecutor {
     this.permissionProfile = options.permissionProfile;
     this.signal = options.signal;
     this.turnContext = options.turnContext;
+    this.searchSuppression = options.searchSuppression;
     this.computerBackendManager = options.computerBackendManager;
     this.workspaceOperations = options.workspaceOperations ?? localWorkspaceOperations;
     this.searchProvider = options.searchProvider ?? createSearchProvider({
@@ -733,6 +754,13 @@ export class RuntimeToolExecutor {
       throw new ApprovalInterruptError(call.tool);
     }
     const effectiveCall: RuntimeToolCall = { ...call, args: preflight.args };
+    if (effectiveCall.tool === "web.search") {
+      const blockedReason = options.shouldBlockSearch?.(effectiveCall)
+        ?? runtimeSearchSuppressionBlockReason(this.searchSuppression, effectiveCall);
+      if (blockedReason) {
+        throw new Error(blockedReason);
+      }
+    }
     const definition = this.definitions.get(effectiveCall.tool);
     try {
       if (!definition?.execute) {
@@ -848,6 +876,7 @@ export class RuntimeToolExecutor {
       allowRisky: options.allowRisky,
       signal: mergeAbortSignals(this.signal, options.signal),
       turnContext: this.turnContext,
+      searchSuppression: this.searchSuppression,
       operations: this.workspaceOperations,
       spawnAgent: this.spawnAgentCallback,
       waitForAgents: this.waitForAgentsCallback,

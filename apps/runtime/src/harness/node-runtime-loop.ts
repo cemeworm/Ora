@@ -41,6 +41,7 @@ import {
 } from "./runtime-tool-loop.js";
 import { RuntimeToolExecutor, type RuntimeFileChangeMetadata, type RuntimeToolCall } from "./runtime-tool-executor.js";
 import type { AppendRuntimeToolCallParams } from "./runtime-tool-ledger.js";
+import { runtimeSearchSuppressionBlockReason } from "./runtime-search-suppression.js";
 import {
   buildRuntimeMiddlewares,
   invokeRuntimeModelCall,
@@ -670,6 +671,7 @@ export interface RunNodeRuntimeLoopDeps {
   }) => boolean;
   toolCalls: () => readonly OraToolCallEnvelope[];
   runtimeToolExecutor: RuntimeToolExecutor;
+  searchSuppression?: import("./runtime-search-suppression.js").RuntimeSearchSuppressionState;
   completion: RuntimeCompletionController;
   runtimeToolResultCache: Map<string, unknown>;
   recoveryCoordinator: RecoveryCoordinator;
@@ -1385,6 +1387,7 @@ export async function runNodeRuntimeLoop(
               currentNodeLabel: params.title,
               clarificationAnswer,
               ensureClarification,
+              shouldBlockSearch: (call) => runtimeSearchSuppressionBlockReason(deps.searchSuppression, call),
               signal: (() => {
                 activeOperationAbortController = new AbortController();
                 return mergeAbortSignals(deps.signal, activeOperationAbortController.signal);

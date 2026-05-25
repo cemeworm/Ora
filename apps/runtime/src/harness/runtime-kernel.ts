@@ -191,9 +191,16 @@ import {
   resolveModeStageToolPreflight,
   resolveVisibleToolsForAgent,
 } from "./runtime-tool-visibility.js";
+import {
+  createRuntimeSearchSuppressionState,
+  restoreRuntimeSearchSuppressionState,
+  serializeRuntimeSearchSuppressionState,
+  type RuntimeSearchSuppressionState,
+} from "./runtime-search-suppression.js";
 
 const DEFAULT_NODE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 const DEFAULT_PROVIDER_TIMEOUT_MS = 3 * 60 * 1000; // 3 minutes
+const RUNTIME_SEARCH_SUPPRESSION_METADATA_KEY = "ora.runtimeSearchSuppression";
 
 export interface RuntimeKernelResult {
   snapshot: StateSnapshot;
@@ -424,6 +431,7 @@ class KernelRuntimeContext {
   private readonly agentMessagesQueueValue = new Map<string, string[]>();
   private readonly backgroundProgressWaitersValue = new Map<string, Array<() => void>>();
   private readonly backgroundProgressTimersValue = new Map<string, ReturnType<typeof setTimeout>>();
+  readonly searchSuppression: RuntimeSearchSuppressionState;
   private parentCoordinationValue: ParentCoordinationState | undefined;
   private planListValue: PlanListStep[];
   private queueSummaryValue: QueueSummary;
@@ -441,6 +449,7 @@ class KernelRuntimeContext {
     initialQueueSummary: QueueSummary;
     initialBusStats: BusStats;
     initialSharedStateSummary: SharedStateSummary;
+    searchSuppression: RuntimeSearchSuppressionState;
     onEvent?: (event: OraEventEnvelope) => void;
   }) {
     this.planListValue = params.initialPlanList;
@@ -449,6 +458,7 @@ class KernelRuntimeContext {
     this.queueSummaryValue = params.initialQueueSummary;
     this.busStatsValue = params.initialBusStats;
     this.sharedStateSummaryValue = params.initialSharedStateSummary;
+    this.searchSuppression = params.searchSuppression;
   }
 
   get events(): OraEventEnvelope[] {
@@ -1284,6 +1294,13 @@ class KernelRuntimeContext {
       conversationCursor: params.conversationCursor,
       now: params.updatedAt,
     });
+    const config = StateSnapshotSchema.shape.config.parse({
+      ...params.config,
+      metadata: {
+        ...params.config.metadata,
+        [RUNTIME_SEARCH_SUPPRESSION_METADATA_KEY]: serializeRuntimeSearchSuppressionState(this.searchSuppression),
+      },
+    });
 
     return StateSnapshotSchema.parse({
       runId: this.params.runId,
@@ -1292,7 +1309,7 @@ class KernelRuntimeContext {
       coordinationKind: params.config.pattern,
       modeId: params.modeSpec.id,
       input: params.input,
-      config: params.config,
+      config,
       topology: this.topology,
       profiles: params.profiles,
       memory: params.memory,
@@ -1755,6 +1772,8 @@ export async function executeRuntimeKernel(
   if (taskMemoryStore) {
     postToolPolicyHooks.push(createTaskMemoryCaptureHook(taskMemoryStore, runId));
   }
+  const searchSuppression = createRuntimeSearchSuppressionState(runId);
+  restoreRuntimeSearchSuppressionState(searchSuppression, config.metadata[RUNTIME_SEARCH_SUPPRESSION_METADATA_KEY]);
   const runtimeToolExecutor = new RuntimeToolExecutor({
     workspace: input.context?.projectWorkspace,
     hostFilesystem: config.hostFilesystem,
@@ -1772,6 +1791,7 @@ export async function executeRuntimeKernel(
     toolDefinitions: toolRegistry.listDefinitions(),
     signal: options.signal,
     turnContext: input.context,
+    searchSuppression,
     postToolPolicyHooks,
   });
   const skills = skillRegistry.snapshot(modeSpec.family);
@@ -1833,6 +1853,7 @@ export async function executeRuntimeKernel(
     initialQueueSummary,
     initialBusStats,
     initialSharedStateSummary,
+    searchSuppression,
     onEvent: options.onEvent,
   });
   const emit = kernelRuntimeContext.emit;
@@ -2567,6 +2588,7 @@ export async function executeRuntimeKernel(
     },
     toolCalls: () => kernelRuntimeContext.toolCalls,
     runtimeToolExecutor,
+    searchSuppression,
     completion,
     runtimeToolResultCache,
     recoveryCoordinator,

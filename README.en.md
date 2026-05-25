@@ -89,9 +89,11 @@ You can configure API keys inside the app. Optional search and Langfuse tracing 
 
 ```bash
 ORA_LANGFUSE_ENABLED=false
-ORA_SEARCH_PROVIDER=brave
-BRAVE_SEARCH_API_KEY=...
+ORA_SEARCH_PROVIDER=mcp
+ANYSEARCH_API_KEY=...
 ```
+
+By default, `web.search` uses Ora's built-in AnySearch MCP integration with server id `anysearch`. `ANYSEARCH_API_KEY` is optional; if it is unset, Ora falls back to anonymous AnySearch access.
 
 If you use a custom provider base URL, the runtime requires an explicit opt-in:
 

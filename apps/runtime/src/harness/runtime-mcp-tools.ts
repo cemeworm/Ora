@@ -20,6 +20,10 @@ interface McpServerConfig {
   disabled?: boolean;
 }
 
+const ANYSEARCH_MCP_SERVER_ID = "anysearch";
+const ANYSEARCH_MCP_URL = "https://api.anysearch.com/mcp";
+const ANYSEARCH_API_KEY_ENV = "ANYSEARCH_API_KEY";
+
 export function mcpToolRuntimeFields(toolId: string): Partial<RuntimeToolDefinition<RuntimeToolExecutionContext>> {
   switch (toolId) {
     case "mcp.listTools":
@@ -132,7 +136,9 @@ function resolveMcpServer(workspace: unknown, server: unknown, configPaths?: str
     throw new Error("MCP tool requires a server id.");
   }
   const servers = loadMcpServers(workspace, configPaths);
-  const config = servers[serverId];
+  const config = serverId === ANYSEARCH_MCP_SERVER_ID
+    ? builtinAnySearchMcpServer(servers[serverId])
+    : servers[serverId];
   if (!config || config.disabled) {
     throw new Error(`MCP server '${serverId}' is not configured.`);
   }
@@ -166,6 +172,20 @@ function loadMcpServers(workspace: unknown, configPaths?: string[]): Record<stri
     }
   }
   return servers;
+}
+
+function builtinAnySearchMcpServer(override: McpServerConfig | undefined): McpServerConfig {
+  const apiKey = process.env[ANYSEARCH_API_KEY_ENV]?.trim();
+  return {
+    ...override,
+    type: "http",
+    url: override?.url ?? ANYSEARCH_MCP_URL,
+    headers: {
+      ...(override?.headers ?? {}),
+      ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+    },
+    timeoutMs: override?.timeoutMs,
+  };
 }
 
 function normalizeMcpConfig(config: Record<string, unknown>): McpServerConfig {

@@ -37,6 +37,8 @@ import type {
   RuntimeToolCall,
   RuntimeToolExecutor,
 } from "./runtime-tool-executor.js";
+import { runtimeSearchFingerprint } from "./runtime-tool-executor.js";
+import { recordRuntimeSearchFailure, type RuntimeSearchSuppressionState } from "./runtime-search-suppression.js";
 
 interface RuntimeToolRecoveryServiceDeps {
   agentId: string;
@@ -113,6 +115,7 @@ interface RuntimeToolRecoveryServiceDeps {
     context: { agentId?: string; nodeId?: string; actionId?: string },
   ) => ArtifactRef;
   sleep: (ms: number) => Promise<void>;
+  searchSuppression?: RuntimeSearchSuppressionState;
 }
 
 export class RuntimeToolRecoveryService {
@@ -171,6 +174,7 @@ export class RuntimeToolRecoveryService {
       ownerActionId: action.id,
       ownerToolId: toolCall.tool,
     });
+    this.maybeRecordSearchSuppression(toolCall, incident);
     const recoveryDecision = this.deps.recoveryCoordinator.resolve(incident);
     this.deps.emitRecoveryDecision(incident, recoveryDecision);
 
@@ -352,14 +356,14 @@ export class RuntimeToolRecoveryService {
     });
     return {
       kind: "continue",
-      response: await this.deps.invokeFollowUpModel({
-        messages: this.deps.getMessages(),
-        system: this.deps.system,
-        maxTokens: this.deps.config.budget?.maxTokens,
-        tools: this.deps.nativeTools,
-        toolChoice: this.deps.nativeTools.length > 0 ? "auto" : undefined,
-      }, failure.response, "tool_follow_up"),
-    };
+        response: await this.deps.invokeFollowUpModel({
+          messages: this.deps.getMessages(),
+          system: this.deps.system,
+          maxTokens: this.deps.config.budget?.maxTokens,
+          tools: this.deps.nativeTools,
+          toolChoice: this.deps.nativeTools.length > 0 ? "auto" : undefined,
+        }, failure.response, "tool_follow_up"),
+      };
   }
 
   private async recoverWithFallbackArtifact(
@@ -472,6 +476,25 @@ export class RuntimeToolRecoveryService {
       title: this.deps.title,
       emitNodeRuntimeState: this.deps.emitForcedFinalProviderState,
     });
+  }
+ 
+  private maybeRecordSearchSuppression(
+    toolCall: RuntimeToolCall,
+    incident: RecoveryIncident,
+  ): void {
+    if (toolCall.tool !== "web.search" || !this.deps.searchSuppression) {
+      return;
+    }
+    if (incident.errorType !== "provider_transient" && incident.errorType !== "provider_busy") {
+      return;
+    }
+    const fingerprint = runtimeSearchFingerprint(toolCall);
+    if (!fingerprint) {
+      return;
+    }
+    const state = this.deps.searchSuppression;
+    recordRuntimeSearchFailure(state, fingerprint, "node");
+    recordRuntimeSearchFailure(state, fingerprint, "run");
   }
 }
 

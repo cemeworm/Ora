@@ -22,7 +22,7 @@ export function resolveConfiguredProviderId(config: SearchProviderConfig | undef
       return providerId;
     }
   }
-  return "duckduckgo";
+  return "mcp";
 }
 
 export function providerLimit(config: SearchProviderConfig | undefined, input: SearchQuery): number {
