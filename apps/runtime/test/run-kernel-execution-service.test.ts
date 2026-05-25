@@ -8,6 +8,10 @@ import {
   type StateSnapshot,
 } from "@cemeworm/shared";
 import { RunKernelExecutionService } from "../src/run-kernel-execution-service.js";
+import {
+  createRuntimeSearchSuppressionState,
+  serializeRuntimeSearchSuppressionState,
+} from "../src/harness/runtime-search-suppression.js";
 
 class CapturingRunKernelExecutionService extends RunKernelExecutionService {
   public lastRunParams: Parameters<RunKernelExecutionService["executeRun"]>[0] | undefined;
@@ -315,5 +319,39 @@ describe("RunKernelExecutionService task memory integration", () => {
     expect(service.lastResumeParams?.planDecisionResolutions).toEqual([
       { decisionId: "decision-plan", status: "declined" },
     ]);
+  });
+
+  it("preserves runtime search suppression metadata when preparing a resume kernel call", async () => {
+    const snapshot = snapshotWithPendingPlanDecision();
+    const suppression = createRuntimeSearchSuppressionState(snapshot.runId);
+    suppression.nodeFailures.set("web.search:ora docs:default", 3);
+    suppression.suppressedQueries.add("web.search:ora docs:default");
+    const snapshotWithSuppressionMetadata = {
+      ...snapshot,
+      config: RunConfigSchema.parse({
+        ...snapshot.config,
+        metadata: {
+          ...snapshot.config.metadata,
+          "ora.runtimeSearchSuppression": serializeRuntimeSearchSuppressionState(suppression),
+        },
+      }),
+    } as StateSnapshot;
+    const service = new CapturingRunKernelExecutionService(snapshotWithSuppressionMetadata, "/tmp/ora-task-memory");
+
+    await service.executePreparedResume({
+      snapshot: snapshotWithSuppressionMetadata,
+      clarificationPatch: {},
+      approvedActionIds: [],
+      approvedActions: [],
+    });
+
+    expect(service.lastResumeParams?.config.metadata).toMatchObject({
+      "ora.runtimeSearchSuppression": {
+        runId: snapshot.runId,
+        nodeFailures: [["web.search:ora docs:default", 3]],
+        runFailures: [],
+        suppressedQueries: ["web.search:ora docs:default"],
+      },
+    });
   });
 });

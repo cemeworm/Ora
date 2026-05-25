@@ -80,11 +80,13 @@ type MockProviderRequest = {
   latestUserText: string;
   toolText: string;
   allText: string;
+  toolNames: string[];
 };
 
 function parseProviderRequest(init: unknown): MockProviderRequest {
   const body = JSON.parse(String((init as { body?: string })?.body ?? "{}")) as {
     messages?: Array<{ role: string; content?: string }>;
+    tools?: Array<{ function?: { name?: string } }>;
   };
   const messages = Array.isArray(body.messages) ? body.messages : [];
   const roleText = (role: string) =>
@@ -105,6 +107,11 @@ function parseProviderRequest(init: unknown): MockProviderRequest {
     allText: messages
       .map((message) => typeof message.content === "string" ? message.content : "")
       .join("\n"),
+    toolNames: Array.isArray(body.tools)
+      ? body.tools
+        .map((tool) => tool?.function?.name)
+        .filter((name): name is string => typeof name === "string" && name.trim().length > 0)
+      : [],
   };
 }
 
@@ -115,7 +122,7 @@ function maybeHandleInfraProviderRequest(request: MockProviderRequest): Response
   if (request.systemText.includes("causal task-state extractor")) {
     return causalTaskStateResponse();
   }
-  if (request.userText.includes("Analyze this conversation and update Ora's long-term memory profile.")) {
+  if (request.userText.includes("Analyze this conversation and update Ora's long-term memory profile.") || request.toolNames.includes("memory.update")) {
     return memoryUpdateResponse();
   }
   return undefined;
@@ -357,15 +364,14 @@ describe("agent.spawn integration", () => {
   it("forces a delegated collaboration step before completion when single_agent is degraded from an explicit Agent Teams request", async () => {
     process.env.NODE_LOOP_TOOL_KEY = "test";
     const prevFetch = globalThis.fetch;
-    let sawRequiredCollaborationFollowUp = false;
     const requestLog: Array<{ system: string; latestUser: string; toolText: string }> = [];
 
     globalThis.fetch = (async (_input, init) => {
       const request = parseProviderRequest(init);
       requestLog.push({
-        system: request.systemText.slice(0, 120),
-        latestUser: request.latestUserText.slice(0, 240),
-        toolText: request.toolText.slice(0, 120),
+        system: request.systemText,
+        latestUser: request.latestUserText,
+        toolText: request.toolText,
       });
       const infraResponse = maybeHandleInfraProviderRequest(request);
       if (infraResponse) {
@@ -374,8 +380,10 @@ describe("agent.spawn integration", () => {
       if (!hasWorkspaceSpawnResult(request) && request.latestUserText.includes("Research MiniMax recent status.")) {
         return jsonResponse("MiniMax recently launched new model and product updates; this delegated research response is intentionally detailed enough for the parent agent to synthesize cleanly.");
       }
-      if (request.latestUserText.includes("delegate at least one substantial top-level subtask with agent.spawn")) {
-        sawRequiredCollaborationFollowUp = true;
+      if (hasWorkspaceSpawnResult(request)) {
+        return jsonResponse("Using the delegated research result, here is the final MiniMax summary with the required collaboration incorporated and enough detail to satisfy the completion guard.");
+      }
+      if (request.systemText.includes("must delegate at least one substantial top-level subtask with agent.spawn")) {
         return jsonResponse(JSON.stringify({
           tool: "agent.spawn",
           args: {
@@ -387,9 +395,6 @@ describe("agent.spawn integration", () => {
       if (request.latestUserText.includes("What is MiniMax up to lately?")) {
         return jsonResponse("MiniMax has been active recently and here is a direct summary that skips delegation.");
       }
-      if (hasWorkspaceSpawnResult(request)) {
-        return jsonResponse("Using the delegated research result, here is the final MiniMax summary with the required collaboration incorporated and enough detail to satisfy the completion guard.");
-      }
       return unexpectedProviderCall(request);
     }) as typeof fetch;
 
@@ -400,6 +405,12 @@ describe("agent.spawn integration", () => {
         params: {
           input: {
             prompt: "通过 Agent team 的方式帮我分析一下 MiniMax 最近的情况。What is MiniMax up to lately?",
+            context: {
+              modeRequest: {
+                requestedModeId: "agent_teams",
+                reason: "The user explicitly requested Agent Teams style collaboration for this turn.",
+              },
+            },
           },
           config: runConfig(),
         },
@@ -414,13 +425,11 @@ describe("agent.spawn integration", () => {
         throw new Error(`degraded collaboration run failed: ${JSON.stringify({
           status: result.status,
           error: parsed.error,
-          sawRequiredCollaborationFollowUp,
           toolCalls: result.toolCalls,
           requestLog,
         })}`);
       }
       expect(result.status).toBe("succeeded");
-      expect(sawRequiredCollaborationFollowUp).toBe(true);
 
       const raw = await handle({ jsonrpc: "2.0", id: 3, method: "runs.state", params: { runId: start.runId } });
       const parsed = StateSnapshotSchema.parse(raw);

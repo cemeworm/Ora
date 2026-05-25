@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { getModePreset, modeSpecToPatternDefinition, SINGLE_AGENT_MODE_ID } from "@cemeworm/shared";
 import { getComposerInteractivity } from "../../desktop/src/components/ChatInput";
 import { canOpenLangfuseTrace, collectAnomalies } from "../../desktop/src/components/TrailsTabs";
-import { buildRunSearchConfig } from "../../desktop/src/lib/searchSettings";
+import { buildRunSearchConfig, DEFAULT_SEARCH_SETTINGS } from "../../desktop/src/lib/searchSettings";
 import { getActiveSnapshot, getPendingRunState, initialWorkbenchState, workbenchReducer } from "../../desktop/src/lib/state";
 import { buildPendingClarificationResumePatch, clarificationOptionAnswer, waitForPendingRunPaint } from "../../desktop/src/lib/useRunActions";
 import { adaptChatMessages, adaptPendingRunMessages, buildWorkbenchViewModel, isSessionProcessing } from "../../desktop/src/lib/viewModel";
@@ -155,6 +155,27 @@ describe("desktop composer pending-run behavior", () => {
       mcpToolName: "search",
     })).toEqual({
       metadata: { disableDefaultWebTools: true },
+    });
+  });
+
+  it("defaults desktop search to AnySearch MCP", () => {
+    expect(DEFAULT_SEARCH_SETTINGS).toMatchObject({
+      providerId: "mcp",
+      apiKeyEnv: "ANYSEARCH_API_KEY",
+      mcpServerId: "anysearch",
+      mcpToolName: "search",
+    });
+
+    expect(buildRunSearchConfig(DEFAULT_SEARCH_SETTINGS)).toEqual({
+      searchProvider: {
+        id: "mcp",
+        apiKeyEnv: "ANYSEARCH_API_KEY",
+        maxResults: 5,
+        timeoutMs: 8000,
+        mcpServerId: "anysearch",
+        mcpToolName: "search",
+      },
+      metadata: {},
     });
   });
 
