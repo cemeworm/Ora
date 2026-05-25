@@ -1,6 +1,12 @@
-import { describe, expect, it } from "vitest";
+// @vitest-environment jsdom
+
+import { act, createElement } from "react";
+import { createRoot } from "react-dom/client";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { initialWorkbenchState } from "../lib/state";
 import type { OraWidget } from "../lib/runtimeClient";
 import {
+  SpaceDashboardView,
   buildSelectedWidgetContext,
   getCanvasMetrics,
   getWidgetCardSize,
@@ -12,6 +18,172 @@ import {
   sortWidgetsForCanvas,
   widgetContextLabel,
 } from "./SpaceDashboardView";
+
+const mocks = vi.hoisted(() => ({
+  workbench: null as any,
+  dispatch: vi.fn(),
+  latestChatInputProps: null as any,
+  runtimeClient: {
+    listWidgets: vi.fn(async () => []),
+  },
+  actions: {
+    startRunWithPrompt: vi.fn(),
+  },
+}));
+
+vi.mock("./ChatInput", () => ({
+  ChatInput: (props: unknown) => {
+    mocks.latestChatInputProps = props;
+    return null;
+  },
+}));
+
+vi.mock("./ChatView", () => ({
+  CHAT_VIEW_STABLE_CONTENT_WIDTH_CLASS: "w-test",
+  getActiveChatProvider: () => undefined,
+}));
+
+vi.mock("../lib/providerOptions", () => ({
+  runnableProviderOptions: () => [],
+}));
+
+vi.mock("../lib/runInteractionState", () => ({
+  deriveRunInteractionState: () => ({
+    status: "idle",
+    isProcessing: false,
+    canSubmit: true,
+    canStop: false,
+    canResume: false,
+    canRebuild: false,
+    authority: "session_summary",
+  }),
+}));
+
+vi.mock("../lib/useRunActions", () => ({
+  useRunActions: () => ({
+    runtimeClient: mocks.runtimeClient,
+    actions: mocks.actions,
+  }),
+}));
+
+vi.mock("../lib/widgetPresets", () => ({
+  ensureTasklistPreset: vi.fn(async () => false),
+}));
+
+vi.mock("../lib/state", async () => {
+  const actual = await vi.importActual("../lib/state");
+  return {
+    ...actual,
+    useWorkbench: () => ({
+      state: mocks.workbench,
+      dispatch: mocks.dispatch,
+    }),
+  };
+});
+
+vi.mock("./WidgetCard", () => ({
+  WidgetCard: () => null,
+}));
+
+vi.mock("./TodoWidgetDetail", () => ({
+  TodoWidgetDetail: () => null,
+}));
+
+vi.mock("./FeedWidgetDetail", () => ({
+  FeedWidgetDetail: () => null,
+}));
+
+vi.mock("./ArtifactWidgetDetail", () => ({
+  ArtifactWidgetDetail: () => null,
+}));
+
+const cleanupCallbacks: Array<() => void> = [];
+
+Object.assign(globalThis, {
+  IS_REACT_ACT_ENVIRONMENT: true,
+});
+
+beforeEach(() => {
+  mocks.workbench = baseWorkbenchState();
+  mocks.dispatch.mockReset();
+  mocks.latestChatInputProps = null;
+  mocks.runtimeClient.listWidgets.mockReset();
+  mocks.runtimeClient.listWidgets.mockResolvedValue([]);
+  mocks.actions.startRunWithPrompt.mockReset();
+});
+
+afterEach(() => {
+  while (cleanupCallbacks.length > 0) {
+    cleanupCallbacks.pop()?.();
+  }
+  document.body.innerHTML = "";
+});
+
+function renderElement(element: ReturnType<typeof createElement>) {
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+
+  act(() => {
+    root.render(element);
+  });
+
+  const cleanup = () => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  };
+  cleanupCallbacks.push(cleanup);
+
+  return {
+    rerender(nextElement: ReturnType<typeof createElement>) {
+      act(() => {
+        root.render(nextElement);
+      });
+    },
+  };
+}
+
+async function flushMicrotasks() {
+  await act(async () => {
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+  });
+}
+
+function baseWorkbenchState(overrides: Record<string, unknown> = {}) {
+  return {
+    ...initialWorkbenchState,
+    activeView: "space-dashboard",
+    sessions: [
+      { sessionId: "session-a", updatedAt: 1 },
+      { sessionId: "session-b", updatedAt: 2 },
+    ],
+    selectedSessionId: "session-a",
+    promptText: "",
+    selectedTurnRunId: undefined,
+    activeSessionDetail: undefined,
+    modes: [
+      {
+        id: "single_agent",
+        family: "single_agent",
+        label: "单智能体",
+        summary: "默认模式",
+      },
+    ],
+    selectedModeId: "single_agent",
+    selectedModeSelection: "manual",
+    providerRegistry: { providers: [] },
+    providerSecretStatuses: [],
+    selectedProviderId: undefined,
+    runLifecycle: { stage: "idle" },
+    taskIntent: "implement",
+    permissionMode: "default",
+    isLoading: false,
+    skillRegistry: { skills: [] },
+    ...overrides,
+  } as any;
+}
 
 function widget(overrides: Partial<OraWidget>): OraWidget {
   const now = 1_700_000_000_000;
@@ -200,5 +372,67 @@ describe("SpaceDashboardView widget context", () => {
     const context = buildSelectedWidgetContext(artifact).artifact as { content: string; truncated?: boolean };
     expect(context.content).toHaveLength(4000);
     expect(context.truncated).toBe(true);
+  });
+});
+
+describe("SpaceDashboardView composer wiring", () => {
+  it("reads the current session draft from workbench state", async () => {
+    mocks.workbench = baseWorkbenchState({
+      selectedSessionId: "session-a",
+      promptText: "draft for a",
+    });
+    const { rerender } = renderElement(createElement(SpaceDashboardView));
+    await flushMicrotasks();
+
+    expect(mocks.latestChatInputProps?.composerPrompt).toBe("draft for a");
+
+    mocks.workbench = baseWorkbenchState({
+      selectedSessionId: "session-b",
+      promptText: "",
+    });
+    rerender(createElement(SpaceDashboardView));
+    await flushMicrotasks();
+    expect(mocks.latestChatInputProps?.composerPrompt).toBe("");
+
+    mocks.workbench = baseWorkbenchState({
+      selectedSessionId: "session-a",
+      promptText: "draft for a",
+    });
+    rerender(createElement(SpaceDashboardView));
+    await flushMicrotasks();
+    expect(mocks.latestChatInputProps?.composerPrompt).toBe("draft for a");
+  });
+
+  it("dispatches prompt updates and clears only the submitted session draft", async () => {
+    mocks.workbench = baseWorkbenchState({
+      selectedSessionId: "session-a",
+      promptText: "draft for a",
+      taskIntent: "plan",
+    });
+    renderElement(createElement(SpaceDashboardView));
+    await flushMicrotasks();
+
+    act(() => {
+      mocks.latestChatInputProps.onPromptChange("updated draft");
+    });
+    expect(mocks.dispatch).toHaveBeenCalledWith({
+      type: "SET_PROMPT",
+      text: "updated draft",
+    });
+
+    act(() => {
+      mocks.latestChatInputProps.onStartRun();
+    });
+
+    expect(mocks.actions.startRunWithPrompt).toHaveBeenCalledWith({
+      prompt: "draft for a",
+      taskIntent: "plan",
+      extraContext: undefined,
+      extraMetadata: undefined,
+    });
+    expect(mocks.dispatch).toHaveBeenCalledWith({
+      type: "CLEAR_PROMPT_IF_MATCH",
+      text: "draft for a",
+    });
   });
 });

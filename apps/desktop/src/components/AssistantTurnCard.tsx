@@ -21,6 +21,7 @@ import {
 import type {
   AssistantTurnAttachment,
   ReviewGateInfo,
+  TurnDelegationAction,
   TurnArtifactAttachment,
   TurnClarificationExchange,
   TurnFileChangeAttachment,
@@ -82,6 +83,7 @@ export const AssistantTurnCard = memo(function AssistantTurnCard({
 }: AssistantTurnCardProps) {
   const isCompact = density === "compact";
   const processSteps = turn?.processSteps ?? [];
+  const delegationActions = turn?.delegationActions ?? [];
   const clarificationExchanges = turn?.clarificationExchanges ?? [];
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [feedbackText, setFeedbackText] = useState("");
@@ -229,6 +231,10 @@ export const AssistantTurnCard = memo(function AssistantTurnCard({
               exchanges={clarificationExchanges}
               density={density}
             />
+          ) : null}
+
+          {delegationActions.length > 0 ? (
+            <DelegationActionList actions={delegationActions} density={density} />
           ) : null}
 
           {!presentation?.showStandaloneBody ? null : (
@@ -400,6 +406,57 @@ function ClarificationExchangeList({
         </div>
       ))}
     </div>
+  );
+}
+
+function DelegationActionList({
+  actions,
+  density = "default",
+}: {
+  actions: TurnDelegationAction[];
+  density?: "default" | "compact";
+}) {
+  const isCompact = density === "compact";
+  return (
+    <div className={cn(isCompact ? "space-y-1.5" : "space-y-2")}>
+      {actions.map((action) => (
+        <TaskItem key={action.id} className="relative">
+          <div className="absolute -left-[1.05rem] top-3.5 h-2 w-2 rounded-full bg-border" />
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <p className="font-medium text-foreground">{action.label}</p>
+                <span className="inline-flex rounded-full border border-dashed border-border px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                  委派
+                </span>
+              </div>
+              <p className="mt-1 whitespace-pre-wrap text-muted-foreground">
+                {action.detail}
+              </p>
+              <TaskItemMeta>
+                {action.agentLabel ? <span>{action.agentLabel}</span> : null}
+                <span>{action.timestamp}</span>
+              </TaskItemMeta>
+            </div>
+            <DelegationStatusBadge status={action.status} />
+          </div>
+        </TaskItem>
+      ))}
+    </div>
+  );
+}
+
+function DelegationStatusBadge({
+  status,
+}: {
+  status: TurnDelegationAction["status"];
+}) {
+  const label =
+    status === "blocked" ? "卡住" : status === "active" ? "执行中" : "已完成";
+  return (
+    <span className="inline-flex shrink-0 items-center rounded-full border border-border bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
+      {label}
+    </span>
   );
 }
 

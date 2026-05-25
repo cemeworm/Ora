@@ -7,6 +7,10 @@ import {
   CHAT_VIEW_COLLABORATION_ITEM_CLASS,
   CHAT_VIEW_COLLABORATION_PANEL_CLASS,
   CHAT_VIEW_CONTENT_ROW_CLASS,
+  CHAT_VIEW_CONTENT_ROW_DEFAULT_LAYOUT_CLASS,
+  CHAT_VIEW_DESKTOP_DOCKED_CONTENT_ROW_CLASS,
+  CHAT_VIEW_DESKTOP_DOCKED_RAIL_CLASS,
+  CHAT_VIEW_DESKTOP_FLOATING_STACK_CLASS,
   CHAT_VIEW_DESKTOP_OVERLAY_MIN_CONTENT_ROW_WIDTH,
   CHAT_VIEW_DESKTOP_OVERLAY_RAIL_CLASS,
   CHAT_VIEW_DESKTOP_OVERLAY_STACK_CLASS,
@@ -625,7 +629,7 @@ describe("chat view collaboration overlay visibility", () => {
     expect(deriveChatSurfaceShiftClassName(false)).toBe("");
   });
 
-  it("keeps the content rail anchored even when the overlay is visible", () => {
+  it("keeps the content rail shift helper inert after the docked sidebar refactor", () => {
     expect(deriveChatSurfaceShiftClassName(true)).toBe("");
   });
 
@@ -642,8 +646,9 @@ describe("chat view collaboration overlay visibility", () => {
   it("keeps the desktop overlay stack interactive with a bounded floating width", () => {
     expect(CHAT_VIEW_DESKTOP_OVERLAY_STACK_CLASS).toContain("pointer-events-auto");
     expect(CHAT_VIEW_DESKTOP_OVERLAY_STACK_CLASS).toContain("flex");
-    expect(CHAT_VIEW_DESKTOP_OVERLAY_STACK_CLASS).toContain("gap-3");
-    expect(CHAT_VIEW_DESKTOP_OVERLAY_STACK_CLASS).toContain("w-[min(21.5rem,calc(100vw-6rem))]");
+    expect(CHAT_VIEW_DESKTOP_OVERLAY_STACK_CLASS).toContain("gap-2.5");
+    expect(CHAT_VIEW_DESKTOP_OVERLAY_STACK_CLASS).toContain("w-full");
+    expect(CHAT_VIEW_DESKTOP_FLOATING_STACK_CLASS).toContain("w-[min(20rem,calc(100vw-5rem))]");
   });
 
   it("reuses the plan tray floating shell for the collaboration panel surfaces", () => {
@@ -652,7 +657,31 @@ describe("chat view collaboration overlay visibility", () => {
     expect(CHAT_VIEW_COLLABORATION_DETAIL_CLASS).toBe(FLOATING_OVERLAY_DETAIL_CLASS);
     expect(CHAT_VIEW_COLLABORATION_ITEM_CLASS).not.toContain("bg-card/80");
     expect(CHAT_VIEW_COLLABORATION_DETAIL_CLASS).toContain("overflow-y-auto");
-    expect(CHAT_VIEW_COLLABORATION_DETAIL_CLASS).toContain("max-h-[min(72vh,42rem)]");
+    expect(CHAT_VIEW_COLLABORATION_DETAIL_CLASS).toContain("max-h-[min(72vh,40rem)]");
+  });
+
+  it("anchors the docked sidebar into the desktop content row while preserving the default flex layout fallback", () => {
+    expect(CHAT_VIEW_CONTENT_ROW_CLASS).toContain("overflow-hidden");
+    expect(CHAT_VIEW_CONTENT_ROW_DEFAULT_LAYOUT_CLASS).toBe("flex");
+    expect(CHAT_VIEW_DESKTOP_DOCKED_CONTENT_ROW_CLASS).toContain("grid");
+    expect(CHAT_VIEW_DESKTOP_DOCKED_CONTENT_ROW_CLASS).toContain("lg:grid-cols-[minmax(0,1fr)_18.75rem]");
+    expect(CHAT_VIEW_DESKTOP_DOCKED_CONTENT_ROW_CLASS).toContain("xl:grid-cols-[minmax(0,1fr)_19.5rem]");
+    expect(CHAT_VIEW_DESKTOP_DOCKED_RAIL_CLASS).toContain("overflow-y-auto");
+  });
+
+  it("renders the docked desktop rail as an aside instead of an absolute overlay", () => {
+    const html = renderToStaticMarkup(
+      createElement(DesktopOverlayRail, {
+        layout: "docked",
+        childSessions: [childSession("running-child", "running")],
+        planSteps: [{ step: "整理结果", status: "pending" }],
+        turnSnapshots: {},
+      }),
+    );
+
+    expect(html).toContain("<aside");
+    expect(html).toContain(CHAT_VIEW_DESKTOP_DOCKED_RAIL_CLASS);
+    expect(html).not.toContain(CHAT_VIEW_DESKTOP_OVERLAY_RAIL_CLASS);
   });
 
   it("renders the collaboration panel with the shared floating shell and softened child cards", () => {

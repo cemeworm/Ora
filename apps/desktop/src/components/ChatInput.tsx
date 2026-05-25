@@ -1666,6 +1666,11 @@ export function ChatInput({
       confirmSkillPickerSelection();
       return;
     }
+    if (e.key === "Enter" && e.shiftKey) {
+      e.preventDefault();
+      insertTextAtSelection("\n");
+      return;
+    }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       if (runInteractionState.isProcessing) {

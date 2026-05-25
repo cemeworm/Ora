@@ -84,7 +84,6 @@ export function SpaceDashboardView() {
   const [loading, setLoading] = useState(true);
   const [selectedWidgetId, setSelectedWidgetId] = useState<string | undefined>();
   const [detailWidgetId, setDetailWidgetId] = useState<string | undefined>();
-  const [composerPrompt, setComposerPrompt] = useState("");
   const [composerOverlayHeight, setComposerOverlayHeight] = useState(0);
   const [layoutOverrides, setLayoutOverrides] = useState<WidgetLayoutOverrideMap>({});
   const [activeInteraction, setActiveInteraction] = useState<LayoutInteraction | null>(null);
@@ -204,8 +203,8 @@ export function SpaceDashboardView() {
   }, []);
 
   const handleStartRun = useCallback(() => {
-    if (!workbench.selectedSessionId || !composerPrompt.trim()) return;
-    const prompt = composerPrompt;
+    if (!workbench.selectedSessionId || !workbench.promptText.trim()) return;
+    const prompt = workbench.promptText;
     void actions.startRunWithPrompt({
       prompt,
       taskIntent: workbench.taskIntent,
@@ -219,13 +218,14 @@ export function SpaceDashboardView() {
           }
         : undefined,
     });
-    setComposerPrompt("");
+    dispatch({ type: "CLEAR_PROMPT_IF_MATCH", text: prompt });
   }, [
     actions,
-    composerPrompt,
+    dispatch,
     detailWidget,
     selectedWidget,
     selectedWidgetContext,
+    workbench.promptText,
     workbench.selectedSessionId,
     workbench.taskIntent,
   ]);
@@ -440,7 +440,7 @@ export function SpaceDashboardView() {
     return (
       <ChatInput
         sessionId={workbench.selectedSessionId ?? ""}
-        composerPrompt={composerPrompt}
+        composerPrompt={workbench.promptText}
         isLoading={workbench.isLoading}
         runInteractionState={runInteractionState}
         activeMode={activeMode}
@@ -461,7 +461,7 @@ export function SpaceDashboardView() {
         onModeChange={handleModeChange}
         onModeSelectionChange={handleModeSelectionChange}
         onProviderChange={handleProviderChange}
-        onPromptChange={setComposerPrompt}
+        onPromptChange={(text) => dispatch({ type: "SET_PROMPT", text })}
         onSelectedSkillIdsChange={handleSelectedSkillIdsChange}
         onRemoveProjectFileAttachment={NOOP}
         onRemoveLocalFileAttachment={NOOP}
@@ -478,8 +478,8 @@ export function SpaceDashboardView() {
     );
   }, [
     activeMode,
-    composerPrompt,
     contextChips,
+    dispatch,
     handleModeChange,
     handleModeSelectionChange,
     handleOverlayHeightChange,
@@ -495,6 +495,7 @@ export function SpaceDashboardView() {
     workbench.isLoading,
     workbench.language,
     workbench.permissionMode,
+    workbench.promptText,
     workbench.selectedModeSelection,
     workbench.selectedSessionId,
     workbench.selectedSkillIds,

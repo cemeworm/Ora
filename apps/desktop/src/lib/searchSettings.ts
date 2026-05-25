@@ -16,11 +16,11 @@ const SEARCH_SETTINGS_STORAGE_KEY = "ora.searchSettings.v1";
 
 export const DEFAULT_SEARCH_SETTINGS: DesktopSearchSettings = {
   enabled: true,
-  providerId: "auto",
-  apiKeyEnv: "",
+  providerId: "mcp",
+  apiKeyEnv: "ANYSEARCH_API_KEY",
   maxResults: "5",
   timeoutMs: "8000",
-  mcpServerId: "",
+  mcpServerId: "anysearch",
   mcpToolName: "search",
 };
 

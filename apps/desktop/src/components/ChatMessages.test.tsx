@@ -534,6 +534,118 @@ describe("ChatMessages bottom inset", () => {
     expect(html.match(/rounded-2xl bg-muted px-3\.5 py-2\.5/g)).toHaveLength(2);
   });
 
+  it("keeps mode-stage delegation inside the parent assistant turn", () => {
+    const createdAt = 1_714_000_300_000;
+    const sessionId = "session-chat-messages-mode-stage-inline";
+    const runId = "run-chat-messages-mode-stage-inline";
+    const snapshot = {
+      runId,
+      sessionId,
+      turnIndex: 1,
+      status: "running",
+      pattern: "orchestrator_subagent",
+      modeId: SINGLE_AGENT_MODE_ID,
+      input: { prompt: "delegate research", createdAt, context: {} },
+      config: {
+        modeId: SINGLE_AGENT_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["ora", "ora-sub-1"],
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "chat-messages-mode-stage-inline",
+        skillIds: [],
+        toolIds: ["agent.spawn"],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      planList: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [{
+        id: `${runId}:evt-0`,
+        runId,
+        seq: 0,
+        type: "tool.called",
+        createdAt: createdAt + 1,
+        pattern: "orchestrator_subagent",
+        agentId: "ora",
+        nodeId: "ora",
+        payload: {
+          toolId: "agent.spawn",
+          status: "succeeded",
+          input: {
+            description: "Research subagent",
+            tool_bundle: "research_readonly",
+          },
+          output: {
+            status: "async_launched",
+            child_agent_id: "ora-sub-1",
+            tool_bundle: "research_readonly",
+          },
+        },
+      }],
+      childSessions: [{
+        id: `${runId}:ora-sub-1`,
+        agentId: "ora-sub-1",
+        label: "Research subagent",
+        sessionClass: "temporary_spawn",
+        delegationKind: "mode_stage",
+        authoritySource: "mode_stage",
+        status: "running",
+        deliveryStatus: "running",
+        lifecyclePhase: "running",
+        parentTaskIntent: "chat",
+        childTaskIntent: "chat",
+        startedAt: createdAt + 1,
+        updatedAt: createdAt + 5,
+        summary: "正在搜集资料",
+      }],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 1, completed: 0, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      updatedAt: createdAt + 5,
+    } as unknown as OraStateSnapshot;
+
+    const messages = adaptRenderableChatMessages({
+      transcript: [{
+        id: `${runId}:user`,
+        sessionId,
+        runId,
+        turnIndex: 1,
+        role: "user",
+        content: "delegate research",
+        pattern: "orchestrator_subagent",
+        modeId: SINGLE_AGENT_MODE_ID,
+        createdAt,
+      }],
+      turnSnapshots: { [runId]: snapshot },
+      selectedSessionId: sessionId,
+    });
+
+    const assistantMessages = messages.filter((message) => message.role === "assistant");
+    expect(assistantMessages).toHaveLength(1);
+    expect(assistantMessages[0]?.turn?.delegationActions).toEqual([
+      expect.objectContaining({
+        label: "Research subagent",
+        detail: "正在搜集资料",
+        status: "active",
+      }),
+    ]);
+  });
+
   it("renders user images as separate bubbles before the text bubble", () => {
     const html = renderToStaticMarkup(
       <ChatMessages

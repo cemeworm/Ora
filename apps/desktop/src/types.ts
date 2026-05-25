@@ -192,6 +192,16 @@ export interface TurnProcessStep {
   toolId?: string;
 }
 
+export interface TurnDelegationAction {
+  id: string;
+  label: string;
+  detail: string;
+  timestamp: string;
+  status: "active" | "complete" | "blocked";
+  agentLabel?: string;
+  agentId?: string;
+}
+
 export type TurnTimelineItem =
   | {
       id: string;
@@ -391,6 +401,7 @@ export interface AssistantTurnAttachment {
   currentAgentLabel?: string;
   liveProgressText?: string;
   processSteps: TurnProcessStep[];
+  delegationActions?: TurnDelegationAction[];
   timelineItems?: TurnTimelineItem[];
   clarificationExchanges?: TurnClarificationExchange[];
   planList: TurnPlanListStep[];

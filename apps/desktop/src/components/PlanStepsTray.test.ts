@@ -59,6 +59,7 @@ describe("plan steps tray open state", () => {
     expect(planStepsTrayRootClassName("floating")).toContain("rounded-3xl");
     expect(planStepsTrayRootClassName("floating")).toContain("shadow-lift");
     expect(planStepsTrayRootClassName("inline")).toContain("mb-2");
+    expect(FLOATING_OVERLAY_PANEL_CLASS).toContain("p-2.5");
   });
 
   it("renders the floating variant without the inline bottom margin shell", () => {
@@ -95,6 +96,7 @@ describe("plan steps tray open state", () => {
     expect(html).toContain(PLAN_STEPS_TRAY_HEADER_CHEVRON_CLASS);
     expect(html).toContain("whitespace-nowrap");
     expect(html).toContain("truncate");
+    expect(html).toContain("gap-2");
   });
 
   it("wraps long step tokens safely in both inline and floating variants", () => {

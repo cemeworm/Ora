@@ -311,12 +311,14 @@ function ChatInputHarness({
   initialPrompt = "",
   initialSkillIds = [],
   initialContextChips = [],
+  onStartRun = () => {},
   onStateChange,
 }: {
   sessionId?: string;
   initialPrompt?: string;
   initialSkillIds?: string[];
   initialContextChips?: Array<{ id: string; label: string; tone?: "widget" }>;
+  onStartRun?: () => void;
   onStateChange: (state: HarnessState) => void;
 }) {
   const [prompt, setPrompt] = useState(initialPrompt);
@@ -353,6 +355,7 @@ function ChatInputHarness({
       contextChips,
       onPromptChange: setPrompt,
       onSelectedSkillIdsChange: setSelectedSkillIds,
+      onStartRun,
     }),
   );
 }
@@ -1223,6 +1226,43 @@ describe("ChatInput content editable chips", () => {
 
     Range.prototype.getClientRects = originalGetClientRects;
     Range.prototype.getBoundingClientRect = originalGetBoundingClientRect;
+  });
+
+  it("inserts a controlled newline on Shift+Enter and keeps typing on the next line", async () => {
+    let latestState: HarnessState = {
+      prompt: "",
+      selectedSkillIds: [],
+      contextIds: [],
+    };
+    let startRunCount = 0;
+    const { container } = renderElement(
+      createElement(ChatInputHarness, {
+        initialPrompt: "第一行",
+        onStartRun: () => {
+          startRunCount += 1;
+        },
+        onStateChange: (state: HarnessState) => {
+          latestState = state;
+        },
+      }),
+    );
+
+    const editor = getEditor(container);
+    const textSegment = getTextSegments(editor)[0];
+    setCaret(textSegment, "第一行".length);
+    flushSelection(editor);
+
+    dispatchEditorKey(editor, "Enter", { shiftKey: true });
+    await flushMicrotasks();
+
+    expect(latestState.prompt).toBe("第一行\n");
+    expect(startRunCount).toBe(0);
+
+    insertTextAtCurrentSelection(getEditor(container), "第二行");
+    await flushMicrotasks();
+
+    expect(latestState.prompt).toBe("第一行\n第二行");
+    expect(startRunCount).toBe(0);
   });
 
   it("does not submit on Enter while IME composition is active", () => {

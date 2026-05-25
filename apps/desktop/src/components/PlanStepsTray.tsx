@@ -22,13 +22,13 @@ interface PlanStepsTrayProps {
 }
 
 export const FLOATING_OVERLAY_PANEL_CLASS =
-  "rounded-3xl border border-border/70 bg-background/92 p-3 shadow-lift backdrop-blur-md";
+  "rounded-3xl border border-border/70 bg-background/92 p-2.5 shadow-lift backdrop-blur-md";
 export const FLOATING_OVERLAY_ICON_PLATE_CLASS =
   "flex h-8 w-8 items-center justify-center rounded-2xl bg-muted/50 text-foreground";
 export const FLOATING_OVERLAY_CARD_CLASS =
-  "rounded-2xl border border-border/70 bg-muted/30 p-2.5 backdrop-blur-sm";
+  "rounded-2xl border border-border/70 bg-muted/30 p-2 backdrop-blur-sm";
 export const FLOATING_OVERLAY_DETAIL_CLASS =
-  "mt-2 max-h-[min(72vh,42rem)] overflow-y-auto rounded-[1rem] border border-border/60 bg-muted/25 p-2 overscroll-contain backdrop-blur-sm";
+  "mt-2 max-h-[min(72vh,40rem)] overflow-y-auto rounded-[1rem] border border-border/60 bg-muted/25 p-2 overscroll-contain backdrop-blur-sm";
 export const FLOATING_OVERLAY_BADGE_BASE_CLASS =
   "shrink-0 rounded-full border border-border/60 px-2 py-0.5 text-[11px] font-medium";
 
@@ -155,7 +155,7 @@ function planStepsIdentity(planSteps: TurnPlanListStep[]) {
 
 function PlanListStepItem({ item }: { item: TurnPlanListStep }) {
   return (
-    <TaskItem className="flex items-start gap-3">
+    <TaskItem className="flex items-start gap-2.5">
       <PlanStepStatusIcon status={item.status} />
       <div className="min-w-0 flex-1">
         <p

@@ -681,6 +681,46 @@ describe("assistant turn display helpers", () => {
     expect(html).not.toContain("已读取 apps/desktop/src/components/AssistantTurnCard.tsx。");
   });
 
+  it("renders delegation actions inside the same assistant turn", () => {
+    const turn: AssistantTurnAttachment = {
+      runId: "run-1",
+      turnIndex: 1,
+      status: "running",
+      pattern: "orchestrator_subagent",
+      sources: [],
+      processSteps: [
+        processStep("spawn-step", "complete", "已委派 Research subagent 在后台处理子任务（research_readonly）。", {
+          label: "委派子代理",
+        }),
+      ],
+      delegationActions: [{
+        id: "child-1",
+        label: "Research subagent",
+        detail: "正在搜集资料",
+        timestamp: "00:01",
+        status: "active",
+        agentLabel: "Research subagent",
+      }],
+      timelineItems: [],
+      agentMessages: [],
+      artifacts: [],
+      todos: [],
+      planList: [],
+      approvalCount: 0,
+      clarificationCount: 0,
+      hasProposedPlan: false,
+    };
+
+    const html = renderToStaticMarkup(
+      <AssistantTurnCard content="delegate research" turn={turn} />,
+    );
+
+    expect(html).toContain("Research subagent");
+    expect(html).toContain("正在搜集资料");
+    expect(html).toContain("执行中");
+    expect(html).toContain("委派");
+  });
+
   it("does not repeat the thinking indicator after the latest active progress group", () => {
     const turn: AssistantTurnAttachment = {
       runId: "run-1",

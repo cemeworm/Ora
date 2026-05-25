@@ -4732,7 +4732,7 @@ describe("desktop session view model", () => {
     )).toBe(false);
   });
 
-  it("projects mode-stage child sessions into additional assistant messages while keeping the root summary first", () => {
+  it("keeps mode-stage child session progress inside the parent assistant turn", () => {
     const createdAt = 1_714_000_000_000;
     const runId = "run-mode-stage-mainline";
     const sessionId = "session-mode-stage-mainline";
@@ -4888,18 +4888,20 @@ describe("desktop session view model", () => {
     );
     const assistantMessages = messages.filter((message) => message.role === "assistant");
 
-    expect(assistantMessages).toHaveLength(3);
-    expect(assistantMessages.map((message) => message.content)).toEqual([
-      "Orchestrator 已完成最终总结。",
-      "Builder 已完成代码修改。",
-      "Reviewer 已完成代码审查。",
-    ]);
+    expect(assistantMessages).toHaveLength(1);
+    expect(assistantMessages[0]?.content).toBe("Orchestrator 已完成最终总结。");
     expect(assistantMessages[0]?.turn?.currentAgentLabel).toBe("Orchestrator");
-    expect(assistantMessages[1]?.turn?.currentAgentLabel).toBe("Builder");
-    expect(assistantMessages[2]?.turn?.currentAgentLabel).toBe("Reviewer");
     expect(assistantMessages[0]?.metadata?.runId).toBe(runId);
-    expect(assistantMessages[1]?.metadata?.runId).toBe(`${runId}:builder`);
-    expect(assistantMessages[2]?.metadata?.runId).toBe(`${runId}:reviewer`);
+    expect(assistantMessages[0]?.turn?.delegationActions).toEqual([
+      expect.objectContaining({
+        label: "Builder",
+        status: "complete",
+      }),
+      expect.objectContaining({
+        label: "Reviewer",
+        status: "complete",
+      }),
+    ]);
   });
 
   it("suppresses the empty parent placeholder when mode-stage child messages already cover the in-progress turn", () => {
@@ -4995,8 +4997,145 @@ describe("desktop session view model", () => {
     ).filter((message) => message.role === "assistant");
 
     expect(assistantMessages).toHaveLength(1);
-    expect(assistantMessages[0]?.content).toBe("Builder 正在继续实现。");
+    expect(assistantMessages[0]?.content).toBe("");
     expect(assistantMessages[0]?.turn?.currentAgentLabel).toBe("Builder");
+    expect(assistantMessages[0]?.turn?.delegationActions).toEqual([
+      expect.objectContaining({
+        label: "Builder",
+        detail: "Builder 正在执行任务。",
+        status: "active",
+      }),
+    ]);
+  });
+
+  it("keeps legacy child-session history readable without requiring delegation metadata", () => {
+    const createdAt = 1_714_000_310_000;
+    const runId = "run-legacy-child-session-history";
+    const snapshot = {
+      runId,
+      sessionId: "session-legacy-child-session-history",
+      turnIndex: 1,
+      status: "succeeded",
+      pattern: "orchestrator_subagent",
+      modeId: DEERFLOW_HARNESS_MODE_ID,
+      input: { prompt: "coordinate subagents", createdAt, context: {} },
+      config: {
+        modeId: DEERFLOW_HARNESS_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["orchestrator", "builder"],
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-legacy-child-session-history-test",
+        skillIds: [],
+        toolIds: [],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [
+        { id: "orchestrator", label: "Orchestrator", role: "Coordinate", modelRef: "local/smoke-model", toolPolicyId: "code.default", memoryNamespaces: ["session"], budget: { maxTokens: 1000, maxToolCalls: 0, maxRuntimeMs: 1000 } },
+        { id: "builder", label: "Builder", role: "Build", modelRef: "local/smoke-model", toolPolicyId: "code.default", memoryNamespaces: ["session"], budget: { maxTokens: 1000, maxToolCalls: 0, maxRuntimeMs: 1000 } },
+      ],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [
+        {
+          id: `${runId}:evt-0`,
+          runId,
+          seq: 0,
+          type: "tool.called",
+          createdAt: createdAt + 1,
+          pattern: "orchestrator_subagent",
+          agentId: ORA_ROOT_AGENT_ID,
+          nodeId: ORA_ROOT_AGENT_ID,
+          payload: {
+            toolId: "agent.spawn",
+            status: "succeeded",
+            input: {
+              description: "Builder",
+              tool_bundle: "code",
+            },
+            output: {
+              status: "async_launched",
+              child_agent_id: "builder",
+            },
+          },
+        },
+        {
+          id: `${runId}:evt-1`,
+          runId,
+          seq: 1,
+          type: "child_session.updated",
+          createdAt: createdAt + 2,
+          pattern: "orchestrator_subagent",
+          agentId: "builder",
+          nodeId: "builder",
+          payload: {
+            childSession: {
+              id: `${runId}:builder`,
+              agentId: "builder",
+              label: "Builder",
+              sessionClass: "mode_subagent",
+              status: "succeeded",
+              startedAt: createdAt + 1,
+              updatedAt: createdAt + 2,
+              summary: "完成资料搜集",
+            },
+          },
+        },
+      ],
+      childSessions: [{
+        id: `${runId}:builder`,
+        agentId: "builder",
+        label: "Builder",
+        sessionClass: "mode_subagent",
+        status: "succeeded",
+        startedAt: createdAt + 1,
+        updatedAt: createdAt + 2,
+        summary: "完成资料搜集",
+      }],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 0, completed: 1, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      output: { text: "综合子代理结果后，结论是应该先保持 record_only。" },
+      updatedAt: createdAt + 3,
+    } as unknown as OraStateSnapshot;
+
+    const assistantMessages = adaptChatMessages(
+      [{
+        id: `${runId}:user`,
+        sessionId: "session-legacy-child-session-history",
+        runId,
+        turnIndex: 1,
+        role: "user",
+        content: "coordinate subagents",
+        pattern: "orchestrator_subagent",
+        modeId: DEERFLOW_HARNESS_MODE_ID,
+        createdAt,
+      }],
+      { [runId]: snapshot },
+    ).filter((message) => message.role === "assistant");
+
+    expect(assistantMessages).toHaveLength(1);
+    expect(assistantMessages[0]?.content).toBe("综合子代理结果后，结论是应该先保持 record_only。");
+    expect(assistantMessages[0]?.turn?.delegationActions).toEqual([
+      expect.objectContaining({
+        label: "Builder",
+        detail: "完成资料搜集",
+        status: "complete",
+      }),
+    ]);
   });
 
   it("keeps a running mode-stage child visible with a status placeholder before any summary text arrives", () => {
@@ -5077,11 +5216,14 @@ describe("desktop session view model", () => {
     ).filter((message) => message.role === "assistant");
 
     expect(assistantMessages).toHaveLength(1);
-    expect(assistantMessages[0]?.content).toBe("Builder 正在执行任务。");
-    expect(assistantMessages[0]?.turn?.timelineItems?.[0]).toMatchObject({
-      kind: "assistant_text",
-      content: "Builder 正在执行任务。",
-    });
+    expect(assistantMessages[0]?.content).toBe("");
+    expect(assistantMessages[0]?.turn?.delegationActions).toEqual([
+      expect.objectContaining({
+        label: "Builder",
+        detail: "Builder 正在执行任务。",
+        status: "active",
+      }),
+    ]);
   });
 
   it("prefers the running mode-stage executor label over parent Ora text", () => {
@@ -5183,7 +5325,7 @@ describe("desktop session view model", () => {
     expect(assistant?.turn?.currentAgentLabel).toBe("Builder");
   });
 
-  it("keeps non-transcript child coordination chatter out of mode-stage mainline messages", () => {
+  it("keeps non-transcript child coordination chatter out of parent-turn delegation summaries", () => {
     const createdAt = 1_714_000_000_000;
     const runId = "run-mode-stage-private-chatter";
     const sessionId = "session-mode-stage-private-chatter";
@@ -5318,14 +5460,19 @@ describe("desktop session view model", () => {
       { [runId]: snapshot },
     ).filter((message) => message.role === "assistant");
 
-    expect(assistantMessages).toHaveLength(2);
-    const builderMessage = assistantMessages[1];
-    expect(builderMessage?.content).toBe("Builder 已完成代码修改。");
-    expect(builderMessage?.turn?.timelineItems).toContainEqual(expect.objectContaining({
+    expect(assistantMessages).toHaveLength(1);
+    const parentMessage = assistantMessages[0];
+    expect(parentMessage?.turn?.delegationActions).toEqual([
+      expect.objectContaining({
+        label: "Builder",
+        status: "complete",
+      }),
+    ]);
+    expect(parentMessage?.turn?.timelineItems).toContainEqual(expect.objectContaining({
       kind: "agent_message",
       content: "接下来交给 Reviewer。\n\nBuilder 已完成代码修改。",
     }));
-    expect(builderMessage?.turn?.timelineItems).not.toContainEqual(expect.objectContaining({
+    expect(parentMessage?.turn?.timelineItems).not.toContainEqual(expect.objectContaining({
       kind: "agent_message",
       content: "Reviewer，请顺手检查一下边界条件。",
     }));
@@ -6099,6 +6246,139 @@ describe("desktop session view model", () => {
       kind: "final_text",
       content: "综合子代理结果后，结论是应该先保持 record_only。",
     }));
+  });
+
+  it("keeps mode-stage delegation inside the parent turn instead of adding a separate assistant message", () => {
+    const createdAt = 1_714_000_300_000;
+    const runId = "run-mode-stage-delegation-inline";
+    const snapshot = {
+      runId,
+      sessionId: "session-mode-stage-delegation-inline",
+      turnIndex: 1,
+      status: "running",
+      pattern: "orchestrator_subagent",
+      modeId: DEERFLOW_HARNESS_MODE_ID,
+      input: { prompt: "delegate research", createdAt, context: {} },
+      config: {
+        modeId: DEERFLOW_HARNESS_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["ora", "ora-sub-1"],
+        providerId: "deepseek",
+        modelRef: "deepseek-chat",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-mode-stage-delegation-inline-test",
+        skillIds: [],
+        toolIds: ["agent.spawn", "file.read"],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [
+        { id: ORA_ROOT_AGENT_ID, label: ORA_ROOT_AGENT_LABEL, role: "root", model: "deepseek-chat", tools: [], budget: "", memoryScopes: [] },
+        { id: "ora-sub-1", label: "Research subagent", role: "research", model: "deepseek-chat", tools: [], budget: "", memoryScopes: [] },
+      ],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [
+        {
+          id: `${runId}:evt-0`,
+          runId,
+          seq: 0,
+          type: "tool.called",
+          createdAt: createdAt + 1,
+          pattern: "orchestrator_subagent",
+          agentId: ORA_ROOT_AGENT_ID,
+          nodeId: ORA_ROOT_AGENT_ID,
+          payload: {
+            toolId: "agent.spawn",
+            status: "succeeded",
+            input: {
+              description: "Research subagent",
+              tool_bundle: "research_readonly",
+            },
+            output: {
+              status: "async_launched",
+              child_agent_id: "ora-sub-1",
+              tool_bundle: "research_readonly",
+            },
+          },
+        },
+        {
+          id: `${runId}:evt-1`,
+          runId,
+          seq: 1,
+          type: "child_session.updated",
+          createdAt: createdAt + 5,
+          pattern: "orchestrator_subagent",
+          payload: {
+            childSession: {
+              id: `${runId}:ora-sub-1`,
+              agentId: "ora-sub-1",
+              label: "Research subagent",
+              status: "running",
+              lifecyclePhase: "running",
+              summary: "正在搜集资料",
+            },
+          },
+        },
+      ],
+      childSessions: [{
+        id: `${runId}:ora-sub-1`,
+        agentId: "ora-sub-1",
+        label: "Research subagent",
+        sessionClass: "temporary_spawn",
+        delegationKind: "mode_stage",
+        authoritySource: "mode_stage",
+        status: "running",
+        deliveryStatus: "running",
+        lifecyclePhase: "running",
+        parentTaskIntent: "chat",
+        childTaskIntent: "chat",
+        startedAt: createdAt + 1,
+        updatedAt: createdAt + 5,
+        summary: "正在搜集资料",
+      }],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 1, completed: 0, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      updatedAt: createdAt + 5,
+    } as unknown as OraStateSnapshot;
+
+    const messages = adaptChatMessages(
+      [{
+        id: `${runId}:user`,
+        sessionId: "session-mode-stage-delegation-inline",
+        runId,
+        turnIndex: 1,
+        role: "user",
+        content: "delegate research",
+        pattern: "orchestrator_subagent",
+        modeId: DEERFLOW_HARNESS_MODE_ID,
+        createdAt,
+      }],
+      { [runId]: snapshot },
+    );
+
+    const assistantMessages = messages.filter((message) => message.role === "assistant");
+    expect(assistantMessages).toHaveLength(1);
+    expect(assistantMessages[0]?.turn?.delegationActions).toEqual([
+      expect.objectContaining({
+        label: "Research subagent",
+        detail: "正在搜集资料",
+        status: "active",
+      }),
+    ]);
+    expect(assistantMessages[0]?.turn?.processSteps?.map((step) => step.label)).toContain("委派子代理");
   });
 
   it("shows blocked agent.spawn attempts as public failure milestones", () => {
