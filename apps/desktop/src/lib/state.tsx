@@ -274,6 +274,30 @@ export interface AcceptedPlanDecisionTurnProjection {
   createdAt: number;
 }
 
+export type RightWorkspacePageKind =
+  | "trails"
+  | "documents"
+  | "artifact"
+  | "child_session";
+
+export interface RightWorkspacePage {
+  id: string;
+  kind: RightWorkspacePageKind;
+  title: string;
+  sessionId: string;
+  targetRunId?: string;
+  projectId?: string;
+  artifactId?: string;
+  childSessionId?: string;
+}
+
+export interface RightWorkspaceSessionState {
+  open: boolean;
+  pages: RightWorkspacePage[];
+  selectedPageId?: string;
+  width: number;
+}
+
 export interface WorkbenchState {
   selectedPattern: CoordinationPattern;
   selectedModeId: string;
@@ -329,9 +353,7 @@ export interface WorkbenchState {
   activeView: AppView;
   settingsOpen: boolean;
   sidebarCollapsed: boolean;
-  detailDrawer: "trails" | "documents" | undefined;
-  artifactPanelOpen: boolean;
-  selectedArtifactId: string | undefined;
+  rightWorkspaceBySessionId: Record<string, RightWorkspaceSessionState>;
   language: AppLanguage;
 }
 
@@ -471,11 +493,12 @@ export type WorkbenchAction =
   | { type: "SET_VIEW"; view: AppView }
   | { type: "SET_SETTINGS_OPEN"; open: boolean }
   | { type: "TOGGLE_SIDEBAR" }
-  | { type: "TOGGLE_DETAIL_DRAWER"; drawer: "trails" | "documents" }
-  | { type: "CLOSE_DETAIL_DRAWER" }
-  | { type: "TOGGLE_ARTIFACT_PANEL" }
-  | { type: "OPEN_ARTIFACT_PANEL"; artifactId: string }
-  | { type: "CLOSE_ARTIFACT_PANEL" }
+  | { type: "SET_RIGHT_WORKSPACE_OPEN"; sessionId?: string; open: boolean }
+  | { type: "OPEN_RIGHT_WORKSPACE_PAGE"; page: RightWorkspacePage; open?: boolean }
+  | { type: "SELECT_RIGHT_WORKSPACE_PAGE"; sessionId?: string; pageId: string }
+  | { type: "CLOSE_RIGHT_WORKSPACE_PAGE"; sessionId?: string; pageId: string }
+  | { type: "CLOSE_RIGHT_WORKSPACE"; sessionId?: string }
+  | { type: "SET_RIGHT_WORKSPACE_WIDTH"; sessionId?: string; width: number }
   | { type: "SET_LANGUAGE"; language: AppLanguage };
 
 const initialSelectedPattern = BuiltInCoordinationPatternSchema
@@ -538,9 +561,7 @@ export const initialWorkbenchState: WorkbenchState = {
   activeView: "chat",
   settingsOpen: false,
   sidebarCollapsed: false,
-  detailDrawer: undefined,
-  artifactPanelOpen: false,
-  selectedArtifactId: undefined,
+  rightWorkspaceBySessionId: {},
   language: readStoredLanguage(),
 };
 
@@ -570,6 +591,152 @@ function reconcileProjectSidebarState(
       ),
     ),
   };
+}
+
+export const DEFAULT_RIGHT_WORKSPACE_WIDTH = 460;
+
+function defaultRightWorkspaceSessionState(): RightWorkspaceSessionState {
+  return {
+    open: false,
+    pages: [],
+    selectedPageId: undefined,
+    width: DEFAULT_RIGHT_WORKSPACE_WIDTH,
+  };
+}
+
+export function getRightWorkspaceSessionState(
+  state: Pick<WorkbenchState, "rightWorkspaceBySessionId">,
+  sessionId: string | undefined,
+): RightWorkspaceSessionState {
+  if (!sessionId) {
+    return defaultRightWorkspaceSessionState();
+  }
+  return state.rightWorkspaceBySessionId[sessionId] ?? defaultRightWorkspaceSessionState();
+}
+
+function setRightWorkspaceSessionState(
+  state: Pick<WorkbenchState, "rightWorkspaceBySessionId">,
+  sessionId: string,
+  next: RightWorkspaceSessionState,
+): Record<string, RightWorkspaceSessionState> {
+  return {
+    ...state.rightWorkspaceBySessionId,
+    [sessionId]: next,
+  };
+}
+
+function clampRightWorkspaceSelection(
+  pages: readonly RightWorkspacePage[],
+  selectedPageId: string | undefined,
+): string | undefined {
+  if (selectedPageId && pages.some((page) => page.id === selectedPageId)) {
+    return selectedPageId;
+  }
+  return pages.at(-1)?.id;
+}
+
+function upsertRightWorkspacePage(
+  workspace: RightWorkspaceSessionState,
+  page: RightWorkspacePage,
+  open = true,
+): RightWorkspaceSessionState {
+  const pages = [
+    page,
+    ...workspace.pages.filter((entry) => entry.id !== page.id),
+  ];
+  return {
+    open: open || workspace.open,
+    pages,
+    selectedPageId: page.id,
+    width: workspace.width,
+  };
+}
+
+function removeRightWorkspacePage(
+  workspace: RightWorkspaceSessionState,
+  pageId: string,
+): RightWorkspaceSessionState {
+  const pages = workspace.pages.filter((page) => page.id !== pageId);
+  return {
+    ...workspace,
+    pages,
+    selectedPageId: clampRightWorkspaceSelection(pages, workspace.selectedPageId === pageId ? undefined : workspace.selectedPageId),
+  };
+}
+
+function normalizeRightWorkspaceSessionState(
+  workspace: RightWorkspaceSessionState | undefined,
+): RightWorkspaceSessionState {
+  if (!workspace) {
+    return defaultRightWorkspaceSessionState();
+  }
+  const selectedPageId = clampRightWorkspaceSelection(
+    workspace.pages,
+    workspace.selectedPageId,
+  );
+  return {
+    open: workspace.open,
+    pages: workspace.pages,
+    selectedPageId,
+    width:
+      Number.isFinite(workspace.width) && workspace.width > 0
+        ? workspace.width
+        : DEFAULT_RIGHT_WORKSPACE_WIDTH,
+  };
+}
+
+function clearRightWorkspaceSessionPageKind(
+  workspace: RightWorkspaceSessionState,
+  kinds: readonly RightWorkspacePageKind[],
+): RightWorkspaceSessionState {
+  const pages = workspace.pages.filter((page) => !kinds.includes(page.kind));
+  return {
+    open: workspace.open,
+    pages,
+    selectedPageId: clampRightWorkspaceSelection(pages, workspace.selectedPageId),
+    width: workspace.width,
+  };
+}
+
+function clearRightWorkspacePageBindings(
+  workspace: RightWorkspaceSessionState,
+  page: RightWorkspacePage,
+): RightWorkspaceSessionState {
+  const pages = workspace.pages.map((entry) => {
+    if (entry.id !== page.id) {
+      return entry;
+    }
+    return page;
+  });
+  return {
+    ...workspace,
+    pages,
+    selectedPageId: clampRightWorkspaceSelection(pages, workspace.selectedPageId),
+  };
+}
+
+function reconcileRightWorkspaceSessions(
+  state: Pick<WorkbenchState, "rightWorkspaceBySessionId">,
+  sessions: readonly OraSessionSummary[],
+): Record<string, RightWorkspaceSessionState> {
+  const visibleSessionIds = new Set(sessions.map((session) => session.sessionId));
+  const next: Record<string, RightWorkspaceSessionState> = {};
+  for (const [sessionId, workspace] of Object.entries(state.rightWorkspaceBySessionId)) {
+    if (!visibleSessionIds.has(sessionId)) {
+      continue;
+    }
+    next[sessionId] = normalizeRightWorkspaceSessionState(workspace);
+  }
+  return next;
+}
+
+function removeRightWorkspaceSession(
+  state: Pick<WorkbenchState, "rightWorkspaceBySessionId">,
+  sessionId: string,
+): Record<string, RightWorkspaceSessionState> {
+  const next = { ...state.rightWorkspaceBySessionId };
+  delete next[sessionId];
+  return next;
 }
 
 function snapshotMatchesSessionSummary(
@@ -3393,14 +3560,13 @@ export function workbenchReducer(
         selectedTurnRunId: undefined,
         selectedBeatId: undefined,
         selectedNodeId: "run",
-        selectedArtifactId: undefined,
-        artifactPanelOpen: false,
         projects: [],
         sessions: [],
         selectedProjectId: undefined,
         activeSessionDetail: undefined,
         sessionDetailsById: {},
         sessionLiveSnapshotsById: {},
+        rightWorkspaceBySessionId: state.rightWorkspaceBySessionId,
         modes: [],
         promptText: "",
         sessionPromptTexts: {},
@@ -3518,6 +3684,7 @@ export function workbenchReducer(
           normalizedDetail.session,
         ),
       );
+      const rightWorkspaceBySessionId = reconcileRightWorkspaceSessions(state, action.sessions);
       if (
         action.preserveSelection &&
         state.selectedSessionId &&
@@ -3532,6 +3699,7 @@ export function workbenchReducer(
           projects: action.projects,
           sessions,
           ...projectSidebarState,
+          rightWorkspaceBySessionId,
           sessionLiveSnapshotsById: cacheSessionLiveSnapshot(
             state.sessionLiveSnapshotsById,
             effectiveSnapshot,
@@ -3557,6 +3725,7 @@ export function workbenchReducer(
         ...state,
         projects: action.projects,
         sessions,
+        rightWorkspaceBySessionId,
         selectedProjectId: action.detail.session.projectId,
         expandedProjectIds: action.detail.session.projectId
           ? {
@@ -3635,6 +3804,7 @@ export function workbenchReducer(
           state,
           action.sessions,
         ),
+        rightWorkspaceBySessionId: reconcileRightWorkspaceSessions(state, action.sessions),
         ...reconcileProjectSidebarState(state, action.projects),
         commandFeedback: action.feedback ?? state.commandFeedback,
         busyCommand: undefined,
@@ -3648,6 +3818,10 @@ export function workbenchReducer(
         ...state,
         sessions: state.sessions.filter(
           (session) => session.sessionId !== action.sessionId,
+        ),
+        rightWorkspaceBySessionId: removeRightWorkspaceSession(
+          state,
+          action.sessionId,
         ),
         sessionLiveSnapshotsById: clearSessionLiveSnapshot(
           state.sessionLiveSnapshotsById,
@@ -3993,9 +4167,6 @@ export function workbenchReducer(
         selectedSkillIds: sessionSkillIds(state, action.sessionId),
         permissionMode: sessionPermissionMode(state, action.sessionId),
         taskIntent: sessionTaskIntent(state, action.sessionId),
-        selectedArtifactId: undefined,
-        detailDrawer: undefined,
-        artifactPanelOpen: false,
         runLifecycle: snapshot
           ? runLifecycleFromSnapshot(snapshot, {
               previous: state.runLifecycle,
@@ -4004,6 +4175,109 @@ export function workbenchReducer(
             })
           : runLifecycleFromPendingRun(pendingRun),
         pendingPlanDecisionResolution: undefined,
+      };
+    }
+
+    case "SET_RIGHT_WORKSPACE_OPEN": {
+      const sessionId = action.sessionId ?? state.selectedSessionId;
+      if (!sessionId) {
+        return state;
+      }
+      const workspace = getRightWorkspaceSessionState(state, sessionId);
+      const open = action.open;
+      return {
+        ...state,
+        rightWorkspaceBySessionId: setRightWorkspaceSessionState(state, sessionId, {
+          ...workspace,
+          open,
+        }),
+      };
+    }
+
+    case "OPEN_RIGHT_WORKSPACE_PAGE": {
+      const sessionId = action.page.sessionId ?? state.selectedSessionId;
+      if (!sessionId) {
+        return state;
+      }
+      const workspace = getRightWorkspaceSessionState(state, sessionId);
+      return {
+        ...state,
+        rightWorkspaceBySessionId: setRightWorkspaceSessionState(
+          state,
+          sessionId,
+          upsertRightWorkspacePage(workspace, action.page, action.open ?? true),
+        ),
+      };
+    }
+
+    case "SELECT_RIGHT_WORKSPACE_PAGE": {
+      const sessionId = action.sessionId ?? state.selectedSessionId;
+      if (!sessionId) {
+        return state;
+      }
+      const workspace = getRightWorkspaceSessionState(state, sessionId);
+      if (!workspace.pages.some((page) => page.id === action.pageId)) {
+        return state;
+      }
+      return {
+        ...state,
+        rightWorkspaceBySessionId: setRightWorkspaceSessionState(state, sessionId, {
+          ...workspace,
+          open: true,
+          selectedPageId: action.pageId,
+        }),
+      };
+    }
+
+    case "CLOSE_RIGHT_WORKSPACE_PAGE": {
+      const sessionId = action.sessionId ?? state.selectedSessionId;
+      if (!sessionId) {
+        return state;
+      }
+      const workspace = getRightWorkspaceSessionState(state, sessionId);
+      if (!workspace.pages.some((page) => page.id === action.pageId)) {
+        return state;
+      }
+      return {
+        ...state,
+        rightWorkspaceBySessionId: setRightWorkspaceSessionState(
+          state,
+          sessionId,
+          {
+            ...removeRightWorkspacePage(workspace, action.pageId),
+            open: true,
+          },
+        ),
+      };
+    }
+
+    case "CLOSE_RIGHT_WORKSPACE": {
+      const sessionId = action.sessionId ?? state.selectedSessionId;
+      if (!sessionId) {
+        return state;
+      }
+      const workspace = getRightWorkspaceSessionState(state, sessionId);
+      return {
+        ...state,
+        rightWorkspaceBySessionId: setRightWorkspaceSessionState(state, sessionId, {
+          ...workspace,
+          open: false,
+        }),
+      };
+    }
+
+    case "SET_RIGHT_WORKSPACE_WIDTH": {
+      const sessionId = action.sessionId ?? state.selectedSessionId;
+      if (!sessionId) {
+        return state;
+      }
+      const workspace = getRightWorkspaceSessionState(state, sessionId);
+      return {
+        ...state,
+        rightWorkspaceBySessionId: setRightWorkspaceSessionState(state, sessionId, {
+          ...workspace,
+          width: action.width,
+        }),
       };
     }
 
@@ -4700,7 +4974,13 @@ export function workbenchReducer(
       return { ...state, busyCommand: action.command };
 
     case "SET_COMMAND_FEEDBACK":
-      return { ...state, commandFeedback: action.feedback };
+      return {
+        ...state,
+        commandFeedback: action.feedback,
+        isLoading: state.pendingPlanDecisionResolution?.status === "accepted"
+          ? true
+          : state.isLoading,
+      };
 
     case "SET_BRIDGE_STATUS":
       return { ...state, bridgeStatus: action.status };
@@ -4720,29 +5000,6 @@ export function workbenchReducer(
 
     case "TOGGLE_SIDEBAR":
       return { ...state, sidebarCollapsed: !state.sidebarCollapsed };
-
-    case "TOGGLE_DETAIL_DRAWER":
-      return {
-        ...state,
-        detailDrawer:
-          state.detailDrawer === action.drawer ? undefined : action.drawer,
-      };
-
-    case "CLOSE_DETAIL_DRAWER":
-      return { ...state, detailDrawer: undefined };
-
-    case "TOGGLE_ARTIFACT_PANEL":
-      return { ...state, artifactPanelOpen: !state.artifactPanelOpen };
-
-    case "OPEN_ARTIFACT_PANEL":
-      return {
-        ...state,
-        selectedArtifactId: action.artifactId,
-        artifactPanelOpen: true,
-      };
-
-    case "CLOSE_ARTIFACT_PANEL":
-      return { ...state, artifactPanelOpen: false };
 
     case "SET_LANGUAGE":
       if (typeof window !== "undefined") {

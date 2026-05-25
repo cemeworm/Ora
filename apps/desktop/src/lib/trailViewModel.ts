@@ -88,6 +88,8 @@ export interface TrailDebugSummary {
     cost: string;
     messages: string;
     costAvailable?: boolean;
+    cacheHitRatio?: string;
+    cacheDataAvailable: boolean;
   };
 }
 
@@ -263,12 +265,16 @@ export function buildTrailDebugSummary(
         : "建议查看：证据 · 本次 run 暂无关键事件。",
     recommendedTab: recommendedFinding?.suggestedTab ?? (lastImportantEvent ? "flow" : "evidence"),
     lastImportantEvent,
-    metrics: {
-      runtime: formatDuration(liveMetrics?.runtimeMs ?? Math.max(0, snapshot.updatedAt - (snapshot.input.createdAt ?? snapshot.updatedAt))),
-      cost: formatUsd(liveMetrics?.estimatedCostUsd ?? trace?.generationRefs.reduce((sum, ref) => sum + (ref.totalCostUsd ?? 0), 0) ?? 0),
-      messages: String(liveMetrics?.messageCount ?? snapshot.events.filter((event) => event.type === "message.delta").length),
-      costAvailable: liveMetrics?.costAvailable ?? ((trace?.generationRefs.length ?? 0) > 0),
-    },
+    metrics: (() => {
+      const cacheHitRatio = buildCacheHitRatio(snapshot);
+      return {
+        runtime: formatDuration(liveMetrics?.runtimeMs ?? Math.max(0, snapshot.updatedAt - (snapshot.input.createdAt ?? snapshot.updatedAt))),
+        cost: formatUsd(liveMetrics?.estimatedCostUsd ?? trace?.generationRefs.reduce((sum, ref) => sum + (ref.totalCostUsd ?? 0), 0) ?? 0),
+        messages: String(liveMetrics?.messageCount ?? snapshot.events.filter((event) => event.type === "message.delta").length),
+        costAvailable: liveMetrics?.costAvailable ?? ((trace?.generationRefs.length ?? 0) > 0),
+        ...(cacheHitRatio ? { cacheHitRatio: cacheHitRatio.ratio, cacheDataAvailable: cacheHitRatio.dataAvailable } : { cacheDataAvailable: false }),
+      };
+    })(),
   };
 }
 
@@ -2779,4 +2785,74 @@ function interventionActionToLabel(action: string): string {
     case "stop": return "停止";
     default: return action;
   }
+}
+
+// ---- KV Cache Hit Ratio ----
+
+export interface CacheHitRatio {
+  ratio: string;
+  dataAvailable: boolean;
+}
+
+/**
+ * 计算 Session 级 LLM Provider KV Cache 命中比例。
+ *
+ * 聚合当前 snapshot 中所有 context.usage.updated 事件中 usage 的 cache 字段，
+ * 按 token 量加权平均。支持 OpenAI (promptCacheHitTokens/promptCacheMissTokens)
+ * 和 Anthropic (cacheReadInputTokens/cacheCreationInputTokens) 两套字段族。
+ *
+ * 字段族检测逻辑：同一个 Session 只会用一种 provider，检测哪个字段族
+ * 两个字段都显式存在就用哪个。两者同时存在时优先 OpenAI。
+ *
+ * 边缘情况：
+ * - 无 context.usage.updated 事件 → { ratio: undefined, dataAvailable: false }
+ * - 有事件但 usage 中无 cache 字段 → { ratio: undefined, dataAvailable: false }
+ * - 仅 promptCacheHitTokens 存在但 promptCacheMissTokens 缺失
+ *   （OpenAI cached_tokens fallback 路径） → { ratio: undefined, dataAvailable: false }
+ * - 分母为 0 但字段存在 → { ratio: "0%", dataAvailable: true }
+ */
+export function buildCacheHitRatio(snapshot: OraStateSnapshot): { ratio?: string; dataAvailable: boolean } {
+  let totalHit = 0;
+  let totalMiss = 0;
+  let hasOpenAIFamily = false;
+  let hasAnthropicFamily = false;
+
+  for (const event of snapshot.events) {
+    if (event.type !== "context.usage.updated") continue;
+    const payload = event.payload as Record<string, unknown> | undefined;
+    const usage = payload?.usage as Record<string, unknown> | undefined;
+    if (!usage) continue;
+
+    const openaiHit = nonnegativeInt(usage.promptCacheHitTokens);
+    const openaiMiss = nonnegativeInt(usage.promptCacheMissTokens);
+    const anthropicRead = nonnegativeInt(usage.cacheReadInputTokens);
+    const anthropicCreation = nonnegativeInt(usage.cacheCreationInputTokens);
+
+    // Detect which family is present. A family is only valid when both fields exist.
+    const openaiComplete = openaiHit !== undefined && openaiMiss !== undefined;
+    const anthropicComplete = anthropicRead !== undefined && anthropicCreation !== undefined;
+
+    if (openaiComplete) {
+      hasOpenAIFamily = true;
+      totalHit += openaiHit;
+      totalMiss += openaiMiss;
+    } else if (anthropicComplete) {
+      hasAnthropicFamily = true;
+      totalHit += anthropicRead;
+      totalMiss += anthropicCreation;
+    }
+    // If only one field is present (e.g. cached_tokens fallback), skip — don't produce 100%誤報.
+  }
+
+  if (!hasOpenAIFamily && !hasAnthropicFamily) {
+    return { dataAvailable: false };
+  }
+
+  const denominator = totalHit + totalMiss;
+  if (denominator === 0) {
+    return { ratio: "0%", dataAvailable: true };
+  }
+
+  const hitRatio = Math.round((totalHit / denominator) * 100);
+  return { ratio: `${hitRatio}%`, dataAvailable: true };
 }

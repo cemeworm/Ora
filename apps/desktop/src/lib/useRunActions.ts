@@ -589,11 +589,11 @@ export function useRunActions() {
   const selectedRunModeSelection = state.selectedModeSelection;
   const selectedNode = viewModel?.topologyNodes.find((node) => node.id === state.selectedNodeId) ?? viewModel?.topologyNodes[0];
   const selectedBeat = useMemo(() => {
-    if (!state.detailDrawer && state.selectedBeatId === undefined) {
+    if (state.selectedBeatId === undefined) {
       return undefined;
     }
     return viewModel?.beats.find((beat) => beat.id === state.selectedBeatId) ?? viewModel?.beats[0];
-  }, [viewModel, state.selectedBeatId, state.detailDrawer]);
+  }, [viewModel, state.selectedBeatId]);
   const selectedAgent = useMemo(() =>
     viewModel?.agents.find((agent) => agent.id === selectedNode?.agentId) ??
     viewModel?.agents.find((agent) => agent.id === selectedBeat?.agentId) ??

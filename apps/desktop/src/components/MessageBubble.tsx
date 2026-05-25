@@ -7,6 +7,7 @@ import { MarkdownContent } from "./MarkdownContent";
 interface MessageBubbleProps {
   role: ChatMessage["role"];
   content: string;
+  inlineContent?: ReactNode;
   children?: ReactNode;
   className?: string;
 }
@@ -14,6 +15,7 @@ interface MessageBubbleProps {
 export const MessageBubble = memo(function MessageBubble({
   role,
   content,
+  inlineContent,
   children,
   className,
 }: MessageBubbleProps) {
@@ -62,6 +64,8 @@ export const MessageBubble = memo(function MessageBubble({
     );
   }
 
+  const hasInlineContent = Boolean(inlineContent);
+
   return (
     <div className={cn("group relative flex w-full flex-col gap-1.5", isUser ? "items-end" : "items-start", className)}>
       <div className="flex max-w-full">
@@ -69,11 +73,24 @@ export const MessageBubble = memo(function MessageBubble({
           <div
             className={cn(
               isUser
-                ? "flex items-center rounded-2xl bg-muted px-3.5 py-2.5 text-foreground shadow-xs"
-                : "flex items-center rounded-2xl bg-card px-3.5 py-2.5 text-foreground shadow-xs ring-1 ring-inset ring-border",
+                ? hasInlineContent
+                  ? "flex flex-col items-start gap-1.5 rounded-2xl bg-muted px-3.5 py-2.5 text-foreground shadow-xs"
+                  : "flex items-center rounded-2xl bg-muted px-3.5 py-2.5 text-foreground shadow-xs"
+                : hasInlineContent
+                  ? "flex flex-col items-start gap-1.5 rounded-2xl bg-card px-3.5 py-2.5 text-foreground shadow-xs ring-1 ring-inset ring-border"
+                  : "flex items-center rounded-2xl bg-card px-3.5 py-2.5 text-foreground shadow-xs ring-1 ring-inset ring-border",
             )}
           >
-            {content ? (
+            {inlineContent ? (
+              <div className={cn("w-full", isUser ? "flex flex-col gap-1.5" : "flex flex-col gap-1.5")}>
+                {inlineContent}
+                {content ? (
+                  isUser
+                    ? <span className="block whitespace-pre-wrap break-words leading-5 [overflow-wrap:anywhere]">{content}</span>
+                    : <MarkdownContent content={content} />
+                ) : null}
+              </div>
+            ) : content ? (
               isUser
                 ? <span className="block whitespace-pre-wrap break-words leading-5 [overflow-wrap:anywhere]">{content}</span>
                 : <MarkdownContent content={content} />

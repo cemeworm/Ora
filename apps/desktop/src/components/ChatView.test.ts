@@ -6,6 +6,7 @@ import {
   CHAT_VIEW_COLLABORATION_DETAIL_CLASS,
   CHAT_VIEW_COLLABORATION_ITEM_CLASS,
   CHAT_VIEW_COLLABORATION_PANEL_CLASS,
+  CHAT_VIEW_OVERLAY_PANEL_CLASS,
   CHAT_VIEW_CONTENT_ROW_CLASS,
   CHAT_VIEW_CONTENT_ROW_DEFAULT_LAYOUT_CLASS,
   CHAT_VIEW_DESKTOP_DOCKED_CONTENT_ROW_CLASS,
@@ -635,12 +636,12 @@ describe("chat view collaboration overlay visibility", () => {
 
   it("anchors the desktop overlay rail near the content area's top-right edge", () => {
     expect(CHAT_VIEW_DESKTOP_OVERLAY_RAIL_CLASS).toContain("absolute");
-    expect(CHAT_VIEW_DESKTOP_OVERLAY_RAIL_CLASS).toContain("right-4");
-    expect(CHAT_VIEW_DESKTOP_OVERLAY_RAIL_CLASS).toContain("top-3");
+    expect(CHAT_VIEW_DESKTOP_OVERLAY_RAIL_CLASS).toContain("right-6");
+    expect(CHAT_VIEW_DESKTOP_OVERLAY_RAIL_CLASS).toContain("top-5");
     expect(CHAT_VIEW_DESKTOP_OVERLAY_RAIL_CLASS).toContain("hidden");
     expect(CHAT_VIEW_DESKTOP_OVERLAY_RAIL_CLASS).toContain("lg:block");
-    expect(CHAT_VIEW_DESKTOP_OVERLAY_RAIL_CLASS).toContain("xl:right-6");
-    expect(CHAT_VIEW_DESKTOP_OVERLAY_RAIL_CLASS).toContain("xl:top-4");
+    expect(CHAT_VIEW_DESKTOP_OVERLAY_RAIL_CLASS).toContain("xl:right-8");
+    expect(CHAT_VIEW_DESKTOP_OVERLAY_RAIL_CLASS).toContain("xl:top-6");
   });
 
   it("keeps the desktop overlay stack interactive with a bounded floating width", () => {
@@ -648,11 +649,11 @@ describe("chat view collaboration overlay visibility", () => {
     expect(CHAT_VIEW_DESKTOP_OVERLAY_STACK_CLASS).toContain("flex");
     expect(CHAT_VIEW_DESKTOP_OVERLAY_STACK_CLASS).toContain("gap-2.5");
     expect(CHAT_VIEW_DESKTOP_OVERLAY_STACK_CLASS).toContain("w-full");
-    expect(CHAT_VIEW_DESKTOP_FLOATING_STACK_CLASS).toContain("w-[min(20rem,calc(100vw-5rem))]");
+    expect(CHAT_VIEW_DESKTOP_FLOATING_STACK_CLASS).toContain("w-[min(20rem,calc(100vw-6.5rem))]");
   });
 
-  it("reuses the plan tray floating shell for the collaboration panel surfaces", () => {
-    expect(CHAT_VIEW_COLLABORATION_PANEL_CLASS).toBe(FLOATING_OVERLAY_PANEL_CLASS);
+  it("uses a single unified floating shell for the right overlay rail", () => {
+    expect(CHAT_VIEW_OVERLAY_PANEL_CLASS).toBe(FLOATING_OVERLAY_PANEL_CLASS);
     expect(CHAT_VIEW_COLLABORATION_ITEM_CLASS).toBe(FLOATING_OVERLAY_CARD_CLASS);
     expect(CHAT_VIEW_COLLABORATION_DETAIL_CLASS).toBe(FLOATING_OVERLAY_DETAIL_CLASS);
     expect(CHAT_VIEW_COLLABORATION_ITEM_CLASS).not.toContain("bg-card/80");
@@ -675,6 +676,12 @@ describe("chat view collaboration overlay visibility", () => {
         layout: "docked",
         childSessions: [childSession("running-child", "running")],
         planSteps: [{ step: "整理结果", status: "pending" }],
+        planSectionOpen: true,
+        collaborationSectionOpen: true,
+        expandedChildId: undefined,
+        onTogglePlanSection: () => undefined,
+        onToggleCollaborationSection: () => undefined,
+        onToggleChild: () => undefined,
         turnSnapshots: {},
       }),
     );
@@ -689,13 +696,21 @@ describe("chat view collaboration overlay visibility", () => {
       createElement(DesktopOverlayRail, {
         childSessions: [childSession("running-child", "running")],
         planSteps: [{ step: "整理结果", status: "pending" }],
+        planSectionOpen: true,
+        collaborationSectionOpen: true,
+        expandedChildId: undefined,
+        onTogglePlanSection: () => undefined,
+        onToggleCollaborationSection: () => undefined,
+        onToggleChild: () => undefined,
         turnSnapshots: {},
       }),
     );
 
-    expect(html).toContain(CHAT_VIEW_COLLABORATION_PANEL_CLASS);
+    expect(html).toContain(CHAT_VIEW_OVERLAY_PANEL_CLASS);
+    expect(html).toContain("进度");
+    expect(html).toContain("协作");
+    expect(html).toContain("1 个任务仍在协作流程中");
     expect(html).toContain(CHAT_VIEW_COLLABORATION_ITEM_CLASS);
-    expect(html).toContain("子代理协作中");
     expect(html).toContain("执行中");
   });
 
@@ -716,6 +731,12 @@ describe("chat view collaboration overlay visibility", () => {
           },
         }],
         planSteps: [],
+        planSectionOpen: true,
+        collaborationSectionOpen: true,
+        expandedChildId: undefined,
+        onTogglePlanSection: () => undefined,
+        onToggleCollaborationSection: () => undefined,
+        onToggleChild: () => undefined,
         turnSnapshots: {
           "run-parent-1": parentOverlaySnapshot(),
         },
@@ -834,6 +855,12 @@ describe("chat view collaboration overlay visibility", () => {
           },
         }],
         planSteps: [],
+        planSectionOpen: true,
+        collaborationSectionOpen: true,
+        expandedChildId: undefined,
+        onTogglePlanSection: () => undefined,
+        onToggleCollaborationSection: () => undefined,
+        onToggleChild: () => undefined,
         turnSnapshots: {
           "run-parent-1": parentOverlaySnapshot(),
         },
@@ -856,6 +883,12 @@ describe("chat view collaboration overlay visibility", () => {
           sourceRunId: "run-parent-1",
         }],
         planSteps: [],
+        planSectionOpen: true,
+        collaborationSectionOpen: true,
+        expandedChildId: undefined,
+        onTogglePlanSection: () => undefined,
+        onToggleCollaborationSection: () => undefined,
+        onToggleChild: () => undefined,
         turnSnapshots: {},
       }),
     );

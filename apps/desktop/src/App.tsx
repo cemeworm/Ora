@@ -9,18 +9,17 @@ import {
   useState,
   type CSSProperties,
   type ErrorInfo,
-  type PointerEvent,
   type ReactNode,
 } from "react";
 import { LoaderCircle } from "lucide-react";
+import { Button } from "./components/ui/button";
 import { AppShell } from "./components/AppShell";
-import { ArtifactDrawer } from "./components/ArtifactDrawer";
 import { ChatView } from "./components/ChatView";
-import { DocumentsDrawer } from "./components/DocumentsDrawer";
+import { ChatMessages } from "./components/ChatMessages";
 import { ProviderOnboardingStep } from "./components/onboarding/ProviderOnboardingStep";
+import { RightWorkspacePane } from "./components/RightWorkspacePane";
 import { SettingsView } from "./components/SettingsView";
 import { SpaceFrame } from "./components/SpaceFrame";
-import { TrailsDrawer } from "./components/TrailsDrawer";
 import { useRunActions } from "./lib/useRunActions";
 import {
   deriveRunInteractionState,
@@ -32,6 +31,7 @@ import {
   type OnboardingStatus,
 } from "./lib/onboarding";
 import {
+  DEFAULT_RIGHT_WORKSPACE_WIDTH,
   beginSessionHistorySnapshotLoad,
   beginSessionHistorySnapshotLoadRegistryLease,
   deriveSessionHistorySnapshotLoadKey,
@@ -41,6 +41,7 @@ import {
   evictSessionTurnSnapshotCache,
   getActiveSnapshot,
   getPendingRunState,
+  getRightWorkspaceSessionState,
   markSessionHistorySnapshotLoaded,
   mergeSessionHistorySnapshotBatch,
   mergeRunStreamSnapshot,
@@ -57,7 +58,7 @@ import {
   useWorkbench,
   WorkbenchProvider,
 } from "./lib/state";
-import type { AppView, ArtifactRecord, ChatMessage } from "./types";
+import type { AppView, ChatMessage, ActionRecord, CheckpointRecord, PlanItem, SessionRun, TopologyNode, TopologyEdge, AgentProfile, ArtifactRecord } from "./types";
 import { cn } from "./lib/utils";
 import { getRecords, clearRecords, timeStart, timeEnd, recordTiming } from "./lib/debugTiming";
 import {
@@ -65,7 +66,9 @@ import {
   adaptRenderableChatMessages,
 } from "./lib/viewModel";
 import { buildChatMessagesCacheKey } from "./lib/chatMessageCache";
+import type { ChatMessages as ChatMessagesType } from "./components/ChatMessages";
 import type {
+  RuntimeClient,
   OraProjectFileEntry,
   OraProjectFileReadResult,
   OraRunEventStream,
@@ -113,11 +116,9 @@ const SkillsView = lazy(() =>
   })),
 );
 
-const DEFAULT_DETAIL_PANEL_WIDTH = 460;
-const DEFAULT_ARTIFACT_PANEL_WIDTH = 420;
 const MIN_DETAIL_PANEL_WIDTH = 360;
-const MIN_ARTIFACT_PANEL_WIDTH = 320;
 const MIN_MAIN_PANEL_WIDTH = 640;
+const MAX_DETAIL_PANEL_WIDTH = 720;
 const WINDOW_TITLE_BASE = "Ora";
 const MAX_TURN_SNAPSHOT_SESSIONS = 8;
 const MAX_TURN_SNAPSHOTS_PER_SESSION = 40;
@@ -254,16 +255,7 @@ class WorkbenchErrorBoundary extends Component<
 
 function WorkbenchInner() {
   const { state, dispatch } = useWorkbench();
-  const {
-    runtimeClient,
-    viewModel,
-    selectedSession,
-    selectedNode,
-    selectedBeat,
-    selectedAgent,
-    selectedCheckpoint,
-    actions,
-  } = useRunActions();
+  const { runtimeClient, viewModel, selectedSession, actions } = useRunActions();
   const [onboardingStatus, setOnboardingStatus] = useState<
     OnboardingStatus | undefined
   >(() => readOnboardingStatus());
@@ -271,9 +263,9 @@ function WorkbenchInner() {
     boolean | undefined
   >();
   const splitContainerRef = useRef<HTMLDivElement>(null);
-  const [detailPanelWidth, setDetailPanelWidth] = useState(
-    DEFAULT_DETAIL_PANEL_WIDTH,
-  );
+  const resizePointerIdRef = useRef<number | null>(null);
+  const closeWorkspaceTimerRef = useRef<number | undefined>(undefined);
+  const openWorkspaceFrameRef = useRef<number | undefined>(undefined);
   const projectsRef = useRef(state.projects);
   const activeSessionIdRef = useRef<string | undefined>(
     state.activeSessionDetail?.session.sessionId,
@@ -359,9 +351,6 @@ function WorkbenchInner() {
     });
   }, [dispatch]);
 
-  const [artifactPanelWidth, setArtifactPanelWidth] = useState(
-    DEFAULT_ARTIFACT_PANEL_WIDTH,
-  );
   const [turnSnapshotsBySession, setTurnSnapshotsBySession] = useState<
     Record<
       string,
@@ -372,8 +361,6 @@ function WorkbenchInner() {
       }
     >
   >({});
-  const [projectFileArtifact, setProjectFileArtifact] =
-    useState<ArtifactRecord>();
   useDocumentTranslations(state.language);
 
   function completeOnboarding(status: OnboardingStatus) {
@@ -401,105 +388,127 @@ function WorkbenchInner() {
     state.providerStatuses,
   ]);
 
-  function clampDetailPanelWidth(nextWidth: number) {
-    const containerWidth =
-      splitContainerRef.current?.getBoundingClientRect().width ?? 0;
-    if (containerWidth <= 0) return nextWidth;
-    const reservedArtifactWidth = state.artifactPanelOpen
-      ? artifactPanelWidth + 8
-      : 0;
+  const selectedSessionWorkspace = getRightWorkspaceSessionState(
+    state,
+    state.selectedSessionId,
+  );
+  const [visibleWorkspaceSessionId, setVisibleWorkspaceSessionId] = useState<string | undefined>(
+    state.selectedSessionId,
+  );
+  const [workspaceClosingSessionId, setWorkspaceClosingSessionId] = useState<string | undefined>(undefined);
+  const [workspaceAnimatedOpen, setWorkspaceAnimatedOpen] = useState(false);
+  const [isResizingRightWorkspace, setIsResizingRightWorkspace] = useState(false);
+  const selectedWorkspaceWidth = Math.min(
+    Math.max(selectedSessionWorkspace.width || DEFAULT_RIGHT_WORKSPACE_WIDTH, MIN_DETAIL_PANEL_WIDTH),
+    MAX_DETAIL_PANEL_WIDTH,
+  );
+  const isCurrentWorkspaceVisible =
+    selectedSessionWorkspace.open ||
+    (Boolean(state.selectedSessionId) &&
+      visibleWorkspaceSessionId === state.selectedSessionId);
 
-    const maxAllowedWidth = Math.max(
-      MIN_DETAIL_PANEL_WIDTH,
-      Math.min(
-        720,
-        containerWidth - MIN_MAIN_PANEL_WIDTH - reservedArtifactWidth - 24,
-      ),
-    );
+  useEffect(() => {
+    const sessionId = state.selectedSessionId;
+    if (!sessionId) {
+      setVisibleWorkspaceSessionId(undefined);
+      setWorkspaceClosingSessionId(undefined);
+      if (closeWorkspaceTimerRef.current !== undefined) {
+        window.clearTimeout(closeWorkspaceTimerRef.current);
+        closeWorkspaceTimerRef.current = undefined;
+      }
+      return;
+    }
 
-    return Math.min(
-      Math.max(nextWidth, MIN_DETAIL_PANEL_WIDTH),
-      maxAllowedWidth,
-    );
-  }
+    if (selectedSessionWorkspace.open) {
+      if (closeWorkspaceTimerRef.current !== undefined) {
+        window.clearTimeout(closeWorkspaceTimerRef.current);
+        closeWorkspaceTimerRef.current = undefined;
+      }
+      if (openWorkspaceFrameRef.current !== undefined) {
+        window.cancelAnimationFrame(openWorkspaceFrameRef.current);
+        openWorkspaceFrameRef.current = undefined;
+      }
+      setWorkspaceClosingSessionId(undefined);
+      if (visibleWorkspaceSessionId !== sessionId) {
+        setVisibleWorkspaceSessionId(sessionId);
+        setWorkspaceAnimatedOpen(false);
+        openWorkspaceFrameRef.current = window.requestAnimationFrame(() => {
+          setWorkspaceAnimatedOpen(true);
+          openWorkspaceFrameRef.current = undefined;
+        });
+      } else {
+        setWorkspaceAnimatedOpen(true);
+      }
+      return;
+    }
 
-  function clampArtifactPanelWidth(nextWidth: number) {
-    const containerWidth =
-      splitContainerRef.current?.getBoundingClientRect().width ?? 0;
-    if (containerWidth <= 0) return nextWidth;
-    const reservedDetailWidth = state.detailDrawer ? detailPanelWidth + 8 : 0;
+    if (visibleWorkspaceSessionId !== sessionId) {
+      return;
+    }
 
-    const maxAllowedWidth = Math.max(
-      MIN_ARTIFACT_PANEL_WIDTH,
-      Math.min(
-        680,
-        containerWidth - MIN_MAIN_PANEL_WIDTH - reservedDetailWidth - 24,
-      ),
-    );
+    if (openWorkspaceFrameRef.current !== undefined) {
+      window.cancelAnimationFrame(openWorkspaceFrameRef.current);
+      openWorkspaceFrameRef.current = undefined;
+    }
+    setWorkspaceAnimatedOpen(false);
+    setWorkspaceClosingSessionId(sessionId);
+    if (closeWorkspaceTimerRef.current !== undefined) {
+      window.clearTimeout(closeWorkspaceTimerRef.current);
+    }
+    closeWorkspaceTimerRef.current = window.setTimeout(() => {
+      setVisibleWorkspaceSessionId((current) => (current === sessionId ? undefined : current));
+      setWorkspaceClosingSessionId((current) => (current === sessionId ? undefined : current));
+      setWorkspaceAnimatedOpen(false);
+      closeWorkspaceTimerRef.current = undefined;
+    }, 220);
+  }, [selectedSessionWorkspace.open, state.selectedSessionId, visibleWorkspaceSessionId]);
 
-    return Math.min(
-      Math.max(nextWidth, MIN_ARTIFACT_PANEL_WIDTH),
-      maxAllowedWidth,
-    );
-  }
+  const handleRightWorkspaceResize = useCallback((clientX: number) => {
+    const container = splitContainerRef.current;
+    const sessionId = state.selectedSessionId;
+    if (!container || !sessionId) {
+      return;
+    }
+    const rect = container.getBoundingClientRect();
+    const nextWidth = rect.right - clientX;
+    const maxWidth = Math.min(MAX_DETAIL_PANEL_WIDTH, rect.width - MIN_MAIN_PANEL_WIDTH);
+    const clampedWidth = Math.max(MIN_DETAIL_PANEL_WIDTH, Math.min(nextWidth, maxWidth));
+    dispatch({
+      type: "SET_RIGHT_WORKSPACE_WIDTH",
+      sessionId,
+      width: clampedWidth,
+    });
+  }, [dispatch, state.selectedSessionId]);
 
-  function handleDetailResizeStart(event: PointerEvent<HTMLButtonElement>) {
-    if (!state.detailDrawer) return;
+  const handleResizePointerMove = useCallback((event: PointerEvent) => {
+    if (resizePointerIdRef.current !== event.pointerId) {
+      return;
+    }
+    handleRightWorkspaceResize(event.clientX);
+  }, [handleRightWorkspaceResize]);
 
-    event.preventDefault();
-    const startX = event.clientX;
-    const startWidth = detailPanelWidth;
+  const handleResizePointerUp = useCallback((event: PointerEvent) => {
+    if (resizePointerIdRef.current !== event.pointerId) {
+      return;
+    }
+    resizePointerIdRef.current = null;
+    setIsResizingRightWorkspace(false);
+    window.removeEventListener("pointermove", handleResizePointerMove);
+    window.removeEventListener("pointerup", handleResizePointerUp);
+  }, [handleResizePointerMove]);
 
-    const previousCursor = document.body.style.cursor;
-    const previousUserSelect = document.body.style.userSelect;
-
-    document.body.style.cursor = "col-resize";
-    document.body.style.userSelect = "none";
-
-    const handlePointerMove = (moveEvent: globalThis.PointerEvent) => {
-      const deltaX = moveEvent.clientX - startX;
-      setDetailPanelWidth(clampDetailPanelWidth(startWidth - deltaX));
+  useEffect(() => {
+    return () => {
+      if (closeWorkspaceTimerRef.current !== undefined) {
+        window.clearTimeout(closeWorkspaceTimerRef.current);
+      }
+      if (openWorkspaceFrameRef.current !== undefined) {
+        window.cancelAnimationFrame(openWorkspaceFrameRef.current);
+      }
+      window.removeEventListener("pointermove", handleResizePointerMove);
+      window.removeEventListener("pointerup", handleResizePointerUp);
     };
-
-    const handlePointerUp = () => {
-      document.body.style.cursor = previousCursor;
-      document.body.style.userSelect = previousUserSelect;
-      window.removeEventListener("pointermove", handlePointerMove);
-      window.removeEventListener("pointerup", handlePointerUp);
-    };
-
-    window.addEventListener("pointermove", handlePointerMove);
-    window.addEventListener("pointerup", handlePointerUp);
-  }
-
-  function handleArtifactResizeStart(event: PointerEvent<HTMLButtonElement>) {
-    if (!state.artifactPanelOpen) return;
-
-    event.preventDefault();
-    const startX = event.clientX;
-    const startWidth = artifactPanelWidth;
-
-    const previousCursor = document.body.style.cursor;
-    const previousUserSelect = document.body.style.userSelect;
-
-    document.body.style.cursor = "col-resize";
-    document.body.style.userSelect = "none";
-
-    const handlePointerMove = (moveEvent: globalThis.PointerEvent) => {
-      const deltaX = moveEvent.clientX - startX;
-      setArtifactPanelWidth(clampArtifactPanelWidth(startWidth - deltaX));
-    };
-
-    const handlePointerUp = () => {
-      document.body.style.cursor = previousCursor;
-      document.body.style.userSelect = previousUserSelect;
-      window.removeEventListener("pointermove", handlePointerMove);
-      window.removeEventListener("pointerup", handlePointerUp);
-    };
-
-    window.addEventListener("pointermove", handlePointerMove);
-    window.addEventListener("pointerup", handlePointerUp);
-  }
+  }, [handleResizePointerMove, handleResizePointerUp]);
 
   useEffect(() => {
     let cancelled = false;
@@ -548,28 +557,6 @@ function WorkbenchInner() {
       cancelled = true;
     };
   }, [runtimeClient, dispatch]);
-
-  useEffect(() => {
-    if (!state.detailDrawer && !state.artifactPanelOpen) return;
-
-    const syncPanelWidth = () => {
-      setDetailPanelWidth((currentWidth) =>
-        clampDetailPanelWidth(currentWidth),
-      );
-      setArtifactPanelWidth((currentWidth) =>
-        clampArtifactPanelWidth(currentWidth),
-      );
-    };
-
-    syncPanelWidth();
-    window.addEventListener("resize", syncPanelWidth);
-    return () => window.removeEventListener("resize", syncPanelWidth);
-  }, [
-    state.detailDrawer,
-    state.artifactPanelOpen,
-    detailPanelWidth,
-    artifactPanelWidth,
-  ]);
 
   useEffect(() => {
     const title = windowTitleForView(
@@ -921,7 +908,7 @@ function WorkbenchInner() {
   }, [activeSessionHistoryLoadTarget]);
 
   useEffect(() => {
-    if (state.detailDrawer !== "trails" || !state.selectedTurnRunId) {
+    if (!selectedSessionWorkspace.open || !state.selectedTurnRunId) {
       return;
     }
 
@@ -992,7 +979,7 @@ function WorkbenchInner() {
     runtimeClient,
     dispatch,
     getActiveSnapshot(state.runLifecycle)?.runId,
-    state.detailDrawer,
+    selectedSessionWorkspace.open,
     state.selectedTurnRunId,
     activeSessionCachedTurnSnapshots,
     state.selectedSessionId,
@@ -1094,45 +1081,6 @@ function WorkbenchInner() {
     state.runLifecycle,
     state.selectedSessionId,
   ]);
-  const selectedArtifact = useMemo(() => {
-    if (!state.selectedArtifactId) return undefined;
-
-    if (projectFileArtifact?.id === state.selectedArtifactId) {
-      return projectFileArtifact;
-    }
-
-    const activeArtifact = viewModel?.artifacts.find(
-      (artifact) => artifact.id === state.selectedArtifactId,
-    );
-    if (activeArtifact) return activeArtifact;
-
-    return chatMessages
-      .flatMap((message) => message.turn?.artifacts ?? [])
-      .find((artifact) => artifact.id === state.selectedArtifactId);
-  }, [
-    chatMessages,
-    projectFileArtifact,
-    state.selectedArtifactId,
-    viewModel?.artifacts,
-  ]);
-
-  async function handleOpenProjectFile(projectId: string, path: string) {
-    try {
-      const file = await runtimeClient.readProjectFile(projectId, path);
-      const artifact = projectFileToArtifact(file);
-      setProjectFileArtifact(artifact);
-      dispatch({ type: "OPEN_ARTIFACT_PANEL", artifactId: artifact.id });
-    } catch (error) {
-      dispatch({
-        type: "SET_COMMAND_FEEDBACK",
-        feedback:
-          error instanceof Error
-            ? error.message
-            : "Project file preview failed.",
-      });
-    }
-  }
-
   async function handleCopyProjectPath(absolutePath: string) {
     try {
       await copyTextToClipboard(absolutePath);
@@ -1354,7 +1302,7 @@ function WorkbenchInner() {
       {settingsDialog}
       <div
         ref={splitContainerRef}
-        className="flex h-full min-h-0 items-stretch gap-0.5"
+        className="flex h-full min-h-0 items-stretch gap-px"
       >
         <WorkspacePane className="min-w-0 flex-1">
           <ChatView
@@ -1396,7 +1344,16 @@ function WorkbenchInner() {
             onResolvePlanDecision={actions.resolvePlanDecision}
             onCancelRun={actions.cancelRun}
             onOpenArtifact={(artifactId) =>
-              dispatch({ type: "OPEN_ARTIFACT_PANEL", artifactId })
+              dispatch({
+                type: "OPEN_RIGHT_WORKSPACE_PAGE",
+                page: {
+                  id: `artifact:${artifactId}:${crypto.randomUUID()}`,
+                  kind: "artifact",
+                  title: "Artifact",
+                  sessionId: state.selectedSessionId ?? selectedSession.id,
+                  artifactId,
+                },
+              })
             }
             onSubmitFeedback={handleSubmitFeedback}
             onSubmitAllClarifications={(answers) =>
@@ -1409,98 +1366,138 @@ function WorkbenchInner() {
             onSelectNode={(id) => dispatch({ type: "SELECT_NODE", nodeId: id })}
             onSelectSession={(sessionId) => void actions.selectSession(sessionId)}
             onStartRun={actions.startRun}
-            onToggleDetailDrawer={(drawer) =>
-              dispatch({ type: "TOGGLE_DETAIL_DRAWER", drawer })
+            onSetRightWorkspaceOpen={(open) =>
+              dispatch({
+                type: "SET_RIGHT_WORKSPACE_OPEN",
+                sessionId: state.selectedSessionId,
+                open,
+              })
             }
-            detailDrawer={state.detailDrawer}
+            selectedSessionWorkspace={selectedSessionWorkspace}
           />
         </WorkspacePane>
 
-        {state.detailDrawer && (
+        {isCurrentWorkspaceVisible && (
           <>
-            <button
-              type="button"
-              aria-label="Resize trails panel"
-              onPointerDown={handleDetailResizeStart}
-              className="group flex h-full w-1.5 shrink-0 cursor-col-resize items-center justify-center bg-transparent"
+            <div
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="调整侧边栏宽度"
+              className={cn(
+                "group relative shrink-0 overflow-hidden touch-none motion-reduce:transition-none",
+                isResizingRightWorkspace
+                  ? "transition-none"
+                  : "transition-[width,opacity] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]",
+                workspaceAnimatedOpen
+                  ? "w-1.5 cursor-col-resize opacity-100"
+                  : "pointer-events-none w-0 cursor-default opacity-0",
+              )}
+              onPointerDown={(event) => {
+                if (!selectedSessionWorkspace.open) {
+                  return;
+                }
+                setIsResizingRightWorkspace(true);
+                resizePointerIdRef.current = event.pointerId;
+                window.addEventListener("pointermove", handleResizePointerMove);
+                window.addEventListener("pointerup", handleResizePointerUp);
+              }}
             >
-              <span className="h-10 w-0.5 rounded-full bg-black/90 transition-colors group-hover:bg-black" />
-            </button>
-
-            <WorkspacePane
-              className="min-w-0 shrink-0 flex-none"
-              style={{ width: detailPanelWidth }}
+              <div className="absolute left-1/2 top-1/2 h-10 w-[2px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-black/85" />
+            </div>
+            <div
+              className={cn(
+                "flex min-w-0 shrink-0 flex-none justify-end overflow-hidden motion-reduce:transition-none",
+                isResizingRightWorkspace
+                  ? "transition-none"
+                  : "transition-[width,opacity] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]",
+                workspaceAnimatedOpen
+                  ? "opacity-100"
+                  : "opacity-0",
+                workspaceClosingSessionId === state.selectedSessionId ? "pointer-events-none" : "",
+              )}
+              style={{
+                width: workspaceAnimatedOpen ? selectedWorkspaceWidth : 0,
+                maxWidth: MAX_DETAIL_PANEL_WIDTH,
+              }}
             >
-              {state.detailDrawer === "documents" &&
-              selectedSession.projectId ? (
-                <DocumentsDrawer
-                  projectId={selectedSession.projectId}
-                  projectLabel={
-                    selectedProject?.label ?? selectedSession.project
-                  }
+              <WorkspacePane
+                className="h-full min-w-0"
+                style={{
+                  width: selectedWorkspaceWidth,
+                  minWidth: MIN_DETAIL_PANEL_WIDTH,
+                  maxWidth: MAX_DETAIL_PANEL_WIDTH,
+                }}
+              >
+                <RightWorkspacePane
+                  workspace={selectedSessionWorkspace}
                   runtimeClient={runtimeClient}
-                  onClose={() => dispatch({ type: "CLOSE_DETAIL_DRAWER" })}
-                  onOpenFile={(path) =>
-                    void handleOpenProjectFile(selectedSession.projectId!, path)
-                  }
-                  onCopyPath={(path) => void handleCopyProjectPath(path)}
-                  onAddFileToChat={(file) =>
-                    handleAddProjectFileToChat(selectedSession.projectId!, file)
-                  }
-                />
-              ) : (
-                <TrailsDrawer
-                  open={state.detailDrawer === "trails"}
-                  onClose={() => dispatch({ type: "CLOSE_DETAIL_DRAWER" })}
-                  actions={actionRecords}
-                  agents={agents}
-                  artifacts={artifacts}
+                  selectedSession={selectedSession}
+                  selectedProject={selectedProject}
                   activeSnapshot={getActiveSnapshot(state.runLifecycle)}
                   busyCommand={state.busyCommand}
                   checkpoints={checkpoints}
                   commandFeedback={state.commandFeedback}
                   planItems={planItems}
-                  selectedAgent={selectedAgent}
-                  selectedBeat={selectedBeat}
-                  selectedCheckpoint={selectedCheckpoint}
-                  selectedNode={selectedNode}
                   runInteractionState={runInteractionState}
-                  selectedSession={selectedSession}
+                  chatMessages={chatMessages}
+                  turnSnapshots={activeSessionTurnSnapshots}
+                  sessionDetailsById={state.sessionDetailsById}
                   onForkRun={actions.forkRun}
                   onForkAndResumeRun={actions.forkAndResumeRun}
                   onReplaySelection={actions.replaySelection}
                   onResumeRun={actions.resumeRun}
                   onCancelRun={actions.cancelRun}
+                  onCopyPath={(path) => void handleCopyProjectPath(path)}
+                  onAddFileToChat={(file) =>
+                    selectedSession.projectId
+                      ? handleAddProjectFileToChat(selectedSession.projectId, file)
+                      : undefined
+                  }
+                  onOpenChildSessionPage={(childSessionId, targetRunId) =>
+                    dispatch({
+                      type: "OPEN_RIGHT_WORKSPACE_PAGE",
+                      page: {
+                        id: `child-session:${childSessionId}:${crypto.randomUUID()}`,
+                        kind: "child_session",
+                        title: "Child session",
+                        sessionId: state.selectedSessionId ?? selectedSession.id,
+                        childSessionId,
+                        targetRunId,
+                      },
+                    })
+                  }
+                  onOpenWorkspacePage={(page) =>
+                    dispatch({ type: "OPEN_RIGHT_WORKSPACE_PAGE", page })
+                  }
+                  onCloseWorkspace={() =>
+                    dispatch({
+                      type: "CLOSE_RIGHT_WORKSPACE",
+                      sessionId: state.selectedSessionId,
+                    })
+                  }
+                  onSelectPage={(page) =>
+                    dispatch({
+                      type: "SELECT_RIGHT_WORKSPACE_PAGE",
+                      sessionId: page.sessionId,
+                      pageId: page.id,
+                    })
+                  }
+                  onClosePage={(page) =>
+                    dispatch({
+                      type: "CLOSE_RIGHT_WORKSPACE_PAGE",
+                      sessionId: page.sessionId,
+                      pageId: page.id,
+                    })
+                  }
+                  onCacheSessionDetail={(detail) =>
+                    dispatch({
+                      type: "CACHE_SESSION_DETAIL",
+                      detail,
+                    })
+                  }
                 />
-              )}
-            </WorkspacePane>
-          </>
-        )}
-
-        {state.artifactPanelOpen && (
-          <>
-            <button
-              type="button"
-              aria-label="Resize artifact panel"
-              onPointerDown={handleArtifactResizeStart}
-              className="group flex h-full w-1.5 shrink-0 cursor-col-resize items-center justify-center bg-transparent"
-            >
-              <span className="h-10 w-0.5 rounded-full bg-black/90 transition-colors group-hover:bg-black" />
-            </button>
-
-            <WorkspacePane
-              className="min-w-0 shrink-0 flex-none"
-              style={{ width: artifactPanelWidth }}
-            >
-              <ArtifactDrawer
-                artifact={
-                  selectedArtifact
-                    ? toArtifactRecord(selectedArtifact)
-                    : undefined
-                }
-                onClose={() => dispatch({ type: "CLOSE_ARTIFACT_PANEL" })}
-              />
-            </WorkspacePane>
+              </WorkspacePane>
+            </div>
           </>
         )}
       </div>
@@ -1595,42 +1592,6 @@ function DebugTimingOverlay() {
       )}
     </div>
   );
-}
-
-function toArtifactRecord(artifact: ArtifactRecord): ArtifactRecord {
-  return {
-    id: artifact.id,
-    label: artifact.label,
-    kind: artifact.kind,
-    mimeType: artifact.mimeType,
-    createdAt: artifact.createdAt,
-    uri: artifact.uri,
-    sizeBytes: artifact.sizeBytes,
-    payload: artifact.payload,
-  };
-}
-
-function projectFileToArtifact(file: OraProjectFileReadResult): ArtifactRecord {
-  return {
-    id: `project-file:${file.projectId}:${file.path}`,
-    label: file.path,
-    kind: "file",
-    mimeType: file.mimeType,
-    createdAt: formatArtifactTime(file.modifiedAt),
-    uri: file.uri,
-    sizeBytes: file.sizeBytes,
-    payload: file.payload,
-  };
-}
-
-function formatArtifactTime(timestamp: number) {
-  if (!Number.isFinite(timestamp) || timestamp <= 0) {
-    return "Unknown";
-  }
-  return new Date(timestamp).toLocaleTimeString([], {
-    hour: "2-digit",
-    minute: "2-digit",
-  });
 }
 
 async function copyTextToClipboard(text: string) {

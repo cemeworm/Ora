@@ -31,7 +31,7 @@ export function ArtifactDrawer({ artifact, onClose }: ArtifactDrawerProps) {
       <div className="flex min-h-0 flex-1 flex-col overflow-y-auto p-3">
         {artifact ? (
           <div data-i18n-skip="" className="flex min-h-0 flex-1 flex-col">
-            <ArtifactPreview artifact={artifact} />
+            <ArtifactPreviewContent artifact={artifact} />
           </div>
         ) : (
           <div className="rounded-xl border border-border bg-card/70 p-4 text-sm text-muted-foreground">
@@ -53,7 +53,7 @@ function ArtifactKindIcon({ artifact }: { artifact?: ArtifactRecord }) {
   return <FileText size={16} className="text-muted-foreground" />;
 }
 
-function ArtifactPreview({ artifact }: { artifact: ArtifactRecord }) {
+export function ArtifactPreviewContent({ artifact }: { artifact: ArtifactRecord }) {
   const fileChange = fileChangePayload(artifact.payload);
   if (fileChange) {
     if (isHtmlArtifact(artifact)) {

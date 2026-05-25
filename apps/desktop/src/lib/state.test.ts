@@ -786,6 +786,163 @@ describe("session turn snapshot cache helpers", () => {
 });
 
 describe("desktop workbench state", () => {
+  it("persists right workspace pages per session and restores them on session switch", () => {
+    let state = workbenchReducer(initialWorkbenchState, {
+      type: "SET_COLLECTIONS",
+      projects: [],
+      sessions: [sessionSummary("session-a"), sessionSummary("session-b")],
+    });
+
+    state = workbenchReducer(state, { type: "SELECT_SESSION", sessionId: "session-a" });
+    state = workbenchReducer(state, {
+      type: "OPEN_RIGHT_WORKSPACE_PAGE",
+      page: {
+        id: "trails:a:1",
+        kind: "trails",
+        title: "Trails",
+        sessionId: "session-a",
+        targetRunId: "run-a-1",
+      },
+    });
+    state = workbenchReducer(state, {
+      type: "OPEN_RIGHT_WORKSPACE_PAGE",
+      page: {
+        id: "documents:a:1",
+        kind: "documents",
+        title: "Documents",
+        sessionId: "session-a",
+        projectId: "project-a",
+      },
+    });
+
+    state = workbenchReducer(state, { type: "SELECT_SESSION", sessionId: "session-b" });
+    state = workbenchReducer(state, {
+      type: "OPEN_RIGHT_WORKSPACE_PAGE",
+      page: {
+        id: "artifact:b:1",
+        kind: "artifact",
+        title: "Artifact",
+        sessionId: "session-b",
+        artifactId: "artifact-b-1",
+      },
+    });
+
+    expect(state.rightWorkspaceBySessionId["session-a"]).toMatchObject({
+      open: true,
+      selectedPageId: "documents:a:1",
+    });
+    expect(state.rightWorkspaceBySessionId["session-a"]?.pages.map((page) => page.id)).toEqual([
+      "documents:a:1",
+      "trails:a:1",
+    ]);
+    expect(state.rightWorkspaceBySessionId["session-b"]).toMatchObject({
+      open: true,
+      selectedPageId: "artifact:b:1",
+    });
+
+    state = workbenchReducer(state, { type: "SELECT_SESSION", sessionId: "session-a" });
+    expect(state.selectedSessionId).toBe("session-a");
+    expect(state.rightWorkspaceBySessionId["session-a"]?.selectedPageId).toBe("documents:a:1");
+
+    state = workbenchReducer(state, { type: "SELECT_SESSION", sessionId: "session-b" });
+    expect(state.selectedSessionId).toBe("session-b");
+    expect(state.rightWorkspaceBySessionId["session-b"]?.selectedPageId).toBe("artifact:b:1");
+  });
+
+  it("keeps right workspace open state isolated per session while preserving page stacks", () => {
+    let state = workbenchReducer(initialWorkbenchState, {
+      type: "SET_COLLECTIONS",
+      projects: [],
+      sessions: [sessionSummary("session-a"), sessionSummary("session-b")],
+    });
+
+    state = workbenchReducer(state, { type: "SELECT_SESSION", sessionId: "session-a" });
+    state = workbenchReducer(state, {
+      type: "OPEN_RIGHT_WORKSPACE_PAGE",
+      page: {
+        id: "trails:a:1",
+        kind: "trails",
+        title: "Trails",
+        sessionId: "session-a",
+        targetRunId: "run-a-1",
+      },
+    });
+    state = workbenchReducer(state, {
+      type: "CLOSE_RIGHT_WORKSPACE",
+      sessionId: "session-a",
+    });
+
+    state = workbenchReducer(state, { type: "SELECT_SESSION", sessionId: "session-b" });
+    state = workbenchReducer(state, {
+      type: "OPEN_RIGHT_WORKSPACE_PAGE",
+      page: {
+        id: "documents:b:1",
+        kind: "documents",
+        title: "Documents",
+        sessionId: "session-b",
+        projectId: "project-b",
+      },
+    });
+
+    expect(state.rightWorkspaceBySessionId["session-a"]).toMatchObject({
+      open: false,
+      selectedPageId: "trails:a:1",
+    });
+    expect(state.rightWorkspaceBySessionId["session-a"]?.pages).toHaveLength(1);
+    expect(state.rightWorkspaceBySessionId["session-b"]).toMatchObject({
+      open: true,
+      selectedPageId: "documents:b:1",
+    });
+  });
+
+  it("persists right workspace width per session and keeps empty open workspaces valid", () => {
+    let state = workbenchReducer(initialWorkbenchState, {
+      type: "SET_COLLECTIONS",
+      projects: [],
+      sessions: [sessionSummary("session-a"), sessionSummary("session-b")],
+    });
+
+    state = workbenchReducer(state, { type: "SELECT_SESSION", sessionId: "session-a" });
+    state = workbenchReducer(state, {
+      type: "SET_RIGHT_WORKSPACE_OPEN",
+      sessionId: "session-a",
+      open: true,
+    });
+    state = workbenchReducer(state, {
+      type: "SET_RIGHT_WORKSPACE_WIDTH",
+      sessionId: "session-a",
+      width: 612,
+    });
+
+    state = workbenchReducer(state, { type: "SELECT_SESSION", sessionId: "session-b" });
+    state = workbenchReducer(state, {
+      type: "OPEN_RIGHT_WORKSPACE_PAGE",
+      page: {
+        id: "trails:b:1",
+        kind: "trails",
+        title: "Trails",
+        sessionId: "session-b",
+        targetRunId: "run-b-1",
+      },
+    });
+    state = workbenchReducer(state, {
+      type: "SET_RIGHT_WORKSPACE_WIDTH",
+      sessionId: "session-b",
+      width: 520,
+    });
+
+    expect(state.rightWorkspaceBySessionId["session-a"]).toMatchObject({
+      open: true,
+      pages: [],
+      width: 612,
+    });
+    expect(state.rightWorkspaceBySessionId["session-b"]).toMatchObject({
+      open: true,
+      selectedPageId: "trails:b:1",
+      width: 520,
+    });
+  });
+
   it("does not leave a disabled provider selected after registry updates", () => {
     const enabled: OraProviderConfig = {
       id: "enabled-openai",

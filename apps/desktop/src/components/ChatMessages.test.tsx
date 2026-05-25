@@ -762,6 +762,52 @@ describe("ChatMessages bottom inset", () => {
     expect(html).toContain('Hello');
   });
 
+  it("renders selected skills and user text inside the same user bubble", () => {
+    const html = renderToStaticMarkup(
+      <ChatMessages
+        chatMessages={[{
+          id: "msg-skill-text",
+          role: "user",
+          content: "请评估这个方案",
+          timestamp: "12:04",
+          skills: [
+            { id: "think", name: "think" },
+            { id: "check", name: "check" },
+          ],
+        }]}
+      />,
+    );
+
+    expect(html).toContain("think");
+    expect(html).toContain("check");
+    expect(html).toContain("请评估这个方案");
+    expect(html).toContain("lucide-sparkles");
+    expect(html.match(/rounded-2xl bg-muted px-3\.5 py-2\.5/g)).toHaveLength(1);
+  });
+
+  it("renders a pending run with selected skills as one user message bubble", () => {
+    const createdAt = 1_714_000_000_000;
+    const sessionId = "session-pending-skill-ui";
+    const messages = adaptRenderableChatMessages({
+      transcript: [],
+      pendingRun: {
+        sessionId,
+        prompt: "请评估这个方案",
+        createdAt,
+        skills: [{ id: "think", name: "think" }],
+      },
+      selectedSessionId: sessionId,
+    });
+
+    expect(messages.filter((message) => message.role === "user")).toHaveLength(1);
+    expect(messages[0]).toMatchObject({
+      id: `${sessionId}:pending:user`,
+      role: "user",
+      content: "请评估这个方案",
+      skills: [{ id: "think", name: "think" }],
+    });
+  });
+
   it("passes the fork-session action through to assistant turns", () => {
     const html = renderToStaticMarkup(
       <ChatMessages

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildAgentLanes,
   buildActiveMemorySummary,
+  buildCacheHitRatio,
   buildCausalDecisionSummary,
   buildEffectiveStrategySummary,
   buildSemanticTimeline,
@@ -1834,6 +1835,238 @@ describe("trail debugger view model", () => {
     expect(chainSummary.totalChains).toBe(0);
     expect(chainSummary.chains).toHaveLength(0);
     expect(chainSummary.uncertaintyTrend).toEqual([]);
+  });
+
+  // ---- KV Cache Hit Ratio ----
+
+  it("returns undefined for snapshot without context.usage.updated events", () => {
+    const snapshot = baseSnapshot({ events: [] });
+    const result = buildCacheHitRatio(snapshot);
+    expect(result.dataAvailable).toBe(false);
+    expect(result.ratio).toBeUndefined();
+  });
+
+  it("returns undefined when usage has no cache fields", () => {
+    const snapshot = baseSnapshot({
+      events: [{
+        id: "evt-usage",
+        runId: "run-test",
+        seq: 1,
+        type: "context.usage.updated",
+        createdAt: 1000,
+        agentId: "ora",
+        nodeId: "ora",
+        payload: {
+          phase: "mid_turn",
+          reason: "test",
+          providerId: "test",
+          modelId: "test-model",
+          usage: {
+            inputTokens: 1000,
+            outputTokens: 200,
+            totalTokens: 1200,
+            source: "provider",
+          },
+          limit: 200000,
+          contextWindow: 200000,
+        },
+      }],
+    });
+    const result = buildCacheHitRatio(snapshot);
+    expect(result.dataAvailable).toBe(false);
+    expect(result.ratio).toBeUndefined();
+  });
+
+  it("computes OpenAI cache hit ratio from promptCacheHitTokens/promptCacheMissTokens", () => {
+    const snapshot = baseSnapshot({
+      events: [{
+        id: "evt-usage",
+        runId: "run-test",
+        seq: 1,
+        type: "context.usage.updated",
+        createdAt: 1000,
+        agentId: "ora",
+        nodeId: "ora",
+        payload: {
+          phase: "mid_turn",
+          reason: "test",
+          providerId: "openai",
+          modelId: "gpt-4o",
+          usage: {
+            inputTokens: 2000,
+            outputTokens: 200,
+            totalTokens: 2200,
+            promptCacheHitTokens: 1500,
+            promptCacheMissTokens: 500,
+            source: "provider",
+          },
+          limit: 200000,
+          contextWindow: 200000,
+        },
+      }],
+    });
+    const result = buildCacheHitRatio(snapshot);
+    expect(result.dataAvailable).toBe(true);
+    expect(result.ratio).toBe("75%");
+  });
+
+  it("computes Anthropic cache hit ratio from cacheReadInputTokens/cacheCreationInputTokens", () => {
+    const snapshot = baseSnapshot({
+      events: [{
+        id: "evt-usage",
+        runId: "run-test",
+        seq: 1,
+        type: "context.usage.updated",
+        createdAt: 1000,
+        agentId: "ora",
+        nodeId: "ora",
+        payload: {
+          phase: "mid_turn",
+          reason: "test",
+          providerId: "anthropic",
+          modelId: "claude-sonnet-4-20250514",
+          usage: {
+            inputTokens: 2000,
+            outputTokens: 200,
+            totalTokens: 2200,
+            cacheReadInputTokens: 1600,
+            cacheCreationInputTokens: 400,
+            source: "provider",
+          },
+          limit: 200000,
+          contextWindow: 200000,
+        },
+      }],
+    });
+    const result = buildCacheHitRatio(snapshot);
+    expect(result.dataAvailable).toBe(true);
+    expect(result.ratio).toBe("80%");
+  });
+
+  it("aggregates cache across multiple context.usage.updated events", () => {
+    const snapshot = baseSnapshot({
+      events: [
+        {
+          id: "evt-usage-1",
+          runId: "run-test",
+          seq: 1,
+          type: "context.usage.updated",
+          createdAt: 1000,
+          agentId: "ora",
+          nodeId: "ora",
+          payload: {
+            phase: "initial",
+            reason: "test",
+            providerId: "openai",
+            modelId: "gpt-4o",
+            usage: {
+              inputTokens: 2000,
+              outputTokens: 200,
+              totalTokens: 2200,
+              promptCacheHitTokens: 1500,
+              promptCacheMissTokens: 500,
+              source: "provider",
+            },
+            limit: 200000,
+            contextWindow: 200000,
+          },
+        },
+        {
+          id: "evt-usage-2",
+          runId: "run-test",
+          seq: 2,
+          type: "context.usage.updated",
+          createdAt: 2000,
+          agentId: "ora",
+          nodeId: "ora",
+          payload: {
+            phase: "mid_turn",
+            reason: "test",
+            providerId: "openai",
+            modelId: "gpt-4o",
+            usage: {
+              inputTokens: 100,
+              outputTokens: 100,
+              totalTokens: 200,
+              promptCacheHitTokens: 0,
+              promptCacheMissTokens: 100,
+              source: "provider",
+            },
+            limit: 200000,
+            contextWindow: 200000,
+          },
+        },
+      ],
+    });
+    const result = buildCacheHitRatio(snapshot);
+    expect(result.dataAvailable).toBe(true);
+    // (1500+0) / (1500+500 + 0+100) = 1500/2100 = 71%
+    expect(result.ratio).toBe("71%");
+  });
+
+  it("returns 0% when fields exist but denominator is zero", () => {
+    const snapshot = baseSnapshot({
+      events: [{
+        id: "evt-usage",
+        runId: "run-test",
+        seq: 1,
+        type: "context.usage.updated",
+        createdAt: 1000,
+        agentId: "ora",
+        nodeId: "ora",
+        payload: {
+          phase: "mid_turn",
+          reason: "test",
+          providerId: "openai",
+          modelId: "gpt-4o",
+          usage: {
+            inputTokens: 0,
+            outputTokens: 0,
+            totalTokens: 0,
+            promptCacheHitTokens: 0,
+            promptCacheMissTokens: 0,
+            source: "provider",
+          },
+          limit: 200000,
+          contextWindow: 200000,
+        },
+      }],
+    });
+    const result = buildCacheHitRatio(snapshot);
+    expect(result.dataAvailable).toBe(true);
+    expect(result.ratio).toBe("0%");
+  });
+
+  it("ignores incomplete OpenAI cached_tokens fallback (only hit, no miss)", () => {
+    const snapshot = baseSnapshot({
+      events: [{
+        id: "evt-usage",
+        runId: "run-test",
+        seq: 1,
+        type: "context.usage.updated",
+        createdAt: 1000,
+        agentId: "ora",
+        nodeId: "ora",
+        payload: {
+          phase: "mid_turn",
+          reason: "test",
+          providerId: "openai",
+          modelId: "gpt-4o",
+          usage: {
+            inputTokens: 1000,
+            outputTokens: 200,
+            totalTokens: 1200,
+            promptCacheHitTokens: 500,
+            source: "provider",
+          },
+          limit: 200000,
+          contextWindow: 200000,
+        },
+      }],
+    });
+    const result = buildCacheHitRatio(snapshot);
+    expect(result.dataAvailable).toBe(false);
+    expect(result.ratio).toBeUndefined();
   });
 });
 

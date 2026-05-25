@@ -43,6 +43,34 @@ describe("desktop session view model", () => {
     expect(messages[1]?.content).not.toContain("正在准备");
   });
 
+  it("keeps selected skills on the same pending user message", () => {
+    const messages = adaptPendingRunMessages({
+      sessionId: "session-pending-skill",
+      prompt: "请评估方案",
+      createdAt: 1_714_000_000_000,
+      skills: [
+        { id: "think", name: "think" },
+        { id: "check", name: "check" },
+      ],
+    });
+
+    expect(messages).toHaveLength(2);
+    expect(messages[0]).toMatchObject({
+      id: "session-pending-skill:pending:user",
+      role: "user",
+      content: "请评估方案",
+      skills: [
+        { id: "think", name: "think" },
+        { id: "check", name: "check" },
+      ],
+    });
+    expect(messages[1]).toMatchObject({
+      id: "session-pending-skill:pending:assistant",
+      role: "assistant",
+      isPlaceholder: true,
+    });
+  });
+
   it("keeps a new pending user message visible when an old running turn has the same prompt", () => {
     const createdAt = 1_714_000_000_000;
     const sessionId = "session-second-turn-pending";
@@ -4513,14 +4541,11 @@ describe("desktop session view model", () => {
 
     expect(assistant?.content).toBe(finalVerdict);
     expect(assistant?.turn?.presentation).toMatchObject({
-      primarySurface: "timeline",
+      primarySurface: "body",
       bodyContent: finalVerdict,
       showStandaloneBody: true,
     });
-    expect(assistant?.turn?.timelineItems).toContainEqual(expect.objectContaining({
-      kind: "agent_message",
-      content: finalVerdict,
-    }));
+    expect(assistant?.turn?.presentation?.visibleTimelineItems).toEqual([]);
   });
 
   it("keeps transcript-owned final answers settled without a thinking indicator", () => {

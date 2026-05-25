@@ -90,7 +90,18 @@ export function ProjectSignalsView({ runtimeClient, bridgeStatus, onOpenEvidence
         }
         dispatch({ type: "SELECT_TURN", runId, snapshot });
         dispatch({ type: "SET_VIEW", view: "chat" });
-        dispatch({ type: "TOGGLE_DETAIL_DRAWER", drawer: "trails" });
+        if (snapshot.sessionId) {
+          dispatch({
+            type: "OPEN_RIGHT_WORKSPACE_PAGE",
+            page: {
+              id: `trail:${runId}`,
+              kind: "trails",
+              title: "Trails",
+              sessionId: snapshot.sessionId,
+              targetRunId: runId,
+            },
+          });
+        }
         onOpenEvidence?.();
       } catch (nextError) {
         setError(nextError instanceof Error ? nextError.message : "Unable to open run evidence.");

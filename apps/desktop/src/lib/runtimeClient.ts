@@ -3128,7 +3128,9 @@ class LocalJsonRpcRuntime {
         supportsFileOutbound: false,
         supportsMessageUpdate: false,
       },
-      config: isRecord(record.config) ? record.config : {},
+      config: isRecord(record.config)
+        ? { localReadRoots: [], ...record.config }
+        : { localReadRoots: [] },
       secretRefs: {},
       createdAt: now,
       updatedAt: now,

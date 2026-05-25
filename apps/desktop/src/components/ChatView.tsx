@@ -1,5 +1,5 @@
 import { deriveSnapshotGateProjection, type ModeSelection } from "@cemeworm/shared";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Bot, ChevronDown } from "lucide-react";
 import { AssistantTurnCard } from "./AssistantTurnCard";
 import { ChatHeader } from "./ChatHeader";
@@ -11,7 +11,9 @@ import {
   FLOATING_OVERLAY_DETAIL_CLASS,
   FLOATING_OVERLAY_ICON_PLATE_CLASS,
   FLOATING_OVERLAY_PANEL_CLASS,
-  PlanStepsTray,
+  PLAN_STEPS_TRAY_HEADER_CHEVRON_CLASS,
+  PlanStepsList,
+  nextPlanTrayOpenState,
 } from "./PlanStepsTray";
 import { cn } from "../lib/utils";
 import type {
@@ -28,7 +30,12 @@ import type {
 } from "../types";
 import type { OraStateSnapshot } from "../lib/runtimeClient";
 import { runnableProviderOptions } from "../lib/providerOptions";
-import { useWorkbench, type ComposerImageAttachment, type ComposerLocalFileAttachment } from "../lib/state";
+import {
+  useWorkbench,
+  type ComposerImageAttachment,
+  type ComposerLocalFileAttachment,
+  type RightWorkspaceSessionState,
+} from "../lib/state";
 import { derivePresentedAssistantTurnFromSnapshot } from "../lib/viewModel";
 import { getWelcomeGreeting } from "../lib/welcomeGreeting";
 import type { DesktopRunInteractionState } from "../lib/runInteractionState";
@@ -54,12 +61,20 @@ export const CHAT_VIEW_DESKTOP_DOCKED_CONTENT_ROW_CLASS =
 export const CHAT_VIEW_DESKTOP_DOCKED_RAIL_CLASS =
   "flex h-full min-h-0 min-w-0 flex-col overflow-y-auto overscroll-contain";
 export const CHAT_VIEW_DESKTOP_OVERLAY_RAIL_CLASS =
-  "pointer-events-none absolute right-4 top-3 z-20 hidden lg:block xl:right-6 xl:top-4";
+  "pointer-events-none absolute right-6 top-5 z-20 hidden lg:block xl:right-8 xl:top-6";
 export const CHAT_VIEW_DESKTOP_OVERLAY_STACK_CLASS =
   "pointer-events-auto flex w-full min-w-0 flex-col gap-2.5";
 export const CHAT_VIEW_DESKTOP_FLOATING_STACK_CLASS =
-  "pointer-events-auto flex w-[min(20rem,calc(100vw-5rem))] flex-col gap-2.5";
-export const CHAT_VIEW_COLLABORATION_PANEL_CLASS = FLOATING_OVERLAY_PANEL_CLASS;
+  "pointer-events-auto flex w-[min(20rem,calc(100vw-6.5rem))] flex-col gap-2.5";
+export const CHAT_VIEW_OVERLAY_PANEL_CLASS = FLOATING_OVERLAY_PANEL_CLASS;
+export const CHAT_VIEW_OVERLAY_SECTION_CLASS = "border-t border-border/55 pt-3 first:border-t-0 first:pt-0";
+export const CHAT_VIEW_OVERLAY_SECTION_HEADER_CLASS =
+  "flex items-center justify-between gap-3 px-1 pb-2";
+export const CHAT_VIEW_OVERLAY_SECTION_TITLE_CLASS =
+  "text-sm font-semibold text-foreground";
+export const CHAT_VIEW_OVERLAY_SECTION_SUMMARY_CLASS =
+  "truncate text-xs text-muted-foreground";
+export const CHAT_VIEW_COLLABORATION_PANEL_CLASS = "space-y-1.5";
 export const CHAT_VIEW_COLLABORATION_ICON_PLATE_CLASS = cn(
   FLOATING_OVERLAY_ICON_PLATE_CLASS,
   "bg-muted/40",
@@ -74,6 +89,19 @@ function matchesDesktopFloatingOverlayViewport() {
   return typeof window !== "undefined" &&
     typeof window.matchMedia === "function" &&
     window.matchMedia(DESKTOP_FLOATING_OVERLAY_MEDIA_QUERY).matches;
+}
+
+function planStepsIdentity(planSteps: TurnPlanListStep[]) {
+  return planSteps.map((item) => item.step).join("\n");
+}
+
+function planSummary(items: TurnPlanListStep[]) {
+  const done = items.filter((s) => s.status === "completed").length;
+  const active = items.find((s) => s.status === "in_progress");
+  if (active) {
+    return `正在进行 - ${active.step}`;
+  }
+  return "";
 }
 
 interface ChatViewProps {
@@ -123,8 +151,8 @@ interface ChatViewProps {
   onSelectNode: (id: string) => void;
   onSelectSession: (sessionId: string) => void | Promise<void>;
   onStartRun: () => void;
-  onToggleDetailDrawer: (drawer: "trails" | "documents") => void;
-  detailDrawer: "trails" | "documents" | undefined;
+  onSetRightWorkspaceOpen: (open: boolean) => void;
+  selectedSessionWorkspace: RightWorkspaceSessionState;
 }
 
 export function getActiveChatProvider<T extends { id: string }>(
@@ -770,8 +798,8 @@ export function ChatView({
   onOpenArtifact,
   onSubmitFeedback,
   onSubmitAllClarifications,
-  onToggleDetailDrawer,
-  detailDrawer,
+  onSetRightWorkspaceOpen,
+  selectedSessionWorkspace,
   onSelectMode,
   onSelectModeSelection,
 }: ChatViewProps) {
@@ -916,6 +944,42 @@ export function ChatView({
     () => deriveChatSurfaceShiftClassName(showDesktopOverlayRail),
     [showDesktopOverlayRail],
   );
+  const [overlayPlanSectionOpen, setOverlayPlanSectionOpen] = useState(true);
+  const [overlayCollaborationSectionOpen, setOverlayCollaborationSectionOpen] = useState(true);
+  const [expandedOverlayChildId, setExpandedOverlayChildId] = useState<string | undefined>(
+    undefined,
+  );
+  const floatingPlanIdentity = useMemo(
+    () => planStepsIdentity(floatingPlanSteps),
+    [floatingPlanSteps],
+  );
+  const previousFloatingPlanIdentity = useRef("");
+  const previousFloatingPlanAllCompleted = useRef(false);
+
+  useEffect(() => {
+    if (floatingPlanSteps.length === 0) {
+      previousFloatingPlanIdentity.current = "";
+      previousFloatingPlanAllCompleted.current = false;
+      return;
+    }
+
+    const nextAllCompleted = floatingPlanSteps.length > 0 &&
+      floatingPlanSteps.every((step) => step.status === "completed");
+    const nextOpen = nextPlanTrayOpenState({
+      currentOpen: overlayPlanSectionOpen,
+      planSteps: floatingPlanSteps,
+      previousPlanIdentity: previousFloatingPlanIdentity.current,
+      nextPlanIdentity: floatingPlanIdentity,
+      previousAllCompleted: previousFloatingPlanAllCompleted.current,
+    });
+
+    previousFloatingPlanIdentity.current = floatingPlanIdentity;
+    previousFloatingPlanAllCompleted.current = nextAllCompleted;
+
+    if (nextOpen !== overlayPlanSectionOpen) {
+      setOverlayPlanSectionOpen(nextOpen);
+    }
+  }, [floatingPlanIdentity, floatingPlanSteps, overlayPlanSectionOpen]);
   const branchGroups = state.activeSessionDetail?.branchGroups ?? [];
 
   const openLocalFiles = useCallback(async () => {
@@ -1025,8 +1089,8 @@ export function ChatView({
       <ChatHeader
         busyCommand={busyCommand}
         selectedSession={selectedSession}
-        onToggleDetailDrawer={onToggleDetailDrawer}
-        detailDrawer={detailDrawer}
+        selectedWorkspace={selectedSessionWorkspace}
+        onSetRightWorkspaceOpen={onSetRightWorkspaceOpen}
         language={state.language}
       />
       <main className={CHAT_VIEW_MAIN_CLASS}>
@@ -1139,10 +1203,18 @@ export function ChatView({
             </div>
           </div>
           {showDesktopOverlayRail ? (
-            <DesktopOverlayRail
-              layout="docked"
-              childSessions={visibleCollaborationChildren}
-              planSteps={floatingPlanSteps}
+          <DesktopOverlayRail
+            layout="docked"
+            childSessions={visibleCollaborationChildren}
+            planSteps={floatingPlanSteps}
+              planSectionOpen={overlayPlanSectionOpen}
+              collaborationSectionOpen={overlayCollaborationSectionOpen}
+              expandedChildId={expandedOverlayChildId}
+              onTogglePlanSection={() => setOverlayPlanSectionOpen((current) => !current)}
+              onToggleCollaborationSection={() => setOverlayCollaborationSectionOpen((current) => !current)}
+              onToggleChild={(childId) => setExpandedOverlayChildId((current) =>
+                toggleExpandedOverlayChildId(current, childId)
+              )}
               turnSnapshots={turnSnapshots}
               projectRootPath={projectRootPath}
               onOpenArtifact={onOpenArtifact}
@@ -1152,6 +1224,14 @@ export function ChatView({
               layout="floating"
               childSessions={visibleCollaborationChildren}
               planSteps={floatingPlanSteps}
+              planSectionOpen={overlayPlanSectionOpen}
+              collaborationSectionOpen={overlayCollaborationSectionOpen}
+              expandedChildId={expandedOverlayChildId}
+              onTogglePlanSection={() => setOverlayPlanSectionOpen((current) => !current)}
+              onToggleCollaborationSection={() => setOverlayCollaborationSectionOpen((current) => !current)}
+              onToggleChild={(childId) => setExpandedOverlayChildId((current) =>
+                toggleExpandedOverlayChildId(current, childId)
+              )}
               turnSnapshots={turnSnapshots}
               projectRootPath={projectRootPath}
               onOpenArtifact={onOpenArtifact}
@@ -1167,6 +1247,12 @@ export function DesktopOverlayRail({
   layout = "floating",
   childSessions,
   planSteps,
+  planSectionOpen,
+  collaborationSectionOpen,
+  expandedChildId,
+  onTogglePlanSection,
+  onToggleCollaborationSection,
+  onToggleChild,
   turnSnapshots,
   projectRootPath,
   onOpenArtifact,
@@ -1174,14 +1260,16 @@ export function DesktopOverlayRail({
   layout?: "floating" | "docked";
   childSessions: NonNullable<OraStateSnapshot["childSessions"]>;
   planSteps: TurnPlanListStep[];
+  planSectionOpen: boolean;
+  collaborationSectionOpen: boolean;
+  expandedChildId?: string;
+  onTogglePlanSection: () => void;
+  onToggleCollaborationSection: () => void;
+  onToggleChild: (childId: string) => void;
   turnSnapshots: Record<string, OraStateSnapshot | undefined>;
   projectRootPath?: string;
   onOpenArtifact?: (artifactId: string) => void;
 }) {
-  const [expandedChildId, setExpandedChildId] = useState<string | undefined>(
-    undefined,
-  );
-
   if (childSessions.length === 0 && planSteps.length === 0) {
     return null;
   }
@@ -1189,221 +1277,156 @@ export function DesktopOverlayRail({
   const stackClassName = layout === "docked"
     ? CHAT_VIEW_DESKTOP_OVERLAY_STACK_CLASS
     : CHAT_VIEW_DESKTOP_FLOATING_STACK_CLASS;
-
-  if (layout === "docked") {
-    return (
-      <aside className={CHAT_VIEW_DESKTOP_DOCKED_RAIL_CLASS}>
-        <div className={stackClassName}>
-          {childSessions.length > 0 ? (
-            <section className={CHAT_VIEW_COLLABORATION_PANEL_CLASS}>
-              <div className="flex items-center gap-2 px-1 pb-2">
-                <div className={CHAT_VIEW_COLLABORATION_ICON_PLATE_CLASS}>
-                  <Bot className="h-4 w-4" />
-                </div>
-                <div className="min-w-0">
-                  <p className="text-sm font-semibold text-foreground">
-                    子代理协作中
-                  </p>
-                  <p className="text-xs text-muted-foreground">
-                    {childSessions.length} 个任务仍在协作流程中
-                  </p>
-                </div>
-              </div>
-              <div className="space-y-1.5">
-                {childSessions.map((child) => {
-                  const expanded = expandedChildId === child.id;
-                  const childSnapshot = resolveOverlayChildSnapshot(child, turnSnapshots);
-                  const childTurnView = childSnapshot
-                    ? derivePresentedAssistantTurnFromSnapshot(childSnapshot)
-                    : undefined;
-                  const childSummaryText = deriveOverlayChildCardSummaryText({
-                    child,
-                    childTurnView,
-                  });
-                  const childStatusText = deriveOverlayChildStatusLabel({
-                    child,
-                    childTurnView,
-                  });
-                  return (
-                    <section
-                      key={child.id}
-                      className={CHAT_VIEW_COLLABORATION_ITEM_CLASS}
-                    >
-                      <button
-                        type="button"
-                        aria-expanded={expanded}
-                        onClick={() => setExpandedChildId((current) =>
-                          toggleExpandedOverlayChildId(current, child.id)
-                        )}
-                        className="grid w-full grid-cols-[minmax(0,1fr)_auto] items-start gap-2.5 text-left"
-                      >
-                        <div className="min-w-0">
-                          <p className="truncate text-sm font-semibold text-foreground">
-                            {child.label}
-                          </p>
-                          <p className="mt-0.5 overflow-hidden text-xs leading-5 text-muted-foreground [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:4] break-words">
-                            {childSummaryText}
-                          </p>
-                        </div>
-                        <div className="flex items-center gap-1.5 self-start pl-1">
-                          <span
-                            className={collaborationStatusBadgeClassName(
-                              child.status,
-                              child.lifecyclePhase,
-                              child.deliveryStatus,
-                            )}
-                          >
-                            {childStatusText}
-                          </span>
-                          <ChevronDown
-                            className={cn(
-                              "h-4 w-4 shrink-0 text-muted-foreground transition-transform",
-                              expanded && "rotate-180",
-                            )}
-                          />
-                        </div>
-                      </button>
-                      {expanded ? (
-                        <div className={CHAT_VIEW_COLLABORATION_DETAIL_CLASS}>
-                          {childTurnView ? (
-                            <AssistantTurnCard
-                              content={childTurnView.content}
-                              turn={childTurnView.turn}
-                              density="compact"
-                              onOpenArtifact={onOpenArtifact}
-                              projectRootPath={projectRootPath}
-                            />
-                          ) : (
-                            <div className="space-y-1">
-                              <p className="text-sm font-medium text-foreground">
-                                等待子代理内容同步
-                              </p>
-                              <p className="text-xs leading-5 text-muted-foreground">
-                                当前只拿到了子代理摘要；待对应 session snapshot 进入本地状态后，这里会自动显示完整 timeline / process / body 内容。
-                              </p>
-                            </div>
-                          )}
-                        </div>
-                      ) : null}
-                    </section>
-                  );
-                })}
-              </div>
-            </section>
-          ) : null}
-          {planSteps.length > 0 ? (
-            <PlanStepsTray planSteps={planSteps} variant="floating" />
-          ) : null}
-        </div>
-      </aside>
-    );
-  }
-
-  return (
-    <div className={CHAT_VIEW_DESKTOP_OVERLAY_RAIL_CLASS}>
-      <div className={stackClassName}>
+  const shell = (
+    <div className={stackClassName}>
+      <section className={CHAT_VIEW_OVERLAY_PANEL_CLASS}>
+        {planSteps.length > 0 ? (
+          <OverlayRailSection
+            title="进度"
+            summary={planSummary(planSteps)}
+            open={planSectionOpen}
+            onToggle={onTogglePlanSection}
+          >
+            {planSectionOpen ? <PlanStepsList planSteps={planSteps} /> : null}
+          </OverlayRailSection>
+        ) : null}
         {childSessions.length > 0 ? (
-          <section className={CHAT_VIEW_COLLABORATION_PANEL_CLASS}>
-            <div className="flex items-center gap-2 px-1 pb-2">
-              <div className={CHAT_VIEW_COLLABORATION_ICON_PLATE_CLASS}>
-                <Bot className="h-4 w-4" />
-              </div>
-              <div className="min-w-0">
-                <p className="text-sm font-semibold text-foreground">
-                  子代理协作中
-                </p>
-                <p className="text-xs text-muted-foreground">
-                  {childSessions.length} 个任务仍在协作流程中
-                </p>
-              </div>
-            </div>
-            <div className="space-y-1.5">
-              {childSessions.map((child) => {
-                const expanded = expandedChildId === child.id;
-                const childSnapshot = resolveOverlayChildSnapshot(child, turnSnapshots);
-                const childTurnView = childSnapshot
-                  ? derivePresentedAssistantTurnFromSnapshot(childSnapshot)
-                  : undefined;
-                const childSummaryText = deriveOverlayChildCardSummaryText({
-                  child,
-                  childTurnView,
-                });
-                const childStatusText = deriveOverlayChildStatusLabel({
-                  child,
-                  childTurnView,
-                });
-                  return (
-                    <section
-                      key={child.id}
-                      className={CHAT_VIEW_COLLABORATION_ITEM_CLASS}
-                    >
-                    <button
-                      type="button"
-                      aria-expanded={expanded}
-                      onClick={() => setExpandedChildId((current) =>
-                        toggleExpandedOverlayChildId(current, child.id)
-                      )}
-                      className="grid w-full grid-cols-[minmax(0,1fr)_auto] items-start gap-2.5 text-left"
+          <OverlayRailSection
+            title="协作"
+            summary={`${childSessions.length} 个任务仍在协作流程中`}
+            open={collaborationSectionOpen}
+            onToggle={onToggleCollaborationSection}
+            sectionClassName={planSteps.length > 0 ? undefined : "pt-0"}
+          >
+            {collaborationSectionOpen ? (
+              <section className={CHAT_VIEW_COLLABORATION_PANEL_CLASS}>
+                <div className="space-y-1.5">
+                  {childSessions.map((child) => {
+                    const expanded = expandedChildId === child.id;
+                    const childSnapshot = resolveOverlayChildSnapshot(child, turnSnapshots);
+                    const childTurnView = childSnapshot
+                      ? derivePresentedAssistantTurnFromSnapshot(childSnapshot)
+                      : undefined;
+                    const childSummaryText = deriveOverlayChildCardSummaryText({
+                      child,
+                      childTurnView,
+                    });
+                    const childStatusText = deriveOverlayChildStatusLabel({
+                      child,
+                      childTurnView,
+                    });
+
+                    return (
+                      <section
+                        key={child.id}
+                        className={CHAT_VIEW_COLLABORATION_ITEM_CLASS}
                       >
-                        <div className="min-w-0">
-                          <p className="truncate text-sm font-semibold text-foreground">
-                            {child.label}
-                          </p>
-                          <p className="mt-0.5 overflow-hidden text-xs leading-5 text-muted-foreground [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:4] break-words">
-                            {childSummaryText}
-                          </p>
-                        </div>
-                      <div className="flex items-center gap-1.5 self-start pl-1">
-                        <span
-                          className={collaborationStatusBadgeClassName(
-                            child.status,
-                            child.lifecyclePhase,
-                            child.deliveryStatus,
-                          )}
+                        <button
+                          type="button"
+                          aria-expanded={expanded}
+                          onClick={() => onToggleChild(child.id)}
+                          className="grid w-full grid-cols-[minmax(0,1fr)_auto] items-start gap-2.5 text-left"
                         >
-                          {childStatusText}
-                        </span>
-                        <ChevronDown
-                          className={cn(
-                            "h-4 w-4 shrink-0 text-muted-foreground transition-transform",
-                            expanded && "rotate-180",
-                          )}
-                        />
-                      </div>
-                    </button>
-                    {expanded ? (
-                      <div className={CHAT_VIEW_COLLABORATION_DETAIL_CLASS}>
-                        {childTurnView ? (
-                          <AssistantTurnCard
-                            content={childTurnView.content}
-                            turn={childTurnView.turn}
-                            density="compact"
-                            onOpenArtifact={onOpenArtifact}
-                            projectRootPath={projectRootPath}
-                          />
-                        ) : (
-                          <div className="space-y-1">
-                            <p className="text-sm font-medium text-foreground">
-                              等待子代理内容同步
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-semibold text-foreground">
+                              {child.label}
                             </p>
-                            <p className="text-xs leading-5 text-muted-foreground">
-                              当前只拿到了子代理摘要；待对应 session snapshot 进入本地状态后，这里会自动显示完整 timeline / process / body 内容。
+                            <p className="mt-0.5 overflow-hidden text-xs leading-5 text-muted-foreground [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:4] break-words">
+                              {childSummaryText}
                             </p>
                           </div>
-                        )}
-                      </div>
-                    ) : null}
-                  </section>
-                );
-              })}
-            </div>
-          </section>
+                          <div className="flex items-center gap-1.5 self-start pl-1">
+                            <span
+                              className={collaborationStatusBadgeClassName(
+                                child.status,
+                                child.lifecyclePhase,
+                                child.deliveryStatus,
+                              )}
+                            >
+                              {childStatusText}
+                            </span>
+                            <ChevronDown
+                              className={cn(
+                                "h-4 w-4 shrink-0 text-muted-foreground transition-transform",
+                                expanded && "rotate-180",
+                              )}
+                            />
+                          </div>
+                        </button>
+                        {expanded ? (
+                          <div className={CHAT_VIEW_COLLABORATION_DETAIL_CLASS}>
+                            {childTurnView ? (
+                              <AssistantTurnCard
+                                content={childTurnView.content}
+                                turn={childTurnView.turn}
+                                density="compact"
+                                onOpenArtifact={onOpenArtifact}
+                                projectRootPath={projectRootPath}
+                              />
+                            ) : (
+                              <div className="space-y-1">
+                                <p className="text-sm font-medium text-foreground">
+                                  等待子代理内容同步
+                                </p>
+                                <p className="text-xs leading-5 text-muted-foreground">
+                                  当前只拿到了子代理摘要；待对应 session snapshot 进入本地状态后，这里会自动显示完整 timeline / process / body 内容。
+                                </p>
+                              </div>
+                            )}
+                          </div>
+                        ) : null}
+                      </section>
+                    );
+                  })}
+                </div>
+              </section>
+            ) : null}
+          </OverlayRailSection>
         ) : null}
-        {planSteps.length > 0 ? (
-          <PlanStepsTray planSteps={planSteps} variant="floating" />
-        ) : null}
-      </div>
+      </section>
     </div>
+  );
+
+  if (layout === "docked") {
+    return <aside className={CHAT_VIEW_DESKTOP_DOCKED_RAIL_CLASS}>{shell}</aside>;
+  }
+
+  return <div className={CHAT_VIEW_DESKTOP_OVERLAY_RAIL_CLASS}>{shell}</div>;
+}
+
+function OverlayRailSection({
+  title,
+  summary,
+  open,
+  onToggle,
+  children,
+  sectionClassName,
+}: {
+  title: string;
+  summary: string;
+  open: boolean;
+  onToggle: () => void;
+  children: ReactNode;
+  sectionClassName?: string;
+}) {
+  return (
+    <section className={cn(CHAT_VIEW_OVERLAY_SECTION_CLASS, sectionClassName)}>
+      <button
+        type="button"
+        onClick={onToggle}
+        className={cn(CHAT_VIEW_OVERLAY_SECTION_HEADER_CLASS, "w-full text-left")}
+      >
+        <div className="min-w-0">
+          <p className={CHAT_VIEW_OVERLAY_SECTION_TITLE_CLASS}>{title}</p>
+          <p className={CHAT_VIEW_OVERLAY_SECTION_SUMMARY_CLASS}>{summary}</p>
+        </div>
+        <ChevronDown
+          size={14}
+          className={cn(PLAN_STEPS_TRAY_HEADER_CHEVRON_CLASS, open && "rotate-180")}
+        />
+      </button>
+      {children}
+    </section>
   );
 }
 

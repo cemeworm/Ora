@@ -3,7 +3,6 @@ import {
   CheckCircle2,
   ChevronDown,
   Circle,
-  ListTodo,
   LoaderCircle,
 } from "lucide-react";
 import type { TurnPlanListStep } from "../types";
@@ -22,7 +21,7 @@ interface PlanStepsTrayProps {
 }
 
 export const FLOATING_OVERLAY_PANEL_CLASS =
-  "rounded-3xl border border-border/70 bg-background/92 p-2.5 shadow-lift backdrop-blur-md";
+  "rounded-3xl border border-border/70 bg-background/92 p-2.5 shadow-[0_2px_8px_rgba(23,23,23,0.05),0_12px_28px_rgba(23,23,23,0.06)] backdrop-blur-md";
 export const FLOATING_OVERLAY_ICON_PLATE_CLASS =
   "flex h-8 w-8 items-center justify-center rounded-2xl bg-muted/50 text-foreground";
 export const FLOATING_OVERLAY_CARD_CLASS =
@@ -77,40 +76,65 @@ export function PlanStepsTray({
 
   if (planSteps.length === 0) return null;
 
+  return (
+    <div className={planStepsTrayRootClassName(variant)}>
+      <PlanStepsContent
+        planSteps={planSteps}
+        open={open}
+        onToggleOpen={() => setOpen((current) => !current)}
+      />
+    </div>
+  );
+}
+
+export function PlanStepsContent({
+  planSteps,
+  open,
+  onToggleOpen,
+}: {
+  planSteps: TurnPlanListStep[];
+  open: boolean;
+  onToggleOpen: () => void;
+}) {
   const done = planSteps.filter((s) => s.status === "completed").length;
   const title = `计划 ${done}/${planSteps.length}`;
 
   return (
-    <div className={planStepsTrayRootClassName(variant)}>
-      <TaskList className="border-0 bg-transparent shadow-none">
-        <button
-          type="button"
-          onClick={() => setOpen((current) => !current)}
-          className="w-full text-left"
-        >
-          <TaskListHeader>
-            <div className={PLAN_STEPS_TRAY_HEADER_TITLE_ROW_CLASS}>
-              <ListTodo size={14} />
-              <span className="shrink-0 font-medium text-foreground">{title}</span>
-              <span className={PLAN_STEPS_TRAY_HEADER_SUMMARY_CLASS}>
-                {planSummary(planSteps)}
-              </span>
-            </div>
-            <ChevronDown
-              size={14}
-              className={cn(PLAN_STEPS_TRAY_HEADER_CHEVRON_CLASS, open && "rotate-180")}
-            />
-          </TaskListHeader>
-        </button>
-        {open ? (
-          <TaskListBody>
-            {planSteps.map((item, index) => (
-              <PlanListStepItem key={index} item={item} />
-            ))}
-          </TaskListBody>
-        ) : null}
-      </TaskList>
-    </div>
+    <TaskList className="border-0 bg-transparent shadow-none">
+      <button
+        type="button"
+        onClick={onToggleOpen}
+        className="w-full text-left"
+      >
+        <TaskListHeader>
+          <div className={PLAN_STEPS_TRAY_HEADER_TITLE_ROW_CLASS}>
+            <span className="shrink-0 font-medium text-foreground">{title}</span>
+            <span className={PLAN_STEPS_TRAY_HEADER_SUMMARY_CLASS}>
+              {planSummary(planSteps)}
+            </span>
+          </div>
+          <ChevronDown
+            size={14}
+            className={cn(PLAN_STEPS_TRAY_HEADER_CHEVRON_CLASS, open && "rotate-180")}
+          />
+        </TaskListHeader>
+      </button>
+      {open ? <PlanStepsList planSteps={planSteps} /> : null}
+    </TaskList>
+  );
+}
+
+export function PlanStepsList({
+  planSteps,
+}: {
+  planSteps: TurnPlanListStep[];
+}) {
+  return (
+    <TaskListBody>
+      {planSteps.map((item, index) => (
+        <PlanListStepItem key={index} item={item} />
+      ))}
+    </TaskListBody>
   );
 }
 

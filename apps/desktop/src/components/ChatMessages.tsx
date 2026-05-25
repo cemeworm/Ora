@@ -146,48 +146,80 @@ export const ChatMessages = memo(function ChatMessages({
 
                 const hasImages = message.role === "user" && message.images && message.images.length > 0;
                 const hasText = message.content.trim().length > 0;
-                const bubbles: React.ReactNode[] = [];
                 const hasSkills = message.role === "user" && message.skills && message.skills.length > 0;
-
-                if (hasImages) {
-                  message.images!.forEach((img, idx) => {
-                    bubbles.push(
-                      <MessageBubble
-                        key={`${message.id}-img-${idx}`}
-                        role="user"
-                        content=""
-                      >
-                        <img
-                          src={img.dataUrl}
-                          alt={img.name}
-                          className="max-w-full rounded-xl object-contain"
-                          style={{ maxHeight: 400 }}
-                        />
-                      </MessageBubble>
-                    );
-                  });
-                }
+                const bubbleClassName = hasImages ? "items-end" : undefined;
 
                 if (hasSkills) {
-                  message.skills!.forEach((skill, idx) => {
-                    bubbles.push(
+                  return (
+                    <Fragment key={message.id}>
                       <MessageBubble
-                        key={`${message.id}-skill-${idx}`}
-                        role="user"
-                        content=""
-                        className="inline-flex items-center gap-1.5"
-                      ><Sparkles size={14} /> {skill.name}</MessageBubble>
-                    );
-                  });
+                        role={message.role}
+                        content={hasText ? message.content : ""}
+                        className={bubbleClassName}
+                        inlineContent={(
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            {message.skills!.map((skill) => (
+                              <span
+                                key={`${message.id}-skill-${skill.id}`}
+                                className="inline-flex items-center gap-1 rounded-full border border-border/70 bg-background/70 px-2 py-0.5 text-xs text-muted-foreground"
+                              >
+                                <Sparkles size={11} />
+                                <span>{skill.name}</span>
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      >
+                        {hasImages && (
+                          <div className="mt-2 flex flex-col gap-1.5">
+                            {message.images!.map((img, idx) => (
+                              <img
+                                key={`${message.id}-img-${idx}`}
+                                src={img.dataUrl}
+                                alt={img.name}
+                                className="max-w-full rounded-xl object-contain"
+                                style={{ maxHeight: 400 }}
+                              />
+                            ))}
+                          </div>
+                        )}
+                        {message.attachments && message.attachments.length > 0 && (
+                          <div className="mt-2 flex flex-wrap gap-1.5">
+                            {message.attachments.map((attachment, index) => (
+                              <div
+                                key={`${attachment.path}-${index}`}
+                                className="inline-flex items-center gap-1.5 rounded-full border border-border bg-background/80 px-2.5 py-1 text-xs text-muted-foreground"
+                              >
+                                <FileText size={11} />
+                                <span className="max-w-[200px] truncate">{attachment.name}</span>
+                                <span className="whitespace-nowrap text-[10px] text-muted-foreground/60">
+                                  {formatFileSize(attachment.sizeBytes)}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </MessageBubble>
+                    </Fragment>
+                  );
                 }
 
-                if (hasText) {
-                  bubbles.push(
-                    <MessageBubble
-                      key={message.id}
-                      role={message.role}
-                      content={message.content}
-                    >
+                return (
+                  <Fragment key={message.id}>
+                    <MessageBubble role={message.role} content={hasText ? message.content : ""} className={bubbleClassName}>
+                      {hasImages && (
+                        <div className="mt-2 flex flex-col gap-1.5">
+                          {message.images!.map((img, idx) => (
+                            <img
+                              key={`${message.id}-img-${idx}`}
+                              src={img.dataUrl}
+                              alt={img.name}
+                              className="max-w-full rounded-xl object-contain"
+                              style={{ maxHeight: 400 }}
+                            />
+                          ))}
+                        </div>
+                      )}
                       {message.attachments && message.attachments.length > 0 && (
                         <div className="mt-2 flex flex-wrap gap-1.5">
                           {message.attachments.map((attachment, index) => (
@@ -205,20 +237,8 @@ export const ChatMessages = memo(function ChatMessages({
                         </div>
                       )}
                     </MessageBubble>
-                  );
-                }
-
-                if (bubbles.length === 0) {
-                  bubbles.push(
-                    <MessageBubble
-                      key={message.id}
-                      role={message.role}
-                      content={message.content}
-                    />
-                  );
-                }
-
-                return <Fragment key={message.id}>{bubbles}</Fragment>;
+                  </Fragment>
+                );
               })}
               <div className={cn("h-1", chatMessages.length === 0 && "flex-1")} />
             </div>

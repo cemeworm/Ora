@@ -8,6 +8,7 @@ import {
   PLAN_STEPS_TRAY_HEADER_CHEVRON_CLASS,
   PLAN_STEPS_TRAY_HEADER_SUMMARY_CLASS,
   PLAN_STEPS_TRAY_HEADER_TITLE_ROW_CLASS,
+  PlanStepsList,
   PlanStepsTray,
   planStepsTrayRootClassName,
 } from "./PlanStepsTray";
@@ -57,7 +58,7 @@ describe("plan steps tray open state", () => {
   it("uses a distinct floating shell class for the right overlay variant", () => {
     expect(planStepsTrayRootClassName("floating")).toBe(FLOATING_OVERLAY_PANEL_CLASS);
     expect(planStepsTrayRootClassName("floating")).toContain("rounded-3xl");
-    expect(planStepsTrayRootClassName("floating")).toContain("shadow-lift");
+    expect(planStepsTrayRootClassName("floating")).toContain("shadow-[0_2px_8px_rgba(23,23,23,0.05),0_12px_28px_rgba(23,23,23,0.06)]");
     expect(planStepsTrayRootClassName("inline")).toContain("mb-2");
     expect(FLOATING_OVERLAY_PANEL_CLASS).toContain("p-2.5");
   });
@@ -128,6 +129,18 @@ describe("plan steps tray open state", () => {
     expect(inlineHtml).toContain(PLAN_STEP_TEXT_CLASS);
     expect(floatingHtml).toContain("[overflow-wrap:anywhere]");
     expect(inlineHtml).toContain("break-words");
+  });
+
+  it("renders the extracted list primitive without any floating shell wrapper", () => {
+    const html = renderToStaticMarkup(
+      createElement(PlanStepsList, {
+        planSteps: plan("in_progress", "pending"),
+      }),
+    );
+
+    expect(html).toContain(PLAN_STEP_TEXT_CLASS);
+    expect(html).not.toContain("rounded-3xl");
+    expect(html).not.toContain("mb-2");
   });
 });
 

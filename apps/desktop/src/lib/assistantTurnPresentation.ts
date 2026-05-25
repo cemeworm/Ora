@@ -24,7 +24,9 @@ export function deriveAssistantTurnPresentation(params: {
     turn,
     bodyContent,
     isPlaceholder,
-  ).filter(dedupeTimelineItemText());
+  )
+    .filter((item) => !shouldSuppressBodyEchoTimelineItem(item, bodyContent, turn, isPlaceholder))
+    .filter(dedupeTimelineItemText());
   const hasPlan = Boolean(turn.hasProposedPlan && turn.planContent);
   const timelineContainsBody = visibleTimelineItems.some((item) =>
     timelineItemRepresentsBody(item, bodyContent, turn),
@@ -68,6 +70,27 @@ function timelineItemRepresentsBody(
     return true;
   }
   return false;
+}
+
+function shouldSuppressBodyEchoTimelineItem(
+  item: TurnTimelineItem,
+  bodyContent: string,
+  turn: AssistantTurnAttachment,
+  isPlaceholder: boolean,
+): boolean {
+  if (turn.status === "running" || isPlaceholder) {
+    return false;
+  }
+  if (!bodyContent.trim()) {
+    return false;
+  }
+  if (item.kind !== "agent_message") {
+    return false;
+  }
+  if (!isComparableDuplicate(bodyContent, item.content)) {
+    return false;
+  }
+  return !transcriptAgentMessageOwnsFinalBody(turn, item);
 }
 
 function transcriptAgentMessageOwnsFinalBody(

@@ -277,7 +277,12 @@ export function TrailsTabs({
           </div>
           <div className="shrink-0 text-right text-[11px] leading-5 text-bench-700">
             <p>{summary.metrics.runtime}</p>
-            <p>{summary.metrics.costAvailable === false ? "成本数据不可用" : summary.metrics.cost} · {summary.metrics.messages} msg</p>
+            <p>
+              {summary.metrics.costAvailable === false ? "成本数据不可用" : summary.metrics.cost}
+              {summary.metrics.costAvailable !== false && " · "}
+              {summary.metrics.messages} msg
+              {summary.metrics.cacheDataAvailable && ` · KV Cache ${summary.metrics.cacheHitRatio}`}
+            </p>
           </div>
         </div>
 

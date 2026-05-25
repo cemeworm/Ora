@@ -1257,10 +1257,10 @@ describe("assistant turn display helpers", () => {
       <AssistantTurnCard content={finalVerdict} turn={turn} />,
     );
 
-    expect(html.split(finalVerdict).length - 1).toBe(2);
+    expect(html.split(finalVerdict).length - 1).toBe(1);
   });
 
-  it("recomputes presentation from current props instead of trusting stale cached presentation", () => {
+  it("recomputes presentation from current props and suppresses non-authoritative timeline body echoes", () => {
     const finalVerdict = "最终裁决：采用方案A。";
     const turn: AssistantTurnAttachment = {
       runId: "run-1",
@@ -1305,7 +1305,7 @@ describe("assistant turn display helpers", () => {
       <AssistantTurnCard content={finalVerdict} turn={turn} />,
     );
 
-    expect(html.split(finalVerdict).length - 1).toBe(2);
+    expect(html.split(finalVerdict).length - 1).toBe(1);
   });
 
   it("deduplicates repeated timeline text before rendering", () => {

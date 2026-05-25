@@ -1490,23 +1490,12 @@ export function adaptPendingRunMessages(
 
   const messages: ChatMessage[] = [];
 
-  if (pendingRun.skills && pendingRun.skills.length > 0) {
-    pendingRun.skills.forEach((skill, idx) => {
-      messages.push({
-        id: `${pendingRun.sessionId}:pending:skill-${idx}`,
-        role: "user",
-        content: "",
-        skills: [skill],
-        timestamp: formatClock(pendingRun.createdAt),
-      });
-    });
-  }
-
   messages.push({
     id: `${pendingRun.sessionId}:pending:user`,
     role: "user",
     content: pendingRun.prompt,
     timestamp: formatClock(pendingRun.createdAt),
+    ...(pendingRun.skills && pendingRun.skills.length > 0 ? { skills: pendingRun.skills } : {}),
   });
 
   messages.push({

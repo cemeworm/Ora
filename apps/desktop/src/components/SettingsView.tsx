@@ -347,6 +347,20 @@ function buildChannelConfig(fields: ChannelConfigField[], draft: Record<string, 
   );
 }
 
+export function normalizeChannelLocalReadRoots(value: string): string[] {
+  return [...new Set(value
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0))];
+}
+
+export function channelLocalReadRootsText(channel: OraChannelConfig | undefined): string {
+  const roots = Array.isArray(channel?.config?.localReadRoots)
+    ? channel.config.localReadRoots.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    : [];
+  return roots.join("\n");
+}
+
 function buildChannelRunConfig(
   provider: OraProviderConfig | undefined,
   defaults: {
@@ -594,6 +608,9 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
   const channelTaskIntent = channelTaskIntentValue(
     channelDraftValue(channelDraft, "runTaskIntent", selectedChannelTaskIntent, "auto"),
   );
+  const channelLocalReadRoots = channelDraft.localReadRoots !== undefined
+    ? channelDraft.localReadRoots
+    : channelLocalReadRootsText(selectedChannel);
   const selectedChannelStartedAt = selectedChannel
     ? new Date(selectedChannel.createdAt).toLocaleString()
     : "未启动";
@@ -940,6 +957,7 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
     });
     const config = {
       ...buildChannelConfig(selectedChannelTab.fields, channelDraft),
+      localReadRoots: normalizeChannelLocalReadRoots(channelLocalReadRoots),
       runConfig,
     };
     const enabled = selectedChannelTab.runtimeImplemented ? nextEnabled : false;
@@ -2523,6 +2541,20 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
                             />
                           </label>
                         ))}
+                        <label className="space-y-2 md:col-span-2">
+                          <span className="text-xs font-semibold uppercase tracking-[0.12em] text-bench-500">
+                            本地只读目录
+                          </span>
+                          <textarea
+                            value={channelLocalReadRoots}
+                            onChange={(event) => setChannelDraft((draft) => ({ ...draft, localReadRoots: event.target.value }))}
+                            placeholder={"/Users/me/project\n/Users/me/Documents/reference"}
+                            className="min-h-28 w-full rounded-2xl border border-bench-200 bg-bench-50 px-3 py-3 font-mono text-sm outline-none transition focus:border-bench-900"
+                          />
+                          <p className="text-xs leading-5 text-bench-500">
+                            一行一个绝对路径。非 Project 的渠道会话可只读访问这些目录中的文件；不会自动获得写权限，也不会自动绑定为 Project。
+                          </p>
+                        </label>
                       </div>
                       {selectedChannelTab.id === "wechat" && (
                         <div className="mt-4">
