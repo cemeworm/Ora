@@ -209,6 +209,16 @@ Failure tags 沿两条边界组织：
 
 ## 6. 输入：数据集与评估规范
 
+### 6.0 Fixture workspace authority
+
+当 spec 通过 `metadata.fixtureManifest` 请求隔离 workspace 时，runner 的责任不是“复制一份目录”，而是“交付一个可运行、可遍历、可写入的独立 workspace”。这条 authority 有三个要求：
+
+- **源码复制与依赖准备分开**：像 Ora 这样的 pnpm monorepo，`node_modules` 里存在大量依赖宿主仓库 `.pnpm` 布局的符号链接。直接复制这些链接并不能得到可运行副本，因此 fixture 需要先复制源码树，再在副本内重建依赖
+- **主聊天/工具读取的是物化后 workspace**：注入给 runtime 的 `projectWorkspace.rootPath` 必须指向 preparation 完成后的副本，而不是半成品目录
+- **工具层 hardening 只是降级保护**：`file.glob` / `file.list` 可以在极端情况下跳过 dangling symlink，但这不改变 fixture authority。只要 fixture 声称自己提供的是可运行 workspace，runner 就必须在 attempt 启动前完成验证
+
+对当前 memory 长任务 A/B fixture，runner 会复制源码树、排除所有 `node_modules`，然后在副本根目录执行 `pnpm install --frozen-lockfile`，最后验证关键依赖路径存在且没有逃逸到 workspace 外的符号链接。
+
 ### 6.1 目录结构
 
 ```

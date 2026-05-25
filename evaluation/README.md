@@ -199,15 +199,20 @@ node apps/runtime/dist/cli.js eval run --spec evaluation/specs/memory-long-task-
 node apps/runtime/dist/cli.js eval run --spec evaluation/specs/memory-long-task-full-ab.json
 ```
 
-### Fixture 隔离
+### Fixture 物化与依赖准备
 
-- 当 spec `metadata.fixtureManifest` 指向一个 fixture manifest 时，evaluation runner 会在每个 attempt 开始前复制一份隔离 workspace
+- 当 spec `metadata.fixtureManifest` 指向一个 fixture manifest 时，evaluation runner 会在每个 attempt 开始前物化一份隔离 workspace
 - 长任务 memory A/B 当前使用 `workspace_copy_per_attempt` 策略，materialize 到：
   - `evaluation/fixtures/memory-long-task-representative/workspaces/<evaluationRunId>/<caseId>/<configId>/rep-<n>/`
+- 物化分成三个阶段：
+  - 复制源码树，并排除 `node_modules`、运行态数据目录和超大构建产物
+  - 在副本根目录执行依赖准备；当前 memory fixture 使用 `pnpm install --frozen-lockfile`
+  - 在 attempt 启动前校验关键依赖路径存在且没有 dangling symlink / 外逃 symlink
 - 这样可以避免：
   - case 之间文件改动串扰
   - `memory-disabled` 与 `memory-enabled` 共享同一工作区
   - smoke / full 批次互相污染中间产物
+- preparation / verification 失败会在 attempt 启动前直接暴露为 fixture workspace 错误，而不是等 agent 在 `file.glob` 或 shell 阶段中途崩溃
 
 ## 对比引擎：compareEvaluationRuns
 
