@@ -24,5 +24,15 @@
     "metadata": {
       "fixtureBundle": "memory-long-task-representative"
     }
+  },
+  "workspacePreparation": {
+    "strategy": "pnpm_install_frozen",
+    "cwd": ".",
+    "verifyNodeModules": true,
+    "verifyPaths": [
+      "apps/desktop/node_modules/vitest",
+      "packages/shared/node_modules/vitest",
+      "apps/desktop/node_modules/@cemeworm/shared"
+    ]
   }
 }

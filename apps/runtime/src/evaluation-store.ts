@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
@@ -148,6 +149,19 @@ const DEFAULT_EVALUATION_FIXTURE_EXCLUDES = [
   ".turbo",
 ];
 
+const DEFAULT_EVALUATION_FIXTURE_VERIFY_PATHS = [
+  "apps/desktop/node_modules/vitest",
+  "packages/shared/node_modules/vitest",
+  "apps/desktop/node_modules/@cemeworm/shared",
+];
+
+const EvaluationWorkspaceFixturePreparationSchema = z.object({
+  strategy: z.enum(["none", "pnpm_install_frozen"]).default("none"),
+  cwd: z.string().min(1).default("."),
+  verifyNodeModules: z.boolean().default(true),
+  verifyPaths: z.array(z.string().min(1)).default(DEFAULT_EVALUATION_FIXTURE_VERIFY_PATHS),
+});
+
 const EvaluationWorkspaceFixtureManifestSchema = z.object({
   schemaVersion: z.literal(1).default(1),
   fixtureId: z.string().min(1),
@@ -163,9 +177,12 @@ const EvaluationWorkspaceFixtureManifestSchema = z.object({
     label: z.string().min(1).optional(),
     metadata: z.record(z.unknown()).default({}),
   }).default({}),
+  workspacePreparation: EvaluationWorkspaceFixturePreparationSchema.default({}),
 });
 
 type EvaluationWorkspaceFixtureManifest = z.infer<typeof EvaluationWorkspaceFixtureManifestSchema>;
+
+type EvaluationWorkspaceFixturePreparation = z.infer<typeof EvaluationWorkspaceFixturePreparationSchema>;
 
 type EvaluationWorkspaceFixtureRuntime = {
   manifestPath: string;
@@ -173,6 +190,17 @@ type EvaluationWorkspaceFixtureRuntime = {
   materializationRoot: string;
   exclusionPrefixes: string[];
   manifest: EvaluationWorkspaceFixtureManifest;
+};
+
+type FixturePreparationCommandRunner = (params: {
+  command: string;
+  args: string[];
+  cwd: string;
+}) => void;
+
+type LocalEvaluationStoreOptions = {
+  clock?: () => number;
+  fixturePreparationCommandRunner?: FixturePreparationCommandRunner;
 };
 
 type RunExecutor = (params: {
@@ -324,6 +352,7 @@ export class LocalEvaluationStore {
   private readonly blueprintsDir: string;
   private readonly annotationsDir: string;
   private readonly clock: () => number;
+  private readonly fixturePreparationCommandRunner: FixturePreparationCommandRunner;
   private manifest: EvaluationManifest;
   private datasets = new Map<string, EvaluationDatasetDetail>();
   private runs = new Map<string, PersistedEvaluationRun>();
@@ -332,8 +361,12 @@ export class LocalEvaluationStore {
   private blueprints = new Map<string, EvaluationBlueprint>();
   private annotations = new Map<string, EvaluationAnnotationTask>();
 
-  constructor(private readonly baseDir: string, clock: () => number = Date.now) {
-    this.clock = clock;
+  constructor(private readonly baseDir: string, optionsOrClock: LocalEvaluationStoreOptions | (() => number) = Date.now) {
+    const options = typeof optionsOrClock === "function"
+      ? { clock: optionsOrClock }
+      : optionsOrClock;
+    this.clock = options.clock ?? Date.now;
+    this.fixturePreparationCommandRunner = options.fixturePreparationCommandRunner ?? runFixturePreparationCommand;
     this.storage = baseDir.endsWith(".db") ? "sqlite" : "file";
     this.manifestPath = path.join(baseDir, "manifest.json");
     this.datasetsDir = path.join(baseDir, "datasets");
@@ -1418,10 +1451,19 @@ export class LocalEvaluationStore {
       fs.rmSync(workspaceRoot, { recursive: true, force: true });
     }
     fs.mkdirSync(path.dirname(workspaceRoot), { recursive: true });
-    copyFixtureSourceTree(
+    materializeFixtureSourceTree(
       fixtureRuntime.sourceRoot,
       workspaceRoot,
       fixtureRuntime.exclusionPrefixes,
+    );
+    prepareMaterializedFixtureWorkspace(
+      workspaceRoot,
+      fixtureRuntime.manifest.workspacePreparation,
+      this.fixturePreparationCommandRunner,
+    );
+    verifyMaterializedFixtureWorkspace(
+      workspaceRoot,
+      fixtureRuntime.manifest.workspacePreparation,
     );
 
     const existingWorkspace = normalizeProjectWorkspaceContext(evaluationCase.input.context?.projectWorkspace);
@@ -2747,8 +2789,80 @@ function normalizeFixtureRelativePath(value: string): string {
     .replace(/\/+$/, "");
 }
 
-function copyFixtureSourceTree(sourceRoot: string, destinationRoot: string, exclusionPrefixes: string[]): void {
+function materializeFixtureSourceTree(sourceRoot: string, destinationRoot: string, exclusionPrefixes: string[]): void {
   copyFixtureNode(sourceRoot, sourceRoot, destinationRoot, exclusionPrefixes);
+}
+
+function prepareMaterializedFixtureWorkspace(
+  workspaceRoot: string,
+  preparation: EvaluationWorkspaceFixturePreparation,
+  runCommand: FixturePreparationCommandRunner,
+): void {
+  if (preparation.strategy === "none") {
+    return;
+  }
+  if (preparation.strategy === "pnpm_install_frozen") {
+    const cwd = path.resolve(workspaceRoot, preparation.cwd);
+    try {
+      runCommand({
+        command: "pnpm",
+        args: ["install", "--frozen-lockfile"],
+        cwd,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`fixture_workspace_preparation_failed: ${message}`);
+    }
+  }
+}
+
+function verifyMaterializedFixtureWorkspace(
+  workspaceRoot: string,
+  preparation: EvaluationWorkspaceFixturePreparation,
+): void {
+  const packageJsonPath = path.join(workspaceRoot, "package.json");
+  const lockfilePath = path.join(workspaceRoot, "pnpm-lock.yaml");
+  if (!fs.existsSync(packageJsonPath)) {
+    throw new Error("fixture_workspace_verification_failed: missing package.json in materialized workspace root");
+  }
+  if (!fs.existsSync(lockfilePath)) {
+    throw new Error("fixture_workspace_verification_failed: missing pnpm-lock.yaml in materialized workspace root");
+  }
+  if (!preparation.verifyNodeModules) {
+    return;
+  }
+  for (const relativePath of preparation.verifyPaths) {
+    const absolutePath = path.resolve(workspaceRoot, relativePath);
+    if (!fs.existsSync(absolutePath)) {
+      throw new Error(`fixture_workspace_verification_failed: missing required dependency path ${relativePath}`);
+    }
+    verifyMaterializedWorkspacePath(absolutePath, workspaceRoot, relativePath);
+  }
+}
+
+function verifyMaterializedWorkspacePath(absolutePath: string, workspaceRoot: string, relativePath: string): void {
+  let currentPath = absolutePath;
+  const visited = new Set<string>();
+  while (true) {
+    const stat = fs.lstatSync(currentPath);
+    if (!stat.isSymbolicLink()) {
+      return;
+    }
+    if (visited.has(currentPath)) {
+      throw new Error(`fixture_workspace_verification_failed: cyclic symlink detected at ${relativePath}`);
+    }
+    visited.add(currentPath);
+    const linkTarget = fs.readlinkSync(currentPath);
+    const resolved = path.resolve(path.dirname(currentPath), linkTarget);
+    const relativeResolved = path.relative(workspaceRoot, resolved);
+    if (relativeResolved.startsWith("..") || path.isAbsolute(relativeResolved)) {
+      throw new Error(`fixture_workspace_verification_failed: dependency symlink escapes workspace at ${relativePath}`);
+    }
+    if (!fs.existsSync(resolved)) {
+      throw new Error(`fixture_workspace_verification_failed: dangling dependency symlink at ${relativePath}`);
+    }
+    currentPath = resolved;
+  }
 }
 
 function copyFixtureNode(
@@ -2785,6 +2899,30 @@ function copyFixtureNode(
   }
   fs.mkdirSync(path.dirname(currentDestination), { recursive: true });
   fs.copyFileSync(currentSource, currentDestination);
+}
+
+function runFixturePreparationCommand(params: {
+  command: string;
+  args: string[];
+  cwd: string;
+}): void {
+  try {
+    execFileSync(params.command, params.args, {
+      cwd: params.cwd,
+      stdio: "pipe",
+      encoding: "utf8",
+    });
+  } catch (error) {
+    const stderr = error instanceof Error && "stderr" in error
+      ? String((error as { stderr?: string }).stderr ?? "").trim()
+      : "";
+    const stdout = error instanceof Error && "stdout" in error
+      ? String((error as { stdout?: string }).stdout ?? "").trim()
+      : "";
+    const baseMessage = error instanceof Error ? error.message : String(error);
+    const detail = stderr || stdout;
+    throw new Error(detail ? `${baseMessage}: ${detail}` : baseMessage);
+  }
 }
 
 function normalizeProjectWorkspaceContext(value: unknown): { label?: string; rootPath: string; [key: string]: unknown } | undefined {
