@@ -1652,8 +1652,10 @@ const documentExtractParameters = {
   properties: {
     path: {
       ...workspacePathParameter,
-      description: "PDF path inside the selected project folder. Provide exactly one of path or url.",
+      description: "PDF path to extract. When scope is workspace, use a project-relative path. Host scopes require an absolute path. Provide exactly one of path or url.",
     },
+    scope: fileAccessScopeParameter,
+    grantId: fileGrantIdParameter,
     url: {
       type: "string",
       format: "uri",

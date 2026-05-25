@@ -129,7 +129,9 @@ export const ChannelConfigSchema = z.object({
   label: z.string().min(1),
   enabled: z.boolean().default(true),
   capabilities: ChannelCapabilitiesSchema.default({}),
-  config: z.record(z.unknown()).default({}),
+  config: z.object({
+    localReadRoots: z.array(z.string().min(1)).default([]),
+  }).catchall(z.unknown()).default({}),
   secretRefs: z.record(z.string().min(1)).default({}),
   createdAt: z.number().int().nonnegative(),
   updatedAt: z.number().int().nonnegative()
