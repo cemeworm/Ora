@@ -948,6 +948,40 @@ describe("RuntimeToolExecutor", () => {
     });
   });
 
+  it("skips dangling symlinks during file.glob traversal instead of failing the tool", async () => {
+    const { rootPath, workspace } = createWorkspace();
+    fs.symlinkSync(path.join(rootPath, "missing-target"), path.join(rootPath, "src", "broken-link"));
+    const executor = new RuntimeToolExecutor({ workspace, toolDescriptors: MVP_TOOLS });
+
+    const glob = await executor.execute({
+      tool: "file.glob",
+      args: { pattern: "src/**/*" },
+    }) as {
+      matches: string[];
+      skipped: Array<{ path: string; reason: string }>;
+    };
+
+    expect(glob.matches).toEqual(expect.arrayContaining(["src/alpha.ts", "src/beta.ts"]));
+    expect(glob.skipped).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: "src/broken-link", reason: "missing_during_walk" }),
+    ]));
+  });
+
+  it("skips dangling symlinks during file.list instead of failing the tool", async () => {
+    const { rootPath, workspace } = createWorkspace();
+    fs.symlinkSync(path.join(rootPath, "missing-target"), path.join(rootPath, "src", "broken-link"));
+    const executor = new RuntimeToolExecutor({ workspace, toolDescriptors: MVP_TOOLS });
+
+    const list = await executor.execute({
+      tool: "file.list",
+      args: { path: "src" },
+    }) as {
+      entries: Array<{ name: string }>;
+    };
+
+    expect(list.entries.map((entry) => entry.name).sort()).toEqual(["alpha.ts", "beta.ts"]);
+  });
+
   it("reports missing file search targets as structured missing results", async () => {
     const { workspace } = createWorkspace();
     const executor = new RuntimeToolExecutor({ workspace, toolDescriptors: MVP_TOOLS });

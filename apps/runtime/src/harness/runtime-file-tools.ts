@@ -29,7 +29,7 @@ const BINARY_SNIFF_BYTES = 4096;
 
 type SkippedWorkspaceFile = {
   path: string;
-  reason: "default_excluded" | "too_large" | "binary";
+  reason: "default_excluded" | "too_large" | "binary" | "missing_during_walk";
   sizeBytes?: number;
 };
 
@@ -451,9 +451,17 @@ function listLocalFiles(target: ResolvedFileToolTarget, args: Record<string, unk
   }
   const entries = fs.readdirSync(absolutePath, { withFileTypes: true })
     .slice(0, readPositiveInt(args.limit, limits.fileListMaxEntries, limits.fileListMaxEntries))
-    .map((entry) => {
+    .flatMap((entry) => {
       const entryPath = path.join(absolutePath, entry.name);
-      const entryStat = fs.statSync(entryPath);
+      let entryStat: fs.Stats;
+      try {
+        entryStat = fs.statSync(entryPath);
+      } catch (error) {
+        if (isErrnoCode(error, "ENOENT")) {
+          return [];
+        }
+        throw error;
+      }
       return {
         name: entry.name,
         path: displayPathFor(target, entryPath),
@@ -954,7 +962,19 @@ function walkFiles(
     if (files.length >= maxFiles) {
       return;
     }
-    const stat = fs.statSync(currentPath);
+    let stat: fs.Stats;
+    try {
+      stat = fs.statSync(currentPath);
+    } catch (error) {
+      if (isErrnoCode(error, "ENOENT")) {
+        options.skipped?.push({
+          path: options.displayPath?.(currentPath) ?? relativeWorkspacePath(rootPath, currentPath),
+          reason: "missing_during_walk",
+        });
+        return;
+      }
+      throw error;
+    }
     if (stat.isFile()) {
       files.push(currentPath);
       return;
