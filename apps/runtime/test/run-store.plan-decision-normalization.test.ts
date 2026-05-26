@@ -69,24 +69,17 @@ function declinedPlanSnapshot(): StateSnapshot {
 }
 
 describe("LocalRunStore plan decision normalization", () => {
-  it("adds a fresh pending plan decision when a declined plan produces a new proposed plan in the same run", () => {
+  it("preserves a declined plan decision without re-opening the same proposed plan", () => {
     const store = new LocalRunStore({ dataDir: freshStoreDir(), clock: () => 2_000 });
     const normalize = (store as unknown as {
       normalizeSnapshotForPersistence: (snapshot: StateSnapshot) => StateSnapshot;
     }).normalizeSnapshotForPersistence.bind(store);
 
     const normalized = StateSnapshotSchema.parse(normalize(declinedPlanSnapshot()));
-    const pendingDecision = normalized.planDecisions.find((decision) => decision.status === "pending");
 
     expect(normalized.planDecisions.find((decision) => decision.id === "decision-old")?.status).toBe("declined");
-    expect(pendingDecision).toMatchObject({
-      id: `${normalized.runId}:plan-decision:${normalized.updatedAt}`,
-      runId: normalized.runId,
-      sessionId: normalized.sessionId,
-      status: "pending",
-    });
-    expect(normalized.attention?.kind).toBe("needs_plan_decision");
-    expect(normalized.attention?.planDecisionId).toBe(pendingDecision?.id);
+    expect(normalized.planDecisions.some((decision) => decision.status === "pending")).toBe(false);
+    expect(normalized.attention?.kind).toBe("idle");
   });
 
   it("adds a pending plan decision for a short recoverable single proposed plan", () => {
@@ -111,5 +104,31 @@ describe("LocalRunStore plan decision normalization", () => {
       planContent: "短",
     });
     expect(normalized.attention?.kind).toBe("needs_plan_decision");
+  });
+
+  it("does not re-open a declined plan decision when the same run still contains the proposed plan text", () => {
+    const store = new LocalRunStore({ dataDir: freshStoreDir(), clock: () => 2_000 });
+    const normalize = (store as unknown as {
+      normalizeSnapshotForPersistence: (snapshot: StateSnapshot) => StateSnapshot;
+    }).normalizeSnapshotForPersistence.bind(store);
+    const base = declinedPlanSnapshot();
+    const normalized = StateSnapshotSchema.parse(normalize(StateSnapshotSchema.parse({
+      ...base,
+      planDecisions: [{
+        ...base.planDecisions[0]!,
+        status: "declined",
+        resolvedAt: 1_900,
+      }],
+    })));
+
+    expect(normalized.planDecisions).toEqual([
+      expect.objectContaining({
+        id: "decision-old",
+        status: "declined",
+        resolvedAt: 1_900,
+      }),
+    ]);
+    expect(normalized.planDecisions.some((decision) => decision.status === "pending")).toBe(false);
+    expect(normalized.attention?.kind).toBe("idle");
   });
 });

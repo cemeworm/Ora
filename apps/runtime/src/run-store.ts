@@ -5267,7 +5267,7 @@ export class LocalRunStore {
       normalized.status === "succeeded" &&
       normalized.config.metadata.taskIntent === "plan" &&
       proposedPlanDecision &&
-      !normalized.planDecisions.some((decision) => decision.status === "pending")
+      normalized.planDecisions.length === 0
     ) {
       normalized = StateSnapshotSchema.parse({
         ...normalized,
