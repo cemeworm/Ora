@@ -4664,7 +4664,7 @@ class LocalJsonRpcRuntime {
     return this.getSessionDetail({ sessionId: params.sessionId });
   }
 
-  private acceptPlanDecisionAndResume(params: unknown): OraRunHandle {
+  private acceptPlanDecisionAndResume(params: unknown): OraAcceptedPlanResumeHandle {
     if (
       typeof params !== "object" ||
       params === null ||
@@ -4683,11 +4683,19 @@ class LocalJsonRpcRuntime {
       decisionId: params.decisionId,
       status: "accepted",
     });
-    return this.resumeStreamingRun(
+    const handle = this.resumeStreamingRun(
       params.runId,
       ("reason" in params && typeof params.reason === "string") ? params.reason : USER_RESUMED_MESSAGE,
       { planDecisionResolutions: [{ decisionId: params.decisionId, status: "accepted" }] },
     );
+    return {
+      ...handle,
+      decisionId: params.decisionId,
+      resumePhase:
+        handle.status === "running" || handle.status === "queued"
+          ? "resumed_running"
+          : "resume_terminal",
+    };
   }
 
   private sessionWithLatestAttention(session: OraSessionSummary): OraSessionSummary {

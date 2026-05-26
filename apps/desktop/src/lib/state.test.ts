@@ -5239,7 +5239,7 @@ describe("desktop workbench state", () => {
       expect(state.commandFeedback).toBe("Plan accepted. Waiting for implementation to start on run-plan.");
     });
 
-    it("keeps local same-run resume authority when hydration returns an accepted settled snapshot over a running local snapshot", () => {
+    it("clears local accepted pending authority when hydration returns an accepted settled snapshot over a running local snapshot", () => {
       const sessionId = "session-plan";
       const runId = "run-plan";
       const localRunningSnapshot = testSnapshot({
@@ -5302,14 +5302,78 @@ describe("desktop workbench state", () => {
         feedback: "Plan accepted.",
       });
 
-      expect(state.pendingPlanDecisionResolution).toMatchObject({
-        sessionId,
-        decisionId: `${runId}:plan-decision`,
-        status: "accepted",
-      });
+      expect(state.pendingPlanDecisionResolution).toBeUndefined();
       expect(getActiveSnapshot(state.runLifecycle)?.status).toBe("running");
       expect(state.activeSessionDetail?.latestSnapshot?.status).toBe("running");
-      expect(state.isLoading).toBe(true);
+      expect(state.isLoading).toBe(false);
+    });
+
+    it("drops stale accepted pending authority when hydrate reveals a different pending plan decision", () => {
+      const sessionId = "session-plan";
+      const runId = "run-plan";
+      const staleDecisionId = `${runId}:plan-decision:accepted`;
+      const freshDecisionId = `${runId}:plan-decision:fresh`;
+      const snapshot = testSnapshot({
+        runId,
+        sessionId,
+        status: "succeeded",
+        planDecisions: [{
+          id: freshDecisionId,
+          runId,
+          sessionId,
+          status: "pending",
+          createdAt: 1_714_000_000_200,
+        }],
+        attention: {
+          kind: "needs_plan_decision",
+          blocking: true,
+          sourceRunId: runId,
+          reason: "plan_decision_required",
+          planDecisionId: freshDecisionId,
+          pendingActionIds: [],
+          pendingToolCallIds: [],
+          pendingClarificationIds: [],
+        },
+      });
+
+      const state = workbenchReducer({
+        ...initialWorkbenchState,
+        selectedSessionId: sessionId,
+        selectedTurnRunId: runId,
+        pendingPlanDecisionResolution: {
+          sessionId,
+          decisionId: staleDecisionId,
+          status: "accepted",
+          createdAt: 1_714_000_000_100,
+        },
+      }, {
+        type: "HYDRATE_SESSION",
+        projects: [],
+        sessions: [{
+          ...sessionSummary(sessionId),
+          latestRunId: runId,
+          status: "succeeded",
+          attention: snapshot.attention,
+        }],
+        detail: {
+          session: {
+            ...sessionSummary(sessionId),
+            latestRunId: runId,
+            status: "succeeded",
+            attention: snapshot.attention,
+          },
+          turns: [],
+          transcript: [],
+          latestSnapshot: snapshot,
+        },
+        snapshot,
+        feedback: "Fresh plan decision arrived.",
+      });
+
+      expect(state.pendingPlanDecisionResolution).toBeUndefined();
+      expect(state.isLoading).toBe(false);
+      expect(state.activeSessionDetail?.latestSnapshot?.attention?.kind).toBe("needs_plan_decision");
+      expect(state.activeSessionDetail?.latestSnapshot?.planDecisions[0]?.id).toBe(freshDecisionId);
     });
 
     it("does not revive stale plan-decision attention when hydrate receives a resumed running snapshot", () => {

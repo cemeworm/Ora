@@ -1369,15 +1369,20 @@ export function useRunActions() {
   }
 
   async function resolvePlanDecision(status: "accepted" | "declined"): Promise<boolean> {
-    if (state.pendingPlanDecisionResolution) {
-      return false;
-    }
     const gateAuthority = getPlanDecisionGateAuthority(state);
     if (!gateAuthority) {
       dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: "No pending plan decision found." });
       return false;
     }
     const { sessionId, decisionId, sourceRunId: resumeRunId } = gateAuthority;
+    const pendingResolution = state.pendingPlanDecisionResolution;
+    if (
+      pendingResolution &&
+      pendingResolution.sessionId === sessionId &&
+      pendingResolution.decisionId === decisionId
+    ) {
+      return false;
+    }
     const currentTaskIntent = state.taskIntent;
     const startedAt = Date.now();
     flushSync(() => {
@@ -1402,40 +1407,46 @@ export function useRunActions() {
         dispatch({ type: "SET_TASK_INTENT", taskIntent: currentTaskIntent });
         return true;
       }
-      const detail = await runtimeClient.resolvePlanDecision({ sessionId, runId: resumeRunId, decisionId, status });
-      dispatch({
-        type: "HYDRATE_SESSION",
-        projects: state.projects,
-        sessions: state.sessions,
-        detail,
-        feedback: "Plan accepted. Starting implementation turn.",
+      flushSync(() => {
+        dispatch({
+          type: "BEGIN_RUN_RESUME",
+          runId: resumeRunId,
+          approvedActionIds: [],
+          resolvedClarificationIds: [],
+          planDecisionId: decisionId,
+          planDecisionStatus: "accepted",
+          updatedAt: Date.now(),
+        });
       });
-      dispatch({ type: "SET_TASK_INTENT", taskIntent: "implement" });
-      dispatch({ type: "SET_PROMPT", text: USER_RESUMED_MESSAGE });
-      await startRunWithPrompt({
-        prompt: USER_RESUMED_MESSAGE,
-        taskIntent: "implement",
-        clearPromptIfMatched: true,
-        extraMetadata: {
-          acceptedPlanDecisionId: decisionId,
-          acceptedPlanSourceRunId: resumeRunId,
-        },
+      await waitForPendingRunPaint();
+      const handle = await runtimeClient.acceptPlanDecisionAndResume({
+        sessionId,
+        runId: resumeRunId,
+        decisionId,
+        reason: USER_RESUMED_MESSAGE,
       });
-      dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: `Plan accepted. Started implementation turn for ${resumeRunId}.` });
+      const snapshot = await runtimeClient.getRunState(handle.runId);
+      await refreshCurrentSession(
+        snapshot,
+        handle.resumePhase === "resume_terminal"
+          ? snapshot.error ?? `Plan accepted, but implementation ended on ${snapshot.runId}.`
+          : `Plan accepted and resumed on ${snapshot.runId}.`,
+      );
+      if (handle.resumePhase !== "resume_terminal" && snapshot.status !== "failed") {
+        dispatch({ type: "SET_TASK_INTENT", taskIntent: "implement" });
+      }
       return true;
     } catch (error) {
       const feedback = error instanceof Error ? error.message : "Plan decision update failed.";
-      dispatch({
-        type: "ROLLBACK_PLAN_DECISION_RESOLUTION",
-        sessionId,
-        decisionId,
-        feedback,
-      });
       try {
         await refreshCurrentSession(undefined, feedback);
       } catch {
-        // Rollback above already restored the local decision gate; keep the
-        // original decision failure as the user-facing feedback.
+        dispatch({
+          type: "ROLLBACK_PLAN_DECISION_RESOLUTION",
+          sessionId,
+          decisionId,
+          feedback,
+        });
       }
       return false;
     }

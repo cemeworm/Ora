@@ -3796,6 +3796,30 @@ function shouldPreserveAcceptedPlanHydrationAuthority(params: {
     projection.blocksHydrationTerminalFallback;
 }
 
+function shouldRetainPendingPlanDecisionResolution(params: {
+  pendingResolution: WorkbenchState["pendingPlanDecisionResolution"];
+  snapshot: OraStateSnapshot | undefined;
+  currentRunId?: string;
+  acceptedPlanDecisionTurnProjections: WorkbenchState["acceptedPlanDecisionTurnProjections"];
+}): boolean {
+  const { pendingResolution, snapshot, currentRunId, acceptedPlanDecisionTurnProjections } = params;
+  if (!pendingResolution) {
+    return false;
+  }
+  const projection = deriveAcceptedPlanResumeProjection({
+    snapshot,
+    currentRunId,
+    pendingDecision: {
+      decisionId: pendingResolution.decisionId,
+      status: pendingResolution.status,
+    },
+    acceptedDecisionId: currentRunId
+      ? Object.values(acceptedPlanDecisionTurnProjections).find((entry) => entry.runId === currentRunId)?.decisionId
+      : undefined,
+  });
+  return projection.phase === "accepted_resuming";
+}
+
 function preserveComposerMode(
   state: WorkbenchState,
   candidateModeId?: string,
@@ -3991,6 +4015,13 @@ export function workbenchReducer(
         snapshot: effectiveSnapshot,
       });
       const pendingRun = preservePendingRun ? currentPendingRun : undefined;
+      const retainAcceptedPendingResolution = preserveAcceptedPlanAuthority &&
+        shouldRetainPendingPlanDecisionResolution({
+          pendingResolution: state.pendingPlanDecisionResolution,
+          snapshot: effectiveSnapshot,
+          currentRunId: effectiveSnapshot?.runId,
+          acceptedPlanDecisionTurnProjections: state.acceptedPlanDecisionTurnProjections,
+        });
       const projectSidebarState = reconcileProjectSidebarState(
         state,
         action.projects,
@@ -4063,11 +4094,11 @@ export function workbenchReducer(
               fallbackSessionId: action.detail.session.sessionId,
               preserveIncomingSnapshot: preserveAcceptedPlanAuthority,
             }),
-        pendingPlanDecisionResolution: preserveAcceptedPlanAuthority
+        pendingPlanDecisionResolution: retainAcceptedPendingResolution
           ? state.pendingPlanDecisionResolution
           : undefined,
         planDecisionResolutionOverrides: state.planDecisionResolutionOverrides,
-        isLoading: preservePendingRun || preserveAcceptedPlanAuthority ? true : false,
+        isLoading: preservePendingRun || retainAcceptedPendingResolution ? true : false,
         busyCommand: undefined,
       };
       timeEnd("HYDRATE_SESSION reducer");
@@ -4856,6 +4887,12 @@ export function workbenchReducer(
         streamBelongsToActiveTurn,
       );
       const nextPendingRun = shouldClearPendingRun ? undefined : pendingRun;
+      const retainAcceptedPendingResolution = shouldRetainPendingPlanDecisionResolution({
+        pendingResolution: state.pendingPlanDecisionResolution,
+        snapshot: streamSnapshot,
+        currentRunId: action.stream.runId,
+        acceptedPlanDecisionTurnProjections: state.acceptedPlanDecisionTurnProjections,
+      });
       const runLifecycle = streamBelongsToActiveTurn
         ? runLifecycleFromSnapshot(activeSnapshot, {
             previous: state.runLifecycle,
@@ -4902,12 +4939,11 @@ export function workbenchReducer(
           ? (action.stream.events.at(-1)?.id ?? state.selectedBeatId)
           : state.selectedBeatId,
         runLifecycle,
-        pendingPlanDecisionResolution:
-          acceptedPlanProjection.phase === "accepted_resuming"
-            ? state.pendingPlanDecisionResolution
-            : shouldClearPendingRun || acceptedPlanProjection.phase === "resumed_running" || acceptedPlanProjection.phase === "resume_terminal"
-              ? undefined
-              : state.pendingPlanDecisionResolution,
+        pendingPlanDecisionResolution: retainAcceptedPendingResolution
+          ? state.pendingPlanDecisionResolution
+          : shouldClearPendingRun || acceptedPlanProjection.phase === "resumed_running" || acceptedPlanProjection.phase === "resume_terminal"
+            ? undefined
+            : state.pendingPlanDecisionResolution,
         selectedModeSelection: streamBelongsToActiveTurn
           ? (activeSnapshot?.config.modeSelection ??
             state.selectedModeSelection)
@@ -4922,7 +4958,7 @@ export function workbenchReducer(
             ? state.taskIntent
             : state.lastRunTaskIntent,
         isLoading: streamBelongsToActiveTurn
-          ? acceptedPlanProjection.phase === "accepted_resuming" ||
+          ? retainAcceptedPendingResolution ||
             derivedStreamStatus === "running" ||
             derivedStreamStatus === "queued"
           : state.isLoading,

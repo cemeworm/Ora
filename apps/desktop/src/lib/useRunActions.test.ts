@@ -64,7 +64,6 @@ function createRuntimeClientMock() {
   const acceptedSessionDetail = sessionDetail(planRunSnapshot);
   let currentSnapshot = planRunSnapshot;
   let currentSessionDetail = acceptedSessionDetail;
-  let nextRunId = "run-implementation";
   return {
     resolvePlanDecision: vi.fn(async () => {
       currentSessionDetail = sessionDetail({
@@ -78,15 +77,19 @@ function createRuntimeClientMock() {
       });
       return currentSessionDetail;
     }),
-    startStreamingRun: vi.fn(async (input: { prompt: string }, config: { metadata?: Record<string, unknown> }, sessionId?: string) => {
+    startStreamingRun: vi.fn(),
+    acceptPlanDecisionAndResume: vi.fn(async (params: { sessionId: string; runId: string; decisionId: string; reason?: string }) => {
       currentSnapshot = implementationSnapshot({
-        runId: nextRunId,
-        sessionId: sessionId ?? planRunSnapshot.sessionId!,
-        prompt: input.prompt,
-        acceptedPlanMetadata: config.metadata,
+        runId: params.runId,
+        sessionId: params.sessionId,
+        prompt: params.reason ?? USER_RESUMED_MESSAGE,
+        acceptedPlanMetadata: {
+          taskIntent: "implement",
+          acceptedPlanDecisionId: params.decisionId,
+          acceptedPlanSourceRunId: params.runId,
+        },
       });
       currentSessionDetail = sessionDetail(currentSnapshot);
-      nextRunId = "run-implementation-2";
       return {
         runId: currentSnapshot.runId,
         sessionId: currentSnapshot.sessionId,
@@ -95,9 +98,10 @@ function createRuntimeClientMock() {
         pattern: currentSnapshot.pattern,
         modeId: currentSnapshot.modeId,
         startedAt: currentSnapshot.input.createdAt ?? currentSnapshot.updatedAt,
+        decisionId: params.decisionId,
+        resumePhase: "accepted_resuming" as const,
       };
     }),
-    acceptPlanDecisionAndResume: vi.fn(),
     getRunState: vi.fn(async () => currentSnapshot),
     listProjects: vi.fn(async () => []),
     listSessions: vi.fn(async () => [currentSessionDetail.session]),
@@ -682,7 +686,7 @@ describe("desktop run actions", () => {
     expect(getInteractiveRunId(state)).toBe("run-gate");
   });
 
-  it("starts a new implementation turn after accepting a plan decision", async () => {
+  it("accepts a plan decision by resuming the same run through the runtime-owned path", async () => {
     const cleanup = renderElement(createElement(ActionsProbe, {
       onReady: (actions) => {
         runtimeHarness.actions = actions;
@@ -701,33 +705,20 @@ describe("desktop run actions", () => {
     });
     vi.useRealTimers();
 
-    expect(runtimeHarness.client!.acceptPlanDecisionAndResume).not.toHaveBeenCalled();
-    expect(runtimeHarness.client!.resolvePlanDecision).toHaveBeenCalledWith({
+    expect(runtimeHarness.client!.resolvePlanDecision).not.toHaveBeenCalled();
+    expect(runtimeHarness.client!.acceptPlanDecisionAndResume).toHaveBeenCalledWith({
       sessionId: "session-plan",
       runId: "run-plan",
       decisionId: "decision-1",
-      status: "accepted",
+      reason: USER_RESUMED_MESSAGE,
     });
-    expect(runtimeHarness.client!.startStreamingRun).toHaveBeenCalledTimes(1);
-    expect(runtimeHarness.client!.startStreamingRun).toHaveBeenCalledWith(
-      expect.objectContaining({
-        prompt: USER_RESUMED_MESSAGE,
-        context: expect.objectContaining({ source: "desktop-workbench" }),
-      }),
-      expect.objectContaining({
-        metadata: expect.objectContaining({
-          taskIntent: "implement",
-          acceptedPlanDecisionId: "decision-1",
-          acceptedPlanSourceRunId: "run-plan",
-        }),
-      }),
-      "session-plan",
-    );
+    expect(runtimeHarness.client!.startStreamingRun).not.toHaveBeenCalled();
+    expect(runtimeHarness.client!.getRunState).toHaveBeenCalledWith("run-plan");
     cleanup();
   });
 
   it("rolls back local plan decision suppression when accepting fails", async () => {
-    runtimeHarness.client!.resolvePlanDecision.mockRejectedValueOnce(
+    runtimeHarness.client!.acceptPlanDecisionAndResume.mockRejectedValueOnce(
       new Error("resolve failed"),
     );
     const cleanup = renderElement(createElement(ActionsProbe, {
@@ -750,12 +741,15 @@ describe("desktop run actions", () => {
     vi.useRealTimers();
 
     expect(result).toBe(false);
-    expect(runtimeHarness.dispatch).toHaveBeenCalledWith({
-      type: "ROLLBACK_PLAN_DECISION_RESOLUTION",
-      sessionId: "session-plan",
-      decisionId: "decision-1",
+    expect(runtimeHarness.client!.getSession).toHaveBeenCalledWith(
+      "session-plan",
+      expect.any(Object),
+      expect.any(Object),
+    );
+    expect(runtimeHarness.dispatch).toHaveBeenCalledWith(expect.objectContaining({
+      type: "HYDRATE_SESSION",
       feedback: "resolve failed",
-    });
+    }));
     cleanup();
   });
 
