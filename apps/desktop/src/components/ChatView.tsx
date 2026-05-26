@@ -41,7 +41,8 @@ import type { DesktopRunInteractionState } from "../lib/runInteractionState";
 import type { PlanDecisionResolutionOverride } from "../lib/state";
 import {
   CHAT_SURFACE_FRAME_WIDTH_CLASS,
-  CHAT_SURFACE_FRAME_WIDTH_REM,
+  CHAT_SURFACE_VIEWPORT_GUTTER_XL_REM,
+  getChatSurfaceOccupiedWidthRem,
   CHAT_SURFACE_VIEWPORT_GUTTER_CLASS,
 } from "./chatSurfaceLayout";
 
@@ -753,14 +754,14 @@ export function deriveChatSurfaceLaneWidthPx({
   railWidth,
   railRightInsetPx,
   safeGapPx,
-  idealFrameWidthPx,
+  occupiedSurfaceWidthPx,
 }: {
   hasDesktopOverlayRail: boolean;
   contentRowWidth: number | null;
   railWidth?: number | null;
   railRightInsetPx?: number;
   safeGapPx?: number;
-  idealFrameWidthPx?: number;
+  occupiedSurfaceWidthPx?: number;
 }) {
   if (
     !hasDesktopOverlayRail ||
@@ -777,9 +778,9 @@ export function deriveChatSurfaceLaneWidthPx({
   if (laneWidth <= 0) {
     return null;
   }
-  // When space is ample to maintain the ideal frame width without
-  // squeezing the rail, keep the message area centered in the full content row.
-  if (typeof idealFrameWidthPx === "number" && laneWidth >= idealFrameWidthPx) {
+  // When space is ample to preserve the full visible chat surface footprint,
+  // keep the message area centered in the full content row.
+  if (typeof occupiedSurfaceWidthPx === "number" && laneWidth >= occupiedSurfaceWidthPx) {
     return null;
   }
   return laneWidth;
@@ -1020,11 +1021,13 @@ export function ChatView({
     () => deriveChatSurfaceLaneClassName(showDesktopOverlayRail),
     [showDesktopOverlayRail],
   );
-  const idealFrameWidthPx = useMemo(() => {
+  const occupiedSurfaceWidthPx = useMemo(() => {
     const fontSizePx = typeof document !== "undefined"
       ? parseFloat(getComputedStyle(document.documentElement).fontSize) || 16
       : 16;
-    return Math.round(CHAT_SURFACE_FRAME_WIDTH_REM * fontSizePx);
+    return Math.round(getChatSurfaceOccupiedWidthRem({
+      viewportGutterXRem: CHAT_SURFACE_VIEWPORT_GUTTER_XL_REM,
+    }) * fontSizePx);
   }, []);
   const chatSurfaceLaneWidthPx = useMemo(
     () => deriveChatSurfaceLaneWidthPx({
@@ -1035,9 +1038,9 @@ export function ChatView({
         ? CHAT_VIEW_DESKTOP_OVERLAY_RIGHT_INSET_XL_PX
         : CHAT_VIEW_DESKTOP_OVERLAY_RIGHT_INSET_PX,
       safeGapPx: CHAT_VIEW_DESKTOP_OVERLAY_SAFE_GAP_PX,
-      idealFrameWidthPx,
+      occupiedSurfaceWidthPx,
     }),
-    [contentRowWidth, idealFrameWidthPx, isXlViewport, overlayRailWidth, showDesktopOverlayRail],
+    [contentRowWidth, occupiedSurfaceWidthPx, isXlViewport, overlayRailWidth, showDesktopOverlayRail],
   );
   const chatSurfaceLaneStyle = useMemo(
     () => deriveChatSurfaceLaneStyle(chatSurfaceLaneWidthPx),

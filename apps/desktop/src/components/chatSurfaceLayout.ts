@@ -1,5 +1,9 @@
 export const CHAT_SURFACE_FRAME_WIDTH_REM = 43.2;
 export const CHAT_SURFACE_MIN_CONTENT_EXTRA_WIDTH_REM = 2;
+export const CHAT_SURFACE_VIEWPORT_GUTTER_X_REM = 1;
+export const CHAT_SURFACE_VIEWPORT_GUTTER_MD_REM = 1.5;
+export const CHAT_SURFACE_VIEWPORT_GUTTER_XL_REM = 2;
+export const CHAT_SURFACE_CENTERING_SAFE_MARGIN_REM = 3;
 export const CHAT_SURFACE_FRAME_WIDTH_CLASS = "w-full max-w-[43.2rem]";
 export const CHAT_SURFACE_VIEWPORT_GUTTER_CLASS =
   "w-full px-4 md:px-6 xl:px-8";
@@ -11,3 +15,15 @@ export const CHAT_SURFACE_SCROLLBAR_COMPENSATION_CLASS =
 // horizontal inset instead so the composer stays on the same geometric center.
 export const CHAT_SURFACE_OVERLAY_SCROLLBAR_PADDING_CLASS =
   "lg:px-4 xl:px-6";
+
+export function getChatSurfaceOccupiedWidthRem({
+  viewportGutterXRem = CHAT_SURFACE_VIEWPORT_GUTTER_XL_REM,
+  centeringSafeMarginRem = CHAT_SURFACE_CENTERING_SAFE_MARGIN_REM,
+}: {
+  viewportGutterXRem?: number;
+  centeringSafeMarginRem?: number;
+} = {}) {
+  return CHAT_SURFACE_FRAME_WIDTH_REM +
+    viewportGutterXRem * 2 +
+    centeringSafeMarginRem;
+}

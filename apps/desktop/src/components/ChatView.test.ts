@@ -53,6 +53,8 @@ import {
 } from "./PlanStepsTray";
 import {
   CHAT_SURFACE_FRAME_WIDTH_CLASS,
+  CHAT_SURFACE_VIEWPORT_GUTTER_XL_REM,
+  getChatSurfaceOccupiedWidthRem,
   CHAT_SURFACE_VIEWPORT_GUTTER_CLASS,
 } from "./chatSurfaceLayout";
 
@@ -877,44 +879,64 @@ describe("chat view collaboration overlay visibility", () => {
   });
 
   describe("deriveChatSurfaceLaneWidthPx with idealFrameWidthPx", () => {
-    it("returns null when space is ample (laneWidth >= idealFrameWidthPx)", () => {
-      // At 16px root font, idealFrameWidthPx = 43.2 * 16 ≈ 691
+    it("returns null when space is ample for the full visible chat surface", () => {
+      // At 16px root font, occupied surface width is:
+      // (43.2 + xl gutters 2+2 + safety margin 3) * 16 ≈ 803
       // Content row 1400, rail 320, rightInset 32, safeGap 24
-      // laneWidth = 1400 - 376 = 1024 >= 691 → null
+      // laneWidth = 1400 - 376 = 1024 >= 803 → null
       expect(deriveChatSurfaceLaneWidthPx({
         hasDesktopOverlayRail: true,
         contentRowWidth: 1400,
         railWidth: 320,
         railRightInsetPx: CHAT_VIEW_DESKTOP_OVERLAY_RIGHT_INSET_PX,
         safeGapPx: CHAT_VIEW_DESKTOP_OVERLAY_SAFE_GAP_PX,
-        idealFrameWidthPx: 691,
+        occupiedSurfaceWidthPx: Math.round(getChatSurfaceOccupiedWidthRem({
+          viewportGutterXRem: CHAT_SURFACE_VIEWPORT_GUTTER_XL_REM,
+        }) * 16),
       })).toBeNull();
     });
 
-    it("returns constrained width when space is tight (laneWidth < idealFrameWidthPx)", () => {
+    it("returns constrained width when the full visible surface would be squeezed", () => {
       // Content row 1000, rail 320, rightInset 32, safeGap 24
-      // laneWidth = 1000 - 376 = 624 < 691 → return 624
+      // laneWidth = 1000 - 376 = 624 < 803 → return 624
       expect(deriveChatSurfaceLaneWidthPx({
         hasDesktopOverlayRail: true,
         contentRowWidth: 1000,
         railWidth: 320,
         railRightInsetPx: CHAT_VIEW_DESKTOP_OVERLAY_RIGHT_INSET_PX,
         safeGapPx: CHAT_VIEW_DESKTOP_OVERLAY_SAFE_GAP_PX,
-        idealFrameWidthPx: 691,
+        occupiedSurfaceWidthPx: Math.round(getChatSurfaceOccupiedWidthRem({
+          viewportGutterXRem: CHAT_SURFACE_VIEWPORT_GUTTER_XL_REM,
+        }) * 16),
       })).toBe(624);
     });
 
-    it("returns null when no rail (regardless of idealFrameWidthPx)", () => {
+    it("shrinks the lane even when the bare frame still fits but the guttered surface no longer does", () => {
+      expect(deriveChatSurfaceLaneWidthPx({
+        hasDesktopOverlayRail: true,
+        contentRowWidth: 1156,
+        railWidth: 320,
+        railRightInsetPx: CHAT_VIEW_DESKTOP_OVERLAY_RIGHT_INSET_PX,
+        safeGapPx: CHAT_VIEW_DESKTOP_OVERLAY_SAFE_GAP_PX,
+        occupiedSurfaceWidthPx: Math.round(getChatSurfaceOccupiedWidthRem({
+          viewportGutterXRem: CHAT_SURFACE_VIEWPORT_GUTTER_XL_REM,
+        }) * 16),
+      })).toBe(780);
+    });
+
+    it("returns null when no rail (regardless of occupiedSurfaceWidthPx)", () => {
       expect(deriveChatSurfaceLaneWidthPx({
         hasDesktopOverlayRail: false,
         contentRowWidth: 1200,
         railWidth: 320,
         safeGapPx: CHAT_VIEW_DESKTOP_OVERLAY_SAFE_GAP_PX,
-        idealFrameWidthPx: 691,
+        occupiedSurfaceWidthPx: Math.round(getChatSurfaceOccupiedWidthRem({
+          viewportGutterXRem: CHAT_SURFACE_VIEWPORT_GUTTER_XL_REM,
+        }) * 16),
       })).toBeNull();
     });
 
-    it("keeps current behavior when idealFrameWidthPx is not passed (backward compat)", () => {
+    it("falls back to the measured lane width when no occupied surface threshold is passed", () => {
       expect(deriveChatSurfaceLaneWidthPx({
         hasDesktopOverlayRail: true,
         contentRowWidth: 1400,
@@ -1355,7 +1377,7 @@ describe("chat view layout classes", () => {
 
     const lane = view.container.querySelector("[data-testid=\"chat-shared-surface-lane\"]") as HTMLDivElement | null;
     const shell = view.container.querySelector("[data-testid=\"chat-shared-surface-shell\"]") as HTMLDivElement | null;
-    expect(lane?.style.maxWidth).toBe("824px");
+    expect(lane?.style.maxWidth).toBe("");
     expect(shell?.style.maxWidth).toBe("");
     expect(shell?.className).toContain("relative flex min-h-0 flex-1 flex-col");
 
