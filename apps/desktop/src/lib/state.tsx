@@ -284,6 +284,7 @@ export interface PlanDecisionResolutionOverride {
 }
 
 export type RightWorkspacePageKind =
+  | "home"
   | "trails"
   | "documents"
   | "artifact"

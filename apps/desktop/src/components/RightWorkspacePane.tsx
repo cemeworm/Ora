@@ -7,7 +7,7 @@ import { DocumentsDrawer } from "./DocumentsDrawer";
 import { MarkdownContent } from "./MarkdownContent";
 import { MessageBubble } from "./MessageBubble";
 import { TrailsDrawer } from "./TrailsDrawer";
-import { Bot, FileStack, FileText, FolderTree, MessageSquareText, Plus, Rows3, X } from "lucide-react";
+import { Bot, FileStack, FileText, FolderTree, Layout, MessageSquareText, Plus, Rows3, X } from "lucide-react";
 import type { DesktopRunInteractionState } from "../lib/runInteractionState";
 import type { OraProjectFileEntry, OraProjectFileReadResult, OraProjectSummary, OraSessionDetail, OraStateSnapshot, RuntimeClient } from "../lib/runtimeClient";
 import type { ArtifactRecord, AssistantTurnAttachment, ChatMessage, CheckpointRecord, PlanItem, SessionRun, TurnProcessStep, TurnAgentConversationMessage, TurnTimelineItem } from "../types";
@@ -104,7 +104,7 @@ export function RightWorkspacePane({
   const activePage =
     workspace.pages.find((page) => page.id === workspace.selectedPageId) ??
     workspace.pages.at(-1);
-  const [isAddMenuOpen, setIsAddMenuOpen] = useState(false);
+
 
   function titleForPageKind(kind: RightWorkspacePage["kind"]) {
     switch (kind) {
@@ -116,6 +116,8 @@ export function RightWorkspacePane({
         return "子会话";
       case "file_preview":
         return "文件预览";
+      case "home":
+        return "新页面";
       case "trails":
       default:
         return "轨迹";
@@ -132,6 +134,8 @@ export function RightWorkspacePane({
         return <Bot size={13} className="shrink-0" />;
       case "file_preview":
         return <FileText size={13} className="shrink-0" />;
+      case "home":
+        return <Layout size={13} className="shrink-0" />;
       case "trails":
         return <Rows3 size={13} className="shrink-0" />;
       default:
@@ -152,7 +156,6 @@ export function RightWorkspacePane({
           : {}),
     };
     onOpenWorkspacePage(page);
-    setIsAddMenuOpen(false);
   }
   const activeChildSessionDetail =
     activePage?.kind === "child_session"
@@ -255,20 +258,17 @@ export function RightWorkspacePane({
                   </button>
                 </div>
               ))}
-              <div className="relative shrink-0">
+              <div className="shrink-0">
                 <Button
                   type="button"
                   variant="ghost"
                   size="icon-sm"
                   aria-label="新增页面"
                   title="新增页面"
-                  onClick={() => setIsAddMenuOpen((current) => !current)}
+                  onClick={() => openWorkspacePage("home")}
                 >
                   <Plus size={14} />
                 </Button>
-                {isAddMenuOpen ? (
-                  <WorkspacePagePicker onOpenPage={openWorkspacePage} />
-                ) : null}
               </div>
             </>
           ) : null}
@@ -342,6 +342,12 @@ export function RightWorkspacePane({
               runtimeClient={runtimeClient}
               onOpenChildSessionPage={onOpenChildSessionPage}
             />
+          ) : activePage?.kind === "home" ? (
+            <WorkspaceHomePage
+              activePage={activePage}
+              onClosePage={onClosePage}
+              openWorkspacePage={openWorkspacePage}
+            />
           ) : (
             <WorkspaceEmptyState onOpenPage={openWorkspacePage} />
           )}
@@ -371,29 +377,40 @@ const WORKSPACE_PAGE_PICKER_OPTIONS: Array<{
   },
 ];
 
-function WorkspacePagePicker({
-  onOpenPage,
+function WorkspaceHomePage({
+  activePage,
+  onClosePage,
+  openWorkspacePage,
 }: {
-  onOpenPage: (kind: RightWorkspacePage["kind"]) => void;
+  activePage: RightWorkspacePage;
+  onClosePage: (page: RightWorkspacePage) => void;
+  openWorkspacePage: (kind: RightWorkspacePage["kind"]) => void;
 }) {
   return (
-    <div className="absolute right-0 top-full z-40 mt-1 min-w-56 rounded-xl border border-border bg-popover p-2 shadow-lift">
-      {WORKSPACE_PAGE_PICKER_OPTIONS.map((option) => (
-        <button
-          key={option.kind}
-          type="button"
-          onClick={() => onOpenPage(option.kind)}
-          className="flex w-full items-start gap-3 rounded-lg px-3 py-2 text-left transition hover:bg-accent hover:text-accent-foreground"
-        >
-          <span className="mt-0.5 text-muted-foreground">{option.icon}</span>
-          <span className="min-w-0">
-            <span className="block text-sm font-medium">{option.title}</span>
-            <span className="mt-0.5 block text-[11px] text-muted-foreground">
-              {option.description}
+    <div className="flex h-full min-h-0 flex-col justify-center p-5">
+      <div className="w-full max-w-sm space-y-2 self-center">
+        {WORKSPACE_PAGE_PICKER_OPTIONS.map((option) => (
+          <button
+            key={option.kind}
+            type="button"
+            onClick={() => {
+              onClosePage(activePage);
+              openWorkspacePage(option.kind);
+            }}
+            className="flex w-full items-start gap-3 rounded-xl border border-border/70 bg-background/80 px-3 py-3 text-left transition hover:bg-accent hover:text-accent-foreground"
+          >
+            <span className="mt-0.5 text-muted-foreground">{option.icon}</span>
+            <span className="min-w-0">
+              <span className="block text-sm font-medium text-foreground">
+                {option.title}
+              </span>
+              <span className="mt-1 block text-[11px] text-muted-foreground">
+                {option.description}
+              </span>
             </span>
-          </span>
-        </button>
-      ))}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }

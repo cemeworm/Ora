@@ -1059,4 +1059,151 @@ describe("RightWorkspacePane", () => {
 
     view.cleanup();
   });
+
+  it("opens a home page when clicking the plus button in the tab bar", () => {
+    const view = renderPane({
+      workspace: workspace({
+        pages: [page({ id: "artifact:1", kind: "artifact", title: "Artifact", sessionId: "session-parent", artifactId: "artifact-child-1" })],
+        selectedPageId: "artifact:1",
+      }),
+    });
+
+    const plusButton = Array.from(view.container.querySelectorAll("button")).find(
+      (btn) => btn.getAttribute("aria-label") === "新增页面",
+    );
+    expect(plusButton).toBeTruthy();
+
+    act(() => {
+      plusButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(view.openWorkspacePage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "home",
+        title: "新页面",
+        sessionId: "session-parent",
+      }),
+    );
+
+    view.cleanup();
+  });
+
+  it("renders panel choices inside a home page and replaces it on selection", () => {
+    const homePage = page({ id: "home:1", kind: "home", title: "新页面", sessionId: "session-parent" });
+    const onClosePage = vi.fn();
+    const onOpenWorkspacePage = vi.fn();
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        createElement(RightWorkspacePane, {
+          workspace: workspace({
+            pages: [homePage],
+            selectedPageId: "home:1",
+          }),
+          runtimeClient: {
+            getSession: vi.fn().mockResolvedValue(detail()),
+            getRunState: vi.fn().mockResolvedValue(snapshot()),
+          } as unknown as RuntimeClient,
+          selectedSession: session(),
+          selectedProject: {
+            projectId: "project-1",
+            label: "Ora",
+            rootPath: "/tmp/ora",
+            createdAt: 1_717_000_000_000,
+            updatedAt: 1_717_000_000_100,
+            sourceKind: "local_folder",
+            sessionCount: 1,
+          },
+          activeSnapshot: snapshot({ sessionId: "session-parent", runId: "run-parent" }),
+          busyCommand: undefined,
+          commandFeedback: "Ready",
+          checkpoints: [],
+          planItems: [],
+          runInteractionState: {
+            sourceRunId: "run-parent",
+            sourceSessionId: "session-parent",
+            authority: "active_snapshot",
+            snapshotSource: "live",
+            isProcessing: false,
+            canSubmit: true,
+            canStop: false,
+            canResume: false,
+            canRebuild: false,
+            gateKind: undefined,
+            status: "idle",
+          },
+          chatMessages: [] as ChatMessage[],
+          turnSnapshots: {},
+          sessionDetailsById: {},
+          onForkRun: vi.fn(),
+          onForkAndResumeRun: vi.fn(),
+          onReplaySelection: vi.fn(),
+          onResumeRun: vi.fn(),
+          onCancelRun: vi.fn(),
+          onCopyPath: vi.fn(),
+          onAddFileToChat: vi.fn(),
+          onOpenChildSessionPage: vi.fn(),
+          onOpenWorkspacePage: onOpenWorkspacePage,
+          onCloseWorkspace: vi.fn(),
+          onSelectPage: vi.fn(),
+          onClosePage: onClosePage,
+          onCacheSessionDetail: vi.fn(),
+        }),
+      );
+    });
+
+    expect(container.textContent).toContain("轨迹");
+    expect(container.textContent).toContain("文件");
+
+    const trailsButton = Array.from(container.querySelectorAll("button")).find(
+      (btn) => btn.textContent?.includes("轨迹") && btn.textContent?.includes("timeline"),
+    );
+
+    // The home page buttons show 轨迹 with description; find the right one.
+    // Since both the tab bar and the home page have buttons containing "轨迹",
+    // we look for buttons inside the content area.
+    const contentButtons = Array.from(
+      container.querySelectorAll(".min-h-0.flex-1.overflow-hidden button"),
+    );
+    const homeTrailsButton = contentButtons.find(
+      (btn) => btn.textContent?.includes("轨迹")
+    );
+    expect(homeTrailsButton).toBeTruthy();
+
+    act(() => {
+      homeTrailsButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onClosePage).toHaveBeenCalledWith(homePage);
+    expect(onOpenWorkspacePage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "trails",
+        title: "轨迹",
+        sessionId: "session-parent",
+      }),
+    );
+
+    act(() => { root.unmount(); });
+    container.remove();
+  });
+
+  it("does not show the plus button when no pages exist", () => {
+    const view = renderPane({
+      workspace: workspace({
+        pages: [],
+        selectedPageId: undefined,
+      }),
+    });
+
+    const plusButton = Array.from(view.container.querySelectorAll("button")).find(
+      (btn) => btn.getAttribute("aria-label") === "新增页面",
+    );
+    expect(plusButton).toBeFalsy();
+
+    view.cleanup();
+  });
 });
