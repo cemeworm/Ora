@@ -329,7 +329,13 @@ describe("deriveRunInteractionState", () => {
       selectedSessionId: "session-1",
       activeSnapshot: activeSnapshot({ status: "cancelled" }),
     });
-    expect(result).toMatchObject({ status: "cancelled", isProcessing: false, canSubmit: true });
+    expect(result).toMatchObject({
+      status: "cancelled",
+      isProcessing: false,
+      canSubmit: true,
+      canStop: false,
+      canResume: false,
+    });
   });
 
   it("maps snapshot succeeded to interaction done", () => {

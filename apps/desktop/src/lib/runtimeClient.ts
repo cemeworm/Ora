@@ -136,7 +136,7 @@ import type {
   ToolRegistry as OraToolRegistry,
   UserTaskInput as OraUserTaskInput,
 } from "@cemeworm/shared";
-import { AutomationCreateParamsSchema, AutomationPreviewScheduleParamsSchema, AutomationSchema, AutomationUpdateParamsSchema, DEFAULT_AGENT_MODE_TOOL_IDS, DEFAULT_PROVIDERS, DEBATE_MODE_ID, FeedbackLoopActionApplyParamsSchema, FeedbackLoopActionResultSchema, FeedbackLoopCalibrationRuleSchema, FeedbackLoopRuleUpdateParamsSchema, LongTermMemoryProfileSchema, MVP_MODE_RUNTIME_ATOMS, MVP_MODES, MVP_PATTERNS, MVP_SKILLS, MVP_TOOLS, ORA_HOST_ABI_VERSION, ORA_ROOT_AGENT_ID, ORA_ROOT_AGENT_LABEL, ORA_RUNTIME_ABI_VERSION, ProjectInsightSchema, ProjectSignalSchema, ProviderConfigSchema, SessionForkParamsSchema, SINGLE_AGENT_MODE_ID, SYSTEM_AGENT_ID_ALIASES, SelfIterationCandidateApplyParamsSchema, SelfIterationCandidateSchema, SelfIterationPolicySchema, SelfIterationScanResultSchema, SystemAgentOverrideUpdateParamsSchema, agentLabelFromSnapshot, canonicalSystemAgentId, deriveRunAttention, deriveSessionBranchGroupsForSession, extractProposedPlanDecisionCandidate, legacySystemAgentIdsFor, modeSpecToPatternDefinition, projectAssistantTextFromSnapshot, projectForkSettledSnapshot, projectForkVisibleAssistantText, validateModeSpec, visibleToolIdsForPreset } from "@cemeworm/shared";
+import { ACCEPTED_PLAN_USER_MESSAGE, AutomationCreateParamsSchema, AutomationPreviewScheduleParamsSchema, AutomationSchema, AutomationUpdateParamsSchema, DEFAULT_AGENT_MODE_TOOL_IDS, DEFAULT_PROVIDERS, DEBATE_MODE_ID, FeedbackLoopActionApplyParamsSchema, FeedbackLoopActionResultSchema, FeedbackLoopCalibrationRuleSchema, FeedbackLoopRuleUpdateParamsSchema, LongTermMemoryProfileSchema, MVP_MODE_RUNTIME_ATOMS, MVP_MODES, MVP_PATTERNS, MVP_SKILLS, MVP_TOOLS, ORA_HOST_ABI_VERSION, ORA_ROOT_AGENT_ID, ORA_ROOT_AGENT_LABEL, ORA_RUNTIME_ABI_VERSION, ProjectInsightSchema, ProjectSignalSchema, ProviderConfigSchema, SessionForkParamsSchema, SINGLE_AGENT_MODE_ID, SYSTEM_AGENT_ID_ALIASES, SelfIterationCandidateApplyParamsSchema, SelfIterationCandidateSchema, SelfIterationPolicySchema, SelfIterationScanResultSchema, SystemAgentOverrideUpdateParamsSchema, agentLabelFromSnapshot, canonicalSystemAgentId, deriveRunAttention, deriveSessionBranchGroupsForSession, extractProposedPlanDecisionCandidate, legacySystemAgentIdsFor, modeSpecToPatternDefinition, projectAssistantTextFromSnapshot, projectForkSettledSnapshot, projectForkVisibleAssistantText, validateModeSpec, visibleToolIdsForPreset } from "@cemeworm/shared";
 import { PROVIDER_PRESETS } from "./providerPresets";
 
 export const USER_CANCELLED_MESSAGE = "Stopped processing as instructed.";
@@ -4683,18 +4683,109 @@ class LocalJsonRpcRuntime {
       decisionId: params.decisionId,
       status: "accepted",
     });
-    const handle = this.resumeStreamingRun(
-      params.runId,
-      ("reason" in params && typeof params.reason === "string") ? params.reason : USER_RESUMED_MESSAGE,
-      { planDecisionResolutions: [{ decisionId: params.decisionId, status: "accepted" }] },
-    );
+    const sourceSnapshot = this.runs.get(params.runId);
+    if (!sourceSnapshot) {
+      throw new Error(`Run not found: ${params.runId}`);
+    }
+    const existingImplementation = [...this.runs.values()]
+      .filter((snapshot) => snapshot.sessionId === params.sessionId)
+      .find((snapshot) =>
+        snapshot.runId !== params.runId &&
+        snapshot.config.metadata.taskIntent === "implement" &&
+        snapshot.config.metadata.acceptedPlanExecutionContract === "new_turn_implementation" &&
+        snapshot.config.metadata.acceptedPlanDecisionId === params.decisionId &&
+        snapshot.config.metadata.acceptedPlanRunId === params.runId &&
+        (snapshot.status === "queued" || snapshot.status === "running")
+      );
+    const handle = existingImplementation
+      ? {
+          runId: existingImplementation.runId,
+          sessionId: existingImplementation.sessionId!,
+          turnIndex: existingImplementation.turnIndex ?? 1,
+          status: existingImplementation.status,
+          pattern: existingImplementation.pattern,
+          modeId: existingImplementation.modeId,
+          startedAt: existingImplementation.input.createdAt ?? existingImplementation.updatedAt,
+        }
+      : this.startMockAcceptedPlanImplementationRun(sourceSnapshot, params.sessionId, params.decisionId);
     return {
       ...handle,
       decisionId: params.decisionId,
       resumePhase:
         handle.status === "running" || handle.status === "queued"
-          ? "resumed_running"
+          ? "accepted_resuming"
           : "resume_terminal",
+    };
+  }
+
+  private startMockAcceptedPlanImplementationRun(
+    sourceSnapshot: OraStateSnapshot,
+    sessionId: string,
+    decisionId: string,
+  ): OraRunHandle {
+    const mode = this.resolveMode(sourceSnapshot.modeId, sourceSnapshot.pattern);
+    const runId = this.nextRunId();
+    const startedAt = Date.now();
+    const snapshot = this.normalizeMockSnapshot({
+      ...this.createSnapshot(
+        runId,
+        mode,
+        ACCEPTED_PLAN_USER_MESSAGE,
+        startedAt,
+        "running",
+        undefined,
+        {
+          providerId: sourceSnapshot.config.providerId,
+          modelRef: sourceSnapshot.config.modelRef,
+          customAgentId: sourceSnapshot.config.customAgentId,
+          projectId: sourceSnapshot.input.projectId ?? this.sessions.get(sessionId)?.projectId,
+          modeSelection: sourceSnapshot.config.modeSelection,
+        },
+        sessionId,
+        this.nextVisibleTurnIndex(sessionId),
+      ),
+      config: {
+        ...sourceSnapshot.config,
+        pattern: sourceSnapshot.pattern,
+        modeId: sourceSnapshot.modeId,
+        metadata: {
+          ...sourceSnapshot.config.metadata,
+          taskIntent: "implement",
+          acceptedPlanExecutionContract: "new_turn_implementation",
+          acceptedPlanDecisionId: decisionId,
+          acceptedPlanRunId: sourceSnapshot.runId,
+        },
+      },
+      input: {
+        prompt: ACCEPTED_PLAN_USER_MESSAGE,
+        projectId: sourceSnapshot.input.projectId ?? this.sessions.get(sessionId)?.projectId,
+        context: {
+          acceptedPlanDecisionId: decisionId,
+          acceptedPlanRunId: sourceSnapshot.runId,
+        },
+        createdAt: startedAt,
+      },
+      planDecisions: sourceSnapshot.planDecisions.map((decision) =>
+        decision.id === decisionId
+          ? {
+              ...decision,
+              status: "accepted" as const,
+              resolvedAt: startedAt,
+            }
+          : decision
+      ),
+      updatedAt: startedAt,
+    });
+    this.runs.set(runId, snapshot);
+    this.updateSessionFromSnapshot(snapshot);
+    return {
+      runId,
+      sessionId,
+      turnIndex: snapshot.turnIndex ?? 1,
+      status: snapshot.status,
+      pattern: snapshot.pattern,
+      modeId: snapshot.modeId,
+      startedAt: snapshot.input.createdAt ?? snapshot.updatedAt,
     };
   }
 

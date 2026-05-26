@@ -1246,7 +1246,7 @@ describe("desktop session view model", () => {
     )).toBe(false);
   });
 
-  it("suppresses historical proposed plan content after an accepted same-run resume starts implementation", () => {
+  it("suppresses historical proposed plan content once accepted-plan implementation starts a new turn", () => {
     const createdAt = 1_714_000_000_000;
     const proposedPlan = [
       "<proposed_plan>",

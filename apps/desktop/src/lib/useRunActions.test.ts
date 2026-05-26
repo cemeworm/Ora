@@ -3,8 +3,9 @@
 import { act, createElement, useEffect } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ACCEPTED_PLAN_USER_MESSAGE } from "@cemeworm/shared";
 import { initialWorkbenchState, type WorkbenchState } from "./state";
-import { USER_RESUMED_MESSAGE, type OraSessionDetail, type OraSessionSummary, type OraStateSnapshot } from "./runtimeClient";
+import { USER_RESUMED_MESSAGE, type OraAcceptedPlanResumeHandle, type OraSessionDetail, type OraSessionSummary, type OraStateSnapshot } from "./runtimeClient";
 import {
   buildClarificationSubmissionPrompt,
   buildDesktopRunContext,
@@ -78,15 +79,16 @@ function createRuntimeClientMock() {
       return currentSessionDetail;
     }),
     startStreamingRun: vi.fn(),
-    acceptPlanDecisionAndResume: vi.fn(async (params: { sessionId: string; runId: string; decisionId: string; reason?: string }) => {
+    acceptPlanDecisionAndResume: vi.fn(async (params: { sessionId: string; runId: string; decisionId: string; reason?: string }): Promise<OraAcceptedPlanResumeHandle> => {
       currentSnapshot = implementationSnapshot({
-        runId: params.runId,
+        runId: "run-implementation",
         sessionId: params.sessionId,
-        prompt: params.reason ?? USER_RESUMED_MESSAGE,
+        prompt: ACCEPTED_PLAN_USER_MESSAGE,
         acceptedPlanMetadata: {
           taskIntent: "implement",
+          acceptedPlanExecutionContract: "new_turn_implementation",
           acceptedPlanDecisionId: params.decisionId,
-          acceptedPlanSourceRunId: params.runId,
+          acceptedPlanRunId: params.runId,
         },
       });
       currentSessionDetail = sessionDetail(currentSnapshot);
@@ -686,7 +688,7 @@ describe("desktop run actions", () => {
     expect(getInteractiveRunId(state)).toBe("run-gate");
   });
 
-  it("accepts a plan decision by resuming the same run through the runtime-owned path", async () => {
+  it("accepts a plan decision by starting a new implementation turn through the runtime-owned path", async () => {
     const cleanup = renderElement(createElement(ActionsProbe, {
       onReady: (actions) => {
         runtimeHarness.actions = actions;
@@ -713,6 +715,56 @@ describe("desktop run actions", () => {
       reason: USER_RESUMED_MESSAGE,
     });
     expect(runtimeHarness.client!.startStreamingRun).not.toHaveBeenCalled();
+    expect(runtimeHarness.client!.getRunState).not.toHaveBeenCalled();
+    expect(runtimeHarness.client!.getSession).toHaveBeenCalledWith(
+      "session-plan",
+      { includeLatestSnapshot: true },
+      expect.any(Object),
+    );
+    expect(runtimeHarness.dispatch).toHaveBeenCalledWith(expect.objectContaining({
+      type: "BEGIN_RUN_REQUEST",
+      sessionId: "session-plan",
+      prompt: ACCEPTED_PLAN_USER_MESSAGE,
+    }));
+    expect(runtimeHarness.dispatch).toHaveBeenCalledWith({
+      type: "ATTACH_PENDING_RUN_HANDLE",
+      sessionId: "session-plan",
+      prompt: ACCEPTED_PLAN_USER_MESSAGE,
+      runId: "run-implementation",
+    });
+    cleanup();
+  });
+
+  it("refreshes terminal accepted-plan resumes with the runtime snapshot immediately", async () => {
+    runtimeHarness.client!.acceptPlanDecisionAndResume.mockResolvedValueOnce({
+      runId: "run-plan",
+      sessionId: "session-plan",
+      turnIndex: 2,
+      status: "failed",
+      pattern: "generator_verifier",
+      modeId: "single_agent",
+      startedAt: 1_700_000_000_200,
+      decisionId: "decision-1",
+      resumePhase: "resume_terminal",
+    });
+    const cleanup = renderElement(createElement(ActionsProbe, {
+      onReady: (actions) => {
+        runtimeHarness.actions = actions;
+      },
+    }));
+
+    await flushMicrotasks();
+    const actions = runtimeHarness.actions;
+    expect(actions).toBeTruthy();
+
+    vi.useFakeTimers();
+    await act(async () => {
+      const resultPromise = actions!.acceptPlanDecisionAndStartImplementation();
+      await vi.runAllTimersAsync();
+      await resultPromise;
+    });
+    vi.useRealTimers();
+
     expect(runtimeHarness.client!.getRunState).toHaveBeenCalledWith("run-plan");
     cleanup();
   });
@@ -914,7 +966,7 @@ describe("desktop run actions", () => {
     });
   });
 
-  it("treats accepted same-run resume authority as the plan source run even before a fresh snapshot arrives", () => {
+  it("treats accepted-plan resume authority as the plan source run even before a fresh snapshot arrives", () => {
     const state = stateWithSession({
       pendingPlanDecisionResolution: {
         sessionId: "session-empty",

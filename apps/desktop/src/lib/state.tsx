@@ -287,7 +287,8 @@ export type RightWorkspacePageKind =
   | "trails"
   | "documents"
   | "artifact"
-  | "child_session";
+  | "child_session"
+  | "file_preview";
 
 export interface RightWorkspacePage {
   id: string;
@@ -295,6 +296,7 @@ export interface RightWorkspacePage {
   title: string;
   sessionId: string;
   targetRunId?: string;
+  filePath?: string;
   projectId?: string;
   artifactId?: string;
   childSessionId?: string;
@@ -659,7 +661,6 @@ function clampRightWorkspaceSelection(
   }
   return pages.at(-1)?.id;
 }
-
 function upsertRightWorkspacePage(
   workspace: RightWorkspaceSessionState,
   page: RightWorkspacePage,
@@ -686,6 +687,25 @@ function upsertRightWorkspacePage(
         open: open || workspace.open,
         pages,
         selectedPageId: mergedPage.id,
+        width: workspace.width,
+      };
+    }
+  }
+  if (page.kind === "file_preview" && page.filePath && page.projectId) {
+    const existingPage = workspace.pages.find((entry) =>
+      entry.kind === "file_preview" &&
+      entry.projectId === page.projectId &&
+      entry.filePath === page.filePath,
+    );
+    if (existingPage) {
+      const pages = [
+        existingPage,
+        ...workspace.pages.filter((entry) => entry.id !== existingPage.id),
+      ];
+      return {
+        open: open || workspace.open,
+        pages,
+        selectedPageId: existingPage.id,
         width: workspace.width,
       };
     }
@@ -1033,6 +1053,39 @@ function cacheSessionLiveSnapshot(
   const next = {
     ...cache,
     [sessionId]: merged,
+  };
+  const keys = Object.keys(next);
+  if (keys.length <= MAX_CACHED_SESSION_DETAILS) return next;
+  const evicted = keys.slice(0, keys.length - MAX_CACHED_SESSION_DETAILS);
+  for (const key of evicted) {
+    delete next[key];
+  }
+  return next;
+}
+
+function overwriteSessionLiveSnapshot(
+  cache: Record<string, OraStateSnapshot>,
+  snapshot: OraStateSnapshot | undefined,
+): Record<string, OraStateSnapshot> {
+  const sessionId = snapshot?.sessionId;
+  if (!sessionId || !snapshot) {
+    return cache;
+  }
+  const normalizedSnapshot = normalizeDesktopSnapshot(snapshot);
+  const existing = cache[sessionId];
+  if (
+    existing &&
+    existing.runId === normalizedSnapshot.runId &&
+    existing.status === normalizedSnapshot.status &&
+    existing.updatedAt === normalizedSnapshot.updatedAt &&
+    existing.events.length === normalizedSnapshot.events.length &&
+    existing.agentMessages.length === normalizedSnapshot.agentMessages.length
+  ) {
+    return cache;
+  }
+  const next = {
+    ...cache,
+    [sessionId]: normalizedSnapshot,
   };
   const keys = Object.keys(next);
   if (keys.length <= MAX_CACHED_SESSION_DETAILS) return next;
@@ -1487,7 +1540,11 @@ function baseSnapshotForStream(params: {
     stream,
     pendingRunTurnIndex(state.activeSessionDetail, currentPendingRun),
   );
-  return mergeStateSnapshot(snapshot, pendingSnapshot);
+  return reactivateSettledSnapshotForStream(
+    mergeStateSnapshot(snapshot, pendingSnapshot),
+    stream,
+    state,
+  );
 }
 
 function sessionPromptText(
@@ -2178,6 +2235,9 @@ export function mergeRunStreamSnapshot(
   snapshot: OraStateSnapshot | undefined,
   stream: OraRunEventStream,
 ): OraStateSnapshot | undefined {
+  const preserveCancelled =
+    snapshot?.status === "cancelled" &&
+    snapshot.runId === stream.runId;
   if (stream.snapshot) {
     const merged = mergeStateSnapshot(snapshot, stream.snapshot);
     if (!merged) return undefined;
@@ -2190,10 +2250,19 @@ export function mergeRunStreamSnapshot(
     const parentCoordination = mergeStreamParentCoordination(merged, stream);
     return normalizeDesktopSnapshot(mergeStreamLatency({
       ...merged,
+      status: preserveCancelled ? "cancelled" : merged.status,
+      attention: preserveCancelled ? snapshot.attention : merged.attention,
       planList,
       agentMessages,
       childSessions,
       parentCoordination,
+      activeAgents: preserveCancelled ? snapshot.activeAgents : merged.activeAgents,
+      queueSummary: preserveCancelled
+        ? {
+            ...merged.queueSummary,
+            inProgress: 0,
+          }
+        : merged.queueSummary,
       events,
       updatedAt: stream.events.at(-1)?.createdAt ?? merged.updatedAt,
     }, stream));
@@ -2216,15 +2285,23 @@ export function mergeRunStreamSnapshot(
   const activeAgents = mergeStreamActiveAgents(snapshot, stream);
   return normalizeDesktopSnapshot(mergeStreamLatency({
     ...snapshot,
-    status: streamRunStatus(stream, snapshot) ?? snapshot.status,
+    status: preserveCancelled
+      ? "cancelled"
+      : streamRunStatus(stream, snapshot) ?? snapshot.status,
     planList,
     actions: merged.actions,
-    pendingApprovals: merged.pendingApprovals,
-    pendingClarifications,
+    pendingApprovals: preserveCancelled ? snapshot.pendingApprovals : merged.pendingApprovals,
+    pendingClarifications: preserveCancelled ? snapshot.pendingClarifications : pendingClarifications,
     agentMessages,
     childSessions,
     parentCoordination,
-    activeAgents,
+    activeAgents: preserveCancelled ? snapshot.activeAgents : activeAgents,
+    queueSummary: preserveCancelled
+      ? {
+          ...snapshot.queueSummary,
+          inProgress: 0,
+        }
+      : snapshot.queueSummary,
     events,
     updatedAt: stream.events.at(-1)?.createdAt ?? snapshot.updatedAt,
   }, stream));
@@ -2965,6 +3042,51 @@ function streamRunStatus(
     return snapshot.status;
   }
   return stream.status ?? (snapshot?.runId === stream.runId ? snapshot.status : undefined);
+}
+
+function streamHasResumeStartEvidence(
+  stream: OraRunEventStream,
+): boolean {
+  return stream.status === "running" ||
+    stream.status === "queued" ||
+    stream.events.some((event) => event.type === "run.resumed");
+}
+
+function reactivateSettledSnapshotForStream(
+  snapshot: OraStateSnapshot | undefined,
+  stream: OraRunEventStream,
+  state: Pick<WorkbenchState, "pendingPlanDecisionResolution" | "acceptedPlanDecisionTurnProjections">,
+): OraStateSnapshot | undefined {
+  if (!snapshot || snapshot.runId !== stream.runId || !isSettledRunStatus(snapshot.status)) {
+    return snapshot;
+  }
+  if (snapshot.status !== "interrupted") {
+    return snapshot;
+  }
+  const acceptedProjection = acceptedPlanProjectionForSnapshot(
+    snapshot,
+    state,
+    stream.runId,
+  );
+  const shouldReactivate =
+    streamHasResumeStartEvidence(stream) ||
+    acceptedProjection.phase === "accepted_resuming" ||
+    acceptedProjection.phase === "resumed_running";
+  if (!shouldReactivate) {
+    return snapshot;
+  }
+  return {
+    ...snapshot,
+    status: stream.status === "queued" ? "queued" : "running",
+    attention: {
+      kind: "running",
+      blocking: false,
+      sourceRunId: snapshot.runId,
+      pendingActionIds: [],
+      pendingToolCallIds: [],
+      pendingClarificationIds: [],
+    },
+  };
 }
 
 function terminalStatusFromStreamEvents(
@@ -3785,15 +3907,31 @@ function shouldPreserveAcceptedPlanHydrationAuthority(params: {
   snapshot: OraStateSnapshot | undefined;
   localAuthoritySnapshot?: OraStateSnapshot | undefined;
 }): boolean {
-  const projection = acceptedPlanProjectionForSnapshot(
+  const localAuthoritySnapshot = params.localAuthoritySnapshot;
+  if (!localAuthoritySnapshot || isSettledRunStatus(localAuthoritySnapshot.status)) {
+    return false;
+  }
+
+  const incomingProjection = acceptedPlanProjectionForSnapshot(
     params.snapshot,
     params.state,
     params.currentRunId,
   );
-  return projection.phase === "accepted_resuming" &&
-    projection.sameRun &&
-    Boolean(params.localAuthoritySnapshot && !isSettledRunStatus(params.localAuthoritySnapshot.status)) &&
-    projection.blocksHydrationTerminalFallback;
+  const localProjection = acceptedPlanProjectionForSnapshot(
+    localAuthoritySnapshot,
+    params.state,
+    params.currentRunId,
+  );
+  if (!localProjection.sameRun) {
+    return false;
+  }
+  if (!params.snapshot) {
+    return localProjection.phase === "accepted_resuming" ||
+      localProjection.phase === "resumed_running";
+  }
+  return incomingProjection.phase === "accepted_resuming" &&
+    incomingProjection.sameRun &&
+    incomingProjection.blocksHydrationTerminalFallback;
 }
 
 function shouldRetainPendingPlanDecisionResolution(params: {
@@ -3954,12 +4092,14 @@ export function workbenchReducer(
           normalizedIncomingLatestSnapshot.runId === currentActiveSnapshot.runId)
           ? currentActiveSnapshot
           : undefined;
-      const effectiveSnapshot = resolveSessionAuthoritySnapshot({
-        detailSnapshot: preserveAcceptedPlanAuthority ? authorityDetailSnapshot : detailSnapshot,
-        liveSnapshot: authorityLiveSnapshot,
-        activeSnapshot: activeSnapshotForSession,
-        planDecisionResolutionOverrides: state.planDecisionResolutionOverrides,
-      });
+      const effectiveSnapshot = preserveAcceptedPlanAuthority && activeSnapshotForSession
+        ? activeSnapshotForSession
+        : resolveSessionAuthoritySnapshot({
+            detailSnapshot: preserveAcceptedPlanAuthority ? authorityDetailSnapshot : detailSnapshot,
+            liveSnapshot: authorityLiveSnapshot,
+            activeSnapshot: activeSnapshotForSession,
+            planDecisionResolutionOverrides: state.planDecisionResolutionOverrides,
+          });
       const effectiveDetail = applyPlanDecisionResolutionOverridesToSessionDetail(
         action.detail,
         state.planDecisionResolutionOverrides,
@@ -3973,8 +4113,27 @@ export function workbenchReducer(
         },
         latestSnapshot: effectiveSnapshot ?? effectiveDetail.latestSnapshot,
       }, effectiveSnapshot);
+      const nextSessionLiveSnapshots =
+        preserveAcceptedPlanAuthority && effectiveSnapshot
+          ? overwriteSessionLiveSnapshot(
+              state.sessionLiveSnapshotsById,
+              effectiveSnapshot,
+            )
+          : cacheSessionLiveSnapshot(
+              state.sessionLiveSnapshotsById,
+              effectiveSnapshot,
+            );
+      const nextSessionDetailsById = cacheSessionDetail(
+        state.sessionDetailsById,
+        normalizedDetail,
+      );
       const sessions = reconcileSessionSummariesWithLocalAuthority(
-        state,
+        {
+          ...state,
+          activeSessionDetail: normalizedDetail,
+          sessionLiveSnapshotsById: nextSessionLiveSnapshots,
+          sessionDetailsById: nextSessionDetailsById,
+        },
         replaceSessionSummary(
           action.sessions.filter(
             (session) => session.sessionId !== action.detail.session.sessionId,
@@ -3998,14 +4157,8 @@ export function workbenchReducer(
         sessions,
           ...projectSidebarState,
           rightWorkspaceBySessionId,
-          sessionLiveSnapshotsById: cacheSessionLiveSnapshot(
-            state.sessionLiveSnapshotsById,
-            effectiveSnapshot,
-          ),
-          sessionDetailsById: cacheSessionDetail(
-            state.sessionDetailsById,
-            normalizedDetail,
-          ),
+          sessionLiveSnapshotsById: nextSessionLiveSnapshots,
+          sessionDetailsById: nextSessionDetailsById,
         };
       }
       const currentPendingRun = getPendingRunState(state.runLifecycle);
@@ -4039,14 +4192,8 @@ export function workbenchReducer(
             }
           : projectSidebarState.expandedProjectIds,
         activeSessionDetail: normalizedDetail,
-        sessionLiveSnapshotsById: cacheSessionLiveSnapshot(
-          state.sessionLiveSnapshotsById,
-          effectiveSnapshot,
-        ),
-        sessionDetailsById: cacheSessionDetail(
-          state.sessionDetailsById,
-          normalizedDetail,
-        ),
+        sessionLiveSnapshotsById: nextSessionLiveSnapshots,
+        sessionDetailsById: nextSessionDetailsById,
         selectedSessionId: action.detail.session.sessionId,
         preservedSettledSnapshots: prunePreservedSnapshotsForSession(
           state.preservedSettledSnapshots,
@@ -4893,18 +5040,34 @@ export function workbenchReducer(
         currentRunId: action.stream.runId,
         acceptedPlanDecisionTurnProjections: state.acceptedPlanDecisionTurnProjections,
       });
+      const preserveIncomingStreamSnapshot =
+        Boolean(
+          streamBelongsToActiveTurn &&
+          currentActiveSnapshot &&
+          currentActiveSnapshot.runId === action.stream.runId &&
+          isSettledRunStatus(currentActiveSnapshot.status) &&
+          streamHasResumeStartEvidence(action.stream),
+        );
+      const nextSessionLiveSnapshotsById =
+        preserveIncomingStreamSnapshot && activeSnapshot
+          ? overwriteSessionLiveSnapshot(
+              state.sessionLiveSnapshotsById,
+              activeSnapshot,
+            )
+          : sessionLiveSnapshotsById;
       const runLifecycle = streamBelongsToActiveTurn
         ? runLifecycleFromSnapshot(activeSnapshot, {
             previous: state.runLifecycle,
             pendingRun: nextPendingRun,
             fallbackSessionId: activeSessionId,
+            preserveIncomingSnapshot: preserveIncomingStreamSnapshot,
           })
         : state.runLifecycle;
       return {
         ...state,
         sessions,
         activeSessionDetail,
-        sessionLiveSnapshotsById,
+        sessionLiveSnapshotsById: nextSessionLiveSnapshotsById,
         preservedSettledSnapshots: state.preservedSettledSnapshots,
         preservedSettledSessionId: state.preservedSettledSessionId,
         sessionDetailsById: (() => {

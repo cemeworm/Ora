@@ -9,6 +9,7 @@ import {
   runtimeStatusForRunAttention,
   type GateProjection,
 } from "@cemeworm/shared";
+import { ACCEPTED_PLAN_USER_MESSAGE } from "@cemeworm/shared";
 import type {
   ActionRecord,
   AgentProfile,
@@ -1833,6 +1834,13 @@ function injectAcceptedPlanDecisionTurns(
       .map((projection) => [projection.runId, projection] as const),
   );
   if (projectionByRunId.size === 0) {
+    return messages;
+  }
+  const hasRealAcceptedPlanUserMessage = messages.some((message) =>
+    message.role === "user" &&
+    message.content.trim() === ACCEPTED_PLAN_USER_MESSAGE,
+  );
+  if (hasRealAcceptedPlanUserMessage) {
     return messages;
   }
   const next: ChatMessage[] = [];

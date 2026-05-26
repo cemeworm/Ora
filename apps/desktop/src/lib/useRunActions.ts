@@ -1,6 +1,6 @@
 import { useMemo, useRef } from "react";
 import { flushSync } from "react-dom";
-import { DEFAULT_WEB_TOOL_IDS, deriveSnapshotGateProjection, type HostFilesystemCapability, type HostFilesystemState } from "@cemeworm/shared";
+import { ACCEPTED_PLAN_USER_MESSAGE, DEFAULT_WEB_TOOL_IDS, deriveSnapshotGateProjection, type HostFilesystemCapability, type HostFilesystemState } from "@cemeworm/shared";
 import { USER_CANCELLED_MESSAGE, USER_INTERRUPTED_MESSAGE, USER_RESUMED_MESSAGE, getSharedRuntimeClient, type OraProjectSummary, type OraProviderConfig, type OraSessionBranchGroupCreateParams, type OraSessionDetail, type OraSessionSummary, type OraStateSnapshot } from "./runtimeClient";
 import { buildRunSearchConfig } from "./searchSettings";
 import { loadDesktopToolModelSettings } from "./toolModelSettings";
@@ -1409,13 +1409,11 @@ export function useRunActions() {
       }
       flushSync(() => {
         dispatch({
-          type: "BEGIN_RUN_RESUME",
-          runId: resumeRunId,
-          approvedActionIds: [],
-          resolvedClarificationIds: [],
-          planDecisionId: decisionId,
-          planDecisionStatus: "accepted",
-          updatedAt: Date.now(),
+          type: "BEGIN_RUN_REQUEST",
+          sessionId,
+          prompt: ACCEPTED_PLAN_USER_MESSAGE,
+          createdAt: Date.now(),
+          skillIds: [],
         });
       });
       await waitForPendingRunPaint();
@@ -1425,16 +1423,30 @@ export function useRunActions() {
         decisionId,
         reason: USER_RESUMED_MESSAGE,
       });
-      const snapshot = await runtimeClient.getRunState(handle.runId);
-      await refreshCurrentSession(
-        snapshot,
-        handle.resumePhase === "resume_terminal"
-          ? snapshot.error ?? `Plan accepted, but implementation ended on ${snapshot.runId}.`
-          : `Plan accepted and resumed on ${snapshot.runId}.`,
-      );
-      if (handle.resumePhase !== "resume_terminal" && snapshot.status !== "failed") {
-        dispatch({ type: "SET_TASK_INTENT", taskIntent: "implement" });
+      if (handle.resumePhase === "resume_terminal") {
+        const snapshot = await runtimeClient.getRunState(handle.runId);
+        await refreshCurrentSession(
+          snapshot,
+          snapshot.error ?? `Plan accepted, but implementation ended on ${snapshot.runId}.`,
+        );
+        return true;
       }
+      dispatch({
+        type: "ATTACH_PENDING_RUN_HANDLE",
+        sessionId,
+        prompt: ACCEPTED_PLAN_USER_MESSAGE,
+        runId: handle.runId,
+      });
+      await hydrateSession(
+        sessionId,
+        undefined,
+        `Plan accepted and started on ${handle.runId}.`,
+        {
+          preserveSelection: true,
+          includeLatestSnapshot: true,
+        },
+      );
+      dispatch({ type: "SET_TASK_INTENT", taskIntent: "implement" });
       return true;
     } catch (error) {
       const feedback = error instanceof Error ? error.message : "Plan decision update failed.";

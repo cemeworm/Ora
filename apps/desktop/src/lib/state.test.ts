@@ -4370,6 +4370,279 @@ describe("desktop workbench state", () => {
     expect(next.commandFeedback).toBe("Stop requested.");
   });
 
+  it("keeps a cancelled run cancelled when later same-run stream evidence says running", () => {
+    const snapshot = testSnapshot({
+      runId: "run-cancel-stream",
+      sessionId: "session-cancel-stream",
+      status: "running",
+      updatedAt: 1_714_000_000_000,
+    });
+    const session = {
+      ...sessionSummary("session-cancel-stream"),
+      latestRunId: snapshot.runId,
+      status: "running" as const,
+      updatedAt: snapshot.updatedAt,
+    };
+
+    const cancelled = workbenchReducer({
+      ...initialWorkbenchState,
+      selectedSessionId: session.sessionId,
+      selectedTurnRunId: snapshot.runId,
+      sessions: [session],
+      runLifecycle: lifecycleFromSnapshot(snapshot),
+      activeSessionDetail: {
+        session,
+        turns: [{
+          runId: snapshot.runId,
+          status: "running",
+          updatedAt: snapshot.updatedAt,
+        } as NonNullable<WorkbenchState["activeSessionDetail"]>["turns"][number]],
+        transcript: [],
+        latestSnapshot: snapshot,
+      },
+    }, {
+      type: "REQUEST_RUN_CANCEL",
+      runId: snapshot.runId,
+      reason: "Stopped processing as instructed.",
+      updatedAt: 1_714_000_000_123,
+    });
+
+    const next = workbenchReducer(cancelled, {
+      type: "APPLY_RUN_STREAM",
+      stream: {
+        runId: snapshot.runId,
+        sessionId: session.sessionId,
+        fromSeq: 1,
+        nextSeq: 2,
+        status: "running",
+        events: [{
+          id: `${snapshot.runId}:event:resumed`,
+          runId: snapshot.runId,
+          seq: 1,
+          type: "run.resumed",
+          createdAt: 1_714_000_000_200,
+          pattern: snapshot.pattern,
+          payload: { reason: "resume noise" },
+        }],
+      } as OraRunEventStream,
+      receivedAt: 1_714_000_000_210,
+    });
+
+    expect(getActiveSnapshot(next.runLifecycle)?.status).toBe("cancelled");
+    expect(getActiveSnapshot(next.runLifecycle)?.attention?.kind).toBe("cancelled");
+    expect(next.activeSessionDetail?.session.status).toBe("cancelled");
+    expect(next.sessions[0]?.status).toBe("cancelled");
+    expect(next.sessionLiveSnapshotsById[session.sessionId]?.status).toBe("cancelled");
+    expect(next.isLoading).toBe(false);
+  });
+
+  it("keeps a cancelled run cancelled when a later stream snapshot reports running", () => {
+    const cancelledSnapshot = testSnapshot({
+      runId: "run-cancel-stream-snapshot",
+      sessionId: "session-cancel-stream-snapshot",
+      status: "cancelled",
+      updatedAt: 1_714_000_000_123,
+      activeAgents: [],
+      attention: {
+        kind: "cancelled",
+        blocking: false,
+        sourceRunId: "run-cancel-stream-snapshot",
+        reason: "Stopped processing as instructed.",
+        pendingActionIds: [],
+        pendingToolCallIds: [],
+        pendingClarificationIds: [],
+      },
+    });
+    const session = {
+      ...sessionSummary("session-cancel-stream-snapshot"),
+      latestRunId: cancelledSnapshot.runId,
+      status: "cancelled" as const,
+      updatedAt: cancelledSnapshot.updatedAt,
+    };
+    const state = {
+      ...initialWorkbenchState,
+      selectedSessionId: session.sessionId,
+      selectedTurnRunId: cancelledSnapshot.runId,
+      sessions: [session],
+      runLifecycle: lifecycleFromSnapshot(cancelledSnapshot),
+      activeSessionDetail: {
+        session,
+        turns: [{
+          runId: cancelledSnapshot.runId,
+          status: "cancelled",
+          updatedAt: cancelledSnapshot.updatedAt,
+        } as NonNullable<WorkbenchState["activeSessionDetail"]>["turns"][number]],
+        transcript: [],
+        latestSnapshot: cancelledSnapshot,
+      },
+      sessionLiveSnapshotsById: {
+        [session.sessionId]: cancelledSnapshot,
+      },
+    } satisfies WorkbenchState;
+
+    const next = workbenchReducer(state, {
+      type: "APPLY_RUN_STREAM",
+      stream: {
+        runId: cancelledSnapshot.runId,
+        sessionId: session.sessionId,
+        fromSeq: cancelledSnapshot.events.length,
+        nextSeq: cancelledSnapshot.events.length + 1,
+        status: "running",
+        snapshot: {
+          ...cancelledSnapshot,
+          status: "running",
+          activeAgents: ["ora"],
+          queueSummary: {
+            ...cancelledSnapshot.queueSummary,
+            inProgress: 1,
+          },
+          attention: {
+            kind: "running",
+            blocking: false,
+            sourceRunId: cancelledSnapshot.runId,
+            pendingActionIds: [],
+            pendingToolCallIds: [],
+            pendingClarificationIds: [],
+          },
+          updatedAt: 1_714_000_000_200,
+        },
+        events: [{
+          id: `${cancelledSnapshot.runId}:event:delta`,
+          runId: cancelledSnapshot.runId,
+          seq: cancelledSnapshot.events.length,
+          type: "message.delta",
+          createdAt: 1_714_000_000_200,
+          pattern: cancelledSnapshot.pattern,
+          payload: { role: "assistant", content: "late", delta: "late", streaming: true },
+        }],
+      } as OraRunEventStream,
+      receivedAt: 1_714_000_000_210,
+    });
+
+    expect(getActiveSnapshot(next.runLifecycle)?.status).toBe("cancelled");
+    expect(next.activeSessionDetail?.session.status).toBe("cancelled");
+    expect(next.sessions[0]?.status).toBe("cancelled");
+    expect(next.sessionLiveSnapshotsById[session.sessionId]?.status).toBe("cancelled");
+    expect(next.sessionLiveSnapshotsById[session.sessionId]?.activeAgents).toEqual([]);
+    expect(next.sessionLiveSnapshotsById[session.sessionId]?.queueSummary.inProgress).toBe(0);
+  });
+
+  it("does not reopen approval or clarification gates on a cancelled run from late stream events", () => {
+    const cancelledSnapshot = testSnapshot({
+      runId: "run-cancelled-gates",
+      sessionId: "session-cancelled-gates",
+      status: "cancelled",
+      updatedAt: 1_714_000_000_123,
+      activeAgents: [],
+      pendingApprovals: [],
+      pendingClarifications: [],
+      attention: {
+        kind: "cancelled",
+        blocking: false,
+        sourceRunId: "run-cancelled-gates",
+        reason: "Stopped processing as instructed.",
+        pendingActionIds: [],
+        pendingToolCallIds: [],
+        pendingClarificationIds: [],
+      },
+    });
+    const session = {
+      ...sessionSummary("session-cancelled-gates"),
+      latestRunId: cancelledSnapshot.runId,
+      status: "cancelled" as const,
+      updatedAt: cancelledSnapshot.updatedAt,
+    };
+    const state = {
+      ...initialWorkbenchState,
+      selectedSessionId: session.sessionId,
+      selectedTurnRunId: cancelledSnapshot.runId,
+      sessions: [session],
+      runLifecycle: lifecycleFromSnapshot(cancelledSnapshot),
+      activeSessionDetail: {
+        session,
+        turns: [{
+          runId: cancelledSnapshot.runId,
+          status: "cancelled",
+          updatedAt: cancelledSnapshot.updatedAt,
+        } as NonNullable<WorkbenchState["activeSessionDetail"]>["turns"][number]],
+        transcript: [],
+        latestSnapshot: cancelledSnapshot,
+      },
+      sessionLiveSnapshotsById: {
+        [session.sessionId]: cancelledSnapshot,
+      },
+    } satisfies WorkbenchState;
+
+    const next = workbenchReducer(state, {
+      type: "APPLY_RUN_STREAM",
+      stream: {
+        runId: cancelledSnapshot.runId,
+        sessionId: session.sessionId,
+        fromSeq: 0,
+        nextSeq: 3,
+        status: "interrupted",
+        events: [{
+          id: `${cancelledSnapshot.runId}:event:approval-required`,
+          runId: cancelledSnapshot.runId,
+          seq: 0,
+          type: "approval.required",
+          createdAt: 1_714_000_000_200,
+          pattern: cancelledSnapshot.pattern,
+          payload: { actionId: "approval-late" },
+        }, {
+          id: `${cancelledSnapshot.runId}:event:action-updated`,
+          runId: cancelledSnapshot.runId,
+          seq: 1,
+          type: "action.updated",
+          createdAt: 1_714_000_000_201,
+          pattern: cancelledSnapshot.pattern,
+          payload: {
+            actionId: "approval-late",
+            status: "approval_required",
+            record: {
+              id: "approval-late",
+              runId: cancelledSnapshot.runId,
+              type: "skills.create",
+              riskLevel: "high",
+              status: "approval_required",
+              input: { name: "late-gate" },
+              artifactIds: [],
+            },
+          },
+        }, {
+          id: `${cancelledSnapshot.runId}:event:clarification-required`,
+          runId: cancelledSnapshot.runId,
+          seq: 2,
+          type: "clarification.required",
+          createdAt: 1_714_000_000_202,
+          pattern: cancelledSnapshot.pattern,
+          payload: {
+            clarification: {
+              id: "clarification:scope",
+              nodeId: "solo_agent",
+              key: "scope",
+              question: "Which scope should I use?",
+              requestedAt: 1_714_000_000_202,
+              options: [],
+            },
+            pending: 1,
+          },
+        }],
+      } as OraRunEventStream,
+      receivedAt: 1_714_000_000_210,
+    });
+
+    expect(getActiveSnapshot(next.runLifecycle)?.status).toBe("cancelled");
+    expect(getActiveSnapshot(next.runLifecycle)?.attention?.kind).toBe("cancelled");
+    expect(getActiveSnapshot(next.runLifecycle)?.pendingApprovals).toEqual([]);
+    expect(getActiveSnapshot(next.runLifecycle)?.pendingClarifications).toEqual([]);
+    expect(next.activeSessionDetail?.latestSnapshot?.pendingApprovals).toEqual([]);
+    expect(next.activeSessionDetail?.latestSnapshot?.pendingClarifications).toEqual([]);
+    expect(next.sessionLiveSnapshotsById[session.sessionId]?.status).toBe("cancelled");
+    expect(next.sessionLiveSnapshotsById[session.sessionId]?.pendingApprovals).toEqual([]);
+    expect(next.sessionLiveSnapshotsById[session.sessionId]?.pendingClarifications).toEqual([]);
+  });
+
   it("keeps runLifecycle in sync when resuming a paused active run", () => {
     const snapshot = testSnapshot({
       runId: "run-resume",
@@ -4402,6 +4675,76 @@ describe("desktop workbench state", () => {
     expect(next.runLifecycle.stage).toBe("streaming");
     expect(getActiveSnapshot(next.runLifecycle)?.status).toBe("running");
     expect(getActiveSnapshot(next.runLifecycle)?.pendingApprovals).toEqual([]);
+  });
+
+  it("still reactivates an interrupted run when resumed stream evidence arrives", () => {
+    const snapshot = testSnapshot({
+      runId: "run-resume-stream",
+      sessionId: "session-resume-stream",
+      status: "interrupted",
+      updatedAt: 1_714_000_000_000,
+      attention: {
+        kind: "paused",
+        blocking: false,
+        sourceRunId: "run-resume-stream",
+        reason: "manual_interrupt",
+        pendingActionIds: [],
+        pendingToolCallIds: [],
+        pendingClarificationIds: [],
+      },
+    });
+    const session = {
+      ...sessionSummary("session-resume-stream"),
+      latestRunId: snapshot.runId,
+      status: "interrupted" as const,
+      updatedAt: snapshot.updatedAt,
+    };
+    const state = {
+      ...initialWorkbenchState,
+      selectedSessionId: session.sessionId,
+      selectedTurnRunId: snapshot.runId,
+      sessions: [session],
+      runLifecycle: lifecycleFromSnapshot(snapshot),
+      activeSessionDetail: {
+        session,
+        turns: [{
+          runId: snapshot.runId,
+          status: "interrupted",
+          updatedAt: snapshot.updatedAt,
+        } as NonNullable<WorkbenchState["activeSessionDetail"]>["turns"][number]],
+        transcript: [],
+        latestSnapshot: snapshot,
+      },
+      sessionLiveSnapshotsById: {
+        [session.sessionId]: snapshot,
+      },
+    } satisfies WorkbenchState;
+
+    const next = workbenchReducer(state, {
+      type: "APPLY_RUN_STREAM",
+      stream: {
+        runId: snapshot.runId,
+        sessionId: session.sessionId,
+        fromSeq: 0,
+        nextSeq: 1,
+        status: "running",
+        events: [{
+          id: `${snapshot.runId}:event:resumed`,
+          runId: snapshot.runId,
+          seq: 0,
+          type: "run.resumed",
+          createdAt: 1_714_000_000_200,
+          pattern: snapshot.pattern,
+          payload: { reason: "Confirmed. Continuing." },
+        }],
+      } as OraRunEventStream,
+      receivedAt: 1_714_000_000_210,
+    });
+
+    expect(getActiveSnapshot(next.runLifecycle)?.status).toBe("running");
+    expect(next.activeSessionDetail?.session.status).toBe("running");
+    expect(next.sessions[0]?.status).toBe("running");
+    expect(next.isLoading).toBe(true);
   });
 
   it("clears stale plan-decision session attention during optimistic resume", () => {
@@ -4931,7 +5274,7 @@ describe("desktop workbench state", () => {
       expect(next.activeSessionDetail?.session.attention?.kind).toBe("needs_plan_decision");
     });
 
-    it("tracks accepted plan decisions as same-run busy state without creating a pending run", () => {
+    it("tracks accepted plan decisions as busy state without creating a pending run", () => {
       const next = workbenchReducer(initialWorkbenchState, {
         type: "BEGIN_PLAN_DECISION_RESOLUTION",
         sessionId: "session-plan",
@@ -4951,7 +5294,7 @@ describe("desktop workbench state", () => {
       expect(next.commandFeedback).toBe("Plan accepted. Continuing run.");
     });
 
-    it("tracks declined plan decisions as same-run busy state until resume begins", () => {
+    it("tracks declined plan decisions as busy state until resolution completes", () => {
       const next = workbenchReducer(initialWorkbenchState, {
         type: "BEGIN_PLAN_DECISION_RESOLUTION",
         sessionId: "session-plan",
@@ -4971,7 +5314,7 @@ describe("desktop workbench state", () => {
       expect(next.commandFeedback).toBe("Plan decision submitted. Adjust the plan.");
     });
 
-    it("projects an accepted plan decision into a synthetic user turn during same-run resume", () => {
+    it("projects an accepted plan decision into a synthetic user turn for legacy fallback rendering", () => {
       const sessionId = "session-plan";
       const runId = "run-plan";
       const state = {
@@ -5306,6 +5649,367 @@ describe("desktop workbench state", () => {
       expect(getActiveSnapshot(state.runLifecycle)?.status).toBe("running");
       expect(state.activeSessionDetail?.latestSnapshot?.status).toBe("running");
       expect(state.isLoading).toBe(false);
+    });
+
+    it("keeps local running authority when accept refresh omits latestSnapshot but cached live state is stale settled", () => {
+      const sessionId = "session-plan";
+      const runId = "run-plan";
+      const decisionId = `${runId}:plan-decision`;
+      const localRunningSnapshot = testSnapshot({
+        runId,
+        sessionId,
+        status: "running",
+        planDecisions: [{
+          id: decisionId,
+          runId,
+          sessionId,
+          status: "accepted",
+          createdAt: 1_714_000_000_000,
+          resolvedAt: 1_714_000_000_100,
+        }],
+        attention: {
+          kind: "running",
+          blocking: false,
+          sourceRunId: runId,
+          pendingActionIds: [],
+          pendingToolCallIds: [],
+          pendingClarificationIds: [],
+        },
+      });
+      const staleSettledSnapshot = testSnapshot({
+        runId,
+        sessionId,
+        status: "succeeded",
+        planDecisions: [{
+          id: decisionId,
+          runId,
+          sessionId,
+          status: "accepted",
+          createdAt: 1_714_000_000_000,
+          resolvedAt: 1_714_000_000_100,
+        }],
+      });
+      const state = workbenchReducer({
+        ...initialWorkbenchState,
+        selectedSessionId: sessionId,
+        selectedTurnRunId: runId,
+        runLifecycle: lifecycleFromSnapshot(localRunningSnapshot),
+        sessionLiveSnapshotsById: {
+          [sessionId]: staleSettledSnapshot,
+        },
+        pendingPlanDecisionResolution: {
+          sessionId,
+          decisionId,
+          status: "accepted",
+          createdAt: 1_714_000_000_100,
+        },
+        acceptedPlanDecisionTurnProjections: {
+          [`${sessionId}:${runId}:${decisionId}`]: {
+            sessionId,
+            runId,
+            decisionId,
+            createdAt: 1_714_000_000_100,
+          },
+        },
+      }, {
+        type: "HYDRATE_SESSION",
+        projects: [],
+        sessions: [{
+          ...sessionSummary(sessionId),
+          latestRunId: runId,
+          status: "succeeded",
+        }],
+        detail: {
+          session: {
+            ...sessionSummary(sessionId),
+            latestRunId: runId,
+            status: "succeeded",
+          },
+          turns: [{
+            runId,
+            sessionId,
+            turnIndex: 1,
+            status: "succeeded",
+            pattern: "orchestrator_subagent",
+            modeId: "debate",
+            providerId: "local-smoke",
+            modelRef: "local/smoke-model",
+            prompt: "Debate this.",
+            startedAt: 1_714_000_000_000,
+            updatedAt: 1_714_000_000_000,
+            eventCount: 0,
+            checkpointCount: 0,
+            artifactCount: 0,
+          }],
+          transcript: [],
+          latestSnapshot: undefined,
+        },
+        feedback: "Plan accepted and resumed on run-plan.",
+      });
+
+      expect(getActiveSnapshot(state.runLifecycle)?.status).toBe("running");
+      expect(state.activeSessionDetail?.latestSnapshot?.status).toBe("running");
+      expect(state.activeSessionDetail?.session.status).toBe("running");
+      expect(state.sessionLiveSnapshotsById[sessionId]?.status).toBe("running");
+      expect(state.commandFeedback).toBe("Plan accepted and resumed on run-plan.");
+    });
+
+    it("keeps a stale succeeded same-run snapshot terminal when non-interrupted resumed stream evidence arrives", () => {
+      const sessionId = "session-plan-reactivate";
+      const runId = "run-plan-reactivate";
+      const settledSnapshot = testSnapshot({
+        runId,
+        sessionId,
+        status: "succeeded",
+        planDecisions: [{
+          id: `${runId}:plan-decision`,
+          runId,
+          sessionId,
+          status: "accepted",
+          createdAt: 1_714_000_000_000,
+          resolvedAt: 1_714_000_000_100,
+        }],
+      });
+      const state: WorkbenchState = {
+        ...initialWorkbenchState,
+        selectedSessionId: sessionId,
+        selectedTurnRunId: runId,
+        sessions: [{ ...sessionSummary(sessionId), latestRunId: runId, status: "succeeded" }],
+        activeSessionDetail: {
+          session: { ...sessionSummary(sessionId), latestRunId: runId, status: "succeeded" },
+          turns: [{
+            runId,
+            sessionId,
+            turnIndex: 1,
+            status: "succeeded",
+            pattern: settledSnapshot.pattern,
+            prompt: settledSnapshot.input.prompt,
+            startedAt: settledSnapshot.updatedAt,
+            updatedAt: settledSnapshot.updatedAt,
+            eventCount: settledSnapshot.events.length,
+            checkpointCount: 0,
+            artifactCount: 0,
+          }],
+          transcript: [],
+          latestSnapshot: settledSnapshot,
+        },
+        runLifecycle: lifecycleFromSnapshot(settledSnapshot),
+        sessionLiveSnapshotsById: {
+          [sessionId]: settledSnapshot,
+        },
+      };
+      const stream = {
+        runId,
+        sessionId,
+        fromSeq: settledSnapshot.events.length,
+        nextSeq: settledSnapshot.events.length + 1,
+        status: "running",
+        events: [{
+          id: `${runId}:event:resumed`,
+          runId,
+          seq: settledSnapshot.events.length,
+          type: "run.resumed",
+          createdAt: 1_714_000_000_200,
+          payload: {},
+        }],
+      } as unknown as OraRunEventStream;
+
+      const next = workbenchReducer(state, { type: "APPLY_RUN_STREAM", stream, receivedAt: 1_714_000_000_210 });
+
+      expect(getActiveSnapshot(next.runLifecycle)?.status).toBe("succeeded");
+      expect(next.sessions.find((session) => session.sessionId === sessionId)?.status).toBe("succeeded");
+      expect(next.activeSessionDetail?.session.status).toBe("succeeded");
+      expect(next.sessionLiveSnapshotsById[sessionId]?.status).toBe("succeeded");
+      expect(next.isLoading).toBe(false);
+    });
+
+    it("keeps a stale failed same-run snapshot terminal when non-interrupted running stream evidence arrives", () => {
+      const sessionId = "session-plan-reactivate-delta";
+      const runId = "run-plan-reactivate-delta";
+      const settledSnapshot = testSnapshot({
+        runId,
+        sessionId,
+        status: "failed",
+        planDecisions: [{
+          id: `${runId}:plan-decision`,
+          runId,
+          sessionId,
+          status: "accepted",
+          createdAt: 1_714_000_000_000,
+          resolvedAt: 1_714_000_000_100,
+        }],
+      });
+      const state: WorkbenchState = {
+        ...initialWorkbenchState,
+        selectedSessionId: sessionId,
+        selectedTurnRunId: runId,
+        sessions: [{ ...sessionSummary(sessionId), latestRunId: runId, status: "failed" }],
+        activeSessionDetail: {
+          session: { ...sessionSummary(sessionId), latestRunId: runId, status: "failed" },
+          turns: [{
+            runId,
+            sessionId,
+            turnIndex: 1,
+            status: "failed",
+            pattern: settledSnapshot.pattern,
+            prompt: settledSnapshot.input.prompt,
+            startedAt: settledSnapshot.updatedAt,
+            updatedAt: settledSnapshot.updatedAt,
+            eventCount: settledSnapshot.events.length,
+            checkpointCount: 0,
+            artifactCount: 0,
+          }],
+          transcript: [],
+          latestSnapshot: settledSnapshot,
+        },
+        runLifecycle: lifecycleFromSnapshot(settledSnapshot),
+        sessionLiveSnapshotsById: {
+          [sessionId]: settledSnapshot,
+        },
+      };
+      const stream = {
+        runId,
+        sessionId,
+        fromSeq: settledSnapshot.events.length,
+        nextSeq: settledSnapshot.events.length + 1,
+        status: "running",
+        events: [{
+          id: `${runId}:event:delta`,
+          runId,
+          seq: settledSnapshot.events.length,
+          type: "message.delta",
+          createdAt: 1_714_000_000_200,
+          payload: { role: "assistant", content: "继续", delta: "继续", streaming: true },
+        }],
+      } as unknown as OraRunEventStream;
+
+      const next = workbenchReducer(state, { type: "APPLY_RUN_STREAM", stream, receivedAt: 1_714_000_000_210 });
+
+      expect(getActiveSnapshot(next.runLifecycle)?.status).toBe("failed");
+      expect(next.sessions.find((session) => session.sessionId === sessionId)?.status).toBe("failed");
+      expect(next.activeSessionDetail?.session.status).toBe("failed");
+      expect(next.sessionLiveSnapshotsById[sessionId]?.status).toBe("failed");
+      expect(next.isLoading).toBe(false);
+    });
+
+    it("keeps a stale settled same-run snapshot terminal when the stream is truly terminal", () => {
+      const sessionId = "session-plan-terminal";
+      const runId = "run-plan-terminal";
+      const settledSnapshot = testSnapshot({
+        runId,
+        sessionId,
+        status: "succeeded",
+      });
+      const state: WorkbenchState = {
+        ...initialWorkbenchState,
+        selectedSessionId: sessionId,
+        selectedTurnRunId: runId,
+        sessions: [{ ...sessionSummary(sessionId), latestRunId: runId, status: "succeeded" }],
+        activeSessionDetail: {
+          session: { ...sessionSummary(sessionId), latestRunId: runId, status: "succeeded" },
+          turns: [{
+            runId,
+            sessionId,
+            turnIndex: 1,
+            status: "succeeded",
+            pattern: settledSnapshot.pattern,
+            prompt: settledSnapshot.input.prompt,
+            startedAt: settledSnapshot.updatedAt,
+            updatedAt: settledSnapshot.updatedAt,
+            eventCount: settledSnapshot.events.length,
+            checkpointCount: 0,
+            artifactCount: 0,
+          }],
+          transcript: [],
+          latestSnapshot: settledSnapshot,
+        },
+        runLifecycle: lifecycleFromSnapshot(settledSnapshot),
+        sessionLiveSnapshotsById: {
+          [sessionId]: settledSnapshot,
+        },
+      };
+      const stream = {
+        runId,
+        sessionId,
+        fromSeq: settledSnapshot.events.length,
+        nextSeq: settledSnapshot.events.length + 1,
+        status: "succeeded",
+        events: [{
+          id: `${runId}:event:done`,
+          runId,
+          seq: settledSnapshot.events.length,
+          type: "run.done",
+          createdAt: 1_714_000_000_200,
+          payload: {},
+        }],
+      } as unknown as OraRunEventStream;
+
+      const next = workbenchReducer(state, { type: "APPLY_RUN_STREAM", stream, receivedAt: 1_714_000_000_210 });
+
+      expect(getActiveSnapshot(next.runLifecycle)?.status).toBe("succeeded");
+      expect(next.sessions.find((session) => session.sessionId === sessionId)?.status).toBe("succeeded");
+      expect(next.activeSessionDetail?.session.status).toBe("succeeded");
+      expect(next.sessionLiveSnapshotsById[sessionId]?.status).toBe("succeeded");
+      expect(next.isLoading).toBe(false);
+    });
+
+    it("does not reactivate a stream from another session", () => {
+      const sessionId = "session-plan-active";
+      const runId = "run-plan-active";
+      const settledSnapshot = testSnapshot({
+        runId,
+        sessionId,
+        status: "succeeded",
+      });
+      const state: WorkbenchState = {
+        ...initialWorkbenchState,
+        selectedSessionId: sessionId,
+        selectedTurnRunId: runId,
+        sessions: [{ ...sessionSummary(sessionId), latestRunId: runId, status: "succeeded" }],
+        activeSessionDetail: {
+          session: { ...sessionSummary(sessionId), latestRunId: runId, status: "succeeded" },
+          turns: [{
+            runId,
+            sessionId,
+            turnIndex: 1,
+            status: "succeeded",
+            pattern: settledSnapshot.pattern,
+            prompt: settledSnapshot.input.prompt,
+            startedAt: settledSnapshot.updatedAt,
+            updatedAt: settledSnapshot.updatedAt,
+            eventCount: settledSnapshot.events.length,
+            checkpointCount: 0,
+            artifactCount: 0,
+          }],
+          transcript: [],
+          latestSnapshot: settledSnapshot,
+        },
+        runLifecycle: lifecycleFromSnapshot(settledSnapshot),
+        sessionLiveSnapshotsById: {
+          [sessionId]: settledSnapshot,
+        },
+      };
+      const stream = {
+        runId: "run-background",
+        sessionId: "session-background",
+        fromSeq: 0,
+        nextSeq: 1,
+        status: "running",
+        events: [{
+          id: "run-background:event:0",
+          runId: "run-background",
+          seq: 0,
+          type: "run.resumed",
+          createdAt: 1_714_000_000_200,
+          payload: {},
+        }],
+      } as unknown as OraRunEventStream;
+
+      const next = workbenchReducer(state, { type: "APPLY_RUN_STREAM", stream, receivedAt: 1_714_000_000_210 });
+
+      expect(getActiveSnapshot(next.runLifecycle)?.runId).toBe(runId);
+      expect(next.sessions.find((session) => session.sessionId === sessionId)?.status).toBe("succeeded");
+      expect(next.isLoading).toBe(false);
     });
 
     it("drops stale accepted pending authority when hydrate reveals a different pending plan decision", () => {
@@ -5875,6 +6579,69 @@ describe("preservedSettledSnapshots limit enforcement", () => {
       createdAt: 600,
       skillIds: [],
     });
+
+describe("right workspace page management", () => {
+  it("preserves documents selection when file_preview page is opened", () => {
+    const state: WorkbenchState = {
+      ...initialWorkbenchState,
+      selectedSessionId: "session-test",
+      rightWorkspaceBySessionId: {
+        "session-test": {
+          open: true,
+          pages: [{
+            id: "docs:1", kind: "documents" as const, title: "文件",
+            sessionId: "session-test",
+          }],
+          selectedPageId: "docs:1",
+          width: 460,
+        },
+      },
+    };
+
+    const next = workbenchReducer(state, {
+      type: "OPEN_RIGHT_WORKSPACE_PAGE",
+      page: {
+        id: "fp:1",
+        kind: "file_preview",
+        title: "test.ts",
+        filePath: "src/test.ts",
+        projectId: "proj-1",
+        sessionId: "session-test",
+      },
+    });
+
+    const ws = next.rightWorkspaceBySessionId["session-test"];
+    expect(ws.pages).toHaveLength(2);
+    expect(ws.selectedPageId).toBe("docs:1");
+  });
+
+  it("falls back selectedPageId when active file_preview page is closed", () => {
+    const state: WorkbenchState = {
+      ...initialWorkbenchState,
+      selectedSessionId: "session-test",
+      rightWorkspaceBySessionId: {
+        "session-test": {
+          open: true,
+          pages: [
+            { id: "docs:1", kind: "documents" as const, title: "文件", sessionId: "session-test" },
+            { id: "fp:1", kind: "file_preview" as const, title: "test.ts", filePath: "src/test.ts", projectId: "proj-1", sessionId: "session-test" },
+          ],
+          selectedPageId: "fp:1",
+          width: 460,
+        },
+      },
+    };
+
+    const next = workbenchReducer(state, {
+      type: "CLOSE_RIGHT_WORKSPACE_PAGE",
+      pageId: "fp:1",
+    });
+
+    const ws = next.rightWorkspaceBySessionId["session-test"];
+    expect(ws.pages).toHaveLength(1);
+    expect(ws.selectedPageId).toBe("docs:1");
+  });
+});
 
     const keys = Object.keys(next.preservedSettledSnapshots);
     expect(keys.length).toBe(20);
