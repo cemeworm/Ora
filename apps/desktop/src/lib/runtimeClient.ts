@@ -413,7 +413,7 @@ export function createRuntimeClient() {
     sidecarStatus: Record<string, unknown> | undefined,
   ): Promise<RuntimeBootstrap> {
     const providerRegistry = mergeCustomProviders(bootstrap.providers);
-    const providerSecretStatuses = await getProviderSecretStatuses(providerRegistry.providers);
+    const providerSecretStatuses: OraProviderSecretStatus[] = [];
     const providerStatuses = deriveProviderStatuses(providerRegistry.providers, providerSecretStatuses);
 
     return {
@@ -452,7 +452,7 @@ export function createRuntimeClient() {
       if (isTauriAvailable() && !processBridgeEnabled) {
         const patterns = await call<OraPatternDefinition[]>("patterns.list");
         const providerRegistry = mergeCustomProviders(await call<OraProviderRegistry>("providers.list"));
-        const providerSecretStatuses = await getProviderSecretStatuses(providerRegistry.providers);
+        const providerSecretStatuses: OraProviderSecretStatus[] = [];
         const providerStatuses = deriveProviderStatuses(providerRegistry.providers, providerSecretStatuses);
         return {
           health: lastHealth ?? {

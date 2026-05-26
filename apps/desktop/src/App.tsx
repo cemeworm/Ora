@@ -266,6 +266,7 @@ function WorkbenchInner() {
   const resizePointerIdRef = useRef<number | null>(null);
   const closeWorkspaceTimerRef = useRef<number | undefined>(undefined);
   const openWorkspaceFrameRef = useRef<number | undefined>(undefined);
+  const providerSecretRefreshKeyRef = useRef<string>("");
   const projectsRef = useRef(state.projects);
   const activeSessionIdRef = useRef<string | undefined>(
     state.activeSessionDetail?.session.sessionId,
@@ -557,6 +558,47 @@ function WorkbenchInner() {
       cancelled = true;
     };
   }, [runtimeClient, dispatch]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const providerRegistry = state.providerRegistry;
+        if (!providerRegistry?.providers?.length) {
+          return;
+        }
+        const refreshKey = [
+          providerRegistry.defaultProviderId,
+          ...providerRegistry.providers.map(
+            (provider) => `${provider.id}:${provider.enabled !== false ? "1" : "0"}`,
+          ),
+        ].join("|");
+        if (providerSecretRefreshKeyRef.current === refreshKey) {
+          return;
+        }
+        providerSecretRefreshKeyRef.current = refreshKey;
+        const secretStatuses = await runtimeClient.refreshProviderSecretStatuses(providerRegistry.providers);
+        if (cancelled) return;
+        dispatch({
+          type: "SET_PROVIDER_SECRET_STATUSES",
+          statuses: secretStatuses,
+        });
+        dispatch({
+          type: "SET_PROVIDER_STATUSES",
+          statuses: runtimeClient.refreshProviderStatuses(
+            providerRegistry.providers,
+            secretStatuses,
+            state.providerStatuses,
+          ),
+        });
+      } catch {
+        // Keep booting even if Keychain lookup is slow or unavailable.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [runtimeClient, dispatch, state.providerRegistry]);
 
   useEffect(() => {
     const title = windowTitleForView(
