@@ -13,7 +13,7 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 const JSON_RPC_VERSION: &str = "2.0";
@@ -2812,7 +2812,7 @@ fn keychain_storage_kind() -> &'static str {
 fn keychain_has_secret(service: &str) -> bool {
     #[cfg(target_os = "macos")]
     {
-        Command::new("security")
+        let Ok(mut child) = Command::new("security")
             .args([
                 "find-generic-password",
                 "-a",
@@ -2820,9 +2820,28 @@ fn keychain_has_secret(service: &str) -> bool {
                 "-s",
                 service,
             ])
-            .status()
-            .map(|status| status.success())
-            .unwrap_or(false)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        else {
+            return false;
+        };
+
+        let deadline = Instant::now() + Duration::from_millis(150);
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => return status.success(),
+                Ok(None) if Instant::now() < deadline => {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Ok(None) | Err(_) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return false;
+                }
+            }
+        }
     }
 
     #[cfg(not(target_os = "macos"))]
