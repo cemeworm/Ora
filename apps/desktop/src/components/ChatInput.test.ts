@@ -83,6 +83,34 @@ Object.assign(globalThis, {
   IS_REACT_ACT_ENVIRONMENT: true,
 });
 
+if (typeof Selection !== "undefined" && typeof Selection.prototype.modify !== "function") {
+  // JSDOM does not ship Selection.modify, but Lexical's default
+  // KEY_BACKSPACE_COMMAND / KEY_DELETE_COMMAND handler relies on it via
+  // RangeSelection.deleteCharacter → moveNativeSelection.  Provide a
+  // minimal implementation that adjusts the underlying Range so Lexical
+  // can remove the targeted character.
+  Selection.prototype.modify = function (
+    this: Selection,
+    alter: string,
+    direction: string,
+    _granularity: string,
+  ) {
+    if (alter !== "extend" || this.rangeCount === 0) return;
+    const range = this.getRangeAt(0);
+    const isBackward = direction === "backward";
+    const domSelection = document.getSelection();
+    if (!domSelection || domSelection.rangeCount === 0) return;
+    const domRange = domSelection.getRangeAt(0);
+    if (isBackward) {
+      domRange.setStart(domRange.startContainer, Math.max(0, domRange.startOffset - 1));
+    } else {
+      domRange.setEnd(domRange.endContainer, domRange.endOffset + 1);
+    }
+    domSelection.removeAllRanges();
+    domSelection.addRange(domRange);
+  } as Selection["modify"];
+}
+
 if (typeof Text !== "undefined") {
   const textPrototype = Text.prototype as Text & {
     getBoundingClientRect?: () => DOMRect;
@@ -1419,7 +1447,7 @@ describe("chat input attachments and preview", () => {
 });
 
 describe("chat input keyboard shortcuts", () => {
-  it("toggles taskIntent from implement to plan on Shift+Tab", () => {
+  it("does not intercept Shift+Tab — task-intent toggle is removed", () => {
     const onTaskIntentChange = vi.fn();
     const { container } = renderElement(
       createElement(
@@ -1434,10 +1462,11 @@ describe("chat input keyboard shortcuts", () => {
     const editor = getEditor(container);
     dispatchEditorKey(editor, "Tab", { shiftKey: true });
 
-    expect(onTaskIntentChange).toHaveBeenCalledWith("plan");
+    // Shift+Tab no longer toggles task intent; native focus navigation is restored.
+    expect(onTaskIntentChange).not.toHaveBeenCalled();
   });
 
-  it("prevents default focus navigation on Tab without Shift", () => {
+  it("does not prevent default on Tab without Shift when picker is closed", () => {
     const onTaskIntentChange = vi.fn();
     const { container } = renderElement(
       createElement(
@@ -1448,7 +1477,37 @@ describe("chat input keyboard shortcuts", () => {
       ),
     );
     const editor = getEditor(container);
-    dispatchEditorKey(editor, "Tab");
+    const event = new KeyboardEvent("keydown", { bubbles: true, key: "Tab" });
+    const preventDefault = vi.spyOn(event, "preventDefault");
+    act(() => {
+      editor.dispatchEvent(event);
+    });
+    // Tab is no longer unconditionally prevented — it is only blocked when the
+    // skill picker is open.
+    expect(preventDefault).not.toHaveBeenCalled();
     expect(onTaskIntentChange).not.toHaveBeenCalled();
+  });
+
+  it("still prevents default on Tab without Shift when skill picker is open", async () => {
+    const onTaskIntentChange = vi.fn();
+    const { container } = renderElement(
+      createElement(ChatInputHarness, {
+        initialPrompt: "/rel",
+        onStateChange: () => {},
+      }),
+    );
+
+    const editor = getEditor(container);
+    setSelectionByTextOffsets(editor, 4);
+    await flushMicrotasks();
+
+    const event = new KeyboardEvent("keydown", { bubbles: true, key: "Tab" });
+    const preventDefault = vi.spyOn(event, "preventDefault");
+    act(() => {
+      editor.dispatchEvent(event);
+    });
+    // Tab is prevented when the skill picker is open so that the selection
+    // is confirmed instead of navigating focus.
+    expect(preventDefault).toHaveBeenCalled();
   });
 });

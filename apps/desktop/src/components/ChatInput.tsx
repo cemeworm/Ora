@@ -723,20 +723,13 @@ function finalizeDeletionFallback() {
 }
 
 function deleteTextCharacterBoundary(
-  textNode: ComposerTextNode,
-  isBackward: boolean,
+  _textNode: ComposerTextNode,
+  _isBackward: boolean,
 ) {
-  const textLength = textNode.getTextContentSize();
-  if (textLength === 0) {
-    return false;
-  }
-  if (isBackward) {
-    textNode.spliceText(textLength - 1, 1, "", true);
-  } else {
-    textNode.spliceText(0, 1, "", false);
-    textNode.select(0, 0);
-  }
-  return true;
+  // Plain text character deletion is deferred to Lexical's default editing path.
+  // Returning false lets KEY_BACKSPACE_COMMAND / KEY_DELETE_COMMAND continue
+  // propagation so the built-in PlainTextPlugin handles the deletion natively.
+  return false;
 }
 
 function deleteSiblingBoundary(
@@ -775,13 +768,9 @@ function handleCollapsedDeletion(isBackward: boolean) {
   if ($isTextNode(anchorNode) && !$isComposerChipNode(anchorNode)) {
     const textNode = anchorNode as ComposerTextNode;
     const textLength = textNode.getTextContentSize();
-    if (isBackward && anchorOffset > 0) {
-      textNode.spliceText(anchorOffset - 1, 1, "", true);
-      return true;
-    }
-    if (!isBackward && anchorOffset < textLength) {
-      textNode.spliceText(anchorOffset, 1, "", true);
-      return true;
+    if ((isBackward && anchorOffset > 0) || (!isBackward && anchorOffset < textLength)) {
+      // Plain text deletion — let Lexical's built-in editing path handle it.
+      return false;
     }
     return deleteSiblingBoundary(textNode, isBackward, textNode);
   }
@@ -819,13 +808,8 @@ function handleCollapsedDeletion(isBackward: boolean) {
       if (textLength === 0) {
         return deleteSiblingBoundary(textNode, isBackward, textNode);
       }
-      if (isBackward) {
-        textNode.spliceText(textLength - 1, 1, "", true);
-      } else {
-        textNode.spliceText(0, 1, "", false);
-        textNode.select(0, 0);
-      }
-      return true;
+      // Plain text deletion on an adjacent text node — let Lexical handle it.
+      return false;
     }
   }
 
@@ -840,14 +824,23 @@ function handleDeleteCommand(isBackward: boolean) {
   }
 
   if (!selection.isCollapsed()) {
+    // If the selection spans chips, we must handle removal structurally.
+    // Otherwise, let Lexical's built-in deletion handle plain text ranges.
+    const nodes = selection.getNodes();
+    const hasChip = nodes.some((node) => $isComposerChipNode(node));
+    if (!hasChip) {
+      return false;
+    }
     selection.removeText();
     finalizeDeletionFallback();
     return true;
   }
 
-  handleCollapsedDeletion(isBackward);
-  finalizeDeletionFallback();
-  return true;
+  const handled = handleCollapsedDeletion(isBackward);
+  if (handled) {
+    finalizeDeletionFallback();
+  }
+  return handled;
 }
 
 function resizeComposerTextarea(target: ComposerEditableMetrics) {
@@ -1158,6 +1151,9 @@ function EditorEnterPlugin({
         KEY_ENTER_COMMAND,
         (event) => {
           if (isComposing() || event?.isComposing) {
+            // Block the host's default Enter behaviour during IME composition
+            // to prevent stray newline insertion or premature submission.
+            event?.preventDefault();
             return true;
           }
           event?.preventDefault();
@@ -1504,6 +1500,19 @@ export function ChatInput({
   }, [filteredSkillOptions.length, openPicker, editorProjection.slashContext]);
 
   function syncProjection(nextProjection: EditorProjection) {
+    // Guard against projection-equivalent re-exports when only the selection
+    // changed but the derived projection fields (prompt, skills, contexts,
+    // slashContext) stayed identical.
+    const current = editorProjection;
+    if (
+      nextProjection.prompt === current.prompt &&
+      arraysEqual(nextProjection.skillIds, current.skillIds) &&
+      arraysEqual(nextProjection.contextIds, current.contextIds) &&
+      slashContextEqual(nextProjection.slashContext, current.slashContext)
+    ) {
+      return;
+    }
+
     const previous = lastExportedRef.current;
     const nextSelectedSkills = nextProjection.skillIds
       .map((skillId) =>
@@ -1515,12 +1524,17 @@ export function ChatInput({
     const nextContextChips = nextProjection.contextIds
       .map((contextId) => contextChipMapRef.current.get(contextId))
       .filter((chip): chip is ChatInputContextChip => Boolean(chip));
-    setEditorProjection(nextProjection);
-    if (nextProjection.prompt.length > 0 || !isComposingRef.current) {
-      setHasPendingUserInput(false);
-    }
+    // During IME composition we suppress all state updates to avoid
+    // contaminating the dedupe guard (which would otherwise see an
+    // already-stale current projection and skip the post-composition
+    // export).
     if (isComposingRef.current) {
       return;
+    }
+
+    setEditorProjection(nextProjection);
+    if (nextProjection.prompt.length > 0) {
+      setHasPendingUserInput(false);
     }
 
     lastExportedRef.current = {
@@ -1545,6 +1559,21 @@ export function ChatInput({
         contextChipMapRef.current.get(contextId)?.onRemove?.();
       }
     }
+  }
+
+  function slashContextEqual(
+    a: SlashTriggerContext | null,
+    b: SlashTriggerContext | null,
+  ): boolean {
+    if (a === b) return true;
+    if (a === null || b === null) return false;
+    return (
+      a.nodeKey === b.nodeKey &&
+      a.caretOffset === b.caretOffset &&
+      a.replaceStartOffset === b.replaceStartOffset &&
+      a.rawText === b.rawText &&
+      a.query === b.query
+    );
   }
 
   function confirmSkillPickerSelection() {
@@ -1632,21 +1661,16 @@ export function ChatInput({
       return;
     }
 
-    if (event.key === "Tab" && !event.shiftKey) {
+    // Tab only overrides default focus navigation when the skill picker is open.
+    if (event.key === "Tab" && !event.shiftKey && openPicker === "skills") {
       event.preventDefault();
-      if (openPicker === "skills") {
-        confirmSkillPickerSelection();
-      }
+      confirmSkillPickerSelection();
       return;
     }
 
+    // Shift+Tab restores native reverse focus navigation; the previous
+    // task-intent toggle via Shift+Tab has been removed.
     if (event.key === "Tab" && event.shiftKey) {
-      event.preventDefault();
-      const nextIntent: TaskIntent =
-        taskIntent === "chat" ? "plan"
-        : taskIntent === "plan" ? "implement"
-        : "plan";
-      onTaskIntentChange(nextIntent);
       return;
     }
 
@@ -2014,6 +2038,14 @@ export function ChatInput({
                         }}
                         onCompositionEnd={(_event: CompositionEvent<HTMLDivElement>) => {
                           isComposingRef.current = false;
+                          setHasPendingUserInput(false);
+                          // The final IME commit fires OnChangePlugin *before* the
+                          // compositionend DOM event reaches this handler, while
+                          // isComposingRef is still true, so OnChangePlugin suppressed
+                          // the export.  We must perform exactly one flush here now
+                          // that the flag is cleared.  OnChangePlugin will not trigger
+                          // again because the editor state stays unchanged after
+                          // compositionend.
                           editorApiRef.current?.update(() => {
                             syncProjection(readEditorProjection());
                           });
