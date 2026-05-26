@@ -3771,6 +3771,7 @@ fn is_streaming_runtime_method(method: &str) -> bool {
             | "runs.resumeStreaming"
             | "flows.createStreaming"
             | "flows.resumeStreaming"
+            | "sessions.acceptPlanDecisionAndResume"
             | "sessions.branchGroups.createAndRun"
     )
 }
@@ -7018,6 +7019,11 @@ mod tests {
     }
 
     #[test]
+    fn accepted_plan_resume_uses_streaming_process_bridge() {
+        assert!(is_streaming_runtime_method("sessions.acceptPlanDecisionAndResume"));
+    }
+
+    #[test]
     fn cleanup_stops_persistent_request_bridge_and_channel_daemon() {
         let manager = process_bridge_manager(
             RuntimeCommandSpec::new(
@@ -7518,6 +7524,38 @@ mod tests {
             .recv_timeout(std::time::Duration::from_secs(2))
             .expect("resume stream notification should be forwarded");
         assert_eq!(notification["events"][0]["type"], json!("approval.resolved"));
+    }
+
+    #[test]
+    fn process_bridge_forwards_stream_notifications_after_accepted_plan_resume_response() {
+        let command = RuntimeCommandSpec::new(
+            "sh -c accepted-plan-resume-streaming-json-rpc",
+            "sh",
+            vec![
+                "-c".to_string(),
+                "read line; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"runId\":\"run-0001\",\"sessionId\":\"session-0001\",\"status\":\"running\",\"decisionId\":\"decision-1\",\"resumePhase\":\"accepted_resuming\"}}'; sleep 0.2; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"method\":\"runs.stream\",\"params\":{\"runId\":\"run-0001\",\"fromSeq\":3,\"events\":[{\"seq\":3,\"type\":\"run.resumed\"}],\"nextSeq\":4,\"status\":\"running\"}}'; sleep 1".to_string(),
+            ],
+            None,
+            Vec::new(),
+        );
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let response = run_process_json_rpc_with_notifications(
+            &command,
+            &request(
+                "sessions.acceptPlanDecisionAndResume",
+                Some(json!({ "sessionId": "session-0001", "runId": "run-0001", "decisionId": "decision-1" })),
+            ),
+            Box::new(move |payload| {
+                let _ = sender.send(payload);
+            }),
+        )
+        .expect("accepted plan resume should return the initial handle response");
+
+        assert_eq!(response.result.unwrap()["runId"], json!("run-0001"));
+        let notification = receiver
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("accepted plan resume stream notification should be forwarded");
+        assert_eq!(notification["events"][0]["type"], json!("run.resumed"));
     }
 
     #[test]

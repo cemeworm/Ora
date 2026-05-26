@@ -41,8 +41,11 @@ export type TaskIntent = z.infer<typeof TaskIntentSchema>;
 
 export const AcceptedPlanExecutionContractSchema = z.enum([
   "same_run_implementation",
+  "new_turn_implementation",
 ]);
 export type AcceptedPlanExecutionContract = z.infer<typeof AcceptedPlanExecutionContractSchema>;
+
+export const ACCEPTED_PLAN_USER_MESSAGE = "请按照上述计划开始执行";
 
 export const DelegationIntentPreferenceSchema = z.enum(["none", "allow", "prefer"]);
 export type DelegationIntentPreference = z.infer<typeof DelegationIntentPreferenceSchema>;
@@ -414,6 +417,21 @@ export function hasAcceptedPlanSameRunImplementationContract(
     return false;
   }
   return !runId || metadata.acceptedPlanRunId === runId;
+}
+
+export function hasAcceptedPlanNewTurnImplementationContract(
+  metadata: RunConfig["metadata"] | undefined,
+): boolean {
+  if (!metadata) {
+    return false;
+  }
+  if (acceptedPlanExecutionContractFromMetadata(metadata) !== "new_turn_implementation") {
+    return false;
+  }
+  if (typeof metadata.acceptedPlanDecisionId !== "string" || metadata.acceptedPlanDecisionId.length === 0) {
+    return false;
+  }
+  return typeof metadata.acceptedPlanRunId === "string" && metadata.acceptedPlanRunId.length > 0;
 }
 
 export const AutomationScheduleSchema = z.discriminatedUnion("kind", [

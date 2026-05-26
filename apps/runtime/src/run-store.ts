@@ -38,6 +38,7 @@ import {
   modeSpecToPatternDefinition,
   MVP_MODE_RUNTIME_ATOMS,
   MVP_PATTERNS,
+  ACCEPTED_PLAN_USER_MESSAGE,
   type ModeCreateParams,
   type ModeSpec,
   type ModeUpdateParams,
@@ -1667,16 +1668,6 @@ export class LocalRunStore {
         decisionId: parsed.decisionId,
       });
     }
-    if (
-      existingDecision.status === "accepted" &&
-      (snapshot.status === "queued" || snapshot.status === "running")
-    ) {
-      return {
-        ...toRunHandle(snapshot),
-        decisionId: parsed.decisionId,
-        resumePhase: snapshot.status === "running" ? "resumed_running" : "accepted_resuming",
-      };
-    }
 
     if (existingDecision.status !== "accepted") {
       this.resolvePlanDecision({
@@ -1686,11 +1677,58 @@ export class LocalRunStore {
         status: "accepted",
       });
     }
+    const existingImplementation = this.findAcceptedPlanImplementationRun({
+      sessionId: parsed.sessionId,
+      decisionId: parsed.decisionId,
+      sourceRunId: parsed.runId,
+    });
+    if (existingImplementation && (existingImplementation.status === "queued" || existingImplementation.status === "running")) {
+      return {
+        ...toRunHandle(existingImplementation),
+        decisionId: parsed.decisionId,
+        resumePhase: "accepted_resuming",
+      };
+    }
 
-    const resumeParams = {
-      runId: parsed.runId,
-      reason: parsed.reason ?? USER_RESUMED_MESSAGE,
-      patch: { planDecisionResolutions: [{ decisionId: parsed.decisionId, status: "accepted" as const }] },
+    const startParams = {
+      sessionId: parsed.sessionId,
+      input: {
+        prompt: ACCEPTED_PLAN_USER_MESSAGE,
+        createdAt: this.now(),
+        context: {
+          acceptedPlanDecisionId: parsed.decisionId,
+          acceptedPlanRunId: parsed.runId,
+        },
+      },
+      config: {
+        ...snapshot.config,
+        modeId: snapshot.modeId,
+        modeSelection: snapshot.config.modeSelection,
+        pattern: snapshot.pattern,
+        profileIds: snapshot.config.profileIds,
+        skillIds: snapshot.config.skillIds,
+        toolIds: snapshot.config.toolIds,
+        providerId: snapshot.config.providerId,
+        providerConfig: snapshot.config.providerConfig,
+        modelRef: snapshot.config.modelRef,
+        approvalMode: snapshot.config.approvalMode,
+        permissionMode: snapshot.config.permissionMode,
+        patternOptions: snapshot.config.patternOptions,
+        metadata: {
+          ...snapshot.config.metadata,
+          taskIntent: "implement",
+          acceptedPlanExecutionContract: "new_turn_implementation",
+          acceptedPlanDecisionId: parsed.decisionId,
+          acceptedPlanRunId: parsed.runId,
+        },
+        hostFilesystem: snapshot.config.hostFilesystem,
+        searchProvider: snapshot.config.searchProvider,
+        budget: snapshot.config.budget,
+        completionPolicy: snapshot.config.completionPolicy,
+        effectiveStrategy: snapshot.config.effectiveStrategy,
+        causalInterventionLevel: snapshot.config.causalInterventionLevel,
+        deterministicSeed: snapshot.config.deterministicSeed,
+      },
     };
 
     let attempt = 0;
@@ -1698,9 +1736,9 @@ export class LocalRunStore {
     while (attempt < ACCEPT_PLAN_RESUME_MAX_ATTEMPTS) {
       attempt += 1;
       try {
-        const handle = await this.resumeStreamingRun(resumeParams, options);
+        const run = await this.startStreamingRun(startParams, options);
         return {
-          ...handle,
+          ...run,
           decisionId: parsed.decisionId,
           resumePhase: "accepted_resuming",
         };
@@ -1736,6 +1774,22 @@ export class LocalRunStore {
       decisionId: parsed.decisionId,
       resumePhase: "resume_terminal",
     };
+  }
+
+  private findAcceptedPlanImplementationRun(params: {
+    sessionId: string;
+    decisionId: string;
+    sourceRunId: string;
+  }): StateSnapshot | undefined {
+    return [...this.runsForSession(params.sessionId)]
+      .reverse()
+      .find((candidate) =>
+        candidate.runId !== params.sourceRunId &&
+        candidate.config.metadata.taskIntent === "implement" &&
+        candidate.config.metadata.acceptedPlanExecutionContract === "new_turn_implementation" &&
+        candidate.config.metadata.acceptedPlanDecisionId === params.decisionId &&
+        candidate.config.metadata.acceptedPlanRunId === params.sourceRunId
+      );
   }
 
   listRuns(params: unknown = {}): RunSummary[] {

@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  ACCEPTED_PLAN_USER_MESSAGE,
   createModeSpecFromPattern,
   deriveRunAttention,
   deriveSessionProjection,
@@ -1288,7 +1289,7 @@ describe("session thread runtime behavior", () => {
     ]);
   });
 
-  it("accepts a plan and resumes the same run atomically", { timeout: 15_000 }, async () => {
+  it("accepts a plan and starts a new implementation turn atomically", { timeout: 15_000 }, async () => {
     titleResponses.push("Atomic Accept Session");
     const dir = freshStoreDir();
     const store = new LocalRunStore({ dataDir: dir, clock });
@@ -1309,15 +1310,7 @@ describe("session thread runtime behavior", () => {
     const planned = SessionDetailSchema.parse(store.getSession({ sessionId: session.sessionId }));
     const decision = planned.latestSnapshot?.planDecisions[0];
     expect(decision?.status).toBe("pending");
-    const resumeSpy = vi.spyOn(store, "resumeStreamingRun").mockResolvedValue({
-      runId: planned.latestSnapshot?.runId ?? "missing-run",
-      sessionId: session.sessionId,
-      turnIndex: planned.latestSnapshot?.turnIndex,
-      status: "running",
-      pattern: planned.latestSnapshot?.pattern ?? "orchestrator_subagent",
-      modeId: planned.latestSnapshot?.modeId,
-      startedAt: planned.latestSnapshot?.input.createdAt ?? planned.latestSnapshot?.updatedAt ?? FIXED_TIME,
-    });
+    const startSpy = vi.spyOn(store, "startStreamingRun");
 
     const handle = await store.acceptPlanDecisionAndResume({
       sessionId: session.sessionId,
@@ -1325,18 +1318,50 @@ describe("session thread runtime behavior", () => {
       decisionId: decision?.id,
     });
 
-    expect(handle.runId).toBe(planned.latestSnapshot?.runId);
+    expect(handle.runId).not.toBe(planned.latestSnapshot?.runId);
     expect(handle.status).toBe("running");
     expect(handle.resumePhase).toBe("accepted_resuming");
     expect(handle.decisionId).toBe(decision?.id);
-    expect(resumeSpy).toHaveBeenCalledTimes(1);
-    expect(resumeSpy).toHaveBeenCalledWith(expect.objectContaining({
-      runId: planned.latestSnapshot?.runId,
-      patch: { planDecisionResolutions: [{ decisionId: decision?.id, status: "accepted" }] },
+    expect(startSpy).toHaveBeenCalledTimes(1);
+    expect(startSpy).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: session.sessionId,
+      input: expect.objectContaining({
+        prompt: ACCEPTED_PLAN_USER_MESSAGE,
+      }),
+      config: expect.objectContaining({
+        metadata: expect.objectContaining({
+          taskIntent: "implement",
+          acceptedPlanExecutionContract: "new_turn_implementation",
+          acceptedPlanDecisionId: decision?.id,
+          acceptedPlanRunId: planned.latestSnapshot?.runId,
+        }),
+      }),
     }), {});
 
     const acceptedState = StateSnapshotSchema.parse(store.getRunState({ runId: handle.runId }));
-    expect(acceptedState.planDecisions[0]).toMatchObject({
+    const detail = SessionDetailSchema.parse(store.getSession({ sessionId: session.sessionId }));
+    expect(acceptedState.input.prompt).toBe(ACCEPTED_PLAN_USER_MESSAGE);
+    expect(detail.transcript).toHaveLength(3);
+    expect(detail.transcript[0]).toMatchObject({
+      role: "user",
+      runId: planned.latestSnapshot?.runId,
+      content: COMPLETE_PROPOSED_PLAN,
+    });
+    expect(detail.transcript[1]).toMatchObject({
+      role: "assistant",
+      runId: planned.latestSnapshot?.runId,
+    });
+    expect(detail.transcript[2]).toMatchObject({
+      role: "user",
+      runId: handle.runId,
+      content: ACCEPTED_PLAN_USER_MESSAGE,
+    });
+    expect(planned.latestSnapshot?.planDecisions[0]).toMatchObject({
+      id: decision?.id,
+      status: "pending",
+    });
+    const acceptedSourceState = StateSnapshotSchema.parse(store.getRunState({ runId: planned.latestSnapshot?.runId ?? "missing-run" }));
+    expect(acceptedSourceState.planDecisions[0]).toMatchObject({
       id: decision?.id,
       status: "accepted",
     });
@@ -1483,7 +1508,7 @@ describe("session thread runtime behavior", () => {
     expect(capturedResumeFrameStatus).toBe("paused");
   });
 
-  it("starts first accepted-plan implementation resume with same-run implement contract metadata", async () => {
+  it("starts first accepted-plan implementation turn with new-turn implement contract metadata", async () => {
     titleResponses.push("Accepted Plan Contract Session");
     const dir = freshStoreDir();
     const store = new LocalRunStore({ dataDir: dir, clock });
@@ -1505,33 +1530,6 @@ describe("session thread runtime behavior", () => {
     const decision = planned.latestSnapshot?.planDecisions[0];
     expect(decision?.status).toBe("pending");
 
-    const kernelExecutionService = (store as unknown as {
-      runKernelExecutionService: {
-        executePreparedResume: (params: {
-          snapshot: StateSnapshot;
-          configOverride?: { metadata?: Record<string, unknown> };
-        }) => Promise<StateSnapshot>;
-      };
-    }).runKernelExecutionService;
-    let capturedResumeMetadata: Record<string, unknown> | undefined;
-    vi.spyOn(kernelExecutionService, "executePreparedResume").mockImplementation(async (params) => {
-      capturedResumeMetadata = params.configOverride?.metadata;
-      return StateSnapshotSchema.parse({
-        ...params.snapshot,
-        status: "running",
-        planDecisions: params.snapshot.planDecisions.map((candidate) =>
-          candidate.id === decision?.id
-            ? {
-                ...candidate,
-                status: "accepted" as const,
-                resolvedAt: FIXED_TIME,
-              }
-            : candidate
-        ),
-        updatedAt: FIXED_TIME,
-      });
-    });
-
     const handle = await store.acceptPlanDecisionAndResume({
       sessionId: session.sessionId,
       runId: planned.latestSnapshot?.runId,
@@ -1539,9 +1537,10 @@ describe("session thread runtime behavior", () => {
     });
 
     expect(handle.status).toBe("running");
-    expect(capturedResumeMetadata).toMatchObject({
+    const implementationState = StateSnapshotSchema.parse(store.getRunState({ runId: handle.runId }));
+    expect(implementationState.config.metadata).toMatchObject({
       taskIntent: "implement",
-      acceptedPlanExecutionContract: "same_run_implementation",
+      acceptedPlanExecutionContract: "new_turn_implementation",
       acceptedPlanDecisionId: decision?.id,
       acceptedPlanRunId: planned.latestSnapshot?.runId,
     });
@@ -1635,7 +1634,7 @@ describe("session thread runtime behavior", () => {
     expect(liveDetail.session.attention?.kind).not.toBe("needs_plan_decision");
   });
 
-  it("treats a second accepted-plan click during same-run resume as idempotent instead of starting resume again", async () => {
+  it("treats a second accepted-plan click as idempotent instead of starting another implementation turn", async () => {
     titleResponses.push("Atomic Second Accept Session");
     const dir = freshStoreDir();
     const store = new LocalRunStore({ dataDir: dir, clock });
@@ -1657,17 +1656,7 @@ describe("session thread runtime behavior", () => {
     const decision = planned.latestSnapshot?.planDecisions[0];
     expect(decision?.status).toBe("pending");
 
-    const kernelExecutionService = (store as unknown as {
-      runKernelExecutionService: {
-        executeKernelResumeWork: (...args: unknown[]) => Promise<StateSnapshot>;
-      };
-    }).runKernelExecutionService;
-    const resumeResolvers: Array<(snapshot: StateSnapshot) => void> = [];
-    const executeKernelResumeWorkSpy = vi.spyOn(kernelExecutionService, "executeKernelResumeWork").mockImplementation(async () =>
-      await new Promise<StateSnapshot>((resolve) => {
-        resumeResolvers.push(resolve);
-      })
-    );
+    const startSpy = vi.spyOn(store, "startStreamingRun");
 
     const firstHandle = await store.acceptPlanDecisionAndResume({
       sessionId: session.sessionId,
@@ -1680,10 +1669,6 @@ describe("session thread runtime behavior", () => {
 
     expect(firstHandle.status).toBe("running");
     expect(duringResumeState.status).toBe("running");
-    expect(duringResumeState.planDecisions[0]).toMatchObject({
-      id: decision?.id,
-      status: "accepted",
-    });
     expect(duringResumeDetail.session.attention?.kind).not.toBe("needs_plan_decision");
 
     const secondHandle = await store.acceptPlanDecisionAndResume({
@@ -1697,52 +1682,9 @@ describe("session thread runtime behavior", () => {
 
     expect(secondHandle.runId).toBe(firstHandle.runId);
     expect(secondHandle.status).toBe("running");
-    expect(executeKernelResumeWorkSpy).toHaveBeenCalledTimes(1);
+    expect(startSpy).toHaveBeenCalledTimes(1);
     expect(afterSecondClickState.status).toBe("running");
-    expect(afterSecondClickState.planDecisions[0]).toMatchObject({
-      id: decision?.id,
-      status: "accepted",
-    });
     expect(afterSecondClickDetail.session.attention?.kind).not.toBe("needs_plan_decision");
-
-    const completedSnapshot = StateSnapshotSchema.parse({
-      ...planned.latestSnapshot,
-      status: "succeeded",
-      output: { text: "Implemented accepted plan after same-run resume." },
-      planDecisions: planned.latestSnapshot?.planDecisions.map((candidate) =>
-        candidate.id === decision?.id
-          ? {
-              ...candidate,
-              status: "accepted" as const,
-              resolvedAt: FIXED_TIME,
-            }
-          : candidate
-      ) ?? [],
-      attention: {
-        kind: "running",
-        blocking: false,
-        sourceRunId: planned.latestSnapshot?.runId ?? "missing-run",
-        pendingActionIds: [],
-        pendingToolCallIds: [],
-        pendingClarificationIds: [],
-      },
-      updatedAt: FIXED_TIME,
-    });
-    for (const resolve of resumeResolvers) {
-      resolve(completedSnapshot);
-    }
-
-    const terminalState = await waitFor(
-      () => StateSnapshotSchema.parse(store.getRunState({ runId: firstHandle.runId })),
-      (snapshot) => snapshot.status === "succeeded",
-    );
-    const terminalDetail = SessionDetailSchema.parse(store.getSession({ sessionId: session.sessionId }));
-
-    expect(terminalState.status).toBe("succeeded");
-    expect(terminalState.output).toMatchObject({
-      text: "Implemented accepted plan after same-run resume.",
-    });
-    expect(terminalDetail.session.attention?.kind).toBe("idle");
   });
 
   it("retries accepted-plan resume startup automatically before succeeding", { timeout: 15_000 }, async () => {
@@ -1766,7 +1708,7 @@ describe("session thread runtime behavior", () => {
     const planned = SessionDetailSchema.parse(store.getSession({ sessionId: session.sessionId }));
     const decision = planned.latestSnapshot?.planDecisions[0];
     let attemptCount = 0;
-    vi.spyOn(store, "resumeStreamingRun").mockImplementation(async (params, options) => {
+    vi.spyOn(store, "startStreamingRun").mockImplementation(async (params, options) => {
       void params;
       void options;
       attemptCount += 1;
@@ -1774,13 +1716,13 @@ describe("session thread runtime behavior", () => {
         throw new Error("Runtime bridge timed out while starting resume.");
       }
       return {
-        runId: planned.latestSnapshot?.runId ?? "missing-run",
+        runId: "run-implementation-retry",
         sessionId: session.sessionId,
-        turnIndex: planned.latestSnapshot?.turnIndex,
+        turnIndex: (planned.latestSnapshot?.turnIndex ?? 0) + 1,
         status: "running",
         pattern: planned.latestSnapshot?.pattern ?? "orchestrator_subagent",
         modeId: planned.latestSnapshot?.modeId,
-        startedAt: planned.latestSnapshot?.input.createdAt ?? planned.latestSnapshot?.updatedAt ?? FIXED_TIME,
+        startedAt: FIXED_TIME,
       };
     });
 
@@ -1791,9 +1733,10 @@ describe("session thread runtime behavior", () => {
     });
 
     expect(attemptCount).toBe(3);
-    expect(handle.runId).toBe(planned.latestSnapshot?.runId);
+    expect(handle.runId).toBe("run-implementation-retry");
     expect(handle.status).toBe("running");
-    expect(StateSnapshotSchema.parse(store.getRunState({ runId: handle.runId })).planDecisions[0]?.status).toBe("accepted");
+    const plannedState = StateSnapshotSchema.parse(store.getRunState({ runId: planned.latestSnapshot?.runId ?? "missing-run" }));
+    expect(plannedState.planDecisions[0]?.status).toBe("accepted");
   });
 
   it("fails the accepted-plan run after retry budget exhaustion instead of reopening plan decision handling", { timeout: 15_000 }, async () => {
@@ -1816,7 +1759,7 @@ describe("session thread runtime behavior", () => {
 
     const planned = SessionDetailSchema.parse(store.getSession({ sessionId: session.sessionId }));
     const decision = planned.latestSnapshot?.planDecisions[0];
-    vi.spyOn(store, "resumeStreamingRun").mockRejectedValue(
+    vi.spyOn(store, "startStreamingRun").mockRejectedValue(
       new Error("Runtime bridge timed out while starting resume."),
     );
 

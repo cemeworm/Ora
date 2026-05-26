@@ -8,6 +8,7 @@ import type {
 import {
   deriveAcceptedPlanResumeProjection,
   hasAcceptedPlanSameRunImplementationContract,
+  hasAcceptedPlanNewTurnImplementationContract,
   isUnresolvedStalledChildSession,
 } from "@cemeworm/shared";
 
@@ -255,6 +256,9 @@ function acceptedPlanResumePhaseSummary(
 export function acceptedPlanImplementationEvidenceGuard(
   state: RuntimeCompletionGuardState,
 ): RuntimeCompletionGuardResult {
+  if (hasAcceptedPlanNewTurnImplementationContract(state.metadata)) {
+    return { allowComplete: true };
+  }
   if (!hasAcceptedPlanSameRunImplementationContract(state.metadata, state.runId)) {
     return { allowComplete: true };
   }

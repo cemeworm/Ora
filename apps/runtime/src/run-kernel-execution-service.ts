@@ -427,7 +427,7 @@ function configForPlanDecisionResume(
     metadata: {
       ...config.metadata,
       taskIntent: "implement",
-      acceptedPlanExecutionContract: "same_run_implementation",
+      acceptedPlanExecutionContract: "new_turn_implementation",
       acceptedPlanDecisionId: resolutions.find((resolution) => resolution.status === "accepted")?.decisionId,
       acceptedPlanRunId: decisions.find((decision) =>
         resolutions.some((resolution) => resolution.status === "accepted" && resolution.decisionId === decision.id),
