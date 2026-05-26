@@ -1,0 +1,36 @@
+{
+  "datasetId": "<import-kv-cache-cause-effect-dataset>",
+  "profileId": "orchestration",
+  "repetitions": 3,
+  "concurrency": 1,
+  "timeoutMs": 300000,
+  "objective": {
+    "kind": "cost",
+    "target": "run.output",
+    "metrics": [
+      "kv_cache_hit_ratio",
+      "agentic_cost_score",
+      "token_efficiency",
+      "tool_efficiency"
+    ]
+  },
+  "configs": [
+    {
+      "id": "deterministic-cache",
+      "label": "Deterministic Cache Path",
+      "runConfig": {
+        "pattern": "single_agent",
+        "modeSelection": "manual",
+        "modeId": "single_agent",
+        "toolIds": ["file.read", "file.list"],
+        "providerId": "deepseek",
+        "modelRef": "deepseek-v4-flash"
+      }
+    }
+  ],
+  "metadata": {
+    "description": "Deterministic KV Cache eval: constrained tool surface (file.read + file.list only) to isolate cache behavior across multi-turn file reads.",
+    "evaluationFamily": "kv-cache",
+    "retrofitCausalDecisions": false
+  }
+}

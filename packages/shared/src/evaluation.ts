@@ -53,6 +53,7 @@ export const EvaluationMetricIdSchema = z.enum([
   "atomic_tool_hops",
   "first_locate_success",
   "shell_explore_restraint",
+  "kv_cache_hit_ratio",
 ]);
 export type EvaluationMetricId = z.infer<typeof EvaluationMetricIdSchema>;
 

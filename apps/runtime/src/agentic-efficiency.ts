@@ -25,6 +25,10 @@ export interface AgenticEfficiencyLedger {
   toolShare: number;
   coordinationShare: number;
   recoveryShare: number;
+  cacheHitTokens: number;
+  cacheMissTokens: number;
+  cacheHitRatio: number;
+  cacheDataAvailable: boolean;
 }
 
 const INPUT_TOKEN_COST_PER_1K_USD = 0.00015;
@@ -112,6 +116,11 @@ export function buildAgenticEfficiencyLedger(
     estimatedTokenCostUsd + toolCostUsd + coordinationCostUsd + recoveryCostUsd + humanGateCostUsd,
   );
 
+  const cacheHitTokens = usage.promptCacheHitTokens + usage.cacheReadInputTokens;
+  const cacheMissTokens = usage.promptCacheMissTokens + usage.cacheCreationInputTokens;
+  const cacheHitRatio = cacheHitTokens + cacheMissTokens > 0 ? cacheHitTokens / (cacheHitTokens + cacheMissTokens) : 0;
+  const cacheDataAvailable = cacheHitTokens + cacheMissTokens > 0;
+
   return {
     modelCallCount,
     inputTokens,
@@ -136,40 +145,82 @@ export function buildAgenticEfficiencyLedger(
     toolShare: share(toolCostUsd, estimatedCostUsd),
     coordinationShare: share(coordinationCostUsd, estimatedCostUsd),
     recoveryShare: share(recoveryCostUsd, estimatedCostUsd),
+    cacheHitTokens,
+    cacheMissTokens,
+    cacheHitRatio,
+    cacheDataAvailable,
   };
 }
 
-function usageFromSnapshot(snapshot: StateSnapshot): Required<Pick<ModelTokenUsage, "inputTokens" | "outputTokens" | "totalTokens">> & {
+interface UsageAggregate {
+  inputTokens: number;
+  outputTokens: number;
   reasoningTokens: number;
-} {
+  totalTokens: number;
+  promptCacheHitTokens: number;
+  promptCacheMissTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+}
+
+function usageFromSnapshot(snapshot: StateSnapshot): UsageAggregate {
   return snapshot.events
     .filter((event) => event.type === "context.usage.updated")
     .map((event) => usageFromPayload(event.payload))
-    .filter((usage): usage is ModelTokenUsage => Boolean(usage))
     .reduce(
       (total, usage) => ({
         inputTokens: total.inputTokens + usage.inputTokens,
         outputTokens: total.outputTokens + usage.outputTokens,
-        reasoningTokens: total.reasoningTokens + (usage.reasoningTokens ?? 0),
+        reasoningTokens: total.reasoningTokens + usage.reasoningTokens,
         totalTokens: total.totalTokens + usage.totalTokens,
+        promptCacheHitTokens: total.promptCacheHitTokens + usage.promptCacheHitTokens,
+        promptCacheMissTokens: total.promptCacheMissTokens + usage.promptCacheMissTokens,
+        cacheReadInputTokens: total.cacheReadInputTokens + usage.cacheReadInputTokens,
+        cacheCreationInputTokens: total.cacheCreationInputTokens + usage.cacheCreationInputTokens,
       }),
-      { inputTokens: 0, outputTokens: 0, reasoningTokens: 0, totalTokens: 0 },
+      {
+        inputTokens: 0,
+        outputTokens: 0,
+        reasoningTokens: 0,
+        totalTokens: 0,
+        promptCacheHitTokens: 0,
+        promptCacheMissTokens: 0,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
+      },
     );
 }
 
-function usageFromPayload(payload: unknown): ModelTokenUsage | undefined {
-  if (!payload || typeof payload !== "object") return undefined;
+interface ExtractedUsage {
+  inputTokens: number;
+  outputTokens: number;
+  reasoningTokens: number;
+  totalTokens: number;
+  promptCacheHitTokens: number;
+  promptCacheMissTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+}
+
+function usageFromPayload(payload: unknown): ExtractedUsage {
+  const zero: ExtractedUsage = {
+    inputTokens: 0, outputTokens: 0, reasoningTokens: 0, totalTokens: 0,
+    promptCacheHitTokens: 0, promptCacheMissTokens: 0,
+    cacheReadInputTokens: 0, cacheCreationInputTokens: 0,
+  };
+  if (!payload || typeof payload !== "object") return zero;
   const usage = (payload as { usage?: unknown }).usage;
-  if (!usage || typeof usage !== "object") return undefined;
-  const record = usage as Partial<ModelTokenUsage>;
-  const totalTokens = numeric(record.totalTokens);
-  if (totalTokens === undefined) return undefined;
+  if (!usage || typeof usage !== "object") return zero;
+  const record = usage as Record<string, unknown>;
   return {
     inputTokens: numeric(record.inputTokens) ?? 0,
     outputTokens: numeric(record.outputTokens) ?? 0,
-    reasoningTokens: numeric(record.reasoningTokens),
-    totalTokens,
-    source: record.source === "provider" ? "provider" : "estimate",
+    reasoningTokens: numeric(record.reasoningTokens) ?? 0,
+    totalTokens: numeric(record.totalTokens) ?? 0,
+    promptCacheHitTokens: numeric(record.promptCacheHitTokens) ?? 0,
+    promptCacheMissTokens: numeric(record.promptCacheMissTokens) ?? 0,
+    cacheReadInputTokens: numeric(record.cacheReadInputTokens) ?? 0,
+    cacheCreationInputTokens: numeric(record.cacheCreationInputTokens) ?? 0,
   };
 }
 

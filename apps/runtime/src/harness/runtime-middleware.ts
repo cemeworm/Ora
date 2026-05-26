@@ -512,6 +512,37 @@ export function createDanglingToolCallRepairMiddleware(): RuntimeMiddleware {
   };
 }
 
+export function createUsageTrackingMiddleware(): RuntimeMiddleware {
+  return {
+    name: "usage_tracking",
+    priority: 100,
+    async wrapModelCall(request, context, next) {
+      const response = await next(request);
+      const provider = resolveRunProviderConfig(context.config);
+      const usage = usageForModelResponse(response, request);
+      const limit = resolveAutoCompactTokenLimit(provider);
+      const contextWindow = resolvedContextWindow(provider);
+      context.emit(
+        "context.usage.updated",
+        {
+          phase: "initial",
+          reason: "model_call",
+          providerId: response.providerId,
+          modelId: response.modelId,
+          usage,
+          limit,
+          contextWindow,
+        },
+        {
+          agentId: context.agentId,
+          nodeId: context.modelNodeId ?? context.nodeId,
+        },
+      );
+      return response;
+    },
+  };
+}
+
 export function createContextCompactionMiddleware(): RuntimeMiddleware {
   return {
     name: "context_compaction",
@@ -534,19 +565,6 @@ export function createContextCompactionMiddleware(): RuntimeMiddleware {
         agentId: context.agentId,
         nodeId: context.modelNodeId ?? context.nodeId,
       };
-      context.emit(
-        "context.usage.updated",
-        {
-          phase: "mid_turn",
-          reason: compaction.reason,
-          providerId: compaction.latestResponse.providerId,
-          modelId: compaction.latestResponse.modelId,
-          usage,
-          limit,
-          contextWindow,
-        },
-        eventContext,
-      );
       if (!limit || usage.totalTokens < limit) {
         return next(request);
       }
@@ -873,6 +891,7 @@ export function createBatchClarificationResponseMiddleware(): RuntimeMiddleware 
 
 export function buildRuntimeMiddlewares(): RuntimeMiddleware[] {
   return [
+    createUsageTrackingMiddleware(),
     createDanglingToolCallRepairMiddleware(),
     createContextCompactionMiddleware(),
     createBatchClarificationResponseMiddleware(),

@@ -3783,7 +3783,7 @@ function defaultMetricsForObjective(objective: EvaluationObjective): EvaluationM
     case "latency":
       return ["latency_score"];
     case "cost":
-      return ["agentic_cost_score", "token_efficiency", "tool_efficiency", "coordination_overhead", "recovery_overhead"];
+      return ["agentic_cost_score", "token_efficiency", "tool_efficiency", "coordination_overhead", "recovery_overhead", "kv_cache_hit_ratio"];
     case "regression":
       return ["assertion_pass_rate"];
     case "outcome":
@@ -3851,6 +3851,8 @@ function scoreMetric(
       return firstLocateSuccessMetric(observations);
     case "shell_explore_restraint":
       return shellExploreRestraintMetric(observations);
+    case "kv_cache_hit_ratio":
+      return kvCacheHitRatioMetric(observations);
   }
   throw new Error(`Unsupported evaluation metric: ${metricId}`);
 }
@@ -4668,6 +4670,33 @@ function shellExploreRestraintMetric(observations: EvaluationObservation): Evalu
   });
 }
 
+function kvCacheHitRatioMetric(observations: EvaluationObservation): EvaluationMetricScore {
+  const cacheHitRatio = numberValue(getObservationPath(observations, "runtime.efficiencyLedger.cacheHitRatio")) ?? 0;
+  const cacheDataAvailable = Boolean(getObservationPath(observations, "runtime.efficiencyLedger.cacheDataAvailable"));
+  const modelCallCount = Math.max(1, numberValue(getObservationPath(observations, "runtime.efficiencyLedger.modelCallCount")) ?? 1);
+  if (!cacheDataAvailable) {
+    return EvaluationMetricScoreSchema.parse({
+      metricId: "kv_cache_hit_ratio",
+      score: 0.5,
+      passed: true,
+      rationale: `No KV cache data available (${modelCallCount} model call(s)). Provider may not support cache or all calls were cache-cold.`,
+      failureTags: [],
+      details: { cacheDataAvailable: false, modelCallCount },
+    });
+  }
+  const score = Math.min(1, cacheHitRatio / 0.99);
+  return EvaluationMetricScoreSchema.parse({
+    metricId: "kv_cache_hit_ratio",
+    score: roundScore(score),
+    passed: cacheHitRatio >= 0.99,
+    rationale: cacheHitRatio >= 0.99
+      ? `KV cache hit ratio ${(cacheHitRatio * 100).toFixed(1)}% meets 99% target (${modelCallCount} model calls).`
+      : `KV cache hit ratio ${(cacheHitRatio * 100).toFixed(1)}% below 99% target (${modelCallCount} model calls).`,
+    failureTags: cacheHitRatio >= 0.99 ? [] : ["low_kv_cache_hit_ratio"],
+    details: { cacheHitRatio, modelCallCount, cacheDataAvailable: true },
+  });
+}
+
 function syncLlmJudgeMetricScore(
   metricScores: EvaluationMetricScore[],
   evaluatorResults: EvaluationEvaluatorResult[],
@@ -4773,6 +4802,7 @@ function aggregateMetricScores(metricScores: EvaluationMetricScore[], profileId:
     "tool_efficiency",
     "coordination_overhead",
     "recovery_overhead",
+    "kv_cache_hit_ratio",
   ], runtimeFailed ? 0.25 : 0.9));
   const safetyScore = runtimeFailed ? 0.2 : metricScores.some((metric) => metric.failureTags.includes("reject_value") || metric.failureTags.includes("wrong_mode")) ? 0.55 : 0.92;
   const failureTags = [

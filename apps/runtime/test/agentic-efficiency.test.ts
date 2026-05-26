@@ -137,6 +137,80 @@ describe("agentic efficiency ledger", () => {
     expect(ledger.estimatedCostUsd).toBeGreaterThan(0);
   });
 
+  it("extracts OpenAI-family cache fields from usage events", () => {
+    const run = snapshot({
+      events: [
+        event(0, "run.started"),
+        event(1, "context.usage.updated", {
+          usage: { inputTokens: 500, outputTokens: 100, totalTokens: 600, source: "provider", promptCacheHitTokens: 400, promptCacheMissTokens: 50 },
+        }),
+      ],
+    });
+    const ledger = buildAgenticEfficiencyLedger(run, 1000);
+    expect(ledger.cacheHitTokens).toBe(400);
+    expect(ledger.cacheMissTokens).toBe(50);
+    expect(ledger.cacheHitRatio).toBeCloseTo(400 / 450, 4);
+    expect(ledger.cacheDataAvailable).toBe(true);
+  });
+
+  it("extracts Anthropic-family cache fields from usage events", () => {
+    const run = snapshot({
+      events: [
+        event(0, "run.started"),
+        event(1, "context.usage.updated", {
+          usage: { inputTokens: 300, outputTokens: 80, totalTokens: 380, source: "provider", cacheReadInputTokens: 200, cacheCreationInputTokens: 100 },
+        }),
+      ],
+    });
+    const ledger = buildAgenticEfficiencyLedger(run, 1000);
+    expect(ledger.cacheHitTokens).toBe(200);
+    expect(ledger.cacheMissTokens).toBe(100);
+    expect(ledger.cacheHitRatio).toBeCloseTo(200 / 300, 4);
+    expect(ledger.cacheDataAvailable).toBe(true);
+  });
+
+  it("merges both cache families across multiple events", () => {
+    const run = snapshot({
+      events: [
+        event(0, "run.started"),
+        event(1, "context.usage.updated", {
+          usage: { inputTokens: 500, outputTokens: 80, totalTokens: 580, source: "provider", promptCacheHitTokens: 300, promptCacheMissTokens: 50 },
+        }),
+        event(2, "context.usage.updated", {
+          usage: { inputTokens: 500, outputTokens: 80, totalTokens: 580, source: "provider", cacheReadInputTokens: 200, cacheCreationInputTokens: 100 },
+        }),
+      ],
+    });
+    const ledger = buildAgenticEfficiencyLedger(run, 1000);
+    expect(ledger.cacheHitTokens).toBe(500);
+    expect(ledger.cacheMissTokens).toBe(150);
+    expect(ledger.cacheHitRatio).toBeCloseTo(500 / 650, 4);
+    expect(ledger.cacheDataAvailable).toBe(true);
+  });
+
+  it("returns cacheDataAvailable=false when no cache fields present", () => {
+    const run = snapshot({
+      events: [
+        event(0, "run.started"),
+        event(1, "context.usage.updated", {
+          usage: { inputTokens: 500, outputTokens: 100, totalTokens: 600, source: "provider" },
+        }),
+      ],
+    });
+    const ledger = buildAgenticEfficiencyLedger(run, 1000);
+    expect(ledger.cacheHitTokens).toBe(0);
+    expect(ledger.cacheMissTokens).toBe(0);
+    expect(ledger.cacheHitRatio).toBe(0);
+    expect(ledger.cacheDataAvailable).toBe(false);
+  });
+
+  it("returns cacheDataAvailable=false with zero events", () => {
+    const run = snapshot({ events: [event(0, "run.started")] });
+    const ledger = buildAgenticEfficiencyLedger(run, 1000);
+    expect(ledger.cacheDataAvailable).toBe(false);
+    expect(ledger.cacheHitRatio).toBe(0);
+  });
+
   it("feeds evaluation observations and agentic cost metrics", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ora-efficiency-eval-"));
     const store = new LocalEvaluationStore(dir, () => BASE_TIME);
@@ -151,7 +225,7 @@ describe("agentic efficiency ledger", () => {
       objective: {
         kind: "cost",
         target: "run.output",
-        metrics: ["agentic_cost_score", "token_efficiency", "tool_efficiency", "coordination_overhead", "recovery_overhead"],
+        metrics: ["agentic_cost_score", "token_efficiency", "tool_efficiency", "coordination_overhead", "recovery_overhead", "kv_cache_hit_ratio"],
       },
       configs: [{
         id: "efficient",
@@ -185,7 +259,103 @@ describe("agentic efficiency ledger", () => {
       "tool_efficiency",
       "coordination_overhead",
       "recovery_overhead",
+      "kv_cache_hit_ratio",
     ]);
     expect(attempt.costUsd).toBe((attempt.observations.runtime as { efficiencyLedger: { estimatedCostUsd: number } }).efficiencyLedger.estimatedCostUsd);
+  });
+
+  it("scores kv_cache_hit_ratio >= 99% as passed with score 1.0", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ora-cache-99-"));
+    const store = new LocalEvaluationStore(dir, () => BASE_TIME);
+    const dataset = store.importDataset({
+      sourceFormat: "inline",
+      content: JSON.stringify([{ id: "case-99", prompt: "Multi-turn cache test", expected: "Done." }]),
+    });
+
+    const detail = await store.startRun({
+      datasetId: dataset.dataset.id,
+      profileId: "outcome",
+      objective: { kind: "cost", target: "run.output", metrics: ["kv_cache_hit_ratio"] },
+      configs: [{ id: "cfg", label: "Cfg", runConfig: { pattern: "orchestrator_subagent", modelRef: "local/smoke-model" } }],
+    }, async () => snapshot({
+      events: [
+        event(0, "run.started"),
+        event(1, "node.updated", { state: "running_model" }),
+        event(2, "context.usage.updated", {
+          usage: { inputTokens: 10000, outputTokens: 200, totalTokens: 10200, source: "provider", promptCacheHitTokens: 9900, promptCacheMissTokens: 100 },
+        }),
+        event(3, "run.done"),
+      ],
+      output: "Done.",
+    }));
+
+    const cacheScore = detail.attempts[0]!.metricScores.find(s => s.metricId === "kv_cache_hit_ratio")!;
+    expect(cacheScore.score).toBe(1.0);
+    expect(cacheScore.passed).toBe(true);
+    expect(cacheScore.details).toMatchObject({ cacheHitRatio: 0.99, cacheDataAvailable: true });
+  });
+
+  it("scores kv_cache_hit_ratio < 99% as failed with failure tag", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ora-cache-low-"));
+    const store = new LocalEvaluationStore(dir, () => BASE_TIME);
+    const dataset = store.importDataset({
+      sourceFormat: "inline",
+      content: JSON.stringify([{ id: "case-low", prompt: "Low cache test", expected: "Done." }]),
+    });
+
+    const detail = await store.startRun({
+      datasetId: dataset.dataset.id,
+      profileId: "outcome",
+      objective: { kind: "cost", target: "run.output", metrics: ["kv_cache_hit_ratio"] },
+      configs: [{ id: "cfg", label: "Cfg", runConfig: { pattern: "orchestrator_subagent", modelRef: "local/smoke-model" } }],
+    }, async () => snapshot({
+      events: [
+        event(0, "run.started"),
+        event(1, "node.updated", { state: "running_model" }),
+        event(2, "context.usage.updated", {
+          usage: { inputTokens: 1000, outputTokens: 200, totalTokens: 1200, source: "provider", promptCacheHitTokens: 500, promptCacheMissTokens: 500 },
+        }),
+        event(3, "run.done"),
+      ],
+      output: "Done.",
+    }));
+
+    const cacheScore = detail.attempts[0]!.metricScores.find(s => s.metricId === "kv_cache_hit_ratio")!;
+    expect(cacheScore.score).toBeLessThan(1.0);
+    expect(cacheScore.passed).toBe(false);
+    expect(cacheScore.failureTags).toContain("low_kv_cache_hit_ratio");
+    expect(cacheScore.details).toMatchObject({ cacheHitRatio: 0.5, cacheDataAvailable: true });
+  });
+
+  it("scores kv_cache_hit_ratio with no cache data as neutral (score 0.5, passed)", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ora-cache-none-"));
+    const store = new LocalEvaluationStore(dir, () => BASE_TIME);
+    const dataset = store.importDataset({
+      sourceFormat: "inline",
+      content: JSON.stringify([{ id: "case-none", prompt: "No cache test", expected: "Done." }]),
+    });
+
+    const detail = await store.startRun({
+      datasetId: dataset.dataset.id,
+      profileId: "outcome",
+      objective: { kind: "cost", target: "run.output", metrics: ["kv_cache_hit_ratio"] },
+      configs: [{ id: "cfg", label: "Cfg", runConfig: { pattern: "orchestrator_subagent", modelRef: "local/smoke-model" } }],
+    }, async () => snapshot({
+      events: [
+        event(0, "run.started"),
+        event(1, "node.updated", { state: "running_model" }),
+        event(2, "context.usage.updated", {
+          usage: { inputTokens: 500, outputTokens: 100, totalTokens: 600, source: "provider" },
+        }),
+        event(3, "run.done"),
+      ],
+      output: "Done.",
+    }));
+
+    const cacheScore = detail.attempts[0]!.metricScores.find(s => s.metricId === "kv_cache_hit_ratio")!;
+    expect(cacheScore.score).toBe(0.5);
+    expect(cacheScore.passed).toBe(true);
+    expect(cacheScore.failureTags).toEqual([]);
+    expect(cacheScore.details).toMatchObject({ cacheDataAvailable: false });
   });
 });

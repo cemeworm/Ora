@@ -106,11 +106,29 @@ export function usageForModelResponse(
 }
 
 export function activeUsageForMessages(messages: readonly ModelMessage[], system?: string): ModelTokenUsage {
-  const totalTokens = estimateMessagesTokens(messages, system);
+  let inputTokens = estimateTextTokens(system);
+  let outputTokens = 0;
+  for (const message of messages) {
+    if (message.role === "assistant") {
+      outputTokens += 4 + estimateTextTokens(message.content);
+      if (message.reasoningContent) {
+        outputTokens += estimateTextTokens(message.reasoningContent);
+      }
+    } else {
+      inputTokens += 4 + estimateTextTokens(message.content);
+    }
+    if (message.toolName) {
+      inputTokens += estimateTextTokens(message.toolName);
+    }
+    for (const call of message.toolCalls ?? []) {
+      inputTokens += estimateTextTokens(call.toolId);
+      inputTokens += estimateTextTokens(JSON.stringify(call.args ?? {}));
+    }
+  }
   return ModelTokenUsageSchema.parse({
-    inputTokens: totalTokens,
-    outputTokens: 0,
-    totalTokens,
+    inputTokens,
+    outputTokens,
+    totalTokens: inputTokens + outputTokens,
     source: "estimate",
   });
 }
@@ -123,9 +141,7 @@ export function shouldCompactContext(args: {
 }): { shouldCompact: boolean; usage: ModelTokenUsage; limit?: number; contextWindow?: number } {
   const limit = resolveAutoCompactTokenLimit(args.provider);
   const contextWindow = resolvedContextWindow(args.provider);
-  const estimated = activeUsageForMessages(args.messages, args.system);
-  const current = normalizeContextState(args.contextState).activeTokenUsage;
-  const usage = estimated.totalTokens >= current.totalTokens ? estimated : current;
+  const usage = activeUsageForMessages(args.messages, args.system);
   return {
     shouldCompact: limit !== undefined && usage.totalTokens >= limit,
     usage,
@@ -169,7 +185,6 @@ export function compactedContextFromSummary(args: {
   const previous = normalizeContextState(args.previousState);
   const contextState = SessionContextStateSchema.parse({
     ...previous,
-    activeTokenUsage: usage,
     contextWindow: args.contextWindow,
     autoCompactTokenLimit: args.limit,
     compactedHistory: [entry],

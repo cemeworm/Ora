@@ -1,0 +1,60 @@
+{
+  "description": "KV Cache Real-World 行为快照数据集。不限制 toolIds，不限制 agent 行为，观察真实复杂场景下的 KV Cache 表现。用于趋势参考而非回归检测，与 Cause-Effect 数据集互补。所有多轮 case 预期产生 cacheDataAvailable=true。",
+  "cases": [
+    {
+      "id": "kv-rw-code-review-001",
+      "prompt": "请审查 apps/runtime/src/agentic-efficiency.ts 的代码质量。分析要点：\n1. 类型安全：是否存在可能的类型错误或缺失的类型守卫\n2. 错误处理：异常路径是否被妥善处理\n3. 性能考虑：是否存在不必要的重复计算或内存浪费\n4. 代码组织：函数职责是否单一，模块是否合理\n\n请逐函数分析，给出具体的代码行引用和改进建议。最后给出一个总体评分（1-10）。",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "not_equals", "path": "run.status", "value": "failed", "rationale": "代码审查应正常完成" },
+            { "type": "min", "path": "runtime.efficiencyLedger.modelCallCount", "value": 3, "rationale": "读取文件+逐函数分析+总体评分，应有至少3次模型调用，前缀应复用" },
+            { "type": "contains", "path": "run.outputText", "value": "agentic-efficiency", "rationale": "输出应提及被审查的文件" }
+          ]
+        }
+      },
+      "metadata": { "category": "code_review", "difficulty": "medium", "cacheExpected": true }
+    },
+    {
+      "id": "kv-rw-multi-search-001",
+      "prompt": "在 Ora 项目中搜索以下关键字，汇总每次搜索结果：\n1. 搜索 'cacheHitRatio' 的所有出现位置\n2. 搜索 'AgenticEfficiencyLedger' 的所有定义和引用\n3. 搜索 'context.usage.updated' 事件的所有 emit 点\n4. 搜索 'kv_cache_hit_ratio' 的所有引用\n\n请对每个搜索关键字分别输出：文件路径、行号、上下文摘要。最后汇总说明这些关键字之间的关联关系和在整个系统中的角色。",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "not_equals", "path": "run.status", "value": "failed", "rationale": "多次搜索应正常完成" },
+            { "type": "min", "path": "runtime.efficiencyLedger.modelCallCount", "value": 4, "rationale": "4次搜索+汇总分析，前缀多次复用应产生显著 cache hit" }
+          ]
+        }
+      },
+      "metadata": { "category": "multi_search", "difficulty": "medium", "cacheExpected": true }
+    },
+    {
+      "id": "kv-rw-fix-verify-001",
+      "prompt": "apps/runtime/src/agentic-efficiency.ts 的 buildAgenticEfficiencyLedger 函数可能包含除零风险或 NaN 传播路径。请：\n1. 读取该文件并定位 buildAgenticEfficiencyLedger 函数\n2. 仔细分析函数内的所有除法操作，检查是否存在分母为零的路径\n3. 再读取一次文件确认你没有遗漏任何除法操作\n4. 列出所有有风险的表达式，给出具体的修复建议（含代码 diff）\n5. 重新读取该函数确认你的修复建议覆盖了所有风险点\n\n请在每个步骤完成后明确告知进入了下一步。",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "not_equals", "path": "run.status", "value": "failed", "rationale": "分析修复应正常完成" },
+            { "type": "min", "path": "runtime.efficiencyLedger.modelCallCount", "value": 3, "rationale": "多次读取+分析+修复建议，前缀复用" },
+            { "type": "contains", "path": "run.outputText", "value": "buildAgenticEfficiencyLedger", "rationale": "输出应提及目标函数" }
+          ]
+        }
+      },
+      "metadata": { "category": "fix_verify", "difficulty": "hard", "cacheExpected": true }
+    },
+    {
+      "id": "kv-rw-compaction-001",
+      "prompt": "我想深入了解 Ora 项目的技术架构。请帮我做一个全面的架构分析报告，包含以下章节：\n\n1. Monorepo 结构分析：列出顶层 packages/apps，说明每个模块的职责和依赖关系\n2. Runtime 核心流程：从接收用户输入到返回最终响应的完整链路，包括 middleware、agent 调度、tool 执行\n3. 数据模型：packages/shared 中的核心 Schema 及其关系（Snapshot、Event、Ledger 等）\n4. Eval 系统架构：数据集 → Spec → Run → Observation → Scoring → Report 的全链路\n5. 桌面端架构：Tauri + React 的进程模型、IPC 通信、状态管理\n6. KV Cache 机制：从 provider 到 Trail 面板展示的完整数据管道\n\n每章需要引用具体的代码文件和行号作为证据。报告应不少于 2000 字。",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "not_equals", "path": "run.status", "value": "failed", "rationale": "架构分析应正常完成" },
+            { "type": "min", "path": "runtime.efficiencyLedger.modelCallCount", "value": 5, "rationale": "多章节分析需要大量模型调用，可能触发 compaction" },
+            { "type": "min", "path": "runtime.efficiencyLedger.totalTokens", "value": 2000, "rationale": "输出应不少于2000字" }
+          ]
+        }
+      },
+      "metadata": { "category": "compaction_scenario", "difficulty": "hard", "cacheExpected": true }
+    }
+  ]
+}

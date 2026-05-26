@@ -331,14 +331,15 @@ describe("runtime middleware chain", () => {
 
     expect(result.text).toContain("large context");
     expect(replaced).toBeUndefined();
+    // context.usage.updated is now emitted by the usage_tracking middleware,
+    // not by the compaction middleware.
     expect(emitted.map((event) => event.type)).toEqual([
-      "context.usage.updated",
       "context.compaction.skipped",
     ]);
     expect(emitted[0]).toMatchObject({
       agentId: "agent-1",
       nodeId: "plan-node-1",
-      payload: expect.objectContaining({ reason: "tool_follow_up", limit: 1 }),
+      payload: expect.objectContaining({ reason: "no_truncatable_candidates", limit: 1 }),
     });
   });
 

@@ -1,0 +1,57 @@
+{
+  "description": "KV Cache Cause-Effect 评测数据集。通过 RunConfig 限制 toolIds + 明确指令保证 agent 行为确定性，用于回归检测 cache 行为。所有多轮 case 应产生 cacheDataAvailable=true 的事件。",
+  "cases": [
+    {
+      "id": "kv-ce-continuous-read-001",
+      "prompt": "按顺序逐文件读取以下三个文件的内容，读取完每个文件后简要总结该文件的核心内容。最后在全部读完三个文件后，汇总说明这三个文件的共同点和差异。\n\n1. evaluation/datasets/token-efficiency-dataset.json\n2. evaluation/datasets/tool-reliability-dataset.json\n3. evaluation/datasets/safety-gate-dataset.json",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "not_equals", "path": "run.status", "value": "failed", "rationale": "应正常完成" },
+            { "type": "min", "path": "runtime.efficiencyLedger.modelCallCount", "value": 3, "rationale": "至少3次模型调用（读取3个文件+总结），前缀应被缓存" }
+          ]
+        }
+      },
+      "metadata": { "category": "continuous_read", "difficulty": "easy", "cacheExpected": true }
+    },
+    {
+      "id": "kv-ce-same-file-twice-001",
+      "prompt": "读取 evaluation/datasets/safety-gate-dataset.json 文件，告诉我它包含哪些 case 的 id。然后再次读取同一个文件，确认第一次读取没有遗漏任何 case id。给出两次读取的完整 case id 清单。",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "not_equals", "path": "run.status", "value": "failed" },
+            { "type": "min", "path": "runtime.efficiencyLedger.modelCallCount", "value": 2, "rationale": "至少2次模型调用，重复读取同一文件应产生 cache hit" }
+          ]
+        }
+      },
+      "metadata": { "category": "same_file_twice", "difficulty": "easy", "cacheExpected": true }
+    },
+    {
+      "id": "kv-ce-list-then-read-001",
+      "prompt": "列出 evaluation/datasets/ 目录下的所有 JSON 文件名，然后依次读取其中文件大小最小的 2 个文件，报告它们的内容概要。最后告诉我这 2 个文件中哪个包含更多 case。",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "not_equals", "path": "run.status", "value": "failed" },
+            { "type": "min", "path": "runtime.efficiencyLedger.modelCallCount", "value": 3, "rationale": "文件列表+2次读取+分析，应有至少3次模型调用" }
+          ]
+        }
+      },
+      "metadata": { "category": "list_then_read", "difficulty": "medium", "cacheExpected": true }
+    },
+    {
+      "id": "kv-ce-single-call-001",
+      "prompt": "什么是 KV Cache？用一句话解释。",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "not_equals", "path": "run.status", "value": "failed" },
+            { "type": "max", "path": "runtime.efficiencyLedger.totalTokens", "value": 500 }
+          ]
+        }
+      },
+      "metadata": { "category": "single_call_baseline", "difficulty": "easy", "cacheExpected": false }
+    }
+  ]
+}
