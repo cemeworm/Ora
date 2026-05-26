@@ -58,7 +58,9 @@ describe("plan steps tray open state", () => {
   it("uses a distinct floating shell class for the right overlay variant", () => {
     expect(planStepsTrayRootClassName("floating")).toBe(FLOATING_OVERLAY_PANEL_CLASS);
     expect(planStepsTrayRootClassName("floating")).toContain("rounded-3xl");
-    expect(planStepsTrayRootClassName("floating")).toContain("shadow-[0_2px_8px_rgba(23,23,23,0.05),0_12px_28px_rgba(23,23,23,0.06)]");
+    expect(planStepsTrayRootClassName("floating")).toContain("border-border/65");
+    expect(planStepsTrayRootClassName("floating")).toContain("bg-background/94");
+    expect(planStepsTrayRootClassName("floating")).toContain("shadow-[0_1px_2px_rgba(23,23,23,0.03),0_8px_20px_rgba(23,23,23,0.04)]");
     expect(planStepsTrayRootClassName("inline")).toContain("mb-2");
     expect(FLOATING_OVERLAY_PANEL_CLASS).toContain("p-2.5");
   });

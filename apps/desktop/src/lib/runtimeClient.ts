@@ -5862,7 +5862,11 @@ class LocalJsonRpcRuntime {
       hasProposedPlan: Boolean(proposedPlanDecision),
       noExistingDecision: normalized.planDecisions.length === 0,
     };
-    const shouldInject = planCheck.hasSessionId && planCheck.isSucceeded && planCheck.taskIntent === "plan" && planCheck.hasProposedPlan && planCheck.noExistingDecision;
+    const shouldInject = planCheck.hasSessionId
+      && planCheck.isSucceeded
+      && planCheck.taskIntent === "plan"
+      && planCheck.hasProposedPlan
+      && planCheck.noExistingDecision;
     if (shouldInject) {
       normalized = {
         ...normalized,

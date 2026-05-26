@@ -1,6 +1,5 @@
-import { Crosshair, X } from "lucide-react";
+import { Crosshair } from "lucide-react";
 import { TrailsTabs } from "./TrailsTabs";
-import { Button } from "./ui/button";
 import type {
   ActionRecord,
   AgentProfile,
@@ -17,7 +16,6 @@ import { cn } from "../lib/utils";
 
 interface TrailsDrawerProps {
   open: boolean;
-  onClose: () => void;
   actions: ActionRecord[];
   agents: AgentProfile[];
   artifacts: ArtifactRecord[];
@@ -41,7 +39,6 @@ interface TrailsDrawerProps {
 
 export function TrailsDrawer({
   open,
-  onClose,
   actions,
   agents,
   artifacts,
@@ -76,27 +73,14 @@ export function TrailsDrawer({
       )}
       aria-hidden={!open}
     >
-      <header className="flex h-12 shrink-0 items-center justify-between bg-card px-4">
-        <div className="flex min-w-0 items-center gap-2">
-          <Crosshair size={16} className="text-muted-foreground" />
-          <div className="min-w-0">
-            <h2 className="truncate text-sm font-medium">Trails</h2>
-            {subtitle ? (
-              <p className="truncate text-[11px] text-muted-foreground">
-                {subtitle}
-              </p>
-            ) : null}
-          </div>
+      {subtitle ? (
+        <div className="flex shrink-0 items-center gap-2 border-b border-border/50 bg-card/50 px-4 py-2.5">
+          <Crosshair size={14} className="text-muted-foreground shrink-0" />
+          <p className="truncate text-[12px] font-medium text-muted-foreground">
+            {subtitle}
+          </p>
         </div>
-        <Button
-          onClick={onClose}
-          variant="ghost"
-          size="icon-sm"
-          title="Close trails"
-        >
-          <X size={16} />
-        </Button>
-      </header>
+      ) : null}
 
       <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-3">
         {activeSnapshot ? (

@@ -21,7 +21,7 @@ interface PlanStepsTrayProps {
 }
 
 export const FLOATING_OVERLAY_PANEL_CLASS =
-  "rounded-3xl border border-border/70 bg-background/92 p-2.5 shadow-[0_2px_8px_rgba(23,23,23,0.05),0_12px_28px_rgba(23,23,23,0.06)] backdrop-blur-md";
+  "rounded-3xl border border-border/65 bg-background/94 p-2.5 shadow-[0_1px_2px_rgba(23,23,23,0.03),0_8px_20px_rgba(23,23,23,0.04)] backdrop-blur-md";
 export const FLOATING_OVERLAY_ICON_PLATE_CLASS =
   "flex h-8 w-8 items-center justify-center rounded-2xl bg-muted/50 text-foreground";
 export const FLOATING_OVERLAY_CARD_CLASS =

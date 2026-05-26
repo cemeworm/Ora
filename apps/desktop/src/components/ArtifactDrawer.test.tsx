@@ -27,7 +27,6 @@ describe("ArtifactDrawer", () => {
             afterContent: "<!doctype html><html><body><h1>Light Fox</h1><script>window.__ready = true;</script></body></html>",
           },
         })}
-        onClose={() => undefined}
       />,
     );
 
@@ -45,7 +44,6 @@ describe("ArtifactDrawer", () => {
           label: "report.html",
           payload: "<html><body><main>Inline report</main></body></html>",
         })}
-        onClose={() => undefined}
       />,
     );
 
@@ -67,7 +65,6 @@ describe("ArtifactDrawer", () => {
             afterContent: "export const answer = 42;",
           },
         })}
-        onClose={() => undefined}
       />,
     );
 
@@ -83,7 +80,6 @@ describe("ArtifactDrawer", () => {
           id: "artifact-sandbox-html",
           payload: "<html><body>Sandboxed</body></html>",
         })}
-        onClose={() => undefined}
       />,
     );
 

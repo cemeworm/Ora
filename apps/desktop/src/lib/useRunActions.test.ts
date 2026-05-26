@@ -1,5 +1,10 @@
-import { describe, expect, it } from "vitest";
+// @vitest-environment jsdom
+
+import { act, createElement, useEffect } from "react";
+import { createRoot } from "react-dom/client";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { initialWorkbenchState, type WorkbenchState } from "./state";
+import { USER_RESUMED_MESSAGE, type OraSessionDetail, type OraSessionSummary, type OraStateSnapshot } from "./runtimeClient";
 import {
   buildClarificationSubmissionPrompt,
   buildDesktopRunContext,
@@ -13,10 +18,357 @@ import {
   shouldEnableClarificationPreflight,
   stableViewModelCacheKey,
   toolIdsForRun,
+  useRunActions,
 } from "./useRunActions";
-import type { OraSessionSummary, OraStateSnapshot } from "./runtimeClient";
+
+const runtimeHarness = vi.hoisted(() => ({
+  client: undefined as unknown as ReturnType<typeof createRuntimeClientMock> | undefined,
+  state: undefined as WorkbenchState | undefined,
+  dispatch: vi.fn(),
+  actions: undefined as ReturnType<typeof useRunActions>["actions"] | undefined,
+}));
+
+vi.mock("./runtimeClient", async () => {
+  const actual = await vi.importActual<typeof import("./runtimeClient")>("./runtimeClient");
+  return {
+    ...actual,
+    getSharedRuntimeClient: () => {
+      if (!runtimeHarness.client) {
+        throw new Error("Test runtime client not configured.");
+      }
+      return runtimeHarness.client;
+    },
+  };
+});
+
+vi.mock("./state", async () => {
+  const actual = await vi.importActual<typeof import("./state")>("./state");
+  return {
+    ...actual,
+    useWorkbench: () => {
+      if (!runtimeHarness.state) {
+        throw new Error("Test workbench state not configured.");
+      }
+      return {
+        state: runtimeHarness.state,
+        dispatch: runtimeHarness.dispatch,
+      };
+    },
+  };
+});
+
+type RuntimeClientMock = ReturnType<typeof createRuntimeClientMock>;
+
+function createRuntimeClientMock() {
+  const planRunSnapshot = planDecisionSnapshot();
+  const acceptedSessionDetail = sessionDetail(planRunSnapshot);
+  let currentSnapshot = planRunSnapshot;
+  let currentSessionDetail = acceptedSessionDetail;
+  let nextRunId = "run-implementation";
+  return {
+    resolvePlanDecision: vi.fn(async () => {
+      currentSessionDetail = sessionDetail({
+        ...currentSnapshot,
+        planDecisions: currentSnapshot.planDecisions.map((decision) =>
+          decision.id === "decision-1"
+            ? { ...decision, status: "accepted" as const, resolvedAt: 1_700_000_000_100 }
+            : decision,
+        ),
+        updatedAt: 1_700_000_000_100,
+      });
+      return currentSessionDetail;
+    }),
+    startStreamingRun: vi.fn(async (input: { prompt: string }, config: { metadata?: Record<string, unknown> }, sessionId?: string) => {
+      currentSnapshot = implementationSnapshot({
+        runId: nextRunId,
+        sessionId: sessionId ?? planRunSnapshot.sessionId!,
+        prompt: input.prompt,
+        acceptedPlanMetadata: config.metadata,
+      });
+      currentSessionDetail = sessionDetail(currentSnapshot);
+      nextRunId = "run-implementation-2";
+      return {
+        runId: currentSnapshot.runId,
+        sessionId: currentSnapshot.sessionId,
+        turnIndex: currentSnapshot.turnIndex,
+        status: currentSnapshot.status,
+        pattern: currentSnapshot.pattern,
+        modeId: currentSnapshot.modeId,
+        startedAt: currentSnapshot.input.createdAt ?? currentSnapshot.updatedAt,
+      };
+    }),
+    acceptPlanDecisionAndResume: vi.fn(),
+    getRunState: vi.fn(async () => currentSnapshot),
+    listProjects: vi.fn(async () => []),
+    listSessions: vi.fn(async () => [currentSessionDetail.session]),
+    getSession: vi.fn(async () => currentSessionDetail),
+    getHealth: vi.fn(() => undefined),
+  };
+}
+
+function planDecisionSnapshot(): OraStateSnapshot {
+  return {
+    runId: "run-plan",
+    sessionId: "session-plan",
+    turnIndex: 1,
+    status: "succeeded",
+    pattern: "orchestrator_subagent",
+    modeId: "single_agent",
+    input: { prompt: "Return a proposed plan.", createdAt: 1_700_000_000_000, context: {} },
+    config: {
+      modeId: "single_agent",
+      pattern: "orchestrator_subagent",
+      modeSelection: "manual",
+      profileIds: ["solo_agent"],
+      skillIds: [],
+      toolIds: [],
+      providerId: "provider-1",
+      modelRef: "provider-model",
+      approvalMode: "high_risk_only",
+      patternOptions: {},
+      metadata: { taskIntent: "plan" },
+      deterministicSeed: "plan-test",
+    },
+    topology: { nodes: [], edges: [] },
+    profiles: [],
+    memory: [],
+    plan: [],
+    planList: [],
+    todos: [],
+    actions: [],
+    toolCalls: [],
+    continuation: { frames: [] },
+    planDecisions: [{
+      id: "decision-1",
+      runId: "run-plan",
+      sessionId: "session-plan",
+      status: "pending",
+      planContent: "## Runtime status plan\n1. Implement the accepted plan.\n2. Preserve session context.",
+      createdAt: 1_700_000_000_050,
+    }],
+    events: [],
+    checkpoints: [],
+    artifacts: [],
+    activeAgents: [],
+    queueSummary: {},
+    sharedStateSummary: {},
+    busStats: {},
+    pendingClarifications: [],
+    pendingApprovals: [],
+    attention: {
+      kind: "needs_plan_decision",
+      blocking: true,
+      sourceRunId: "run-plan",
+      reason: "plan_decision_required",
+      planDecisionId: "decision-1",
+      pendingActionIds: [],
+      pendingToolCallIds: [],
+      pendingClarificationIds: [],
+    },
+    updatedAt: 1_700_000_000_050,
+  } as unknown as OraStateSnapshot;
+}
+
+function implementationSnapshot(params: {
+  runId: string;
+  sessionId: string;
+  prompt: string;
+  acceptedPlanMetadata?: Record<string, unknown>;
+}): OraStateSnapshot {
+  return {
+    runId: params.runId,
+    sessionId: params.sessionId,
+    turnIndex: 2,
+    status: "running",
+    pattern: "generator_verifier",
+    modeId: "single_agent",
+    input: { prompt: params.prompt, createdAt: 1_700_000_000_200, context: {} },
+    config: {
+      modeId: "single_agent",
+      pattern: "generator_verifier",
+      modeSelection: "manual",
+      profileIds: ["solo_agent"],
+      skillIds: [],
+      toolIds: [],
+      providerId: "provider-1",
+      modelRef: "provider-model",
+      approvalMode: "high_risk_only",
+      patternOptions: {},
+      metadata: {
+        taskIntent: "implement",
+        ...(params.acceptedPlanMetadata ?? {}),
+      },
+      deterministicSeed: "implementation-test",
+    },
+    topology: { nodes: [], edges: [] },
+    profiles: [],
+    memory: [],
+    plan: [],
+    planList: [],
+    todos: [],
+    actions: [],
+    toolCalls: [],
+    continuation: { frames: [] },
+    planDecisions: [],
+    events: [],
+    checkpoints: [],
+    artifacts: [],
+    activeAgents: [],
+    queueSummary: {},
+    sharedStateSummary: {},
+    busStats: {},
+    pendingClarifications: [],
+    pendingApprovals: [],
+    attention: {
+      kind: "running",
+      blocking: false,
+      sourceRunId: params.runId,
+      pendingActionIds: [],
+      pendingToolCallIds: [],
+      pendingClarificationIds: [],
+    },
+    updatedAt: 1_700_000_000_200,
+  } as unknown as OraStateSnapshot;
+}
+
+function sessionDetail(snapshot: OraStateSnapshot): OraSessionDetail {
+  return {
+    session: {
+      sessionId: snapshot.sessionId!,
+      title: "Plan session",
+      status: snapshot.status,
+      latestRunId: snapshot.runId,
+      latestPattern: snapshot.pattern,
+      latestModeId: snapshot.modeId,
+      latestProviderId: snapshot.config.providerId,
+      latestModelRef: snapshot.config.modelRef,
+      turnCount: 1,
+      createdAt: 1_700_000_000_000,
+      updatedAt: snapshot.updatedAt,
+      attention: snapshot.attention,
+    },
+    turns: [{
+      runId: snapshot.runId,
+      sessionId: snapshot.sessionId!,
+      turnIndex: snapshot.turnIndex,
+      status: snapshot.status,
+      pattern: snapshot.pattern,
+      modeId: snapshot.modeId,
+      providerId: snapshot.config.providerId,
+      modelRef: snapshot.config.modelRef,
+      prompt: snapshot.input.prompt,
+      startedAt: snapshot.input.createdAt ?? snapshot.updatedAt,
+      updatedAt: snapshot.updatedAt,
+      eventCount: snapshot.events.length,
+      checkpointCount: snapshot.checkpoints.length,
+      artifactCount: snapshot.artifacts.length,
+      attention: snapshot.attention,
+    }],
+    transcript: [],
+    latestSnapshot: snapshot,
+  };
+}
+
+function renderElement(element: ReturnType<typeof createElement>) {
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  act(() => {
+    root.render(element);
+  });
+  return () => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  };
+}
+
+async function flushMicrotasks() {
+  await act(async () => {
+    await Promise.resolve();
+  });
+}
+
+function acceptedPlanWorkbenchState(): WorkbenchState {
+  const snapshot = planDecisionSnapshot();
+  return {
+    ...initialWorkbenchState,
+    selectedSessionId: snapshot.sessionId,
+    selectedTurnRunId: undefined,
+    selectedPattern: "orchestrator_subagent",
+    selectedModeId: "single_agent",
+    selectedModeSelection: "manual",
+    selectedProviderId: "provider-1",
+    promptText: "",
+    taskIntent: "plan",
+    sessions: [{
+      sessionId: snapshot.sessionId,
+      title: "Plan session",
+      status: snapshot.status,
+      latestRunId: snapshot.runId,
+      latestPattern: snapshot.pattern,
+      latestModeId: snapshot.modeId,
+      latestProviderId: snapshot.config.providerId,
+      latestModelRef: snapshot.config.modelRef,
+      turnCount: 1,
+      createdAt: 1_700_000_000_000,
+      updatedAt: snapshot.updatedAt,
+      attention: snapshot.attention,
+    }],
+    activeSessionDetail: sessionDetail(snapshot),
+    runLifecycle: {
+      stage: "settled",
+      runId: snapshot.runId,
+      sessionId: snapshot.sessionId,
+      prompt: snapshot.input.prompt,
+      createdAt: snapshot.input.createdAt ?? snapshot.updatedAt,
+      snapshot,
+    },
+    modes: [{
+      id: "single_agent",
+      family: "single_agent",
+      label: "Single Agent",
+      summary: "Plan implementation mode",
+      capabilityFlags: {
+        toolIds: [],
+        skillIds: [],
+      },
+    }] as never,
+    providerRegistry: {
+      providers: [{
+        id: "provider-1",
+        label: "Provider 1",
+        type: "local_smoke",
+        modelId: "provider-model",
+        capabilities: ["chat"],
+        headers: {},
+      }],
+    } as never,
+    patterns: [],
+  } as WorkbenchState;
+}
+
+function ActionsProbe({ onReady }: { onReady: (actions: ReturnType<typeof useRunActions>["actions"]) => void }) {
+  const { actions } = useRunActions();
+  useEffect(() => {
+    onReady(actions);
+  }, [actions, onReady]);
+  return null;
+}
 
 describe("desktop run actions", () => {
+  beforeEach(() => {
+    runtimeHarness.state = acceptedPlanWorkbenchState();
+    runtimeHarness.client = createRuntimeClientMock();
+    runtimeHarness.dispatch.mockReset();
+  });
+
+  afterEach(() => {
+    runtimeHarness.state = undefined;
+    runtimeHarness.client = undefined;
+  });
+
   it("keeps clarification preflight off by default for all task intents", () => {
     expect(shouldEnableClarificationPreflight("implement")).toBe(false);
     expect(shouldEnableClarificationPreflight("plan")).toBe(false);
@@ -328,6 +680,50 @@ describe("desktop run actions", () => {
     });
 
     expect(getInteractiveRunId(state)).toBe("run-gate");
+  });
+
+  it("starts a new implementation turn after accepting a plan decision", async () => {
+    const cleanup = renderElement(createElement(ActionsProbe, {
+      onReady: (actions) => {
+        runtimeHarness.actions = actions;
+      },
+    }));
+
+    await flushMicrotasks();
+    const actions = runtimeHarness.actions;
+    expect(actions).toBeTruthy();
+
+    vi.useFakeTimers();
+    await act(async () => {
+      const resultPromise = actions!.acceptPlanDecisionAndStartImplementation();
+      await vi.runAllTimersAsync();
+      await resultPromise;
+    });
+    vi.useRealTimers();
+
+    expect(runtimeHarness.client!.acceptPlanDecisionAndResume).not.toHaveBeenCalled();
+    expect(runtimeHarness.client!.resolvePlanDecision).toHaveBeenCalledWith({
+      sessionId: "session-plan",
+      runId: "run-plan",
+      decisionId: "decision-1",
+      status: "accepted",
+    });
+    expect(runtimeHarness.client!.startStreamingRun).toHaveBeenCalledTimes(1);
+    expect(runtimeHarness.client!.startStreamingRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prompt: USER_RESUMED_MESSAGE,
+        context: expect.objectContaining({ source: "desktop-workbench" }),
+      }),
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          taskIntent: "implement",
+          acceptedPlanDecisionId: "decision-1",
+          acceptedPlanSourceRunId: "run-plan",
+        }),
+      }),
+      "session-plan",
+    );
+    cleanup();
   });
 
   describe("getPlanDecisionGateAuthority", () => {

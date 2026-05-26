@@ -1,4 +1,4 @@
-export const CHAT_SURFACE_FRAME_WIDTH_CLASS = "w-full max-w-[54rem]";
+export const CHAT_SURFACE_FRAME_WIDTH_CLASS = "w-full max-w-[43.2rem]";
 export const CHAT_SURFACE_VIEWPORT_GUTTER_CLASS =
   "w-full px-4 md:px-6 xl:px-8";
 // Keep the message rail on the same geometric center as the composer by

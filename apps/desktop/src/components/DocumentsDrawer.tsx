@@ -1,4 +1,4 @@
-import { BookOpenText, ChevronDown, ChevronRight, Copy, FileCode2, FileImage, FileText, Folder, FolderOpen, MessageSquarePlus, RefreshCw, X } from "lucide-react";
+import { BookOpenText, ChevronDown, ChevronRight, Copy, FileCode2, FileImage, FileText, Folder, FolderOpen, MessageSquarePlus, RefreshCw } from "lucide-react";
 import { useEffect, useMemo, useState, type MouseEvent } from "react";
 import type { OraProjectFileEntry, OraProjectFilesResult, RuntimeClient } from "../lib/runtimeClient";
 import { cn } from "../lib/utils";
@@ -10,7 +10,6 @@ interface DocumentsDrawerProps {
   projectId: string;
   projectLabel: string;
   runtimeClient: RuntimeClient;
-  onClose: () => void;
   onOpenFile: (path: string) => void;
   onCopyPath: (absolutePath: string) => void;
   onAddFileToChat: (file: OraProjectFileEntry) => void;
@@ -30,7 +29,7 @@ interface ContextMenuState {
   node: FileTreeNode;
 }
 
-export function DocumentsDrawer({ projectId, projectLabel, runtimeClient, onClose, onOpenFile, onCopyPath, onAddFileToChat }: DocumentsDrawerProps) {
+export function DocumentsDrawer({ projectId, projectLabel, runtimeClient, onOpenFile, onCopyPath, onAddFileToChat }: DocumentsDrawerProps) {
   const [result, setResult] = useState<OraProjectFilesResult>();
   const [error, setError] = useState<string>();
   const [loading, setLoading] = useState(true);
@@ -108,25 +107,14 @@ export function DocumentsDrawer({ projectId, projectLabel, runtimeClient, onClos
 
   return (
     <aside className="flex h-full min-h-0 w-full min-w-0 flex-col bg-transparent">
-      <header className="flex h-12 shrink-0 items-center justify-between bg-card/74 px-4 backdrop-blur-sm">
-        <div className="flex min-w-0 items-center gap-2">
-          <BookOpenText size={16} className="text-muted-foreground" />
-          <div className="min-w-0">
-            <h2 className="truncate text-sm font-medium">Documents</h2>
-            <p data-i18n-skip="" className="truncate text-[11px] text-muted-foreground">{result?.rootPath ?? projectLabel}</p>
-          </div>
-        </div>
-        <div className="flex items-center gap-1">
-          <Button onClick={() => void loadFiles()} variant="ghost" size="icon-sm" title="Refresh documents" disabled={loading}>
-            <RefreshCw size={15} className={cn(loading && "animate-spin")} />
-          </Button>
-          <Button onClick={onClose} variant="ghost" size="icon-sm" title="Close documents">
-            <X size={16} />
-          </Button>
-        </div>
-      </header>
-
       <div className="min-h-0 flex-1 overflow-y-auto p-3">
+        <div className="mb-2 flex shrink-0 items-center gap-2 border-b border-border/50 pb-2">
+          <BookOpenText size={14} className="shrink-0 text-muted-foreground" />
+          <p data-i18n-skip="" className="min-w-0 flex-1 truncate text-[12px] font-medium text-muted-foreground">{result?.rootPath ?? projectLabel}</p>
+          <Button onClick={() => void loadFiles()} variant="ghost" size="icon-sm" title="Refresh documents" disabled={loading}>
+            <RefreshCw size={14} className={cn(loading && "animate-spin")} />
+          </Button>
+        </div>
         {loading && !result ? (
           <PanelMessage title="Loading documents" detail="Scanning the selected project folder." />
         ) : error ? (

@@ -291,7 +291,6 @@ export function RightWorkspacePane({
           {activePage?.kind === "trails" && activeSnapshot ? (
             <TrailsDrawer
               open
-              onClose={onCloseWorkspace}
               actions={[] as never}
               agents={[] as never}
               artifacts={activeSnapshot.artifacts.map(toArtifactRecord)}
@@ -313,13 +312,12 @@ export function RightWorkspacePane({
               projectId={selectedProject.projectId}
               projectLabel={selectedProject.label}
               runtimeClient={runtimeClient}
-              onClose={onCloseWorkspace}
               onOpenFile={() => undefined}
               onCopyPath={onCopyPath}
               onAddFileToChat={onAddFileToChat}
             />
           ) : activePage?.kind === "artifact" && selectedArtifact ? (
-            <ArtifactDrawer artifact={selectedArtifact} onClose={onCloseWorkspace} />
+            <ArtifactDrawer artifact={selectedArtifact} />
           ) : activePage?.kind === "child_session" ? (
             <ChildSessionWorkspacePage
               detail={activeChildSessionDetail}

@@ -8,13 +8,9 @@ import {
   CHAT_VIEW_COLLABORATION_PANEL_CLASS,
   CHAT_VIEW_OVERLAY_PANEL_CLASS,
   CHAT_VIEW_CONTENT_ROW_CLASS,
-  CHAT_VIEW_CONTENT_ROW_DEFAULT_LAYOUT_CLASS,
-  CHAT_VIEW_DESKTOP_DOCKED_CONTENT_ROW_CLASS,
-  CHAT_VIEW_DESKTOP_DOCKED_RAIL_CLASS,
   CHAT_VIEW_DESKTOP_FLOATING_STACK_CLASS,
   CHAT_VIEW_DESKTOP_OVERLAY_MIN_CONTENT_ROW_WIDTH,
   CHAT_VIEW_DESKTOP_OVERLAY_RAIL_CLASS,
-  CHAT_VIEW_DESKTOP_OVERLAY_STACK_CLASS,
   CHAT_VIEW_MAIN_CLASS,
   CHAT_VIEW_MESSAGES_PANEL_CLASS,
   CHAT_VIEW_ROOT_CLASS,
@@ -636,20 +632,19 @@ describe("chat view collaboration overlay visibility", () => {
 
   it("anchors the desktop overlay rail near the content area's top-right edge", () => {
     expect(CHAT_VIEW_DESKTOP_OVERLAY_RAIL_CLASS).toContain("absolute");
-    expect(CHAT_VIEW_DESKTOP_OVERLAY_RAIL_CLASS).toContain("right-6");
-    expect(CHAT_VIEW_DESKTOP_OVERLAY_RAIL_CLASS).toContain("top-5");
+    expect(CHAT_VIEW_DESKTOP_OVERLAY_RAIL_CLASS).toContain("right-8");
+    expect(CHAT_VIEW_DESKTOP_OVERLAY_RAIL_CLASS).toContain("top-7");
     expect(CHAT_VIEW_DESKTOP_OVERLAY_RAIL_CLASS).toContain("hidden");
     expect(CHAT_VIEW_DESKTOP_OVERLAY_RAIL_CLASS).toContain("lg:block");
-    expect(CHAT_VIEW_DESKTOP_OVERLAY_RAIL_CLASS).toContain("xl:right-8");
-    expect(CHAT_VIEW_DESKTOP_OVERLAY_RAIL_CLASS).toContain("xl:top-6");
+    expect(CHAT_VIEW_DESKTOP_OVERLAY_RAIL_CLASS).toContain("xl:right-10");
+    expect(CHAT_VIEW_DESKTOP_OVERLAY_RAIL_CLASS).toContain("xl:top-8");
   });
 
   it("keeps the desktop overlay stack interactive with a bounded floating width", () => {
-    expect(CHAT_VIEW_DESKTOP_OVERLAY_STACK_CLASS).toContain("pointer-events-auto");
-    expect(CHAT_VIEW_DESKTOP_OVERLAY_STACK_CLASS).toContain("flex");
-    expect(CHAT_VIEW_DESKTOP_OVERLAY_STACK_CLASS).toContain("gap-2.5");
-    expect(CHAT_VIEW_DESKTOP_OVERLAY_STACK_CLASS).toContain("w-full");
-    expect(CHAT_VIEW_DESKTOP_FLOATING_STACK_CLASS).toContain("w-[min(20rem,calc(100vw-6.5rem))]");
+    expect(CHAT_VIEW_DESKTOP_FLOATING_STACK_CLASS).toContain("pointer-events-auto");
+    expect(CHAT_VIEW_DESKTOP_FLOATING_STACK_CLASS).toContain("flex");
+    expect(CHAT_VIEW_DESKTOP_FLOATING_STACK_CLASS).toContain("gap-2.5");
+    expect(CHAT_VIEW_DESKTOP_FLOATING_STACK_CLASS).toContain("w-[min(20rem,calc(100vw-8.5rem))]");
   });
 
   it("uses a single unified floating shell for the right overlay rail", () => {
@@ -661,19 +656,10 @@ describe("chat view collaboration overlay visibility", () => {
     expect(CHAT_VIEW_COLLABORATION_DETAIL_CLASS).toContain("max-h-[min(72vh,40rem)]");
   });
 
-  it("anchors the docked sidebar into the desktop content row while preserving the default flex layout fallback", () => {
+  it("keeps the desktop content row on a single stacked layout while the floating overlay remains absolute", () => {
     expect(CHAT_VIEW_CONTENT_ROW_CLASS).toContain("overflow-hidden");
-    expect(CHAT_VIEW_CONTENT_ROW_DEFAULT_LAYOUT_CLASS).toBe("flex");
-    expect(CHAT_VIEW_DESKTOP_DOCKED_CONTENT_ROW_CLASS).toContain("grid");
-    expect(CHAT_VIEW_DESKTOP_DOCKED_CONTENT_ROW_CLASS).toContain("lg:grid-cols-[minmax(0,1fr)_18.75rem]");
-    expect(CHAT_VIEW_DESKTOP_DOCKED_CONTENT_ROW_CLASS).toContain("xl:grid-cols-[minmax(0,1fr)_19.5rem]");
-    expect(CHAT_VIEW_DESKTOP_DOCKED_RAIL_CLASS).toContain("overflow-y-auto");
-  });
-
-  it("renders the docked desktop rail as an aside instead of an absolute overlay", () => {
-    const html = renderToStaticMarkup(
+    expect(renderToStaticMarkup(
       createElement(DesktopOverlayRail, {
-        layout: "docked",
         childSessions: [childSession("running-child", "running")],
         planSteps: [{ step: "整理结果", status: "pending" }],
         planSectionOpen: true,
@@ -684,11 +670,7 @@ describe("chat view collaboration overlay visibility", () => {
         onToggleChild: () => undefined,
         turnSnapshots: {},
       }),
-    );
-
-    expect(html).toContain("<aside");
-    expect(html).toContain(CHAT_VIEW_DESKTOP_DOCKED_RAIL_CLASS);
-    expect(html).not.toContain(CHAT_VIEW_DESKTOP_OVERLAY_RAIL_CLASS);
+    )).toContain(CHAT_VIEW_DESKTOP_OVERLAY_RAIL_CLASS);
   });
 
   it("renders the collaboration panel with the shared floating shell and softened child cards", () => {
@@ -954,7 +936,7 @@ describe("chat view layout classes", () => {
   });
 
   it("keeps the content row height-constrained so the message area can scroll", () => {
-    expect(CHAT_VIEW_CONTENT_ROW_CLASS).toContain("flex");
+    expect(CHAT_VIEW_CONTENT_ROW_CLASS).toContain("relative flex ");
     expect(CHAT_VIEW_CONTENT_ROW_CLASS).toContain("min-h-0");
     expect(CHAT_VIEW_CONTENT_ROW_CLASS).toContain("min-w-0");
     expect(CHAT_VIEW_CONTENT_ROW_CLASS).toContain("flex-1");

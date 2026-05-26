@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import fs from "node:fs";
-import { CODE_DEVELOPMENT_MODE_ID, DEBATE_MODE_ID, DEERFLOW_HARNESS_MODE_ID, MVP_MODES, MVP_PATTERNS, ORA_ROOT_AGENT_ID, ORA_ROOT_AGENT_LABEL, SINGLE_AGENT_MODE_ID, projectForkSettledSnapshot, projectForkVisibleAssistantText } from "@cemeworm/shared";
+import { CODE_DEVELOPMENT_MODE_ID, DEBATE_MODE_ID, MVP_MODES, MVP_PATTERNS, ORA_ROOT_AGENT_ID, ORA_ROOT_AGENT_LABEL, SINGLE_AGENT_MODE_ID, projectForkSettledSnapshot, projectForkVisibleAssistantText } from "@cemeworm/shared";
 import { mergeStateSnapshot } from "./state";
 import { adaptChatMessages, adaptPendingRunMessages, adaptRenderableChatMessages, buildWorkbenchViewModel, derivePresentedAssistantTurnFromSnapshot, isSessionProcessing } from "./viewModel";
 import type { OraSessionDetail, OraSessionSummary, OraStateSnapshot } from "./runtimeClient";
+
+const DEERFLOW_HARNESS_MODE_ID = "deerflow_harness";
 
 describe("desktop session view model", () => {
   it("freezes runtime timeline facts in shared projection and desktop timeline item formatting locally", () => {
@@ -4429,6 +4431,7 @@ describe("desktop session view model", () => {
       primarySurface: "timeline",
       showStandaloneBody: false,
     });
+    expect(assistant?.turn?.presentation?.visibleTimelineItems?.some((item) => item.kind === "status_group")).toBe(false);
     expect(assistant?.turn?.timelineItems).toContainEqual(expect.objectContaining({
       kind: "agent_message",
       content: finalVerdict,
@@ -6200,6 +6203,7 @@ describe("desktop session view model", () => {
 
     expect(assistant?.content).toBe("");
     expect(assistant?.turn?.presentation?.showStandaloneBody).toBe(false);
+    expect(assistant?.turn?.presentation?.visibleTimelineItems).toEqual([]);
     expect(timelineText).toContain("已委派 Research subagent，正在处理子任务。");
     expect(timelineText.match(/已委派 Research subagent，正在处理子任务。/g)).toHaveLength(1);
     expect(timelineText).toContain("Research subagent 已完成，结果已回流，父 Agent 正在整合。");

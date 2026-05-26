@@ -1262,13 +1262,14 @@ export function useRunActions() {
   async function startRunWithPrompt(options: {
     prompt: string;
     taskIntent?: WorkbenchState["taskIntent"];
+    clearPromptIfMatched?: boolean;
     extraContext?: Record<string, unknown>;
     extraMetadata?: Record<string, unknown>;
   }) {
     await startRunWithOptions({
       prompt: options.prompt,
       taskIntent: options.taskIntent,
-      clearPromptIfMatched: false,
+      clearPromptIfMatched: options.clearPromptIfMatched ?? false,
       extraContext: options.extraContext,
       extraMetadata: options.extraMetadata,
     });
@@ -1383,37 +1384,26 @@ export function useRunActions() {
         dispatch({ type: "SET_TASK_INTENT", taskIntent: currentTaskIntent });
         return true;
       }
-      flushSync(() => {
-        dispatch({
-          type: "BEGIN_RUN_RESUME",
-          runId: resumeRunId,
-          approvedActionIds: [],
-          resolvedClarificationIds: [],
-          planDecisionId: decisionId,
-          planDecisionStatus: status,
-          updatedAt: Date.now(),
-        });
+      const detail = await runtimeClient.resolvePlanDecision({ sessionId, runId: resumeRunId, decisionId, status });
+      dispatch({
+        type: "HYDRATE_SESSION",
+        projects: state.projects,
+        sessions: state.sessions,
+        detail,
+        feedback: "Plan accepted. Starting implementation turn.",
       });
-      await waitForPendingRunPaint();
-      const handle = await runtimeClient.acceptPlanDecisionAndResume({
-        sessionId,
-        runId: resumeRunId,
-        decisionId,
-        reason: USER_RESUMED_MESSAGE,
+      dispatch({ type: "SET_TASK_INTENT", taskIntent: "implement" });
+      dispatch({ type: "SET_PROMPT", text: USER_RESUMED_MESSAGE });
+      await startRunWithPrompt({
+        prompt: USER_RESUMED_MESSAGE,
+        taskIntent: "implement",
+        clearPromptIfMatched: true,
+        extraMetadata: {
+          acceptedPlanDecisionId: decisionId,
+          acceptedPlanSourceRunId: resumeRunId,
+        },
       });
-      if (handle.resumePhase === "resume_terminal" || handle.status === "failed") {
-        const snapshot = await runtimeClient.getRunState(handle.runId);
-        await refreshCurrentSession(
-          snapshot,
-          snapshot.error ?? `Plan accepted, but implementation could not start on ${snapshot.runId}.`,
-        );
-      } else {
-        dispatch({ type: "SET_BUSY_COMMAND", command: undefined });
-        dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: `Plan accepted. Waiting for implementation to start on ${handle.runId}.` });
-      }
-      if (handle.status !== "failed" && handle.resumePhase !== "resume_terminal") {
-        dispatch({ type: "SET_TASK_INTENT", taskIntent: "implement" });
-      }
+      dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: `Plan accepted. Started implementation turn for ${resumeRunId}.` });
       return true;
     } catch (error) {
       const feedback = error instanceof Error ? error.message : "Plan decision update failed.";

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { FileImage, FileJson, FileText, X } from "lucide-react";
+import { FileImage, FileJson, FileText } from "lucide-react";
 import { JsonTree } from "./JsonTree";
 import { MarkdownContent } from "./MarkdownContent";
 import { Button } from "./ui/button";
@@ -7,30 +7,25 @@ import type { ArtifactRecord } from "../types";
 
 interface ArtifactDrawerProps {
   artifact?: ArtifactRecord;
-  onClose: () => void;
 }
 
-export function ArtifactDrawer({ artifact, onClose }: ArtifactDrawerProps) {
+export function ArtifactDrawer({ artifact }: ArtifactDrawerProps) {
   return (
     <aside className="flex h-full min-h-0 w-full min-w-0 flex-col bg-transparent">
-      <header className="flex h-12 shrink-0 items-center justify-between bg-card/74 px-4 backdrop-blur-sm">
-        <div className="flex min-w-0 items-center gap-2">
-          <ArtifactKindIcon artifact={artifact} />
-          <div className="min-w-0">
-            <h2 className="truncate text-sm font-medium">Artifact</h2>
-            <p data-i18n-skip={artifact ? "" : undefined} className="truncate text-[11px] text-muted-foreground">
-              {artifact?.label ?? "No artifact selected"}
-            </p>
-          </div>
-        </div>
-        <Button onClick={onClose} variant="ghost" size="icon-sm" title="Close artifact">
-          <X size={16} />
-        </Button>
-      </header>
-
       <div className="flex min-h-0 flex-1 flex-col overflow-y-auto p-3">
         {artifact ? (
           <div data-i18n-skip="" className="flex min-h-0 flex-1 flex-col">
+            <div className="mb-2 flex shrink-0 items-center gap-2 border-b border-border/50 pb-2">
+              <ArtifactKindIcon artifact={artifact} />
+              <p className="min-w-0 truncate text-[12px] font-medium text-muted-foreground">
+                {artifact.label}
+              </p>
+              {artifact.mimeType ? (
+                <span className="shrink-0 text-[11px] text-muted-foreground/60">
+                  {artifact.mimeType}
+                </span>
+              ) : null}
+            </div>
             <ArtifactPreviewContent artifact={artifact} />
           </div>
         ) : (
