@@ -22,6 +22,7 @@ export const CODE_DEVELOPMENT_MODE_ID = "code_development" as const;
 export const CODE_AGENT_MODE_ID = "code_agent" as const;
 export const DEEP_RESEARCH_MODE_ID = "deep_research" as const;
 export const REVIEW_CRITIQUE_MODE_ID = "review_critique" as const;
+export const ORA_SELF_BUILDER_MODE_ID = "ora_self_builder" as const;
 export const ORA_ROOT_AGENT_ID = "ora" as const;
 export const ORA_ROOT_AGENT_LABEL = "Ora" as const;
 
