@@ -86,7 +86,7 @@ describe("runtime plan list completion guard", () => {
     );
   });
 
-  it("keeps looping when a model tries to finish with unfinished plan list steps", async () => {
+  it("does not auto-advance plan list from runtime lifecycle", async () => {
     const modeSpec = getModePreset(SINGLE_AGENT_MODE_ID)!;
     const definition = modeSpecToPatternDefinition(modeSpec);
 
@@ -122,38 +122,15 @@ describe("runtime plan list completion guard", () => {
     );
 
     expect(snapshot.status).toBe("succeeded");
-    expect(snapshot.planList).toEqual([
-      { id: "plan-step-1-inspect-current-behavior", step: "Inspect current behavior", status: "completed" },
-      { id: "plan-step-2-implement-guard", step: "Implement guard", status: "completed" },
-      { id: "plan-step-3-verify-regression", step: "Verify regression", status: "completed" },
-    ]);
+    expect(snapshot.planList).toEqual([]);
     const planListEvents = snapshot.events.filter((event) => event.type === "plan_list.updated");
-    expect(planListEvents.at(-1)?.payload).toMatchObject({ plan: snapshot.planList });
-    expect(planListEvents.length).toBeGreaterThan(0);
-    expect(planListEvents.every((event) => event.agentId === ORA_ROOT_AGENT_ID)).toBe(true);
-    expect(planListEvents.every((event) => typeof event.nodeId === "string" && event.nodeId.length > 0)).toBe(true);
+    expect(planListEvents).toEqual([]);
     expect(snapshot.events.map((event) => event.seq)).toEqual(snapshot.events.map((_, index) => index));
-    const checkpoint = snapshot.checkpoints[0];
-    expect(checkpoint).toBeDefined();
-    const checkpointEvent = snapshot.events.find((event) => event.type === "checkpoint.created");
-    expect(checkpointEvent).toBeDefined();
-    expect(checkpoint?.eventSeq).toBe(checkpointEvent?.seq);
-    expect(snapshot.events).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          type: "task.progress",
-          payload: expect.objectContaining({
-            source: "runtime_status",
-            trigger: "plan_list.incomplete",
-          }),
-        }),
-      ]),
-    );
     expect(capturedRequests.some((request) =>
       request.messages.some((message) =>
         message.content.includes("The current plan list is not complete yet"),
       ),
-    )).toBe(true);
+    )).toBe(false);
   });
 });
 

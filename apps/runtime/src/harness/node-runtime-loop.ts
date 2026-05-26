@@ -535,57 +535,6 @@ export function buildReportingReadContextSurfaceFollowUp(): string {
   return "[Read Context Policy] For summary/report/week-update requests, first inspect high-signal project artifacts such as docs/, CHANGELOG, release notes, or release metadata. Use workspace-relative file paths, not absolute paths. For discovery, prefer targeted file.glob/file.grep calls over broad file.list on the workspace root (for example, file.glob with patterns like CHANGELOG*, docs/**/*.md, or *release*.json). Prioritize concrete release metadata files when they already exist in the root, such as release.json or latest.json, before broad docs summaries. Only use file.read on a concrete file path such as release.json, latest.json, or docs/weekly-update.md, and do not attach pattern to file.read. Do not start with broad tasks/ archive sweeps; only read 1-2 recent task journals after those higher-signal sources prove insufficient.";
 }
 
-const NODE_RUNTIME_HARD_TIMEOUT_MULTIPLIER = 6;
-
-class NodeRuntimeTimeoutError extends Error {
-  constructor(
-    public readonly kind: "idle" | "hard",
-    public readonly timeoutMs: number,
-    public readonly state?: NodeRuntimeLoopState,
-  ) {
-    super(
-      kind === "idle"
-        ? `Node idle timeout after ${timeoutMs}ms without progress.`
-        : `Node hard timeout after ${timeoutMs}ms.`,
-    );
-    this.name = "NodeRuntimeTimeoutError";
-  }
-}
-
-function shouldTrackRuntimeActivity(
-  type: OraEventEnvelope["type"],
-  payload: unknown,
-): boolean {
-  switch (type) {
-    case "message.delta":
-    case "token.delta":
-    case "tool.called":
-    case "action.updated":
-    case "task.started":
-    case "task.progress":
-    case "task.completed":
-    case "task.failed":
-    case "artifact.exported":
-    case "artifact.degraded":
-      return true;
-    case "node.updated": {
-      if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-        return false;
-      }
-      const state = (payload as { state?: unknown }).state;
-      return typeof state === "string" && state !== "cache_diagnostics";
-    }
-    default:
-      return false;
-  }
-}
-
-function shouldTrackProviderStreamActivity(
-  event: Pick<ModelStreamEvent, "kind">,
-): boolean {
-  return event.kind === "sse_frame" || event.kind === "fallback_response" || event.kind === "local_stream_started";
-}
-
 function mergeAbortSignals(
   ...signals: Array<AbortSignal | undefined>
 ): AbortSignal | undefined {
@@ -623,10 +572,7 @@ export interface RunNodeRuntimeLoopParams {
   cacheDiagnosticsContext?: ModelRequest["cacheDiagnosticsContext"];
   responseFormat?: ModelRequest["responseFormat"];
   toolIds: string[];
-  /** Optional per-node timeout in milliseconds. Interpreted as an idle timeout:
-   *  the node is allowed to run longer than this as long as it continues to
-   *  produce meaningful progress. A longer hard-timeout fallback is derived
-   *  internally to prevent infinite hangs. */
+  /** Optional per-node timeout in milliseconds. Retained for compatibility with mode configs. */
   timeoutMs?: number;
   onForcedFinalProviderExhausted?: (error: unknown) => ModelResponse | undefined;
 }
@@ -990,21 +936,11 @@ export async function runNodeRuntimeLoop(
     streamProvider: deps.streamProvider,
   };
   let activeOperationAbortController: AbortController | undefined;
-  let recordWatchdogActivity = (_source: string): void => undefined;
-  let disposeNodeWatchdog = (): void => undefined;
   const emitNodeRuntimeState: RunNodeRuntimeLoopDeps["emitNodeRuntimeState"] = (state, emitParams) => {
     rawEmitNodeRuntimeStateEvent(state, emitParams);
-    recordWatchdogActivity(`state:${state}`);
-    if (state === "completed" || state === "failed" || state === "interrupted") {
-      disposeNodeWatchdog();
-    }
   };
   const emit: RuntimeLoopEmit = (type, payload, extra) => {
-    const envelope = rawEmit(type, payload, extra);
-    if (shouldTrackRuntimeActivity(type, payload)) {
-      recordWatchdogActivity(`event:${type}`);
-    }
-    return envelope;
+    return rawEmit(type, payload, extra);
   };
   const input = { prompt: deps.inputPrompt };
   const lastPublicCommentaryFingerprintRef: { current?: string } = {};
@@ -1035,66 +971,6 @@ export async function runNodeRuntimeLoop(
       );
     },
   });
-  let nodeTimeoutError: NodeRuntimeTimeoutError | undefined;
-  const idleTimeoutMs =
-    typeof params.timeoutMs === "number" && Number.isFinite(params.timeoutMs) && params.timeoutMs > 0
-      ? params.timeoutMs
-      : undefined;
-  const hardTimeoutMs = idleTimeoutMs ? idleTimeoutMs * NODE_RUNTIME_HARD_TIMEOUT_MULTIPLIER : undefined;
-  if (idleTimeoutMs && hardTimeoutMs) {
-    let idleTimeoutHandle: ReturnType<typeof setTimeout> | undefined;
-    let hardTimeoutHandle: ReturnType<typeof setTimeout> | undefined;
-    let disposed = false;
-    const triggerTimeout = (kind: "idle" | "hard", timeoutMs: number) => {
-      if (disposed || nodeTimeoutError) {
-        return;
-      }
-      nodeTimeoutError = new NodeRuntimeTimeoutError(kind, timeoutMs, nodeLoopController.state);
-      activeOperationAbortController?.abort(nodeTimeoutError);
-      const currentState = nodeLoopController.state;
-      if (currentState === "running_model" || currentState === "tool_running" || currentState === "failed") {
-        nodeLoopController.emitRecoveryState("degraded", {
-          agentId: params.agentId,
-          title: params.title,
-          reason: kind === "idle" ? "node_idle_timeout" : "node_hard_timeout",
-          detail: nodeTimeoutError.message,
-        });
-      }
-    };
-    const armIdleTimeout = () => {
-      if (disposed || nodeTimeoutError) {
-        return;
-      }
-      if (idleTimeoutHandle) {
-        clearTimeout(idleTimeoutHandle);
-      }
-      idleTimeoutHandle = setTimeout(() => {
-        triggerTimeout("idle", idleTimeoutMs);
-      }, idleTimeoutMs);
-    };
-    recordWatchdogActivity = () => {
-      if (disposed || nodeTimeoutError) {
-        return;
-      }
-      armIdleTimeout();
-    };
-    disposeNodeWatchdog = () => {
-      disposed = true;
-      if (idleTimeoutHandle) {
-        clearTimeout(idleTimeoutHandle);
-        idleTimeoutHandle = undefined;
-      }
-      if (hardTimeoutHandle) {
-        clearTimeout(hardTimeoutHandle);
-        hardTimeoutHandle = undefined;
-      }
-    };
-    hardTimeoutHandle = setTimeout(() => {
-      triggerTimeout("hard", hardTimeoutMs);
-    }, hardTimeoutMs);
-    armIdleTimeout();
-  }
-
   const emitNodeRuntimeStateDirect = nodeLoopController.emit;
   const completionScope = { agentId: params.agentId, nodeId: params.nodeId };
   const enabledTools = runtimeToolExecutor.enabledToolIds(params.toolIds);
@@ -1123,7 +999,6 @@ export async function runNodeRuntimeLoop(
           text: string;
           raw?: unknown;
         }) => {
-          recordWatchdogActivity("stream:text_delta");
           const visibility = isInternalProviderAssistantText(chunk.text)
             ? "internal"
             : undefined;
@@ -1142,9 +1017,6 @@ export async function runNodeRuntimeLoop(
           );
         },
         onStreamEvent: (event: ModelStreamEvent) => {
-          if (shouldTrackProviderStreamActivity(event)) {
-            recordWatchdogActivity(`stream:${event.kind}`);
-          }
           if (!shouldEmitProviderStreamEvent(event, emittedProviderStreamFrameForInvocation)) {
             return;
           }
@@ -1195,17 +1067,19 @@ export async function runNodeRuntimeLoop(
     options: { emitRetryModelState: boolean },
   ): Promise<ModelResponse> => {
     const attemptScope = nextAssistantMessageId();
+    let currentRequest = request;
     let retryCount = 0;
     while (true) {
       try {
-        const cacheDiagnostics = buildModelRequestCacheDiagnostics(request);
+        currentRequest = injectPendingExternalInputs(currentRequest);
+        const cacheDiagnostics = buildModelRequestCacheDiagnostics(currentRequest);
         const cacheDelta = cacheDiagnosticDelta(lastRequestCacheDiagnostics, cacheDiagnostics);
         emit(
           "node.updated",
           {
             state: "cache_diagnostics",
             title: params.title,
-            providerCache: request.providerCache,
+            providerCache: currentRequest.providerCache,
             cacheDiagnostics: {
               ...cacheDiagnostics,
               changedSincePreviousRequest: cacheDelta.changed,
@@ -1214,22 +1088,11 @@ export async function runNodeRuntimeLoop(
           },
           { agentId: params.agentId, nodeId: params.agentId },
         );
-        const response = await invokeProvider(config, request, streamCallbacks);
-        lastProviderRequestMessages = [...(request.messages ?? [])];
+        const response = await invokeProvider(config, currentRequest, streamCallbacks);
+        lastProviderRequestMessages = [...(currentRequest.messages ?? [])];
         lastRequestCacheDiagnostics = cacheDiagnostics;
         return response;
       } catch (error) {
-        if (nodeTimeoutError) {
-          const incident = classifyRecoveryError(nodeTimeoutError, {
-            surface: "node",
-            nodeId: params.nodeId,
-            agentId: params.agentId,
-            currentState: nodeTimeoutError.state,
-          });
-          const recoveryDecision = recoveryCoordinator.resolve(incident);
-          emitRecoveryDecision(incident, recoveryDecision);
-          throw new RecoveryExhaustedError(incident, recoveryDecision);
-        }
         retryCount += 1;
         const detail = error instanceof Error ? error.message : String(error);
         const incident = classifyRecoveryError(error, {
@@ -1260,12 +1123,35 @@ export async function runNodeRuntimeLoop(
     }
   };
 
+  const reconcilePendingExternalInputs = () => {
+    const pendingInputs = deps.drainPendingExternalInputs?.(params.agentId);
+    const externalInputMessage = pendingInputs
+      ? formatExternalInputMessage(pendingInputs)
+      : undefined;
+    return externalInputMessage;
+  };
+  const injectPendingExternalInputs = (request: ModelRequest): ModelRequest => {
+    const externalInputMessage = reconcilePendingExternalInputs();
+    if (!externalInputMessage) {
+      return request;
+    }
+    if (typeof request.prompt === "string" && request.prompt.trim().length > 0) {
+      return {
+        ...request,
+        prompt: `${request.prompt}\n\n${externalInputMessage}`,
+      };
+    }
+    return {
+      ...request,
+      messages: [...(request.messages ?? []), { role: "user", content: externalInputMessage }],
+    };
+  };
   const invokeModel = (
     request: ModelRequest,
     options: { emitRetryModelState?: boolean } = {},
   ) =>
     invokeRuntimeModelCall({
-      request: withAbortSignal(withStablePrefixCacheMetadata(requestWithPendingExternalInputs(request))),
+      request: withAbortSignal(withStablePrefixCacheMetadata(injectPendingExternalInputs(request))),
       context: middlewareContext,
       middlewares: runtimeMiddlewares,
       terminal: (nextRequest) => invokeProviderWithRecovery(nextRequest, {
@@ -1278,7 +1164,7 @@ export async function runNodeRuntimeLoop(
     reason: string,
   ) =>
     invokeRuntimeModelCall({
-      request: withAbortSignal(withFollowUpCacheMetadata(requestWithPendingExternalInputs(request), latestResponse, lastProviderRequestMessages)),
+      request: withAbortSignal(withFollowUpCacheMetadata(injectPendingExternalInputs(request), latestResponse, lastProviderRequestMessages)),
       context: middlewareContext,
       middlewares: runtimeMiddlewares,
       terminal: (nextRequest) => invokeProviderWithRecovery(nextRequest, {
@@ -1327,25 +1213,6 @@ export async function runNodeRuntimeLoop(
       ].join("\n"));
     }
     return sections.length > 0 ? sections.join("\n\n") : undefined;
-  };
-  const requestWithPendingExternalInputs = (request: ModelRequest): ModelRequest => {
-    const pendingInputs = deps.drainPendingExternalInputs?.(params.agentId);
-    const externalInputMessage = pendingInputs
-      ? formatExternalInputMessage(pendingInputs)
-      : undefined;
-    if (!externalInputMessage) {
-      return request;
-    }
-    if (typeof request.prompt === "string" && request.prompt.trim().length > 0) {
-      return {
-        ...request,
-        prompt: `${request.prompt}\n\n${externalInputMessage}`,
-      };
-    }
-    return {
-      ...request,
-      messages: [...(request.messages ?? []), { role: "user", content: externalInputMessage }],
-    };
   };
   const emitForcedFinalProviderState: RunNodeRuntimeLoopDeps["emitNodeRuntimeState"] = (state, emitParams) => {
     if (state === "completed" || state === "failed") {

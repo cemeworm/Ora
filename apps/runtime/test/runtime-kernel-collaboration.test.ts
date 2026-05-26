@@ -66,4 +66,28 @@ describe("runtime kernel collaboration coordination", () => {
       partialResultChildIds: ["run-1:child-1"],
     });
   });
+
+  it("does not keep decisioned stalled partial children in the recoverable blocking set", () => {
+    expect(deriveParentCoordinationUpdate({
+      children: [
+        {
+          id: "run-1:child-1",
+          agentId: "child-1",
+          status: "running",
+          lifecyclePhase: "stalled",
+          resultAvailability: "partial",
+          resolutionStatus: "accepted_partial",
+          stallReason: "recovery_detected",
+          coordinationBarrier: "required",
+        },
+      ],
+      lastChildStatus: "running",
+    })).toMatchObject({
+      activeChildIds: [],
+      blockedByChildIds: [],
+      stalledChildIds: [],
+      recoverableChildIds: [],
+      partialResultChildIds: ["run-1:child-1"],
+    });
+  });
 });

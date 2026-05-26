@@ -330,8 +330,8 @@ describe("RightWorkspacePane", () => {
       root.render(
         createElement(RightWorkspacePane, {
           workspace: workspace({
-            pages: [page({ id: "trails:1", kind: "trails", title: "轨迹", targetRunId: "run-parent" })],
-            selectedPageId: "trails:1",
+            pages: [page({ id: "artifact:1", kind: "artifact", title: "Artifact", artifactId: "artifact-child-1" })],
+            selectedPageId: "artifact:1",
           }),
           runtimeClient: {
             getSession: vi.fn().mockResolvedValue(detail()),
@@ -740,5 +740,88 @@ describe("RightWorkspacePane", () => {
 
     expect(view.cacheDetail).toHaveBeenCalledWith(nextDetail);
     view.cleanup();
+  });
+
+  it("passes the child-session title when opening the latest turn in a new workspace tab", () => {
+    const onOpenChildSessionPage = vi.fn();
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        createElement(RightWorkspacePane, {
+          workspace: workspace(),
+          runtimeClient: {
+            getSession: vi.fn().mockResolvedValue(detail()),
+            getRunState: vi.fn().mockResolvedValue(snapshot()),
+          } as unknown as RuntimeClient,
+          selectedSession: session(),
+          selectedProject: {
+            projectId: "project-1",
+            label: "Ora",
+            rootPath: "/tmp/ora",
+            createdAt: 1_717_000_000_000,
+            updatedAt: 1_717_000_000_100,
+            sourceKind: "local_folder",
+            sessionCount: 1,
+          },
+          activeSnapshot: snapshot({ sessionId: "session-parent", runId: "run-parent" }),
+          busyCommand: undefined,
+          commandFeedback: "Ready",
+          checkpoints: [],
+          planItems: [],
+          runInteractionState: {
+            sourceRunId: "run-parent",
+            sourceSessionId: "session-parent",
+            authority: "active_snapshot",
+            snapshotSource: "live",
+            isProcessing: false,
+            canSubmit: true,
+            canStop: false,
+            canResume: false,
+            canRebuild: false,
+            gateKind: undefined,
+            status: "idle",
+          },
+          chatMessages: [] as ChatMessage[],
+          turnSnapshots: { "run-child": snapshot() },
+          sessionDetailsById: { "session-child": detail() },
+          onForkRun: vi.fn(),
+          onForkAndResumeRun: vi.fn(),
+          onReplaySelection: vi.fn(),
+          onResumeRun: vi.fn(),
+          onCancelRun: vi.fn(),
+          onCopyPath: vi.fn(),
+          onAddFileToChat: vi.fn(),
+          onOpenChildSessionPage,
+          onOpenWorkspacePage: vi.fn(),
+          onCloseWorkspace: vi.fn(),
+          onSelectPage: vi.fn(),
+          onClosePage: vi.fn(),
+          onCacheSessionDetail: vi.fn(),
+        }),
+      );
+    });
+
+    const button = Array.from(container.querySelectorAll("button")).find((entry) =>
+      entry.textContent?.includes("在新页签打开最新回合"),
+    );
+    expect(button).toBeTruthy();
+
+    act(() => {
+      button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onOpenChildSessionPage).toHaveBeenCalledWith(
+      "session-child",
+      "run-child",
+      "Builder Child Session",
+    );
+
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
   });
 });

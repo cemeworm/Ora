@@ -441,6 +441,7 @@ describe("runtime completion guards", () => {
         lifecyclePhase: "stalled",
         stallReason: "no_progress_timeout",
         resultAvailability: "partial",
+        resolutionStatus: "open",
       }],
     });
 
@@ -454,6 +455,23 @@ describe("runtime completion guards", () => {
       expect(result.detail).toContain("Research alpha");
       expect(result.detail).toContain("no_progress_timeout");
     }
+  });
+
+  it("allows completion once a stalled partial child has already been accepted by the parent", () => {
+    expect(stalledBackgroundWorkGuard({
+      actions: [],
+      planList: [],
+      toolCalls: [],
+      stalledBackgroundChildren: [{
+        id: "run-1:child-1",
+        agentId: "ora-sub-1",
+        label: "Research alpha",
+        lifecyclePhase: "stalled",
+        stallReason: "recovery_detected",
+        resultAvailability: "partial",
+        resolutionStatus: "accepted_partial",
+      }],
+    })).toEqual({ allowComplete: true });
   });
 });
 

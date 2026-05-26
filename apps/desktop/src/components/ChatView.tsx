@@ -1,7 +1,6 @@
 import { deriveSnapshotGateProjection, type ModeSelection } from "@cemeworm/shared";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Bot, ChevronDown } from "lucide-react";
-import { AssistantTurnCard } from "./AssistantTurnCard";
 import { ChatHeader } from "./ChatHeader";
 import { ChatMessages } from "./ChatMessages";
 import { ChatInput } from "./ChatInput";
@@ -74,10 +73,16 @@ export const CHAT_VIEW_COLLABORATION_ICON_PLATE_CLASS = cn(
   "bg-muted/40",
 );
 export const CHAT_VIEW_COLLABORATION_ITEM_CLASS = FLOATING_OVERLAY_CARD_CLASS;
-export const CHAT_VIEW_COLLABORATION_DETAIL_CLASS = FLOATING_OVERLAY_DETAIL_CLASS;
-export const CHAT_VIEW_DESKTOP_OVERLAY_MIN_CONTENT_ROW_WIDTH = 1272;
+export const CHAT_VIEW_DESKTOP_OVERLAY_IDEAL_CONTENT_ROW_WIDTH = 1272;
+export const CHAT_VIEW_DESKTOP_OVERLAY_MIN_CONTENT_ROW_WIDTH = 1140;
+export const CHAT_VIEW_DESKTOP_OVERLAY_MAX_SURFACE_SHIFT_PX =
+  CHAT_VIEW_DESKTOP_OVERLAY_IDEAL_CONTENT_ROW_WIDTH - CHAT_VIEW_DESKTOP_OVERLAY_MIN_CONTENT_ROW_WIDTH;
+export const CHAT_VIEW_DESKTOP_OVERLAY_SAFE_GAP_PX = 24;
+export const CHAT_VIEW_DESKTOP_OVERLAY_RIGHT_INSET_PX = 32;
+export const CHAT_VIEW_DESKTOP_OVERLAY_RIGHT_INSET_XL_PX = 40;
 const OVERLAY_CHILD_CARD_SUMMARY_MAX_CHARS = 280;
 const DESKTOP_FLOATING_OVERLAY_MEDIA_QUERY = "(min-width: 1024px)";
+const DESKTOP_FLOATING_OVERLAY_XL_MEDIA_QUERY = "(min-width: 1280px)";
 
 function matchesDesktopFloatingOverlayViewport() {
   return typeof window !== "undefined" &&
@@ -126,6 +131,11 @@ interface ChatViewProps {
   onInterruptRun: () => void;
   onReplaySelection: () => void;
   onResumeRun: () => void;
+  onOpenChildSessionPage: (
+    childSessionId: string,
+    targetRunId?: string,
+    title?: string,
+  ) => void;
   onAcceptPlanDecisionAndStartImplementation: () =>
     | void
     | boolean
@@ -313,13 +323,6 @@ export function shouldShowCollaborationOverlay(
   snapshot?: Pick<OraStateSnapshot, "childSessions">,
 ): boolean {
   return deriveVisibleCollaborationChildren(snapshot).length > 0;
-}
-
-export function toggleExpandedOverlayChildId(
-  expandedChildId: string | undefined,
-  childId: string,
-): string | undefined {
-  return expandedChildId === childId ? undefined : childId;
 }
 
 export function resolveOverlayChildSnapshot(
@@ -640,23 +643,6 @@ function isRecord(value: unknown): value is Record<string, any> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function deriveOverlayChildCardSummaryText({
-  child,
-  childTurnView,
-}: {
-  child: NonNullable<OraStateSnapshot["childSessions"]>[number];
-  childTurnView?: ReturnType<typeof derivePresentedAssistantTurnFromSnapshot>;
-}): string {
-  const liveContent = normalizeOverlayChildSummaryText(childTurnView?.content);
-  if (liveContent && isUsefulOverlayChildSummaryText(liveContent)) {
-    return liveContent;
-  }
-  return bestAvailableOverlayChildSummaryText([
-    child.lastMessage,
-    child.summary,
-  ]) ?? "正在等待子代理返回最新进展。";
-}
-
 function bestAvailableOverlayChildSummaryText(
   values: Array<string | undefined>,
 ): string | undefined {
@@ -745,6 +731,46 @@ export function canUseDesktopOverlayRail({
     contentRowWidth >= CHAT_VIEW_DESKTOP_OVERLAY_MIN_CONTENT_ROW_WIDTH;
 }
 
+export function deriveChatSurfaceShiftPx({
+  hasDesktopOverlayRail,
+  contentRowWidth,
+  railWidth,
+  surfaceFrameWidth,
+  railRightInsetPx,
+  safeGapPx,
+}: {
+  hasDesktopOverlayRail: boolean;
+  contentRowWidth: number | null;
+  railWidth?: number | null;
+  surfaceFrameWidth?: number | null;
+  railRightInsetPx?: number;
+  safeGapPx?: number;
+}) {
+  if (!hasDesktopOverlayRail || typeof contentRowWidth !== "number") {
+    return 0;
+  }
+  if (typeof railWidth === "number" && typeof surfaceFrameWidth === "number") {
+    const availableRightSpace = Math.max(
+      0,
+      (contentRowWidth - surfaceFrameWidth) / 2,
+    );
+    const requiredShift =
+      railWidth +
+      (railRightInsetPx ?? CHAT_VIEW_DESKTOP_OVERLAY_RIGHT_INSET_PX) +
+      (safeGapPx ?? CHAT_VIEW_DESKTOP_OVERLAY_SAFE_GAP_PX) -
+      availableRightSpace;
+    if (requiredShift <= 0) {
+      return 0;
+    }
+    return Math.min(Math.ceil(requiredShift), CHAT_VIEW_DESKTOP_OVERLAY_MAX_SURFACE_SHIFT_PX);
+  }
+  const overflowDelta = CHAT_VIEW_DESKTOP_OVERLAY_IDEAL_CONTENT_ROW_WIDTH - contentRowWidth;
+  if (overflowDelta <= 0) {
+    return 0;
+  }
+  return Math.min(overflowDelta, CHAT_VIEW_DESKTOP_OVERLAY_MAX_SURFACE_SHIFT_PX);
+}
+
 export function shouldShowDesktopOverlayRail({
   hasCollaborationOverlay,
   hasFloatingPlanSteps,
@@ -765,9 +791,11 @@ export function deriveChatSurfaceContentWidthClassName(
 }
 
 export function deriveChatSurfaceShiftClassName(
-  _hasDesktopOverlayRail: boolean,
+  hasDesktopOverlayRail: boolean,
 ): string {
-  return "";
+  return hasDesktopOverlayRail
+    ? "transition-transform duration-200 motion-reduce:transition-none"
+    : "";
 }
 
 export function ChatView({
@@ -790,6 +818,7 @@ export function ChatView({
   onClearSelectedCustomAgent,
   onInterruptRun,
   onResumeRun,
+  onOpenChildSessionPage,
   onAcceptPlanDecisionAndStartImplementation,
   onResolvePlanDecision,
   onCancelRun,
@@ -846,9 +875,19 @@ export function ChatView({
   const [isDesktopViewport, setIsDesktopViewport] = useState(
     matchesDesktopFloatingOverlayViewport,
   );
+  const [isXlViewport, setIsXlViewport] = useState(
+    typeof window !== "undefined" &&
+      typeof window.matchMedia === "function" &&
+      window.matchMedia(DESKTOP_FLOATING_OVERLAY_XL_MEDIA_QUERY).matches,
+  );
   const [contentRowWidth, setContentRowWidth] = useState<number | null>(null);
+  const [overlayRailWidth, setOverlayRailWidth] = useState<number | null>(null);
+  const [surfaceFrameWidth, setSurfaceFrameWidth] = useState<number | null>(null);
   const handleOverlayHeightChange = useCallback((height: number) => {
     setComposerOverlayHeight((current) => current === height ? current : height);
+  }, []);
+  const handleSurfaceFrameWidthChange = useCallback((width: number) => {
+    setSurfaceFrameWidth((current) => current === width ? current : width);
   }, []);
 
   useEffect(() => {
@@ -860,6 +899,24 @@ export function ChatView({
     }
     const mediaQuery = window.matchMedia(DESKTOP_FLOATING_OVERLAY_MEDIA_QUERY);
     const handleChange = () => setIsDesktopViewport(mediaQuery.matches);
+    handleChange();
+    if (typeof mediaQuery.addEventListener === "function") {
+      mediaQuery.addEventListener("change", handleChange);
+      return () => mediaQuery.removeEventListener("change", handleChange);
+    }
+    mediaQuery.addListener(handleChange);
+    return () => mediaQuery.removeListener(handleChange);
+  }, []);
+
+  useEffect(() => {
+    if (
+      typeof window === "undefined" ||
+      typeof window.matchMedia !== "function"
+    ) {
+      return;
+    }
+    const mediaQuery = window.matchMedia(DESKTOP_FLOATING_OVERLAY_XL_MEDIA_QUERY);
+    const handleChange = () => setIsXlViewport(mediaQuery.matches);
     handleChange();
     if (typeof mediaQuery.addEventListener === "function") {
       mediaQuery.addEventListener("change", handleChange);
@@ -945,11 +1002,21 @@ export function ChatView({
     () => deriveChatSurfaceShiftClassName(showDesktopOverlayRail),
     [showDesktopOverlayRail],
   );
+  const chatSurfaceShiftPx = useMemo(
+    () => deriveChatSurfaceShiftPx({
+      hasDesktopOverlayRail: showDesktopOverlayRail,
+      contentRowWidth,
+      railWidth: overlayRailWidth,
+      surfaceFrameWidth,
+      railRightInsetPx: isXlViewport
+        ? CHAT_VIEW_DESKTOP_OVERLAY_RIGHT_INSET_XL_PX
+        : CHAT_VIEW_DESKTOP_OVERLAY_RIGHT_INSET_PX,
+      safeGapPx: CHAT_VIEW_DESKTOP_OVERLAY_SAFE_GAP_PX,
+    }),
+    [contentRowWidth, isXlViewport, overlayRailWidth, showDesktopOverlayRail, surfaceFrameWidth],
+  );
   const [overlayPlanSectionOpen, setOverlayPlanSectionOpen] = useState(true);
   const [overlayCollaborationSectionOpen, setOverlayCollaborationSectionOpen] = useState(true);
-  const [expandedOverlayChildId, setExpandedOverlayChildId] = useState<string | undefined>(
-    undefined,
-  );
   const floatingPlanIdentity = useMemo(
     () => planStepsIdentity(floatingPlanSteps),
     [floatingPlanSteps],
@@ -1101,10 +1168,16 @@ export function ChatView({
         >
           <div className={CHAT_VIEW_MESSAGES_PANEL_CLASS}>
             <div
+              data-testid="chat-shared-surface-shell"
               className={cn(
-                "relative flex min-h-0 flex-1 flex-col transition-transform duration-200 motion-reduce:transition-none",
+                "relative flex min-h-0 flex-1 flex-col",
                 chatSurfaceShiftClassName,
               )}
+              style={
+                chatSurfaceShiftPx > 0
+                  ? { transform: `translateX(-${chatSurfaceShiftPx}px)` }
+                  : undefined
+              }
             >
               {showWelcome && (
                 <div className="pointer-events-none absolute left-0 right-0 top-[calc(50%-160px)] z-10 flex justify-center">
@@ -1189,6 +1262,7 @@ export function ChatView({
                 onConfirmPlanDecision={onAcceptPlanDecisionAndStartImplementation}
                 onDeclinePlanDecision={handleDeclinePlanDecision}
                 onOverlayHeightChange={handleOverlayHeightChange}
+                onSurfaceFrameWidthChange={handleSurfaceFrameWidthChange}
                 surfaceFrameWidthClassName={chatSurfaceContentWidthClassName}
                 onOpenLocalFiles={handleOpenLocalFiles}
                 onFilesDropped={handleFilesDropped}
@@ -1200,19 +1274,14 @@ export function ChatView({
           </div>
           {showDesktopOverlayRail ? (
             <DesktopOverlayRail
+              onMeasuredWidthChange={setOverlayRailWidth}
               childSessions={visibleCollaborationChildren}
               planSteps={floatingPlanSteps}
               planSectionOpen={overlayPlanSectionOpen}
               collaborationSectionOpen={overlayCollaborationSectionOpen}
-              expandedChildId={expandedOverlayChildId}
               onTogglePlanSection={() => setOverlayPlanSectionOpen((current) => !current)}
               onToggleCollaborationSection={() => setOverlayCollaborationSectionOpen((current) => !current)}
-              onToggleChild={(childId) => setExpandedOverlayChildId((current) =>
-                toggleExpandedOverlayChildId(current, childId)
-              )}
-              turnSnapshots={turnSnapshots}
-              projectRootPath={projectRootPath}
-              onOpenArtifact={onOpenArtifact}
+              onOpenChildSessionPage={onOpenChildSessionPage}
             />
           ) : null}
         </div>
@@ -1222,37 +1291,59 @@ export function ChatView({
 }
 
 export function DesktopOverlayRail({
+  onMeasuredWidthChange,
   childSessions,
   planSteps,
   planSectionOpen,
   collaborationSectionOpen,
-  expandedChildId,
   onTogglePlanSection,
   onToggleCollaborationSection,
-  onToggleChild,
-  turnSnapshots,
-  projectRootPath,
-  onOpenArtifact,
+  onOpenChildSessionPage,
 }: {
+  onMeasuredWidthChange?: (width: number) => void;
   childSessions: NonNullable<OraStateSnapshot["childSessions"]>;
   planSteps: TurnPlanListStep[];
   planSectionOpen: boolean;
   collaborationSectionOpen: boolean;
-  expandedChildId?: string;
   onTogglePlanSection: () => void;
   onToggleCollaborationSection: () => void;
-  onToggleChild: (childId: string) => void;
-  turnSnapshots: Record<string, OraStateSnapshot | undefined>;
-  projectRootPath?: string;
-  onOpenArtifact?: (artifactId: string) => void;
+  onOpenChildSessionPage: (
+    childSessionId: string,
+    targetRunId?: string,
+    title?: string,
+  ) => void;
 }) {
+  const [railElement, setRailElement] = useState<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!railElement || !onMeasuredWidthChange) {
+      return;
+    }
+
+    const reportWidth = () => {
+      onMeasuredWidthChange(Math.ceil(railElement.getBoundingClientRect().width));
+    };
+
+    reportWidth();
+    if (typeof ResizeObserver === "undefined") {
+      return;
+    }
+    const observer = new ResizeObserver(reportWidth);
+    observer.observe(railElement);
+    return () => observer.disconnect();
+  }, [onMeasuredWidthChange, railElement]);
+
   if (childSessions.length === 0 && planSteps.length === 0) {
     return null;
   }
 
   return (
     <div className={CHAT_VIEW_DESKTOP_OVERLAY_RAIL_CLASS}>
-      <div className={CHAT_VIEW_DESKTOP_FLOATING_STACK_CLASS}>
+      <div
+        ref={setRailElement}
+        data-testid="desktop-overlay-rail-stack"
+        className={CHAT_VIEW_DESKTOP_FLOATING_STACK_CLASS}
+      >
         <section className={CHAT_VIEW_OVERLAY_PANEL_CLASS}>
           {planSteps.length > 0 ? (
             <OverlayRailSection
@@ -1276,19 +1367,10 @@ export function DesktopOverlayRail({
                 <section className={CHAT_VIEW_COLLABORATION_PANEL_CLASS}>
                   <div className="space-y-1.5">
                     {childSessions.map((child) => {
-                      const expanded = expandedChildId === child.id;
-                      const childSnapshot = resolveOverlayChildSnapshot(child, turnSnapshots);
-                      const childTurnView = childSnapshot
-                        ? derivePresentedAssistantTurnFromSnapshot(childSnapshot)
-                        : undefined;
-                      const childSummaryText = deriveOverlayChildCardSummaryText({
-                        child,
-                        childTurnView,
-                      });
                       const childStatusText = deriveOverlayChildStatusLabel({
                         child,
-                        childTurnView,
                       });
+                      const childTargetRunId = child.replayRef?.runId ?? child.id;
 
                       return (
                         <section
@@ -1297,16 +1379,12 @@ export function DesktopOverlayRail({
                         >
                           <button
                             type="button"
-                            aria-expanded={expanded}
-                            onClick={() => onToggleChild(child.id)}
+                            onClick={() => onOpenChildSessionPage(child.id, childTargetRunId, child.label)}
                             className="grid w-full grid-cols-[minmax(0,1fr)_auto] items-start gap-2.5 text-left"
                           >
                             <div className="min-w-0">
                               <p className="truncate text-sm font-semibold text-foreground">
                                 {child.label}
-                              </p>
-                              <p className="mt-0.5 overflow-hidden text-xs leading-5 text-muted-foreground [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:4] break-words">
-                                {childSummaryText}
                               </p>
                             </div>
                             <div className="flex items-center gap-1.5 self-start pl-1">
@@ -1319,36 +1397,8 @@ export function DesktopOverlayRail({
                               >
                                 {childStatusText}
                               </span>
-                              <ChevronDown
-                                className={cn(
-                                  "h-4 w-4 shrink-0 text-muted-foreground transition-transform",
-                                  expanded && "rotate-180",
-                                )}
-                              />
                             </div>
                           </button>
-                          {expanded ? (
-                            <div className={CHAT_VIEW_COLLABORATION_DETAIL_CLASS}>
-                              {childTurnView ? (
-                                <AssistantTurnCard
-                                  content={childTurnView.content}
-                                  turn={childTurnView.turn}
-                                  density="compact"
-                                  onOpenArtifact={onOpenArtifact}
-                                  projectRootPath={projectRootPath}
-                                />
-                              ) : (
-                                <div className="space-y-1">
-                                  <p className="text-sm font-medium text-foreground">
-                                    等待子代理内容同步
-                                  </p>
-                                  <p className="text-xs leading-5 text-muted-foreground">
-                                    当前只拿到了子代理摘要；待对应 session snapshot 进入本地状态后，这里会自动显示完整 timeline / process / body 内容。
-                                  </p>
-                                </div>
-                              )}
-                            </div>
-                          ) : null}
                         </section>
                       );
                     })}

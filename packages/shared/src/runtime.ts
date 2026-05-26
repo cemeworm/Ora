@@ -756,6 +756,14 @@ export const ChildSessionDeliveryStatusSchema = z.enum([
 ]);
 export type ChildSessionDeliveryStatus = z.infer<typeof ChildSessionDeliveryStatusSchema>;
 
+export const ChildSessionResolutionStatusSchema = z.enum([
+  "open",
+  "accepted_partial",
+  "abandoned_partial",
+  "escalated_to_user",
+]);
+export type ChildSessionResolutionStatus = z.infer<typeof ChildSessionResolutionStatusSchema>;
+
 export const BackgroundChildLifecyclePhaseSchema = z.enum([
   "queued",
   "running",
@@ -809,6 +817,7 @@ export const ChildSessionSummarySchema = z.object({
   status: ChildSessionStatusSchema,
   lifecyclePhase: BackgroundChildLifecyclePhaseSchema.optional(),
   deliveryStatus: ChildSessionDeliveryStatusSchema.optional(),
+  resolutionStatus: ChildSessionResolutionStatusSchema.optional(),
   resultAvailability: BackgroundChildResultAvailabilitySchema.optional(),
   summary: z.string().min(1).optional(),
   lastMessage: z.string().min(1).optional(),
@@ -840,6 +849,14 @@ export const ChildSessionSummarySchema = z.object({
   completedAt: z.number().int().nonnegative().optional(),
 });
 export type ChildSessionSummary = z.infer<typeof ChildSessionSummarySchema>;
+
+export function isUnresolvedStalledChildSession(
+  child: Pick<ChildSessionSummary, "lifecyclePhase" | "resultAvailability" | "resolutionStatus">,
+): boolean {
+  return child.lifecyclePhase === "stalled" &&
+    (child.resultAvailability === "partial" || child.resultAvailability === "visible_output" || child.resultAvailability === "queued_for_parent") &&
+    (child.resolutionStatus ?? "open") === "open";
+}
 
 export const ParentCoordinationPhaseSchema = z.enum([
   "planning",

@@ -2193,7 +2193,7 @@ describe("node runtime loop transition contract", () => {
     }
   });
 
-  it("fails cleanly when tool execution goes idle past the node timeout", async () => {
+  it("does not fail just because a node timeoutMs is configured when the tool eventually returns", async () => {
     const handle = createRuntimeMethodHandler(createTempStore());
     const previousFetch = globalThis.fetch;
     const previousKey = process.env.NODE_LOOP_TOOL_TIMEOUT_KEY;
@@ -2202,30 +2202,39 @@ describe("node runtime loop transition contract", () => {
 
     globalThis.fetch = (async (input, init) => {
       if (String(input) === "https://example.com/node-loop-tool-timeout") {
-        return await new Promise((_resolve, reject) => {
-          const abort = () => reject(init?.signal?.reason ?? new Error("aborted"));
-          if (init?.signal?.aborted) {
-            abort();
-            return;
-          }
-          init?.signal?.addEventListener("abort", abort, { once: true });
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        return new Response("slow but successful", {
+          status: 200,
+          headers: { "content-type": "text/plain" },
         });
       }
 
       providerCalls += 1;
+      if (providerCalls === 1) {
+        return new Response(JSON.stringify({
+          choices: [{
+            finish_reason: "tool_calls",
+            message: {
+              content: null,
+              tool_calls: [{
+                id: "call-timeout",
+                type: "function",
+                function: {
+                  name: "web__fetch",
+                  arguments: "{\"url\":\"https://example.com/node-loop-tool-timeout\"}",
+                },
+              }],
+            },
+          }],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+
       return new Response(JSON.stringify({
         choices: [{
-          finish_reason: "tool_calls",
+          finish_reason: "stop",
           message: {
-            content: null,
-            tool_calls: [{
-              id: "call-timeout",
-              type: "function",
-              function: {
-                name: "web__fetch",
-                arguments: "{\"url\":\"https://example.com/node-loop-tool-timeout\"}",
-              },
-            }],
+            role: "assistant",
+            content: "The slow fetch completed successfully without a node-level timeout.",
           },
         }],
       }), { status: 200, headers: { "content-type": "application/json" } });
@@ -2295,26 +2304,14 @@ describe("node runtime loop transition contract", () => {
       }));
       const states = nodeRuntimeStateSequence(state.events, { agentId: ORA_ROOT_AGENT_ID });
 
-      expect(run.status).toBe("failed");
-      expect(state.status).toBe("failed");
-      expect(providerCalls).toBeGreaterThanOrEqual(1);
-      expect(containsStateSubsequence(states, [
-        "pending",
-        "running_model",
-        "tool_requested",
-        "tool_running",
-        "degraded",
-      ]), states.join(" -> ")).toBe(true);
+      expect(run.status).toBe("succeeded");
+      expect(state.status).toBe("succeeded");
+      expect(providerCalls).toBeGreaterThanOrEqual(2);
+      expect(states.at(-1)).toBe("completed");
       expect(nodeLoopTransitionDiagnostics(state.events)).toEqual([]);
-      expect(state.toolCalls).toEqual([
-        expect.objectContaining({
-          providerCallId: "call-timeout",
-          toolId: "web.fetch",
-          status: "failed",
-        }),
-      ]);
-      expect(state.events.map((event) => event.type)).toContain("run.failed");
-      expect(state.error).toContain("Node idle timeout after 20ms without progress.");
+      expect(state.events.map((event) => event.type)).not.toContain("run.failed");
+      expect(states).not.toContain("degraded");
+      expect(String(state.output?.text ?? "")).toContain("slow fetch completed successfully");
     } finally {
       globalThis.fetch = previousFetch;
       if (previousKey === undefined) {

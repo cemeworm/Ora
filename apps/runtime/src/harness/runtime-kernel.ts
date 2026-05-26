@@ -19,6 +19,7 @@ import {
   type AgentToolBundleId,
   type BackgroundChildLifecyclePhase,
   type BackgroundChildResultAvailability,
+  type ChildSessionResolutionStatus,
   type ChildSessionAuthoritySource,
   type ChildSessionClass,
   type ChildSessionDeliveryStatus,
@@ -55,6 +56,7 @@ import {
   type CompletionStopReason,
   type CustomAgentDetail,
   acceptedPlanExecutionContractFromMetadata,
+  isUnresolvedStalledChildSession,
   getPermissionProfile,
   inspectProposedPlanContract,
   ORA_ROOT_AGENT_ID,
@@ -199,7 +201,6 @@ import {
   type RuntimeSearchSuppressionState,
 } from "./runtime-search-suppression.js";
 
-const DEFAULT_NODE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 const DEFAULT_PROVIDER_TIMEOUT_MS = 3 * 60 * 1000; // 3 minutes
 const RUNTIME_SEARCH_SUPPRESSION_METADATA_KEY = "ora.runtimeSearchSuppression";
 
@@ -301,6 +302,7 @@ type BackgroundChildRegistryEntry = {
   lifecyclePhase: BackgroundChildLifecyclePhase;
   coordinationBarrier: "required" | "independent";
   deliveryStatus?: ChildSessionDeliveryStatus;
+  resolutionStatus?: ChildSessionResolutionStatus;
   resultAvailability: BackgroundChildResultAvailability;
   summary?: string;
   lastMessage?: string;
@@ -372,6 +374,10 @@ function hasBackgroundChildConsumableOutput(
   return Boolean(entry.lastMeaningfulOutputAt || entry.lastMessage?.trim() || entry.summary?.trim());
 }
 
+function backgroundChildCancellationSummary(reason: string): string {
+  return reason.trim().length > 0 ? `已取消：${reason}` : "已取消。";
+}
+
 function projectBackgroundChildSummary(
   entry: BackgroundChildRegistryEntry,
 ): ChildSessionSummary {
@@ -385,6 +391,7 @@ function projectBackgroundChildSummary(
     status: entry.status,
     lifecyclePhase: entry.lifecyclePhase,
     deliveryStatus: entry.deliveryStatus,
+    resolutionStatus: entry.resolutionStatus,
     resultAvailability: entry.resultAvailability,
     summary: entry.summary,
     lastMessage: entry.lastMessage,
@@ -588,6 +595,10 @@ class KernelRuntimeContext {
         ...current,
         deliveryStatus: "awaiting_pickup",
         lifecyclePhase: "awaiting_pickup",
+        resolutionStatus:
+          current.lifecyclePhase === "stalled" || current.resultAvailability === "partial"
+            ? current.resolutionStatus ?? "open"
+            : current.resolutionStatus,
         resultAvailability:
           current.lifecyclePhase === "stalled" || current.resultAvailability === "visible_output"
             ? "partial"
@@ -672,6 +683,59 @@ class KernelRuntimeContext {
     this.notifyBackgroundProgress(parentAgentId);
   }
 
+  cancelActiveBackgroundChildren(reason: string): void {
+    const now = this.params.now();
+    const cancelledParentIds = new Set<string>();
+    const cancellationSummary = backgroundChildCancellationSummary(reason);
+    for (const [id, current] of this.childSessionsValue.entries()) {
+      if (!isBackgroundLifecycleActive(current.lifecyclePhase) && current.lifecyclePhase !== "stalled") {
+        continue;
+      }
+      const next: BackgroundChildRegistryEntry = {
+        ...current,
+        status: "cancelled",
+        lifecyclePhase: "cancelled",
+        deliveryStatus: undefined,
+        resolutionStatus:
+          current.resultAvailability === "visible_output" || current.resultAvailability === "partial"
+            ? current.resolutionStatus ?? "abandoned_partial"
+            : current.resolutionStatus,
+        resultAvailability:
+          current.resultAvailability === "visible_output" || current.resultAvailability === "partial"
+            ? "partial"
+            : "none",
+        summary: cancellationSummary,
+        lastMessage: cancellationSummary,
+        stallReason: current.stallReason ?? "parent_run_cancelled",
+        updatedAt: now,
+        completedAt: current.completedAt ?? now,
+      };
+      this.childSessionsValue.set(id, next);
+      if (current.parentAgentId) {
+        cancelledParentIds.add(current.parentAgentId);
+      }
+      const summary = projectBackgroundChildSummary(next);
+      this.emit(
+        "child_session.updated",
+        { childSession: summary },
+        { agentId: summary.agentId, nodeId: summary.agentId },
+      );
+    }
+    if (cancelledParentIds.size > 0) {
+      for (const parentAgentId of cancelledParentIds) {
+        this.asyncAgentResultsValue.delete(parentAgentId);
+        this.agentMessagesQueueValue.delete(parentAgentId);
+        this.notifyBackgroundProgress(parentAgentId);
+      }
+      this.syncParentCoordinationFromChildren("cancelled");
+    }
+  }
+
+  isBackgroundChildCancelled(childSessionId: string): boolean {
+    const current = this.childSessionsValue.get(childSessionId);
+    return current?.status === "cancelled" || current?.lifecyclePhase === "cancelled";
+  }
+
   activeBackgroundChildCount(parentAgentId: string): number {
     this.reconcileBackgroundChildren();
     return [...this.childSessionsValue.values()].filter((child) =>
@@ -698,13 +762,19 @@ class KernelRuntimeContext {
       .map((entry) => projectBackgroundChildSummary(entry));
   }
 
+  unresolvedStalledBackgroundChildren(parentAgentId: string): ChildSessionSummary[] {
+    return this.stalledBackgroundChildren(parentAgentId).filter((child) =>
+      isUnresolvedStalledChildSession(child)
+    );
+  }
+
   async waitForBackgroundProgress(agentId: string): Promise<void> {
     this.reconcileBackgroundChildren();
     if (
       this.activeBackgroundChildCount(agentId) === 0 &&
       this.pendingAsyncAgentResultCount(agentId) === 0 &&
       (this.agentMessagesQueueValue.get(agentId)?.length ?? 0) === 0 &&
-      this.stalledBackgroundChildren(agentId).length === 0
+      this.unresolvedStalledBackgroundChildren(agentId).length === 0
     ) {
       return;
     }
@@ -755,6 +825,10 @@ class KernelRuntimeContext {
       deliveryStatus,
       lifecyclePhase: deliveryStatus === "consumed" ? "picked_up" : "awaiting_pickup",
       resultAvailability: deliveryStatus === "consumed" ? "consumed" : "queued_for_parent",
+      resolutionStatus:
+        deliveryStatus === "consumed" && current.resultAvailability === "partial"
+          ? "accepted_partial"
+          : current.resolutionStatus,
       updatedAt: this.params.now(),
     });
   }
@@ -798,6 +872,7 @@ class KernelRuntimeContext {
       }),
       coordinationBarrier: current?.coordinationBarrier ?? "independent",
       deliveryStatus: parsed.deliveryStatus,
+      resolutionStatus: parsed.resolutionStatus ?? current?.resolutionStatus,
       resultAvailability: parsed.resultAvailability ?? current?.resultAvailability ?? "none",
       summary: parsed.summary,
       lastMessage: parsed.lastMessage,
@@ -955,6 +1030,10 @@ class KernelRuntimeContext {
       this.childSessionsValue.set(id, {
         ...current,
         lifecyclePhase: "stalled",
+        resolutionStatus:
+          hasBackgroundChildConsumableOutput(current)
+            ? current.resolutionStatus ?? "open"
+            : current.resolutionStatus,
         resultAvailability: hasBackgroundChildConsumableOutput(current) ? "partial" : current.resultAvailability,
         stallReason: current.stallReason ?? "no_progress_timeout",
         updatedAt: now,
@@ -998,6 +1077,18 @@ class KernelRuntimeContext {
     lastChildStatus?: ChildSessionSummary["status"],
   ): void {
     if (this.childSessionsValue.size === 0) {
+      if (this.parentCoordinationValue) {
+        this.setParentCoordination({
+          phase: "dispatching",
+          activeChildIds: [],
+          waitingChildIds: [],
+          blockedByChildIds: [],
+          stalledChildIds: [],
+          recoverableChildIds: [],
+          partialResultChildIds: [],
+          summary: "无活跃子任务。",
+        });
+      }
       return;
     }
     const coordination = deriveParentCoordinationUpdate({
@@ -1008,6 +1099,7 @@ class KernelRuntimeContext {
         lifecyclePhase: child.lifecyclePhase,
         resultAvailability: child.resultAvailability,
         stallReason: child.stallReason,
+        resolutionStatus: child.resolutionStatus,
         coordinationBarrier: child.coordinationBarrier,
       })),
       lastChildStatus:
@@ -1394,7 +1486,7 @@ class KernelRuntimeContext {
 
 export function deriveParentCoordinationUpdate(params: {
   children: ReadonlyArray<
-    Pick<ChildSessionSummary, "id" | "agentId" | "status" | "lifecyclePhase" | "resultAvailability" | "stallReason"> & {
+    Pick<ChildSessionSummary, "id" | "agentId" | "status" | "lifecyclePhase" | "resultAvailability" | "stallReason" | "resolutionStatus"> & {
       coordinationBarrier?: "required" | "independent";
     }
   >;
@@ -1417,7 +1509,7 @@ export function deriveParentCoordinationUpdate(params: {
     });
     const isActive = isBackgroundLifecycleActive(phase);
     const isRequired = child.coordinationBarrier === "required";
-    const isStalled = child.lifecyclePhase === "stalled";
+    const isUnresolvedStalled = isUnresolvedStalledChildSession(child);
     const hasPartialResult =
       child.resultAvailability === "visible_output" ||
       child.resultAvailability === "queued_for_parent" ||
@@ -1430,11 +1522,11 @@ export function deriveParentCoordinationUpdate(params: {
         waitingChildIds.push(child.id);
       }
     }
-    if (isStalled) {
+    if (isUnresolvedStalled) {
       stalledChildIds.push(child.id);
       recoverableChildIds.push(child.id);
     }
-    if (isRequired && (isActive || isStalled)) {
+    if (isRequired && (isActive || isUnresolvedStalled)) {
       blockedByChildIds.push(child.id);
     }
     if (hasPartialResult) {
@@ -1858,6 +1950,19 @@ export async function executeRuntimeKernel(
     onEvent: options.onEvent,
   });
   const emit = kernelRuntimeContext.emit;
+  const cancelBackgroundChildrenForRunAbort = (reason: string) => {
+    kernelRuntimeContext.cancelActiveBackgroundChildren(reason);
+  };
+  if (options.signal) {
+    const cancelReason = String(options.signal.reason ?? "Stopped processing as instructed.");
+    if (options.signal.aborted) {
+      cancelBackgroundChildrenForRunAbort(cancelReason);
+    } else {
+      options.signal.addEventListener("abort", () => {
+        cancelBackgroundChildrenForRunAbort(String(options.signal?.reason ?? "Stopped processing as instructed."));
+      }, { once: true });
+    }
+  }
   const runtimeToolResultCache = new Map<string, unknown>(
     (options.resumeState?.toolResults ?? [])
       .filter((entry) => entry.status === "succeeded")
@@ -2579,16 +2684,30 @@ export async function executeRuntimeKernel(
     ).length,
     planList: () => kernelRuntimeContext.planList,
     activePlanStepId: () => activePlanStepId(kernelRuntimeContext.planList),
-    autoAdvancePlanListFromLifecycle: ({ agentId, nodeId, title, evidenceToolCallIds, planStepId }) => {
+    autoAdvancePlanListFromLifecycle: ({ planStepId }) => {
       const payload = advancePlanListFromLifecycle({
         plan: kernelRuntimeContext.planList,
         planStepId,
-        explanation: `Advanced plan after ${title} completed runtime work (${evidenceToolCallIds.length} tool result${evidenceToolCallIds.length === 1 ? "" : "s"}).`,
       });
       if (!payload) {
         return false;
       }
-      emit("plan_list.updated", payload, { agentId, nodeId });
+      for (const [index, step] of payload.plan.entries()) {
+        const item = planService.list()[index];
+        if (!item) {
+          break;
+        }
+        const nextStatus = step.status === "completed"
+          ? "done"
+          : step.status === "in_progress"
+            ? "running"
+            : "planned";
+        if (item.status !== nextStatus) {
+          planService.setStatus(item.id, nextStatus);
+        }
+      }
+      todoService.syncFromPlan(planService.list());
+      emit("plan_list.updated", payload, { agentId: ORA_ROOT_AGENT_ID, nodeId: ORA_ROOT_AGENT_ID });
       return true;
     },
     toolCalls: () => kernelRuntimeContext.toolCalls,
@@ -3090,10 +3209,9 @@ export async function executeRuntimeKernel(
           },
           responseFormat: params.responseFormat,
           toolIds: effectiveToolIds,
-          timeoutMs:
-            resolvedModeSpec.nodes.find(
-              (n) => n.id === (params.planItemId ?? params.agentId),
-            )?.config.timeoutMs ?? DEFAULT_NODE_TIMEOUT_MS,
+          timeoutMs: resolvedModeSpec.nodes.find(
+            (n) => n.id === (params.planItemId ?? params.agentId),
+          )?.config.timeoutMs,
           onForcedFinalProviderExhausted: (error) => {
             const detail = error instanceof Error ? error.message : String(error);
             const incident = classifyRecoveryError(error, {
@@ -4632,6 +4750,9 @@ export async function executeRuntimeKernel(
         ? entry.description.slice(0, MAX_TITLE_LENGTH)
         : entry.description;
       const startedAt = now();
+      const childSessionId = `${runId}:${entry.effectiveAgentId}`;
+      const childWasCancelled = () =>
+        options.signal?.aborted === true || kernelRuntimeContext.isBackgroundChildCancelled(childSessionId);
       try {
         updateCollaborationState({
           agentId: entry.effectiveAgentId,
@@ -4666,6 +4787,9 @@ export async function executeRuntimeKernel(
           riskLevel: "low",
           toolIds: entry.customToolIds,
         });
+        if (childWasCancelled()) {
+          return;
+        }
         const rawText = typeof result === "string" ? result : String(result ?? "");
         const stats = collectChildExecutionStats(entry.effectiveAgentId);
         const durationMs = Math.max(0, now() - startedAt);
@@ -4682,7 +4806,7 @@ export async function executeRuntimeKernel(
         kernelRuntimeContext.enqueueAsyncAgentResult({
           targetAgentId: entry.parentAgentId,
           sourceAgentId: entry.effectiveAgentId,
-          childSessionId: `${runId}:${entry.effectiveAgentId}`,
+          childSessionId,
           result: validated.text,
           toolBundleId: entry.toolBundleId,
           resolvedToolIds: entry.resolvedToolIds,
@@ -4723,10 +4847,13 @@ export async function executeRuntimeKernel(
           const stats = collectChildExecutionStats(entry.effectiveAgentId);
           const durationMs = Math.max(0, now() - startedAt);
           const text = stripInternalAssistantText(err.degradedOutput).trim() || err.degradedOutput;
+          if (childWasCancelled()) {
+            return;
+          }
           kernelRuntimeContext.enqueueAsyncAgentResult({
             targetAgentId: entry.parentAgentId,
             sourceAgentId: entry.effectiveAgentId,
-            childSessionId: `${runId}:${entry.effectiveAgentId}`,
+            childSessionId,
             result: text,
             toolBundleId: entry.toolBundleId,
             resolvedToolIds: entry.resolvedToolIds,
@@ -4764,10 +4891,13 @@ export async function executeRuntimeKernel(
           const message = `Error: ${err instanceof Error ? err.message : String(err)}`;
           const stats = collectChildExecutionStats(entry.effectiveAgentId);
           const durationMs = Math.max(0, now() - startedAt);
+          if (childWasCancelled()) {
+            return;
+          }
           kernelRuntimeContext.enqueueAsyncAgentResult({
             targetAgentId: entry.parentAgentId,
             sourceAgentId: entry.effectiveAgentId,
-            childSessionId: `${runId}:${entry.effectiveAgentId}`,
+            childSessionId,
             result: message,
             toolBundleId: entry.toolBundleId,
             resolvedToolIds: entry.resolvedToolIds,
@@ -5294,9 +5424,7 @@ export async function executeRuntimeKernel(
         derivedContextBlocks: runtimePromptContext.cacheDiagnosticsContext.derivedContextBlocks,
       },
       toolIds: effectiveAgentToolIds(agentId, nodeId),
-      timeoutMs:
-        resolvedModeSpec.nodes.find((n) => n.id === nodeId)?.config.timeoutMs ??
-        DEFAULT_NODE_TIMEOUT_MS,
+      timeoutMs: resolvedModeSpec.nodes.find((n) => n.id === nodeId)?.config.timeoutMs,
     });
 
     const resolvedOutput = resolvePublicAssistantText(response.text);

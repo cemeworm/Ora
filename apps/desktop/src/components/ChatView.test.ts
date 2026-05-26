@@ -1,15 +1,22 @@
+// @vitest-environment jsdom
+
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { act } from "react";
+import { createRoot } from "react-dom/client";
+import { describe, expect, it, vi } from "vitest";
 import {
   canUseDesktopOverlayRail,
-  CHAT_VIEW_COLLABORATION_DETAIL_CLASS,
   CHAT_VIEW_COLLABORATION_ITEM_CLASS,
   CHAT_VIEW_COLLABORATION_PANEL_CLASS,
   CHAT_VIEW_OVERLAY_PANEL_CLASS,
   CHAT_VIEW_CONTENT_ROW_CLASS,
   CHAT_VIEW_DESKTOP_FLOATING_STACK_CLASS,
+  CHAT_VIEW_DESKTOP_OVERLAY_IDEAL_CONTENT_ROW_WIDTH,
+  CHAT_VIEW_DESKTOP_OVERLAY_MAX_SURFACE_SHIFT_PX,
   CHAT_VIEW_DESKTOP_OVERLAY_MIN_CONTENT_ROW_WIDTH,
+  CHAT_VIEW_DESKTOP_OVERLAY_RIGHT_INSET_PX,
+  CHAT_VIEW_DESKTOP_OVERLAY_SAFE_GAP_PX,
   CHAT_VIEW_DESKTOP_OVERLAY_RAIL_CLASS,
   CHAT_VIEW_MAIN_CLASS,
   CHAT_VIEW_MESSAGES_PANEL_CLASS,
@@ -20,6 +27,7 @@ import {
   DesktopOverlayRail,
   deriveChildReplaySelection,
   deriveChatSurfaceContentWidthClassName,
+  deriveChatSurfaceShiftPx,
   deriveChatSurfaceShiftClassName,
   deriveComposerPlanDecisionState,
   deriveOverlayChildStatusLabel,
@@ -34,12 +42,10 @@ import {
   resolveOverlayChildSnapshot,
   shouldShowCollaborationOverlay,
   shouldShowDesktopOverlayRail,
-  toggleExpandedOverlayChildId,
 } from "./ChatView";
 import {
   FLOATING_OVERLAY_BADGE_BASE_CLASS,
   FLOATING_OVERLAY_CARD_CLASS,
-  FLOATING_OVERLAY_DETAIL_CLASS,
   FLOATING_OVERLAY_PANEL_CLASS,
 } from "./PlanStepsTray";
 import {
@@ -542,10 +548,17 @@ describe("chat view collaboration overlay visibility", () => {
     })).toBe(false);
   });
 
-  it("shows the desktop overlay rail once the content row reaches the safe width", () => {
+  it("shows the desktop overlay rail once the content row reaches the minimum safe width", () => {
     expect(canUseDesktopOverlayRail({
       isDesktopViewport: true,
       contentRowWidth: CHAT_VIEW_DESKTOP_OVERLAY_MIN_CONTENT_ROW_WIDTH,
+    })).toBe(true);
+  });
+
+  it("keeps the desktop overlay rail visible below the ideal width as long as the minimum width is satisfied", () => {
+    expect(canUseDesktopOverlayRail({
+      isDesktopViewport: true,
+      contentRowWidth: CHAT_VIEW_DESKTOP_OVERLAY_IDEAL_CONTENT_ROW_WIDTH - 1,
     })).toBe(true);
   });
 
@@ -662,10 +675,76 @@ describe("chat view collaboration overlay visibility", () => {
 
   it("does not shift the content rail when the overlay is hidden", () => {
     expect(deriveChatSurfaceShiftClassName(false)).toBe("");
+    expect(deriveChatSurfaceShiftPx({
+      hasDesktopOverlayRail: false,
+      contentRowWidth: CHAT_VIEW_DESKTOP_OVERLAY_IDEAL_CONTENT_ROW_WIDTH,
+    })).toBe(0);
   });
 
-  it("keeps the content rail shift helper inert after the docked sidebar refactor", () => {
-    expect(deriveChatSurfaceShiftClassName(true)).toBe("");
+  it("applies no shift when the content row already has the ideal width", () => {
+    expect(deriveChatSurfaceShiftClassName(true)).toContain("transition-transform");
+    expect(deriveChatSurfaceShiftPx({
+      hasDesktopOverlayRail: true,
+      contentRowWidth: CHAT_VIEW_DESKTOP_OVERLAY_IDEAL_CONTENT_ROW_WIDTH,
+    })).toBe(0);
+  });
+
+  it("shifts the shared chat surface left on medium widths and clamps the shift", () => {
+    expect(deriveChatSurfaceShiftPx({
+      hasDesktopOverlayRail: true,
+      contentRowWidth: CHAT_VIEW_DESKTOP_OVERLAY_IDEAL_CONTENT_ROW_WIDTH - 40,
+    })).toBe(40);
+    expect(deriveChatSurfaceShiftPx({
+      hasDesktopOverlayRail: true,
+      contentRowWidth: CHAT_VIEW_DESKTOP_OVERLAY_MIN_CONTENT_ROW_WIDTH,
+    })).toBe(CHAT_VIEW_DESKTOP_OVERLAY_MAX_SURFACE_SHIFT_PX);
+    expect(deriveChatSurfaceShiftPx({
+      hasDesktopOverlayRail: true,
+      contentRowWidth: CHAT_VIEW_DESKTOP_OVERLAY_MIN_CONTENT_ROW_WIDTH + 1,
+    })).toBe(CHAT_VIEW_DESKTOP_OVERLAY_MAX_SURFACE_SHIFT_PX - 1);
+  });
+
+  it("uses the measured rail width and available right space when both are available", () => {
+    expect(deriveChatSurfaceShiftPx({
+      hasDesktopOverlayRail: true,
+      contentRowWidth: 1200,
+      railWidth: 320,
+      surfaceFrameWidth: 691,
+      railRightInsetPx: CHAT_VIEW_DESKTOP_OVERLAY_RIGHT_INSET_PX,
+      safeGapPx: CHAT_VIEW_DESKTOP_OVERLAY_SAFE_GAP_PX,
+    })).toBe(122);
+  });
+
+  it("increases shift when the measured rail gets wider", () => {
+    const base = deriveChatSurfaceShiftPx({
+      hasDesktopOverlayRail: true,
+      contentRowWidth: 1200,
+      railWidth: 280,
+      surfaceFrameWidth: 691,
+      railRightInsetPx: CHAT_VIEW_DESKTOP_OVERLAY_RIGHT_INSET_PX,
+      safeGapPx: CHAT_VIEW_DESKTOP_OVERLAY_SAFE_GAP_PX,
+    });
+    const wider = deriveChatSurfaceShiftPx({
+      hasDesktopOverlayRail: true,
+      contentRowWidth: 1200,
+      railWidth: 320,
+      surfaceFrameWidth: 691,
+      railRightInsetPx: CHAT_VIEW_DESKTOP_OVERLAY_RIGHT_INSET_PX,
+      safeGapPx: CHAT_VIEW_DESKTOP_OVERLAY_SAFE_GAP_PX,
+    });
+
+    expect(wider).toBeGreaterThan(base);
+  });
+
+  it("returns zero when the measured right-side space already fits the rail", () => {
+    expect(deriveChatSurfaceShiftPx({
+      hasDesktopOverlayRail: true,
+      contentRowWidth: 1500,
+      railWidth: 280,
+      surfaceFrameWidth: 691,
+      railRightInsetPx: CHAT_VIEW_DESKTOP_OVERLAY_RIGHT_INSET_PX,
+      safeGapPx: CHAT_VIEW_DESKTOP_OVERLAY_SAFE_GAP_PX,
+    })).toBe(0);
   });
 
   it("anchors the desktop overlay rail near the content area's top-right edge", () => {
@@ -688,10 +767,7 @@ describe("chat view collaboration overlay visibility", () => {
   it("uses a single unified floating shell for the right overlay rail", () => {
     expect(CHAT_VIEW_OVERLAY_PANEL_CLASS).toBe(FLOATING_OVERLAY_PANEL_CLASS);
     expect(CHAT_VIEW_COLLABORATION_ITEM_CLASS).toBe(FLOATING_OVERLAY_CARD_CLASS);
-    expect(CHAT_VIEW_COLLABORATION_DETAIL_CLASS).toBe(FLOATING_OVERLAY_DETAIL_CLASS);
     expect(CHAT_VIEW_COLLABORATION_ITEM_CLASS).not.toContain("bg-card/80");
-    expect(CHAT_VIEW_COLLABORATION_DETAIL_CLASS).toContain("overflow-y-auto");
-    expect(CHAT_VIEW_COLLABORATION_DETAIL_CLASS).toContain("max-h-[min(72vh,40rem)]");
   });
 
   it("keeps the desktop content row on a single stacked layout while the floating overlay remains absolute", () => {
@@ -702,11 +778,9 @@ describe("chat view collaboration overlay visibility", () => {
         planSteps: [{ step: "整理结果", status: "pending" }],
         planSectionOpen: true,
         collaborationSectionOpen: true,
-        expandedChildId: undefined,
         onTogglePlanSection: () => undefined,
         onToggleCollaborationSection: () => undefined,
-        onToggleChild: () => undefined,
-        turnSnapshots: {},
+        onOpenChildSessionPage: () => undefined,
       }),
     )).toContain(CHAT_VIEW_DESKTOP_OVERLAY_RAIL_CLASS);
   });
@@ -718,11 +792,9 @@ describe("chat view collaboration overlay visibility", () => {
         planSteps: [{ step: "整理结果", status: "pending" }],
         planSectionOpen: true,
         collaborationSectionOpen: true,
-        expandedChildId: undefined,
         onTogglePlanSection: () => undefined,
         onToggleCollaborationSection: () => undefined,
-        onToggleChild: () => undefined,
-        turnSnapshots: {},
+        onOpenChildSessionPage: () => undefined,
       }),
     );
 
@@ -734,7 +806,7 @@ describe("chat view collaboration overlay visibility", () => {
     expect(html).toContain("执行中");
   });
 
-  it("shows a shorter in-progress badge once a running child already has substantial content", () => {
+  it("keeps the running badge on navigation-only collaboration cards", () => {
     const html = renderToStaticMarkup(
       createElement(DesktopOverlayRail, {
         childSessions: [{
@@ -753,18 +825,14 @@ describe("chat view collaboration overlay visibility", () => {
         planSteps: [],
         planSectionOpen: true,
         collaborationSectionOpen: true,
-        expandedChildId: undefined,
         onTogglePlanSection: () => undefined,
         onToggleCollaborationSection: () => undefined,
-        onToggleChild: () => undefined,
-        turnSnapshots: {
-          "run-parent-1": parentOverlaySnapshot(),
-        },
+        onOpenChildSessionPage: () => undefined,
       }),
     );
 
-    expect(html).toContain("完善中");
-    expect(html).not.toContain("执行中");
+    expect(html).toContain("执行中");
+    expect(html).not.toContain("完善中");
   });
 
   it("keeps collaboration status badges on muted surfaces instead of bright white pills", () => {
@@ -789,12 +857,6 @@ describe("chat view collaboration overlay visibility", () => {
     expect(deriveOverlayChildStatusLabel({
       child: childSession("stalled-child", "running", undefined, "stalled") as any,
     })).toBe("卡住");
-  });
-
-  it("toggles overlay child expansion as a single-open accordion", () => {
-    expect(toggleExpandedOverlayChildId(undefined, "child-a")).toBe("child-a");
-    expect(toggleExpandedOverlayChildId("child-a", "child-a")).toBeUndefined();
-    expect(toggleExpandedOverlayChildId("child-a", "child-b")).toBe("child-b");
   });
 
   it("prefers a real child snapshot keyed by child.id", () => {
@@ -858,7 +920,7 @@ describe("chat view collaboration overlay visibility", () => {
     expect(turnView?.content).toBe("子代理最终结论。");
   });
 
-  it("renders collapsed child cards with live child content instead of stale generic summaries", () => {
+  it("renders collaboration cards as navigation items with title and status only", () => {
     const html = renderToStaticMarkup(
       createElement(DesktopOverlayRail, {
         childSessions: [{
@@ -877,21 +939,74 @@ describe("chat view collaboration overlay visibility", () => {
         planSteps: [],
         planSectionOpen: true,
         collaborationSectionOpen: true,
-        expandedChildId: undefined,
         onTogglePlanSection: () => undefined,
         onToggleCollaborationSection: () => undefined,
-        onToggleChild: () => undefined,
-        turnSnapshots: {
-          "run-parent-1": parentOverlaySnapshot(),
-        },
+        onOpenChildSessionPage: () => undefined,
       }),
     );
 
-    expect(html).toContain("子代理最终结论。");
+    expect(html).toContain("Research subagent");
+    expect(html).toContain("执行中");
+    expect(html).not.toContain("子代理最终结论。");
     expect(html).not.toContain("后台子 Agent 正在执行任务。");
+    expect(html).not.toContain("等待子代理内容同步");
+    expect(html).not.toContain("aria-expanded");
   });
 
-  it("clips very long collapsed child summaries so the header does not become the full transcript", () => {
+  it("opens the workspace child-session page when a collaboration card is clicked", () => {
+    const onOpenChildSessionPage = vi.fn();
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        createElement(DesktopOverlayRail, {
+          childSessions: [{
+            ...childSession("run-parent-1:ora-sub-1", "running"),
+            agentId: "ora-sub-1",
+            label: "Research subagent",
+            summary: "后台子 Agent 正在执行任务。",
+            sourceRunId: "run-parent-1",
+            replayRef: {
+              kind: "event_range",
+              runId: "run-parent-1",
+              fromSeq: 0,
+              toSeq: 0,
+            },
+          }],
+          planSteps: [],
+          planSectionOpen: true,
+          collaborationSectionOpen: true,
+          onTogglePlanSection: () => undefined,
+          onToggleCollaborationSection: () => undefined,
+          onOpenChildSessionPage,
+        }),
+      );
+    });
+
+    const button = Array.from(container.querySelectorAll("button")).find((entry) =>
+      entry.textContent?.includes("Research subagent"),
+    );
+    expect(button).toBeTruthy();
+
+    act(() => {
+      button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onOpenChildSessionPage).toHaveBeenCalledWith(
+      "run-parent-1:ora-sub-1",
+      "run-parent-1",
+      "Research subagent",
+    );
+
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  it("does not render child summaries even when a long summary is available", () => {
     const longSummary = "很长的子代理摘要".repeat(80);
     const html = renderToStaticMarkup(
       createElement(DesktopOverlayRail, {
@@ -905,16 +1020,13 @@ describe("chat view collaboration overlay visibility", () => {
         planSteps: [],
         planSectionOpen: true,
         collaborationSectionOpen: true,
-        expandedChildId: undefined,
         onTogglePlanSection: () => undefined,
         onToggleCollaborationSection: () => undefined,
-        onToggleChild: () => undefined,
-        turnSnapshots: {},
+        onOpenChildSessionPage: () => undefined,
       }),
     );
 
     expect(html).toContain("Research subagent");
-    expect(html).toContain("…");
     expect(html).not.toContain(longSummary);
     expect(html).toContain("grid-cols-[minmax(0,1fr)_auto]");
   });

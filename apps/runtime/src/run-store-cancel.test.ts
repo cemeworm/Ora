@@ -132,6 +132,108 @@ describe("run store cancellation", () => {
     expect(cancelled.output).toEqual({ text: "我已经完成前半部分分析。" });
   });
 
+  it("projects active child sessions as cancelled when the parent run is cancelled", () => {
+    const source = snapshot("run-cancel-children");
+    const withChildren: StateSnapshot = {
+      ...source,
+      childSessions: [{
+        id: "run-cancel-children:ora-sub-async-1",
+        agentId: "ora-sub-async-1",
+        label: "Async sub-agent",
+        sessionClass: "temporary_spawn",
+        status: "running",
+        lifecyclePhase: "running",
+        resultAvailability: "none",
+        artifactIds: [],
+        recoveryAttemptCount: 0,
+        startedAt: source.updatedAt,
+        updatedAt: source.updatedAt,
+      }],
+      parentCoordination: {
+        phase: "parallel_independent_work",
+        activeChildIds: ["run-cancel-children:ora-sub-async-1"],
+        waitingChildIds: [],
+        blockedByChildIds: [],
+        stalledChildIds: [],
+        recoverableChildIds: [],
+        partialResultChildIds: [],
+        updatedAt: source.updatedAt,
+      },
+    };
+    const store = storeWithSnapshot(withChildren);
+
+    const cancelled = store.cancelRun({ runId: withChildren.runId, reason: "stop" });
+
+    expect(cancelled.status).toBe("cancelled");
+    expect(cancelled.childSessions).toEqual([
+      expect.objectContaining({
+        id: "run-cancel-children:ora-sub-async-1",
+        status: "cancelled",
+        lifecyclePhase: "cancelled",
+        summary: "已取消：stop",
+        lastMessage: "已取消：stop",
+      }),
+    ]);
+    expect(cancelled.parentCoordination).toMatchObject({
+      phase: "resuming_with_child_summaries",
+      activeChildIds: [],
+      waitingChildIds: [],
+      blockedByChildIds: [],
+    });
+  });
+
+  it("also cancels stalled child sessions when the parent run is cancelled", () => {
+    const source = snapshot("run-cancel-stalled-child");
+    const withChildren: StateSnapshot = {
+      ...source,
+      childSessions: [{
+        id: "run-cancel-stalled-child:ora-sub-async-2",
+        agentId: "ora-sub-async-2",
+        label: "Stalled sub-agent",
+        sessionClass: "temporary_spawn",
+        status: "running",
+        lifecyclePhase: "stalled",
+        resultAvailability: "partial",
+        summary: "后台子 Agent 正在执行任务。",
+        lastMessage: "后台子 Agent 正在执行任务。",
+        artifactIds: [],
+        recoveryAttemptCount: 1,
+        startedAt: source.updatedAt,
+        updatedAt: source.updatedAt,
+      }],
+      parentCoordination: {
+        phase: "waiting_on_required_children",
+        activeChildIds: [],
+        waitingChildIds: [],
+        blockedByChildIds: ["run-cancel-stalled-child:ora-sub-async-2"],
+        stalledChildIds: ["run-cancel-stalled-child:ora-sub-async-2"],
+        recoverableChildIds: ["run-cancel-stalled-child:ora-sub-async-2"],
+        partialResultChildIds: ["run-cancel-stalled-child:ora-sub-async-2"],
+        updatedAt: source.updatedAt,
+      },
+    };
+    const store = storeWithSnapshot(withChildren);
+
+    const cancelled = store.cancelRun({ runId: withChildren.runId, reason: "stop" });
+
+    expect(cancelled.childSessions).toEqual([
+      expect.objectContaining({
+        id: "run-cancel-stalled-child:ora-sub-async-2",
+        status: "cancelled",
+        lifecyclePhase: "cancelled",
+        summary: "已取消：stop",
+        lastMessage: "已取消：stop",
+      }),
+    ]);
+    expect(cancelled.parentCoordination).toMatchObject({
+      activeChildIds: [],
+      waitingChildIds: [],
+      blockedByChildIds: [],
+      stalledChildIds: [],
+      recoverableChildIds: [],
+    });
+  });
+
   it("preserves pending continuation work when forking from a recovery checkpoint", async () => {
     const base = snapshot("run-recovery");
     const source: StateSnapshot = {

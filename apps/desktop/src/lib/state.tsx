@@ -665,6 +665,31 @@ function upsertRightWorkspacePage(
   page: RightWorkspacePage,
   open = true,
 ): RightWorkspaceSessionState {
+  if (page.kind === "child_session" && page.childSessionId) {
+    const existingPage = workspace.pages.find((entry) =>
+      entry.kind === "child_session" &&
+      entry.childSessionId === page.childSessionId
+    );
+    if (existingPage) {
+      const mergedPage: RightWorkspacePage = {
+        ...existingPage,
+        ...page,
+        id: existingPage.id,
+        title: page.title || existingPage.title,
+        targetRunId: page.targetRunId ?? existingPage.targetRunId,
+      };
+      const pages = [
+        mergedPage,
+        ...workspace.pages.filter((entry) => entry.id !== existingPage.id),
+      ];
+      return {
+        open: open || workspace.open,
+        pages,
+        selectedPageId: mergedPage.id,
+        width: workspace.width,
+      };
+    }
+  }
   const pages = [
     page,
     ...workspace.pages.filter((entry) => entry.id !== page.id),

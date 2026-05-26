@@ -211,6 +211,11 @@ function LoadingPane() {
   );
 }
 
+function childSessionWorkspacePageTitle(title?: string): string {
+  const trimmed = title?.trim();
+  return trimmed && trimmed.length > 0 ? trimmed : "子会话";
+}
+
 class WorkbenchErrorBoundary extends Component<
   { children: ReactNode },
   { error?: Error }
@@ -1046,6 +1051,32 @@ function WorkbenchInner() {
       state.planDecisionResolutionOverrides,
     ],
   );
+  const fallbackChildSessionWorkspaceSessionId =
+    state.selectedSessionId ?? selectedSession?.id;
+
+  const openChildSessionWorkspacePage = useCallback((params: {
+    childSessionId: string;
+    targetRunId?: string;
+    title?: string;
+    sessionId?: string;
+  }) => {
+    const sessionId =
+      params.sessionId ?? fallbackChildSessionWorkspaceSessionId;
+    if (!sessionId) {
+      return;
+    }
+    dispatch({
+      type: "OPEN_RIGHT_WORKSPACE_PAGE",
+      page: {
+        id: `child-session:${params.childSessionId}:${crypto.randomUUID()}`,
+        kind: "child_session",
+        title: childSessionWorkspacePageTitle(params.title),
+        sessionId,
+        childSessionId: params.childSessionId,
+        targetRunId: params.targetRunId,
+      },
+    });
+  }, [dispatch, fallbackChildSessionWorkspaceSessionId]);
 
   const runInteractionState: DesktopRunInteractionState = useMemo(() => {
     const sessionSummary = state.sessions.find(
@@ -1384,6 +1415,13 @@ function WorkbenchInner() {
             onInterruptRun={actions.interruptRun}
             onReplaySelection={actions.replaySelection}
             onResumeRun={actions.resumeRun}
+            onOpenChildSessionPage={(childSessionId, targetRunId, title) =>
+              openChildSessionWorkspacePage({
+                childSessionId,
+                targetRunId,
+                title,
+              })
+            }
             onAcceptPlanDecisionAndStartImplementation={
               actions.acceptPlanDecisionAndStartImplementation
             }
@@ -1499,17 +1537,11 @@ function WorkbenchInner() {
                       ? handleAddProjectFileToChat(selectedSession.projectId, file)
                       : undefined
                   }
-                  onOpenChildSessionPage={(childSessionId, targetRunId) =>
-                    dispatch({
-                      type: "OPEN_RIGHT_WORKSPACE_PAGE",
-                      page: {
-                        id: `child-session:${childSessionId}:${crypto.randomUUID()}`,
-                        kind: "child_session",
-                        title: "Child session",
-                        sessionId: state.selectedSessionId ?? selectedSession.id,
-                        childSessionId,
-                        targetRunId,
-                      },
+                  onOpenChildSessionPage={(childSessionId, targetRunId, title) =>
+                    openChildSessionWorkspacePage({
+                      childSessionId,
+                      targetRunId,
+                      title,
                     })
                   }
                   onOpenWorkspacePage={(page) =>

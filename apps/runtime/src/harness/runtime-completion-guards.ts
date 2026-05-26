@@ -8,6 +8,7 @@ import type {
 import {
   deriveAcceptedPlanResumeProjection,
   hasAcceptedPlanSameRunImplementationContract,
+  isUnresolvedStalledChildSession,
 } from "@cemeworm/shared";
 
 export interface RuntimeCompletionGuardState {
@@ -30,7 +31,7 @@ export interface RuntimeCompletionGuardState {
   collaborationObserved?: boolean;
   stalledBackgroundChildren?: readonly Pick<
     ChildSessionSummary,
-    "id" | "agentId" | "label" | "lifecyclePhase" | "stallReason" | "resultAvailability"
+    "id" | "agentId" | "label" | "lifecyclePhase" | "stallReason" | "resultAvailability" | "resolutionStatus"
   >[];
 }
 
@@ -316,7 +317,9 @@ export function requiredCollaborationGuard(
 export function stalledBackgroundWorkGuard(
   state: RuntimeCompletionGuardState,
 ): RuntimeCompletionGuardResult {
-  const stalledChildren = state.stalledBackgroundChildren ?? [];
+  const stalledChildren = (state.stalledBackgroundChildren ?? []).filter((child) =>
+    isUnresolvedStalledChildSession(child)
+  );
   if (stalledChildren.length === 0) {
     return { allowComplete: true };
   }
@@ -328,6 +331,9 @@ export function stalledBackgroundWorkGuard(
       ];
       if (child.resultAvailability) {
         parts.push(`result=${child.resultAvailability}`);
+      }
+      if (child.resolutionStatus) {
+        parts.push(`resolution=${child.resolutionStatus}`);
       }
       if (child.stallReason) {
         parts.push(`reason=${child.stallReason}`);

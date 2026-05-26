@@ -159,6 +159,10 @@ function withRootProfile(profiles: ReturnType<AgentProfileRegistry["list"]>) {
     : [rootAgentProfile(), ...profiles];
 }
 
+function backgroundChildCancellationSummary(reason: string): string {
+  return reason.trim().length > 0 ? `已取消：${reason}` : "已取消。";
+}
+
 export function cancelledRunSnapshot(params: {
   snapshot: StateSnapshot;
   payload: unknown;
@@ -180,6 +184,31 @@ export function cancelledRunSnapshot(params: {
     status: item.status === "done" || item.status === "skipped" ? item.status : "blocked" as const,
     updatedAt: params.updatedAt,
   }));
+  const cancellationSummary = backgroundChildCancellationSummary(reason);
+  const childSessions = (params.snapshot.childSessions ?? []).map((child) => {
+    const lifecyclePhase = child.lifecyclePhase;
+    const isActive = lifecyclePhase === undefined
+      ? child.status === "queued" || child.status === "running"
+      : lifecyclePhase === "queued" || lifecyclePhase === "running" || lifecyclePhase === "produced_output" || lifecyclePhase === "stalled";
+    if (!isActive) {
+      return child;
+    }
+    return {
+      ...child,
+      status: "cancelled" as const,
+      lifecyclePhase: "cancelled" as const,
+      deliveryStatus: undefined,
+      resultAvailability:
+        child.resultAvailability === "visible_output" || child.resultAvailability === "partial"
+          ? "partial" as const
+          : "none" as const,
+      summary: cancellationSummary,
+      lastMessage: cancellationSummary,
+      stallReason: child.stallReason ?? "parent_run_cancelled",
+      updatedAt: params.updatedAt,
+      completedAt: child.completedAt ?? params.updatedAt,
+    };
+  });
   const assistantText = projectAssistantTextFromSnapshot(params.snapshot);
   return normalizeRunAttention(StateSnapshotSchema.parse({
     ...params.snapshot,
@@ -215,6 +244,22 @@ export function cancelledRunSnapshot(params: {
     ),
     pendingApprovals: [],
     activeAgents: [],
+    childSessions,
+    parentCoordination: childSessions.length > 0
+      ? {
+          phase: "resuming_with_child_summaries" as const,
+          activeChildIds: [],
+          waitingChildIds: [],
+          blockedByChildIds: [],
+          stalledChildIds: [],
+          recoverableChildIds: [],
+          partialResultChildIds: childSessions
+            .filter((child) => child.resultAvailability === "visible_output" || child.resultAvailability === "queued_for_parent" || child.resultAvailability === "consumed" || child.resultAvailability === "partial")
+            .map((child) => child.id),
+          summary: "父 run 已取消，后台子任务已终止。",
+          updatedAt: params.updatedAt,
+        }
+      : params.snapshot.parentCoordination,
     queueSummary: {
       ...params.snapshot.queueSummary,
       inProgress: 0,

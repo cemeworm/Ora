@@ -142,6 +142,7 @@ interface ChatInputProps {
   onConfirmPlanDecision?: () => void | boolean | Promise<void | boolean>;
   onDeclinePlanDecision?: () => void | boolean | Promise<void | boolean>;
   onOverlayHeightChange?: (height: number) => void;
+  onSurfaceFrameWidthChange?: (width: number) => void;
   surfaceFrameWidthClassName?: string;
   onStartRun: () => void;
   onStopRun: () => void;
@@ -1241,6 +1242,7 @@ export function ChatInput({
   onConfirmPlanDecision,
   onDeclinePlanDecision,
   onOverlayHeightChange,
+  onSurfaceFrameWidthChange,
   surfaceFrameWidthClassName = CHAT_SURFACE_FRAME_WIDTH_CLASS,
   onStartRun,
   onStopRun,
@@ -1274,6 +1276,7 @@ export function ChatInput({
   );
   const editorSeedVersionRef = useRef(0);
   const overlayRef = useRef<HTMLDivElement>(null);
+  const surfaceFrameRef = useRef<HTMLDivElement>(null);
   const editorRootRef = useRef<HTMLDivElement | null>(null);
   const editorApiRef = useRef<LexicalEditor | null>(null);
   const lastOverlayHeightRef = useRef<number | undefined>(undefined);
@@ -1479,6 +1482,34 @@ export function ChatInput({
     approvalActions,
     planDecisionPending,
     planSteps,
+  ]);
+
+  useLayoutEffect(() => {
+    const target = surfaceFrameRef.current;
+    if (!target || !onSurfaceFrameWidthChange) return;
+
+    const reportWidth = () => {
+      onSurfaceFrameWidthChange(Math.ceil(target.getBoundingClientRect().width));
+    };
+
+    reportWidth();
+    if (typeof ResizeObserver === "undefined") {
+      return;
+    }
+
+    const observer = new ResizeObserver(reportWidth);
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [
+    hasFileChips,
+    hideComposer,
+    onSurfaceFrameWidthChange,
+    plainTextPrompt,
+    planSteps,
+    showApprovalTray,
+    showClarificationTray,
+    showPlanDecisionTray,
+    surfaceFrameWidthClassName,
   ]);
 
   useEffect(() => {
@@ -1834,6 +1865,7 @@ export function ChatInput({
         )}
       >
         <div
+          ref={surfaceFrameRef}
           data-testid="chat-input-surface-frame"
           className={cn(
             "pointer-events-none relative mx-auto",

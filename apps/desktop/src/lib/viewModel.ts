@@ -1380,6 +1380,7 @@ export function adaptChatMessages(
   turnSnapshots: Record<string, OraStateSnapshot | undefined> = {},
   liveMessageDeltas: Record<string, LiveMessageDeltaPreview> = {},
 ): ChatMessage[] {
+  const dynamicSpawnChildRunIds = collectDynamicSpawnChildRunIds(turnSnapshots);
   const grouped = new Map<
     string,
     {
@@ -1423,6 +1424,7 @@ export function adaptChatMessages(
   }
 
   return [...grouped.values()]
+    .filter((turn) => !dynamicSpawnChildRunIds.has(turn.runId))
     .sort((left, right) => left.turnIndex - right.turnIndex)
     .flatMap((turn) => {
       const messages: ChatMessage[] = [];
@@ -1559,6 +1561,31 @@ export function adaptChatMessages(
 
       return messages;
     });
+}
+
+function collectDynamicSpawnChildRunIds(
+  turnSnapshots: Record<string, OraStateSnapshot | undefined>,
+): Set<string> {
+  const childRunIds = new Set<string>();
+  for (const snapshot of Object.values(turnSnapshots)) {
+    if (!snapshot) continue;
+    for (const child of snapshot.childSessions ?? []) {
+      if (!isMainChatSuppressedDynamicSpawnChild(child)) continue;
+      childRunIds.add(child.id);
+    }
+  }
+  return childRunIds;
+}
+
+function isMainChatSuppressedDynamicSpawnChild(
+  child: NonNullable<OraStateSnapshot["childSessions"]>[number],
+): boolean {
+  if (child.authoritySource === "dynamic_spawn" || child.delegationKind === "dynamic_spawn") {
+    return true;
+  }
+  return !child.authoritySource &&
+    !child.delegationKind &&
+    child.sessionClass === "temporary_spawn";
 }
 
 export function adaptPendingRunMessages(
@@ -4544,6 +4571,10 @@ function timelineProcessEventAgentId(
 
 function publicTimelineNarrativeText(event: OraEventEnvelope): string | undefined {
   if (event.type === "child_session.updated") {
+    const milestoneKind = childSessionMilestoneKindFromEvent(event);
+    if (milestoneKind === "spawn_started" || milestoneKind === "result_returned") {
+      return undefined;
+    }
     return childSessionPublicMilestoneText(event);
   }
   if (
@@ -4556,7 +4587,7 @@ function publicTimelineNarrativeText(event: OraEventEnvelope): string | undefine
       return spawnToolFailureNarrativeText(event.payload);
     }
     if (shouldShowSuccessfulSpawnNarrative(event, event.payload)) {
-      return spawnToolSuccessNarrativeText(event.payload);
+      return undefined;
     }
   }
   return undefined;

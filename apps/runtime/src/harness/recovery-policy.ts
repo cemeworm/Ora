@@ -168,7 +168,7 @@ export function classifyRecoveryError(error: unknown, context: {
     const structuredProviderType = classifyStructuredProviderError(error);
     if (structuredProviderType) {
       errorType = structuredProviderType;
-    } else if (matchesAny(lowered, ["no project folder", "eacces", "eperm", "permission denied"])) {
+    } else if (matchesAny(lowered, ["no project folder", "a selected project folder is required", "eacces", "eperm", "permission denied"])) {
       errorType = "env_unavailable";
     } else if (matchesAny(lowered, ["quota", "billing", "credit", "payment"])) {
       errorType = "provider_quota";

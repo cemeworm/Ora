@@ -188,6 +188,7 @@ import {
   deriveSnapshotGateProjection,
   deriveSessionBranchGroupStatus,
   deriveSessionBranchGroupsForSession,
+  isUnresolvedStalledChildSession,
   ensureModeNodePositions,
   getModePreset,
   getModeNodeRuntimeTemplateDefinition,
@@ -385,6 +386,26 @@ describe("Ora shared contracts", () => {
     const builderMode = MVP_MODES.find((mode) => mode.id === MODE_STUDIO_BUILDER_MODE_ID)!;
     expect(builderMode.visibility).toBe("internal");
     expect(builderMode.family).toBe("agent_teams");
+  });
+
+  it("treats only open stalled partial children as unresolved blocking children", () => {
+    expect(isUnresolvedStalledChildSession({
+      lifecyclePhase: "stalled",
+      resultAvailability: "partial",
+      resolutionStatus: "open",
+    })).toBe(true);
+
+    expect(isUnresolvedStalledChildSession({
+      lifecyclePhase: "stalled",
+      resultAvailability: "partial",
+      resolutionStatus: "accepted_partial",
+    })).toBe(false);
+
+    expect(isUnresolvedStalledChildSession({
+      lifecyclePhase: "awaiting_pickup",
+      resultAvailability: "queued_for_parent",
+      resolutionStatus: "open",
+    })).toBe(false);
   });
 
   it("validates automation contracts and RPC method names", () => {

@@ -895,6 +895,57 @@ describe("desktop workbench state", () => {
     });
   });
 
+  it("reuses an existing child-session page for the same childSessionId", () => {
+    let state = workbenchReducer(initialWorkbenchState, {
+      type: "SET_COLLECTIONS",
+      projects: [],
+      sessions: [sessionSummary("session-a")],
+    });
+
+    state = workbenchReducer(state, { type: "SELECT_SESSION", sessionId: "session-a" });
+    state = workbenchReducer(state, {
+      type: "OPEN_RIGHT_WORKSPACE_PAGE",
+      page: {
+        id: "child-session:session-child:1",
+        kind: "child_session",
+        title: "Research subagent",
+        sessionId: "session-a",
+        childSessionId: "session-child",
+        targetRunId: "run-child-1",
+      },
+    });
+    state = workbenchReducer(state, {
+      type: "SET_RIGHT_WORKSPACE_OPEN",
+      sessionId: "session-a",
+      open: false,
+    });
+
+    state = workbenchReducer(state, {
+      type: "OPEN_RIGHT_WORKSPACE_PAGE",
+      page: {
+        id: "child-session:session-child:2",
+        kind: "child_session",
+        title: "Research subagent v2",
+        sessionId: "session-a",
+        childSessionId: "session-child",
+        targetRunId: "run-child-2",
+      },
+    });
+
+    expect(state.rightWorkspaceBySessionId["session-a"]).toMatchObject({
+      open: true,
+      selectedPageId: "child-session:session-child:1",
+    });
+    expect(state.rightWorkspaceBySessionId["session-a"]?.pages).toHaveLength(1);
+    expect(state.rightWorkspaceBySessionId["session-a"]?.pages[0]).toMatchObject({
+      id: "child-session:session-child:1",
+      kind: "child_session",
+      title: "Research subagent v2",
+      childSessionId: "session-child",
+      targetRunId: "run-child-2",
+    });
+  });
+
   it("persists right workspace width per session and keeps empty open workspaces valid", () => {
     let state = workbenchReducer(initialWorkbenchState, {
       type: "SET_COLLECTIONS",

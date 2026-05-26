@@ -92,6 +92,15 @@ describe("recovery policy classification", () => {
     expect(incident).toMatchObject({ errorType: "provider_transient" });
   });
 
+  it("classifies missing selected project folder as env_unavailable even on provider-like surfaces", () => {
+    const incident = classifyRecoveryError(
+      new Error("A selected project folder is required for this tool."),
+      { surface: "provider", nodeId: "solo_agent", agentId: "solo_agent" },
+    );
+
+    expect(incident).toMatchObject({ errorType: "env_unavailable" });
+  });
+
   it("keeps real tool execution failures eligible for fallback artifacts", () => {
     const modeSpec = getModePreset("single_agent")!;
     const coordinator = new RecoveryCoordinator(modeSpec, ["file.read"]);

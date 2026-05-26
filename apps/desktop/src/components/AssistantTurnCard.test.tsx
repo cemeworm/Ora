@@ -677,7 +677,7 @@ describe("assistant turn display helpers", () => {
     );
 
     expect(html).toContain("已委派 Research subagent，正在处理子任务。");
-    expect(html).not.toContain("已委派 Research subagent 在后台处理子任务（research_readonly）。");
+    expect(html).toContain("已委派 Research subagent 在后台处理子任务（research_readonly）。");
     expect(html).not.toContain("已读取 apps/desktop/src/components/AssistantTurnCard.tsx。");
   });
 
@@ -1037,7 +1037,7 @@ describe("assistant turn display helpers", () => {
       <AssistantTurnCard content="文档已更新。" turn={turn} />,
     );
 
-    expect(html).not.toContain("已更新任务计划：1/2 完成，正在 汇总结论");
+    expect(html).toContain("已更新任务计划：1/2 完成，正在 汇总结论");
     expect(html).toContain("notes/project.md");
     expect(html).not.toContain("工具调用更新：plan.update（已完成）");
     expect(html).not.toContain("已发布产物：notes/project.md。");
@@ -1380,7 +1380,7 @@ describe("assistant turn display helpers", () => {
     );
 
     expect(html.split(duplicateText).length - 1).toBe(1);
-    expect(html).toContain("正在思考");
+    expect(html).not.toContain("正在思考");
   });
 
   it("keeps distinct body text visible alongside projected timeline agent messages", () => {

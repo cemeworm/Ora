@@ -64,7 +64,11 @@ interface RightWorkspacePaneProps {
   onCancelRun: () => void;
   onCopyPath: (path: string) => void;
   onAddFileToChat: (file: OraProjectFileEntry) => void;
-  onOpenChildSessionPage: (childSessionId: string, targetRunId?: string) => void;
+  onOpenChildSessionPage: (
+    childSessionId: string,
+    targetRunId?: string,
+    title?: string,
+  ) => void;
   onOpenWorkspacePage: (page: RightWorkspacePage) => void;
   onCloseWorkspace: () => void;
   onSelectPage: (page: RightWorkspacePage) => void;
@@ -421,7 +425,11 @@ function ChildSessionWorkspacePage({
   detail?: OraSessionDetail;
   snapshot?: OraStateSnapshot;
   runtimeClient: RuntimeClient;
-  onOpenChildSessionPage: (childSessionId: string, targetRunId?: string) => void;
+  onOpenChildSessionPage: (
+    childSessionId: string,
+    targetRunId?: string,
+    title?: string,
+  ) => void;
 }) {
   const [activeSection, setActiveSection] = useState<"conversation" | "turns" | "artifacts">("conversation");
   const [turnSnapshotsByRunId, setTurnSnapshotsByRunId] = useState<Record<string, OraStateSnapshot | undefined>>({});
@@ -551,7 +559,11 @@ function ChildSessionWorkspacePage({
             <button
               type="button"
               onClick={() =>
-                onOpenChildSessionPage(detail.session.sessionId, latestTurn.runId)
+                onOpenChildSessionPage(
+                  detail.session.sessionId,
+                  latestTurn.runId,
+                  detail.session.title,
+                )
               }
               className="mt-3 inline-flex items-center gap-2 rounded-full border border-border bg-background/80 px-3 py-1 text-xs text-foreground transition hover:bg-accent hover:text-accent-foreground"
             >

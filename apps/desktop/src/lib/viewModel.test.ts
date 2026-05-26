@@ -6259,17 +6259,13 @@ describe("desktop session view model", () => {
     );
 
     const assistant = messages.find((message) => message.role === "assistant");
-    const timelineText = assistant?.turn?.timelineItems
-      ?.flatMap((item) => "content" in item ? [item.content] : "summary" in item ? [item.summary] : [])
-      .join("\n") ?? "";
-
+    const assistantTexts = assistant?.turn?.timelineItems
+      ?.flatMap((item) => item.kind === "assistant_text" ? [item.content] : []) ?? [];
     expect(assistant?.content).toBe("");
     expect(assistant?.turn?.presentation?.showStandaloneBody).toBe(false);
-    expect(timelineText).toContain("已委派 Research subagent，正在处理子任务。");
-    expect(timelineText.match(/已委派 Research subagent，正在处理子任务。/g)).toHaveLength(1);
-    expect(timelineText).toContain("Research subagent 已完成，结果已回流，父 Agent 正在整合。");
-    expect(timelineText).not.toContain("Research subagent 正在读取相关文件。");
-    expect(timelineText).not.toContain("ChatInput.tsx");
+    expect(assistantTexts).not.toContain("已委派 Research subagent，正在处理子任务。");
+    expect(assistantTexts).not.toContain("Research subagent 已完成，结果已回流，父 Agent 正在整合。");
+    expect(assistantTexts).not.toContain("Research subagent 正在读取相关文件。");
     expect(assistant?.turn?.processSteps?.map((step) => step.label)).toEqual([
       "委派子代理",
       "委派子代理",
@@ -6397,19 +6393,169 @@ describe("desktop session view model", () => {
       { [runId]: snapshot },
     ).find((message) => message.role === "assistant");
 
-    const timelineText = assistant?.turn?.timelineItems
-      ?.flatMap((item) => "content" in item ? [item.content] : "summary" in item ? [item.summary] : [])
-      .join("\n") ?? "";
+    const assistantTexts = assistant?.turn?.timelineItems
+      ?.flatMap((item) => item.kind === "assistant_text" ? [item.content] : []) ?? [];
     const finalItems = assistant?.turn?.timelineItems?.filter((item) =>
       item.kind === "final_text" && "content" in item
     ) ?? [];
 
     expect(assistant?.content).toBe("综合子代理结果后，结论是应该先保持 record_only。");
-    expect(timelineText).toContain("Research subagent 已完成，结果已回流，父 Agent 正在整合。");
+    expect(assistantTexts).not.toContain("Research subagent 已完成，结果已回流，父 Agent 正在整合。");
     expect(finalItems).toContainEqual(expect.objectContaining({
       kind: "final_text",
       content: "综合子代理结果后，结论是应该先保持 record_only。",
     }));
+  });
+
+  it("suppresses dynamic_spawn child runs from the main chat while keeping the parent turn intact", () => {
+    const createdAt = 1_714_000_250_000;
+    const parentRunId = "run-dynamic-spawn-parent";
+    const childRunId = `${parentRunId}:ora-sub-1`;
+    const parentSnapshot = {
+      runId: parentRunId,
+      sessionId: "session-dynamic-spawn-parent",
+      turnIndex: 1,
+      status: "running",
+      pattern: "orchestrator_subagent",
+      modeId: DEERFLOW_HARNESS_MODE_ID,
+      input: { prompt: "coordinate subagents", createdAt, context: {} },
+      config: {
+        modeId: DEERFLOW_HARNESS_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["ora", "ora-sub-1"],
+        providerId: "deepseek",
+        modelRef: "deepseek-chat",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-dynamic-spawn-main-chat-test",
+        skillIds: [],
+        toolIds: ["agent.spawn", "file.read"],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [
+        { id: ORA_ROOT_AGENT_ID, label: ORA_ROOT_AGENT_LABEL, role: "root", model: "deepseek-chat", tools: [], budget: "", memoryScopes: [] },
+        { id: "ora-sub-1", label: "Research subagent", role: "research", model: "deepseek-chat", tools: [], budget: "", memoryScopes: [] },
+      ],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [
+        {
+          id: `${parentRunId}:evt-0`,
+          runId: parentRunId,
+          seq: 0,
+          type: "tool.called",
+          createdAt: createdAt + 1,
+          pattern: "orchestrator_subagent",
+          agentId: ORA_ROOT_AGENT_ID,
+          nodeId: ORA_ROOT_AGENT_ID,
+          payload: {
+            toolId: "agent.spawn",
+            status: "succeeded",
+            input: {
+              description: "Research subagent",
+              tool_bundle: "research_readonly",
+            },
+            output: {
+              status: "async_launched",
+              child_agent_id: "ora-sub-1",
+              tool_bundle: "research_readonly",
+            },
+          },
+        },
+        {
+          id: `${parentRunId}:evt-1`,
+          runId: parentRunId,
+          seq: 1,
+          type: "child_session.updated",
+          createdAt: createdAt + 2,
+          pattern: "orchestrator_subagent",
+          payload: {
+            childSession: {
+              id: childRunId,
+              agentId: "ora-sub-1",
+              label: "Research subagent",
+              sessionClass: "temporary_spawn",
+              authoritySource: "dynamic_spawn",
+              delegationKind: "dynamic_spawn",
+              status: "running",
+              deliveryStatus: "running",
+              startedAt: createdAt + 1,
+              updatedAt: createdAt + 2,
+              summary: "正在读取相关文件。",
+            },
+          },
+        },
+      ],
+      childSessions: [{
+        id: childRunId,
+        agentId: "ora-sub-1",
+        label: "Research subagent",
+        sessionClass: "temporary_spawn",
+        authoritySource: "dynamic_spawn",
+        delegationKind: "dynamic_spawn",
+        status: "running",
+        deliveryStatus: "running",
+        parentTaskIntent: "chat",
+        childTaskIntent: "chat",
+        startedAt: createdAt + 1,
+        updatedAt: createdAt + 2,
+        summary: "正在读取相关文件。",
+      }],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 1, completed: 0, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      updatedAt: createdAt + 2,
+    } as unknown as OraStateSnapshot;
+
+    const childSnapshot = {
+      ...parentSnapshot,
+      runId: childRunId,
+      sessionId: "session-dynamic-spawn-child",
+      turnIndex: 2,
+      childSessions: [],
+      events: [],
+      updatedAt: createdAt + 3,
+    } as unknown as OraStateSnapshot;
+
+    const messages = adaptChatMessages(
+      [{
+        id: `${parentRunId}:user`,
+        sessionId: "session-dynamic-spawn-parent",
+        runId: parentRunId,
+        turnIndex: 1,
+        role: "user",
+        content: "coordinate subagents",
+        pattern: "orchestrator_subagent",
+        modeId: DEERFLOW_HARNESS_MODE_ID,
+        createdAt,
+      }],
+      {
+        [parentRunId]: parentSnapshot,
+        [childRunId]: childSnapshot,
+      },
+    );
+
+    const assistantMessages = messages.filter((message) => message.role === "assistant");
+    const parentAssistant = assistantMessages.find((message) => message.metadata?.runId === parentRunId);
+
+    expect(assistantMessages).toHaveLength(1);
+    expect(parentAssistant?.turn).toBeDefined();
+    expect(parentAssistant?.turn?.processSteps?.map((step) => step.label)).toEqual([
+      "委派子代理",
+      "委派子代理",
+    ]);
+    expect(messages.some((message) => message.metadata?.runId === childRunId)).toBe(false);
   });
 
   it("keeps mode-stage delegation inside the parent turn instead of adding a separate assistant message", () => {
@@ -6814,10 +6960,6 @@ describe("desktop session view model", () => {
     expect(assistant?.turn?.timelineItems).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          kind: "assistant_text",
-          content: "已委派 Research subagent，正在处理子任务。",
-        }),
-        expect.objectContaining({
           kind: "status_group",
           summary: "已委派 Research subagent 在后台处理子任务（research_readonly）。",
           steps: [
@@ -6835,6 +6977,137 @@ describe("desktop session view model", () => {
         }),
       ]),
     );
+    expect(assistant?.turn?.timelineItems).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "assistant_text",
+          content: "已委派 Research subagent，正在处理子任务。",
+        }),
+      ]),
+    );
+  });
+
+  it("keeps failure-like child session milestones visible as public narratives", () => {
+    const createdAt = 1_714_000_350_000;
+    const cases = [
+      {
+        runId: "run-child-session-failed-inline",
+        status: "failed",
+        lifecyclePhase: "failed",
+        expectedText: "Research subagent 执行失败，父 Agent 正在处理。",
+      },
+      {
+        runId: "run-child-session-cancelled-inline",
+        status: "cancelled",
+        lifecyclePhase: "cancelled",
+        expectedText: "Research subagent 已取消，父 Agent 正在调整后续步骤。",
+      },
+      {
+        runId: "run-child-session-stalled-inline",
+        status: "running",
+        lifecyclePhase: "stalled",
+        expectedText: "Research subagent 进展卡住，父 Agent 正在处理。",
+      },
+    ] as const;
+
+    for (const testCase of cases) {
+      const snapshot = {
+        runId: testCase.runId,
+        sessionId: `${testCase.runId}:session`,
+        turnIndex: 1,
+        status: "running",
+        pattern: "orchestrator_subagent",
+        modeId: DEERFLOW_HARNESS_MODE_ID,
+        input: { prompt: "coordinate subagents", createdAt, context: {} },
+        config: {
+          modeId: DEERFLOW_HARNESS_MODE_ID,
+          pattern: "orchestrator_subagent",
+          modeSelection: "manual",
+          profileIds: ["ora", "ora-sub-1"],
+          providerId: "deepseek",
+          modelRef: "deepseek-chat",
+          approvalMode: "high_risk_only",
+          patternOptions: {},
+          metadata: {},
+          deterministicSeed: `${testCase.runId}:test`,
+          skillIds: [],
+          toolIds: ["agent.spawn"],
+        },
+        topology: { nodes: [], edges: [] },
+        profiles: [
+          { id: ORA_ROOT_AGENT_ID, label: ORA_ROOT_AGENT_LABEL, role: "root", model: "deepseek-chat", tools: [], budget: "", memoryScopes: [] },
+          { id: "ora-sub-1", label: "Research subagent", role: "research", model: "deepseek-chat", tools: [], budget: "", memoryScopes: [] },
+        ],
+        memory: [],
+        plan: [],
+        todos: [],
+        actions: [],
+        toolCalls: [],
+        policyDecisions: [],
+        checkpoints: [],
+        events: [
+          {
+            id: `${testCase.runId}:evt-0`,
+            runId: testCase.runId,
+            seq: 0,
+            type: "child_session.updated",
+            createdAt: createdAt + 1,
+            pattern: "orchestrator_subagent",
+            payload: {
+              childSession: {
+                id: `${testCase.runId}:ora-sub-1`,
+                agentId: "ora-sub-1",
+                label: "Research subagent",
+                status: testCase.status,
+                lifecyclePhase: testCase.lifecyclePhase,
+                updatedAt: createdAt + 1,
+              },
+            },
+          },
+        ],
+        childSessions: [{
+          id: `${testCase.runId}:ora-sub-1`,
+          agentId: "ora-sub-1",
+          label: "Research subagent",
+          sessionClass: "temporary_spawn",
+          status: testCase.status,
+          deliveryStatus: testCase.lifecyclePhase,
+          lifecyclePhase: testCase.lifecyclePhase,
+          parentTaskIntent: "chat",
+          childTaskIntent: "chat",
+          startedAt: createdAt,
+          updatedAt: createdAt + 1,
+        }],
+        artifacts: [],
+        activeAgents: [],
+        queueSummary: { mode: "dag", pending: 0, inProgress: 1, completed: 0, topics: [] },
+        sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+        busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+        pendingClarifications: [],
+        pendingApprovals: [],
+        updatedAt: createdAt + 1,
+      } as unknown as OraStateSnapshot;
+
+      const assistant = adaptChatMessages(
+        [{
+          id: `${testCase.runId}:user`,
+          sessionId: `${testCase.runId}:session`,
+          runId: testCase.runId,
+          turnIndex: 1,
+          role: "user",
+          content: "coordinate subagents",
+          pattern: "orchestrator_subagent",
+          modeId: DEERFLOW_HARNESS_MODE_ID,
+          createdAt,
+        }],
+        { [testCase.runId]: snapshot },
+      ).find((message) => message.role === "assistant");
+
+      const assistantTexts = assistant?.turn?.timelineItems
+        ?.flatMap((item) => item.kind === "assistant_text" ? [item.content] : []) ?? [];
+
+      expect(assistantTexts).toContain(testCase.expectedText);
+    }
   });
 
   it("keeps progress-only status distinct and prefers streamed assistant answer", () => {
