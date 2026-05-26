@@ -58,6 +58,7 @@ import {
   useWorkbench,
   WorkbenchProvider,
 } from "./lib/state";
+import { clampRightWorkspaceWidth, getRightWorkspaceMaxWidth } from "./lib/rightWorkspaceLayout";
 import type { AppView, ChatMessage, ActionRecord, CheckpointRecord, PlanItem, SessionRun, TopologyNode, TopologyEdge, AgentProfile, ArtifactRecord } from "./types";
 import { cn } from "./lib/utils";
 import { getRecords, clearRecords, timeStart, timeEnd, recordTiming } from "./lib/debugTiming";
@@ -117,8 +118,6 @@ const SkillsView = lazy(() =>
 );
 
 const MIN_DETAIL_PANEL_WIDTH = 360;
-const MIN_MAIN_PANEL_WIDTH = 640;
-const MAX_DETAIL_PANEL_WIDTH = 720;
 const WINDOW_TITLE_BASE = "Ora";
 const MAX_TURN_SNAPSHOT_SESSIONS = 8;
 const MAX_TURN_SNAPSHOTS_PER_SESSION = 40;
@@ -404,9 +403,10 @@ function WorkbenchInner() {
   const [workspaceClosingSessionId, setWorkspaceClosingSessionId] = useState<string | undefined>(undefined);
   const [workspaceAnimatedOpen, setWorkspaceAnimatedOpen] = useState(false);
   const [isResizingRightWorkspace, setIsResizingRightWorkspace] = useState(false);
-  const selectedWorkspaceWidth = Math.min(
-    Math.max(selectedSessionWorkspace.width || DEFAULT_RIGHT_WORKSPACE_WIDTH, MIN_DETAIL_PANEL_WIDTH),
-    MAX_DETAIL_PANEL_WIDTH,
+  const [splitContainerWidth, setSplitContainerWidth] = useState<number | null>(null);
+  const selectedWorkspaceWidth = clampRightWorkspaceWidth(
+    selectedSessionWorkspace.width || DEFAULT_RIGHT_WORKSPACE_WIDTH,
+    splitContainerWidth,
   );
   const isCurrentWorkspaceVisible =
     selectedSessionWorkspace.open ||
@@ -469,6 +469,26 @@ function WorkbenchInner() {
     }, 220);
   }, [selectedSessionWorkspace.open, state.selectedSessionId, visibleWorkspaceSessionId]);
 
+  useEffect(() => {
+    if (!splitContainerRef.current) {
+      setSplitContainerWidth(null);
+      return;
+    }
+
+    const updateWidth = () => {
+      const nextWidth = Math.ceil(splitContainerRef.current?.getBoundingClientRect().width ?? 0);
+      setSplitContainerWidth((current) => (current === nextWidth ? current : nextWidth));
+    };
+
+    updateWidth();
+    if (typeof ResizeObserver === "undefined") {
+      return;
+    }
+    const observer = new ResizeObserver(() => updateWidth());
+    observer.observe(splitContainerRef.current);
+    return () => observer.disconnect();
+  }, []);
+
   const handleRightWorkspaceResize = useCallback((clientX: number) => {
     const container = splitContainerRef.current;
     const sessionId = state.selectedSessionId;
@@ -477,8 +497,7 @@ function WorkbenchInner() {
     }
     const rect = container.getBoundingClientRect();
     const nextWidth = rect.right - clientX;
-    const maxWidth = Math.min(MAX_DETAIL_PANEL_WIDTH, rect.width - MIN_MAIN_PANEL_WIDTH);
-    const clampedWidth = Math.max(MIN_DETAIL_PANEL_WIDTH, Math.min(nextWidth, maxWidth));
+    const clampedWidth = clampRightWorkspaceWidth(nextWidth, rect.width);
     dispatch({
       type: "SET_RIGHT_WORKSPACE_WIDTH",
       sessionId,
@@ -1501,7 +1520,7 @@ function WorkbenchInner() {
               )}
               style={{
                 width: workspaceAnimatedOpen ? selectedWorkspaceWidth : 0,
-                maxWidth: MAX_DETAIL_PANEL_WIDTH,
+                maxWidth: getRightWorkspaceMaxWidth(splitContainerWidth),
               }}
             >
               <WorkspacePane
@@ -1509,7 +1528,7 @@ function WorkbenchInner() {
                 style={{
                   width: selectedWorkspaceWidth,
                   minWidth: MIN_DETAIL_PANEL_WIDTH,
-                  maxWidth: MAX_DETAIL_PANEL_WIDTH,
+                  maxWidth: getRightWorkspaceMaxWidth(splitContainerWidth),
                 }}
               >
                 <RightWorkspacePane

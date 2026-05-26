@@ -681,6 +681,49 @@ describe("assistant turn display helpers", () => {
     expect(html).not.toContain("已读取 apps/desktop/src/components/AssistantTurnCard.tsx。");
   });
 
+  it("keeps collaboration progress visible when the assistant body is present", () => {
+    const turn: AssistantTurnAttachment = {
+      runId: "run-1",
+      turnIndex: 1,
+      status: "running",
+      pattern: "orchestrator_subagent",
+      sources: [],
+      processSteps: [],
+      timelineItems: [
+        {
+          id: "status-1",
+          kind: "status_group",
+          summary: "已委派 Research subagent 在后台处理子任务（research_readonly）。",
+          timestamp: "00:01",
+          status: "active",
+          steps: [
+            processStep("spawn-step", "complete", "已委派 Research subagent 在后台处理子任务（research_readonly）。", {
+              label: "委派子代理",
+            }),
+            processStep("read-step", "active", "已读取 apps/desktop/src/components/AssistantTurnCard.tsx。", {
+              label: "读取文件",
+            }),
+          ],
+        },
+      ],
+      agentMessages: [],
+      artifacts: [],
+      todos: [],
+      planList: [],
+      approvalCount: 0,
+      clarificationCount: 0,
+      hasProposedPlan: false,
+    };
+
+    const html = renderToStaticMarkup(
+      <AssistantTurnCard content="我会先整理上下文。" turn={turn} />,
+    );
+
+    expect(html).toContain("我会先整理上下文。");
+    expect(html).toContain("已委派 Research subagent 在后台处理子任务（research_readonly）。");
+    expect(html).not.toContain("已读取 apps/desktop/src/components/AssistantTurnCard.tsx。");
+  });
+
   it("renders delegation actions inside the same assistant turn", () => {
     const turn: AssistantTurnAttachment = {
       runId: "run-1",

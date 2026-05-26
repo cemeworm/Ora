@@ -60,9 +60,9 @@ export const CHAT_VIEW_DESKTOP_OVERLAY_RAIL_CLASS =
 export const CHAT_VIEW_DESKTOP_FLOATING_STACK_CLASS =
   "pointer-events-auto flex w-[min(20rem,calc(100vw-8.5rem))] flex-col gap-2.5";
 export const CHAT_VIEW_OVERLAY_PANEL_CLASS = FLOATING_OVERLAY_PANEL_CLASS;
-export const CHAT_VIEW_OVERLAY_SECTION_CLASS = "border-t border-border/55 pt-3 first:border-t-0 first:pt-0";
+export const CHAT_VIEW_OVERLAY_SECTION_CLASS = "border-t border-border/55 pt-2.5 first:border-t-0 first:pt-0";
 export const CHAT_VIEW_OVERLAY_SECTION_HEADER_CLASS =
-  "flex items-center justify-between gap-3 px-1 pb-2";
+  "flex min-h-14 items-center justify-between gap-3 px-1 py-2";
 export const CHAT_VIEW_OVERLAY_SECTION_TITLE_CLASS =
   "text-sm font-semibold text-foreground";
 export const CHAT_VIEW_OVERLAY_SECTION_SUMMARY_CLASS =
@@ -75,8 +75,6 @@ export const CHAT_VIEW_COLLABORATION_ICON_PLATE_CLASS = cn(
 export const CHAT_VIEW_COLLABORATION_ITEM_CLASS = FLOATING_OVERLAY_CARD_CLASS;
 export const CHAT_VIEW_DESKTOP_OVERLAY_IDEAL_CONTENT_ROW_WIDTH = 1272;
 export const CHAT_VIEW_DESKTOP_OVERLAY_MIN_CONTENT_ROW_WIDTH = 1140;
-export const CHAT_VIEW_DESKTOP_OVERLAY_MAX_SURFACE_SHIFT_PX =
-  CHAT_VIEW_DESKTOP_OVERLAY_IDEAL_CONTENT_ROW_WIDTH - CHAT_VIEW_DESKTOP_OVERLAY_MIN_CONTENT_ROW_WIDTH;
 export const CHAT_VIEW_DESKTOP_OVERLAY_SAFE_GAP_PX = 24;
 export const CHAT_VIEW_DESKTOP_OVERLAY_RIGHT_INSET_PX = 32;
 export const CHAT_VIEW_DESKTOP_OVERLAY_RIGHT_INSET_XL_PX = 40;
@@ -731,44 +729,57 @@ export function canUseDesktopOverlayRail({
     contentRowWidth >= CHAT_VIEW_DESKTOP_OVERLAY_MIN_CONTENT_ROW_WIDTH;
 }
 
-export function deriveChatSurfaceShiftPx({
+export function deriveChatSurfaceLaneWidthPx({
   hasDesktopOverlayRail,
   contentRowWidth,
   railWidth,
-  surfaceFrameWidth,
   railRightInsetPx,
   safeGapPx,
 }: {
   hasDesktopOverlayRail: boolean;
   contentRowWidth: number | null;
   railWidth?: number | null;
-  surfaceFrameWidth?: number | null;
   railRightInsetPx?: number;
   safeGapPx?: number;
 }) {
-  if (!hasDesktopOverlayRail || typeof contentRowWidth !== "number") {
-    return 0;
+  if (
+    !hasDesktopOverlayRail ||
+    typeof contentRowWidth !== "number" ||
+    typeof railWidth !== "number"
+  ) {
+    return null;
   }
-  if (typeof railWidth === "number" && typeof surfaceFrameWidth === "number") {
-    const availableRightSpace = Math.max(
-      0,
-      (contentRowWidth - surfaceFrameWidth) / 2,
-    );
-    const requiredShift =
-      railWidth +
-      (railRightInsetPx ?? CHAT_VIEW_DESKTOP_OVERLAY_RIGHT_INSET_PX) +
-      (safeGapPx ?? CHAT_VIEW_DESKTOP_OVERLAY_SAFE_GAP_PX) -
-      availableRightSpace;
-    if (requiredShift <= 0) {
-      return 0;
-    }
-    return Math.min(Math.ceil(requiredShift), CHAT_VIEW_DESKTOP_OVERLAY_MAX_SURFACE_SHIFT_PX);
+
+  const occupiedRightSpace = railWidth +
+    (railRightInsetPx ?? CHAT_VIEW_DESKTOP_OVERLAY_RIGHT_INSET_PX) +
+    (safeGapPx ?? CHAT_VIEW_DESKTOP_OVERLAY_SAFE_GAP_PX);
+  const laneWidth = Math.floor(contentRowWidth - occupiedRightSpace);
+  if (laneWidth <= 0) {
+    return null;
   }
-  const overflowDelta = CHAT_VIEW_DESKTOP_OVERLAY_IDEAL_CONTENT_ROW_WIDTH - contentRowWidth;
-  if (overflowDelta <= 0) {
-    return 0;
-  }
-  return Math.min(overflowDelta, CHAT_VIEW_DESKTOP_OVERLAY_MAX_SURFACE_SHIFT_PX);
+  return laneWidth;
+}
+
+export function deriveChatSurfaceContentWidthClassName(
+  _hasCollaborationOverlay: boolean,
+): string {
+  return CHAT_VIEW_STABLE_CONTENT_WIDTH_CLASS;
+}
+
+export function deriveChatSurfaceLaneClassName(
+  hasDesktopOverlayRail: boolean,
+): string {
+  return hasDesktopOverlayRail
+    ? "w-full transition-[max-width] duration-200 motion-reduce:transition-none"
+    : "w-full";
+}
+
+export function deriveChatSurfaceLaneStyle(
+  laneWidthPx: number | null,
+): { maxWidth: string } | undefined {
+  return typeof laneWidthPx === "number"
+    ? { maxWidth: `${laneWidthPx}px` }
+    : undefined;
 }
 
 export function shouldShowDesktopOverlayRail({
@@ -782,20 +793,6 @@ export function shouldShowDesktopOverlayRail({
 }) {
   return canUseDesktopOverlayRail &&
     (hasCollaborationOverlay || hasFloatingPlanSteps);
-}
-
-export function deriveChatSurfaceContentWidthClassName(
-  _hasCollaborationOverlay: boolean,
-): string {
-  return CHAT_VIEW_STABLE_CONTENT_WIDTH_CLASS;
-}
-
-export function deriveChatSurfaceShiftClassName(
-  hasDesktopOverlayRail: boolean,
-): string {
-  return hasDesktopOverlayRail
-    ? "transition-transform duration-200 motion-reduce:transition-none"
-    : "";
 }
 
 export function ChatView({
@@ -882,12 +879,8 @@ export function ChatView({
   );
   const [contentRowWidth, setContentRowWidth] = useState<number | null>(null);
   const [overlayRailWidth, setOverlayRailWidth] = useState<number | null>(null);
-  const [surfaceFrameWidth, setSurfaceFrameWidth] = useState<number | null>(null);
   const handleOverlayHeightChange = useCallback((height: number) => {
     setComposerOverlayHeight((current) => current === height ? current : height);
-  }, []);
-  const handleSurfaceFrameWidthChange = useCallback((width: number) => {
-    setSurfaceFrameWidth((current) => current === width ? current : width);
   }, []);
 
   useEffect(() => {
@@ -998,22 +991,25 @@ export function ChatView({
     () => deriveChatSurfaceContentWidthClassName(showDesktopOverlayRail),
     [showDesktopOverlayRail],
   );
-  const chatSurfaceShiftClassName = useMemo(
-    () => deriveChatSurfaceShiftClassName(showDesktopOverlayRail),
+  const chatSurfaceLaneClassName = useMemo(
+    () => deriveChatSurfaceLaneClassName(showDesktopOverlayRail),
     [showDesktopOverlayRail],
   );
-  const chatSurfaceShiftPx = useMemo(
-    () => deriveChatSurfaceShiftPx({
+  const chatSurfaceLaneWidthPx = useMemo(
+    () => deriveChatSurfaceLaneWidthPx({
       hasDesktopOverlayRail: showDesktopOverlayRail,
       contentRowWidth,
       railWidth: overlayRailWidth,
-      surfaceFrameWidth,
       railRightInsetPx: isXlViewport
         ? CHAT_VIEW_DESKTOP_OVERLAY_RIGHT_INSET_XL_PX
         : CHAT_VIEW_DESKTOP_OVERLAY_RIGHT_INSET_PX,
       safeGapPx: CHAT_VIEW_DESKTOP_OVERLAY_SAFE_GAP_PX,
     }),
-    [contentRowWidth, isXlViewport, overlayRailWidth, showDesktopOverlayRail, surfaceFrameWidth],
+    [contentRowWidth, isXlViewport, overlayRailWidth, showDesktopOverlayRail],
+  );
+  const chatSurfaceLaneStyle = useMemo(
+    () => deriveChatSurfaceLaneStyle(chatSurfaceLaneWidthPx),
+    [chatSurfaceLaneWidthPx],
   );
   const [overlayPlanSectionOpen, setOverlayPlanSectionOpen] = useState(true);
   const [overlayCollaborationSectionOpen, setOverlayCollaborationSectionOpen] = useState(true);
@@ -1164,112 +1160,113 @@ export function ChatView({
       <main className={CHAT_VIEW_MAIN_CLASS}>
         <div
           ref={setContentRowElement}
+          data-testid="chat-content-row"
           className={CHAT_VIEW_CONTENT_ROW_CLASS}
         >
           <div className={CHAT_VIEW_MESSAGES_PANEL_CLASS}>
             <div
-              data-testid="chat-shared-surface-shell"
+              data-testid="chat-shared-surface-lane"
               className={cn(
                 "relative flex min-h-0 flex-1 flex-col",
-                chatSurfaceShiftClassName,
+                chatSurfaceLaneClassName,
               )}
-              style={
-                chatSurfaceShiftPx > 0
-                  ? { transform: `translateX(-${chatSurfaceShiftPx}px)` }
-                  : undefined
-              }
+              style={chatSurfaceLaneStyle}
             >
-              {showWelcome && (
-                <div className="pointer-events-none absolute left-0 right-0 top-[calc(50%-160px)] z-10 flex justify-center">
-                  <div
-                    data-testid="chat-welcome-viewport"
-                    className={cn(
-                      "w-full",
-                      CHAT_VIEW_WELCOME_VIEWPORT_CLASS,
-                    )}
-                  >
+              <div
+                data-testid="chat-shared-surface-shell"
+                className="relative flex min-h-0 flex-1 flex-col"
+              >
+                {showWelcome && (
+                  <div className="pointer-events-none absolute left-0 right-0 top-[calc(50%-160px)] z-10 flex justify-center">
                     <div
-                      data-testid="chat-welcome-surface-frame"
+                      data-testid="chat-welcome-viewport"
                       className={cn(
-                        "mx-auto flex w-full flex-col items-center gap-2 text-center",
-                        chatSurfaceContentWidthClassName,
+                        "w-full",
+                        CHAT_VIEW_WELCOME_VIEWPORT_CLASS,
                       )}
                     >
-                      <div className="flex items-center gap-2 text-2xl font-bold">
-                        <span>{getWelcomeGreeting(new Date(), state.language, projectLabel)}</span>
+                      <div
+                        data-testid="chat-welcome-surface-frame"
+                        className={cn(
+                          "mx-auto flex w-full flex-col items-center gap-2 text-center",
+                          chatSurfaceContentWidthClassName,
+                        )}
+                      >
+                        <div className="flex items-center gap-2 text-2xl font-bold">
+                          <span>{getWelcomeGreeting(new Date(), state.language, projectLabel)}</span>
+                        </div>
                       </div>
                     </div>
                   </div>
-                </div>
-              )}
-              <ChatMessages
-                chatMessages={chatMessages}
-                branchGroups={branchGroups}
-                turnSnapshots={turnSnapshots}
-                language={state.language}
-                actionRecords={actionRecords}
-                hasApprovalTray={hasApprovalTray}
-                hasClarificationTray={hasClarificationTray}
-                hasPlanDecisionTray={planDecisionPending}
-                hasPlanStepsTray={inlinePlanSteps.length > 0}
-                bottomInsetPx={composerOverlayHeight}
-                surfaceFrameWidthClassName={chatSurfaceContentWidthClassName}
-                projectRootPath={projectRootPath}
-                onOpenArtifact={onOpenArtifact}
-                onSubmitFeedback={onSubmitFeedback}
-                onForkSessionFromTurn={onForkSessionFromTurn}
-                onAdoptBranchGroup={onAdoptBranchGroup}
-              />
-              <ChatInput
-                sessionId={selectedSession.id}
-                composerPrompt={composerPrompt}
-                isLoading={isLoading}
-                runInteractionState={runInteractionState}
-                activeMode={activeMode}
-                modeOptions={modeCards}
-                selectedModeSelection={state.selectedModeSelection}
-                activeProvider={activeProvider}
-                contextState={chatInputContextState}
-                providerOptions={providerOptions}
-                skillOptions={state.skillRegistry?.skills ?? []}
-                selectedSkillIds={state.selectedSkillIds}
-                language={state.language}
-                selectedCustomAgentId={selectedCustomAgentId}
-                projectFileAttachments={projectFileAttachments}
-                localFileAttachments={localFileAttachments}
-                approvalActions={attention?.kind === "needs_approval" ? pendingApprovalActions : []}
-                approvalDisabled={busyCommand !== undefined}
-                onApprove={onResumeRun}
-                onCancelApproval={onCancelRun}
-                clarificationQuestions={pendingClarifications}
-                onSubmitAllClarifications={onSubmitAllClarifications}
-                onModeChange={onSelectMode}
-                onModeSelectionChange={onSelectModeSelection}
-                onProviderChange={handleProviderChange}
-                onPromptChange={onComposerPromptChange}
-                onSelectedSkillIdsChange={handleSelectedSkillIdsChange}
-                onRemoveProjectFileAttachment={handleRemoveProjectFileAttachment}
-                onRemoveLocalFileAttachment={handleRemoveLocalFileAttachment}
-                imageAttachments={imageAttachments}
-                onRemoveImageAttachment={handleRemoveImageAttachment}
-                onAddImageAttachment={handleImagePasted}
-                permissionMode={state.permissionMode}
-                onPermissionModeChange={handlePermissionModeChange}
-                taskIntent={state.taskIntent}
-                onTaskIntentChange={handleTaskIntentChange}
-                planDecisionPending={planDecisionPending}
-                planSteps={inlinePlanSteps}
-                onConfirmPlanDecision={onAcceptPlanDecisionAndStartImplementation}
-                onDeclinePlanDecision={handleDeclinePlanDecision}
-                onOverlayHeightChange={handleOverlayHeightChange}
-                onSurfaceFrameWidthChange={handleSurfaceFrameWidthChange}
-                surfaceFrameWidthClassName={chatSurfaceContentWidthClassName}
-                onOpenLocalFiles={handleOpenLocalFiles}
-                onFilesDropped={handleFilesDropped}
-                onClearSelectedCustomAgent={onClearSelectedCustomAgent}
-                onStartRun={onStartRun}
-                onStopRun={onCancelRun}
-              />
+                )}
+                <ChatMessages
+                  chatMessages={chatMessages}
+                  branchGroups={branchGroups}
+                  turnSnapshots={turnSnapshots}
+                  language={state.language}
+                  actionRecords={actionRecords}
+                  hasApprovalTray={hasApprovalTray}
+                  hasClarificationTray={hasClarificationTray}
+                  hasPlanDecisionTray={planDecisionPending}
+                  hasPlanStepsTray={inlinePlanSteps.length > 0}
+                  bottomInsetPx={composerOverlayHeight}
+                  surfaceFrameWidthClassName={chatSurfaceContentWidthClassName}
+                  projectRootPath={projectRootPath}
+                  onOpenArtifact={onOpenArtifact}
+                  onSubmitFeedback={onSubmitFeedback}
+                  onForkSessionFromTurn={onForkSessionFromTurn}
+                  onAdoptBranchGroup={onAdoptBranchGroup}
+                />
+                <ChatInput
+                  sessionId={selectedSession.id}
+                  composerPrompt={composerPrompt}
+                  isLoading={isLoading}
+                  runInteractionState={runInteractionState}
+                  activeMode={activeMode}
+                  modeOptions={modeCards}
+                  selectedModeSelection={state.selectedModeSelection}
+                  activeProvider={activeProvider}
+                  contextState={chatInputContextState}
+                  providerOptions={providerOptions}
+                  skillOptions={state.skillRegistry?.skills ?? []}
+                  selectedSkillIds={state.selectedSkillIds}
+                  language={state.language}
+                  selectedCustomAgentId={selectedCustomAgentId}
+                  projectFileAttachments={projectFileAttachments}
+                  localFileAttachments={localFileAttachments}
+                  approvalActions={attention?.kind === "needs_approval" ? pendingApprovalActions : []}
+                  approvalDisabled={busyCommand !== undefined}
+                  onApprove={onResumeRun}
+                  onCancelApproval={onCancelRun}
+                  clarificationQuestions={pendingClarifications}
+                  onSubmitAllClarifications={onSubmitAllClarifications}
+                  onModeChange={onSelectMode}
+                  onModeSelectionChange={onSelectModeSelection}
+                  onProviderChange={handleProviderChange}
+                  onPromptChange={onComposerPromptChange}
+                  onSelectedSkillIdsChange={handleSelectedSkillIdsChange}
+                  onRemoveProjectFileAttachment={handleRemoveProjectFileAttachment}
+                  onRemoveLocalFileAttachment={handleRemoveLocalFileAttachment}
+                  imageAttachments={imageAttachments}
+                  onRemoveImageAttachment={handleRemoveImageAttachment}
+                  onAddImageAttachment={handleImagePasted}
+                  permissionMode={state.permissionMode}
+                  onPermissionModeChange={handlePermissionModeChange}
+                  taskIntent={state.taskIntent}
+                  onTaskIntentChange={handleTaskIntentChange}
+                  planDecisionPending={planDecisionPending}
+                  planSteps={inlinePlanSteps}
+                  onConfirmPlanDecision={onAcceptPlanDecisionAndStartImplementation}
+                  onDeclinePlanDecision={handleDeclinePlanDecision}
+                  onOverlayHeightChange={handleOverlayHeightChange}
+                  surfaceFrameWidthClassName={chatSurfaceContentWidthClassName}
+                  onOpenLocalFiles={handleOpenLocalFiles}
+                  onFilesDropped={handleFilesDropped}
+                  onClearSelectedCustomAgent={onClearSelectedCustomAgent}
+                  onStartRun={onStartRun}
+                  onStopRun={onCancelRun}
+                />
+              </div>
             </div>
           </div>
           {showDesktopOverlayRail ? (

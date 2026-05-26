@@ -4,8 +4,9 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  ChatView,
   canUseDesktopOverlayRail,
   CHAT_VIEW_COLLABORATION_ITEM_CLASS,
   CHAT_VIEW_COLLABORATION_PANEL_CLASS,
@@ -13,7 +14,6 @@ import {
   CHAT_VIEW_CONTENT_ROW_CLASS,
   CHAT_VIEW_DESKTOP_FLOATING_STACK_CLASS,
   CHAT_VIEW_DESKTOP_OVERLAY_IDEAL_CONTENT_ROW_WIDTH,
-  CHAT_VIEW_DESKTOP_OVERLAY_MAX_SURFACE_SHIFT_PX,
   CHAT_VIEW_DESKTOP_OVERLAY_MIN_CONTENT_ROW_WIDTH,
   CHAT_VIEW_DESKTOP_OVERLAY_RIGHT_INSET_PX,
   CHAT_VIEW_DESKTOP_OVERLAY_SAFE_GAP_PX,
@@ -23,12 +23,15 @@ import {
   CHAT_VIEW_ROOT_CLASS,
   CHAT_VIEW_STABLE_CONTENT_WIDTH_CLASS,
   CHAT_VIEW_WELCOME_VIEWPORT_CLASS,
+  CHAT_VIEW_OVERLAY_SECTION_CLASS,
+  CHAT_VIEW_OVERLAY_SECTION_HEADER_CLASS,
   collaborationStatusBadgeClassName,
   DesktopOverlayRail,
   deriveChildReplaySelection,
   deriveChatSurfaceContentWidthClassName,
-  deriveChatSurfaceShiftPx,
-  deriveChatSurfaceShiftClassName,
+  deriveChatSurfaceLaneClassName,
+  deriveChatSurfaceLaneStyle,
+  deriveChatSurfaceLaneWidthPx,
   deriveComposerPlanDecisionState,
   deriveOverlayChildStatusLabel,
   deriveOverlayChildTurnView,
@@ -52,6 +55,111 @@ import {
   CHAT_SURFACE_FRAME_WIDTH_CLASS,
   CHAT_SURFACE_VIEWPORT_GUTTER_CLASS,
 } from "./chatSurfaceLayout";
+
+const mocks = vi.hoisted(() => ({
+  workbench: {
+    providerRegistry: { providers: [] },
+    providerSecretStatuses: [],
+    selectedProviderId: undefined,
+    activeSessionDetail: {
+      session: {},
+      branchGroups: [],
+    },
+    sessionProjectFileAttachments: {},
+    sessionLocalFileAttachments: {},
+    sessionImageAttachments: {},
+    pendingPlanDecisionResolution: undefined,
+    planDecisionResolutionOverrides: {},
+    language: "zh",
+    selectedModeSelection: "manual",
+    skillRegistry: { skills: [] },
+    selectedSkillIds: [],
+    permissionMode: "default",
+    taskIntent: "implement",
+  } as any,
+  dispatch: vi.fn(),
+  latestChatInputProps: null as any,
+  latestChatMessagesProps: null as any,
+}));
+
+vi.mock("./ChatHeader", () => ({
+  ChatHeader: () => null,
+}));
+
+vi.mock("./ChatMessages", () => ({
+  ChatMessages: (props: unknown) => {
+    mocks.latestChatMessagesProps = props;
+    return createElement("div", { "data-testid": "chat-messages-stub" });
+  },
+}));
+
+vi.mock("./ChatInput", () => ({
+  ChatInput: (props: unknown) => {
+    mocks.latestChatInputProps = props;
+    return createElement("div", { "data-testid": "chat-input-stub" });
+  },
+}));
+
+vi.mock("../lib/providerOptions", () => ({
+  runnableProviderOptions: (providers: unknown[] = []) => providers,
+}));
+
+vi.mock("../lib/state", async () => {
+  const actual = await vi.importActual("../lib/state");
+  return {
+    ...actual,
+    useWorkbench: () => ({
+      state: mocks.workbench,
+      dispatch: mocks.dispatch,
+    }),
+  };
+});
+
+const cleanupCallbacks: Array<() => void> = [];
+
+Object.assign(globalThis, {
+  IS_REACT_ACT_ENVIRONMENT: true,
+});
+
+beforeEach(() => {
+  mocks.dispatch.mockReset();
+  mocks.latestChatInputProps = null;
+  mocks.latestChatMessagesProps = null;
+});
+
+afterEach(() => {
+  while (cleanupCallbacks.length > 0) {
+    cleanupCallbacks.pop()?.();
+  }
+  document.body.innerHTML = "";
+  vi.restoreAllMocks();
+});
+
+function renderElement(element: ReturnType<typeof createElement>) {
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+
+  act(() => {
+    root.render(element);
+  });
+
+  const cleanup = () => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  };
+  cleanupCallbacks.push(cleanup);
+
+  return { container };
+}
+
+async function flushEffects() {
+  await act(async () => {
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+  });
+}
 
 describe("chat view provider selection", () => {
   it("uses the selected provider when it is available", () => {
@@ -673,78 +781,62 @@ describe("chat view collaboration overlay visibility", () => {
     expect(CHAT_VIEW_WELCOME_VIEWPORT_CLASS).toContain("xl:px-8");
   });
 
-  it("does not shift the content rail when the overlay is hidden", () => {
-    expect(deriveChatSurfaceShiftClassName(false)).toBe("");
-    expect(deriveChatSurfaceShiftPx({
+  it("keeps the shared surface full-width when the overlay is hidden", () => {
+    expect(deriveChatSurfaceLaneClassName(false)).toBe("w-full");
+    expect(deriveChatSurfaceLaneWidthPx({
       hasDesktopOverlayRail: false,
       contentRowWidth: CHAT_VIEW_DESKTOP_OVERLAY_IDEAL_CONTENT_ROW_WIDTH,
-    })).toBe(0);
+      railWidth: 320,
+    })).toBeNull();
+    expect(deriveChatSurfaceLaneStyle(null)).toBeUndefined();
   });
 
-  it("applies no shift when the content row already has the ideal width", () => {
-    expect(deriveChatSurfaceShiftClassName(true)).toContain("transition-transform");
-    expect(deriveChatSurfaceShiftPx({
-      hasDesktopOverlayRail: true,
-      contentRowWidth: CHAT_VIEW_DESKTOP_OVERLAY_IDEAL_CONTENT_ROW_WIDTH,
-    })).toBe(0);
+  it("adds a max-width transition class when the overlay lane is active", () => {
+    expect(deriveChatSurfaceLaneClassName(true)).toContain("transition-[max-width]");
   });
 
-  it("shifts the shared chat surface left on medium widths and clamps the shift", () => {
-    expect(deriveChatSurfaceShiftPx({
-      hasDesktopOverlayRail: true,
-      contentRowWidth: CHAT_VIEW_DESKTOP_OVERLAY_IDEAL_CONTENT_ROW_WIDTH - 40,
-    })).toBe(40);
-    expect(deriveChatSurfaceShiftPx({
-      hasDesktopOverlayRail: true,
-      contentRowWidth: CHAT_VIEW_DESKTOP_OVERLAY_MIN_CONTENT_ROW_WIDTH,
-    })).toBe(CHAT_VIEW_DESKTOP_OVERLAY_MAX_SURFACE_SHIFT_PX);
-    expect(deriveChatSurfaceShiftPx({
-      hasDesktopOverlayRail: true,
-      contentRowWidth: CHAT_VIEW_DESKTOP_OVERLAY_MIN_CONTENT_ROW_WIDTH + 1,
-    })).toBe(CHAT_VIEW_DESKTOP_OVERLAY_MAX_SURFACE_SHIFT_PX - 1);
-  });
-
-  it("uses the measured rail width and available right space when both are available", () => {
-    expect(deriveChatSurfaceShiftPx({
+  it("derives the left lane width from content width minus rail occupancy", () => {
+    expect(deriveChatSurfaceLaneWidthPx({
       hasDesktopOverlayRail: true,
       contentRowWidth: 1200,
       railWidth: 320,
-      surfaceFrameWidth: 691,
       railRightInsetPx: CHAT_VIEW_DESKTOP_OVERLAY_RIGHT_INSET_PX,
       safeGapPx: CHAT_VIEW_DESKTOP_OVERLAY_SAFE_GAP_PX,
-    })).toBe(122);
+    })).toBe(824);
+    expect(deriveChatSurfaceLaneStyle(824)).toEqual({
+      maxWidth: "824px",
+    });
   });
 
-  it("increases shift when the measured rail gets wider", () => {
-    const base = deriveChatSurfaceShiftPx({
+  it("shrinks the left lane when the measured rail gets wider", () => {
+    const base = deriveChatSurfaceLaneWidthPx({
       hasDesktopOverlayRail: true,
       contentRowWidth: 1200,
       railWidth: 280,
-      surfaceFrameWidth: 691,
       railRightInsetPx: CHAT_VIEW_DESKTOP_OVERLAY_RIGHT_INSET_PX,
       safeGapPx: CHAT_VIEW_DESKTOP_OVERLAY_SAFE_GAP_PX,
     });
-    const wider = deriveChatSurfaceShiftPx({
+    const wider = deriveChatSurfaceLaneWidthPx({
       hasDesktopOverlayRail: true,
       contentRowWidth: 1200,
       railWidth: 320,
-      surfaceFrameWidth: 691,
       railRightInsetPx: CHAT_VIEW_DESKTOP_OVERLAY_RIGHT_INSET_PX,
       safeGapPx: CHAT_VIEW_DESKTOP_OVERLAY_SAFE_GAP_PX,
     });
 
-    expect(wider).toBeGreaterThan(base);
+    expect(base).toBe(864);
+    expect(wider).toBe(824);
+    expect(wider ?? 0).toBeLessThan(base ?? 0);
   });
 
-  it("returns zero when the measured right-side space already fits the rail", () => {
-    expect(deriveChatSurfaceShiftPx({
+  it("returns no lane width when the rail would consume the whole row", () => {
+    expect(deriveChatSurfaceLaneWidthPx({
       hasDesktopOverlayRail: true,
-      contentRowWidth: 1500,
-      railWidth: 280,
-      surfaceFrameWidth: 691,
+      contentRowWidth: 350,
+      railWidth: 320,
       railRightInsetPx: CHAT_VIEW_DESKTOP_OVERLAY_RIGHT_INSET_PX,
       safeGapPx: CHAT_VIEW_DESKTOP_OVERLAY_SAFE_GAP_PX,
-    })).toBe(0);
+    })).toBeNull();
   });
 
   it("anchors the desktop overlay rail near the content area's top-right edge", () => {
@@ -804,6 +896,12 @@ describe("chat view collaboration overlay visibility", () => {
     expect(html).toContain("1 个任务仍在协作流程中");
     expect(html).toContain(CHAT_VIEW_COLLABORATION_ITEM_CLASS);
     expect(html).toContain("执行中");
+  });
+
+  it("uses a vertically balanced overlay section header", () => {
+    expect(CHAT_VIEW_OVERLAY_SECTION_CLASS).toContain("pt-2.5");
+    expect(CHAT_VIEW_OVERLAY_SECTION_HEADER_CLASS).toContain("min-h-14");
+    expect(CHAT_VIEW_OVERLAY_SECTION_HEADER_CLASS).toContain("py-2");
   });
 
   it("keeps the running badge on navigation-only collaboration cards", () => {
@@ -1099,6 +1197,87 @@ describe("chat view layout classes", () => {
     expect(CHAT_VIEW_MESSAGES_PANEL_CLASS).toContain("min-h-0");
     expect(CHAT_VIEW_MESSAGES_PANEL_CLASS).toContain("overflow-hidden");
   });
+
+  it("applies the computed left-lane max width to the lane wrapper when the floating rail is visible", async () => {
+    const originalMatchMedia = window.matchMedia;
+    const resizeObserverInstances: Array<{ callback: ResizeObserverCallback }> = [];
+    class ResizeObserverStub {
+      callback: ResizeObserverCallback;
+
+      constructor(callback: ResizeObserverCallback) {
+        this.callback = callback;
+        resizeObserverInstances.push({ callback });
+      }
+
+      observe() {}
+      disconnect() {}
+      unobserve() {}
+    }
+
+    Object.defineProperty(window, "matchMedia", {
+      writable: true,
+      value: vi.fn((query: string) => ({
+        matches: query === "(min-width: 1024px)",
+        media: query,
+        onchange: null,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      })),
+    });
+    Object.defineProperty(globalThis, "ResizeObserver", {
+      writable: true,
+      value: ResizeObserverStub,
+    });
+
+    const view = renderElement(
+      createElement(ChatView, baseChatViewProps({
+        activeSnapshot: {
+          childSessions: [childSession("running-child", "running")],
+          planList: [],
+        } as any,
+      })),
+    );
+
+    await flushEffects();
+
+    const contentRow = view.container.querySelector("[data-testid=\"chat-content-row\"]") as HTMLDivElement | null;
+    expect(contentRow).toBeTruthy();
+
+    contentRow!.getBoundingClientRect = () => ({ width: 1200 } as DOMRect);
+    act(() => {
+      resizeObserverInstances[0]?.callback([
+        { contentRect: { width: 1200 } } as ResizeObserverEntry,
+      ], {} as ResizeObserver);
+    });
+
+    await flushEffects();
+
+    const rail = view.container.querySelector("[data-testid=\"desktop-overlay-rail-stack\"]") as HTMLDivElement | null;
+    expect(rail).toBeTruthy();
+
+    rail!.getBoundingClientRect = () => ({ width: 320 } as DOMRect);
+    act(() => {
+      resizeObserverInstances[1]?.callback([
+        { contentRect: { width: 320 } } as ResizeObserverEntry,
+      ], {} as ResizeObserver);
+    });
+
+    await flushEffects();
+
+    const lane = view.container.querySelector("[data-testid=\"chat-shared-surface-lane\"]") as HTMLDivElement | null;
+    const shell = view.container.querySelector("[data-testid=\"chat-shared-surface-shell\"]") as HTMLDivElement | null;
+    expect(lane?.style.maxWidth).toBe("824px");
+    expect(shell?.style.maxWidth).toBe("");
+    expect(shell?.className).toContain("relative flex min-h-0 flex-1 flex-col");
+
+    Object.defineProperty(window, "matchMedia", {
+      writable: true,
+      value: originalMatchMedia,
+    });
+  });
 });
 
 function contextState(totalTokens: number) {
@@ -1114,6 +1293,73 @@ function contextState(totalTokens: number) {
     compactedThroughTurnIndex: 0,
     compactionCount: 0,
   };
+}
+
+function baseChatViewProps(
+  overrides: Record<string, unknown> = {},
+) {
+  return {
+    activeMode: {
+      id: "single_agent",
+      family: "single_agent",
+      label: "单智能体",
+      summary: "默认模式",
+    },
+    modeCards: [{
+      id: "single_agent",
+      family: "single_agent",
+      label: "单智能体",
+      summary: "默认模式",
+    }],
+    activeSnapshot: undefined,
+    actionRecords: [],
+    agents: [],
+    busyCommand: undefined,
+    chatMessages: [],
+    turnSnapshots: {},
+    checkpoints: [],
+    composerPrompt: "",
+    isLoading: false,
+    runInteractionState: runInteractionState("done"),
+    selectedSession: {
+      id: "session-1",
+      sessionId: "session-1",
+      title: "Session 1",
+      status: "idle",
+      updatedAt: 1,
+    },
+    selectedCustomAgentId: undefined,
+    projectLabel: undefined,
+    projectRootPath: undefined,
+    streamLines: [],
+    topologyEdges: [],
+    topologyNodes: [],
+    onCancelRun: () => undefined,
+    onComposerPromptChange: () => undefined,
+    onClearSelectedCustomAgent: () => undefined,
+    onForkSessionFromTurn: () => undefined,
+    onAdoptBranchGroup: () => undefined,
+    onInterruptRun: () => undefined,
+    onReplaySelection: () => undefined,
+    onResumeRun: () => undefined,
+    onOpenChildSessionPage: () => undefined,
+    onAcceptPlanDecisionAndStartImplementation: () => undefined,
+    onResolvePlanDecision: () => undefined,
+    onOpenArtifact: () => undefined,
+    onSubmitFeedback: async () => undefined,
+    onSubmitAllClarifications: () => undefined,
+    onSelectMode: () => undefined,
+    onSelectModeSelection: () => undefined,
+    onSelectNode: () => undefined,
+    onSelectSession: () => undefined,
+    onStartRun: () => undefined,
+    onSetRightWorkspaceOpen: () => undefined,
+    selectedSessionWorkspace: {
+      mode: "session",
+      sessionId: "session-1",
+    },
+    ...overrides,
+  } as any;
 }
 
 function childSession(

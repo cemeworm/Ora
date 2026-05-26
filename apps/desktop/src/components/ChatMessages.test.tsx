@@ -385,7 +385,7 @@ describe("ChatMessages bottom inset", () => {
     expect(html.match(/rounded-2xl bg-muted px-3\.5 py-2\.5/g)).toHaveLength(1);
   });
 
-  it("renders an accepted same-run plan decision as a synthetic user turn without replaying the old proposal card", () => {
+  it("renders an accepted plan decision as a synthetic user turn when no real transcript user message exists", () => {
     const createdAt = 1_714_000_000_000;
     const sessionId = "session-plan-ui";
     const runId = "run-plan-ui";
@@ -608,6 +608,152 @@ describe("ChatMessages bottom inset", () => {
     );
 
     expect(html.split(prompt).length - 1).toBe(1);
+  });
+
+  it("does not inject a synthetic accepted-plan user bubble when the real transcript already has it", () => {
+    const createdAt = 1_714_000_000_000;
+    const sessionId = "session-accepted-plan-real-user";
+    const sourceRunId = "run-plan-source";
+    const implementationRunId = "run-plan-implementation";
+    const messages = adaptRenderableChatMessages({
+      transcript: [{
+        id: `${sourceRunId}:assistant`,
+        sessionId,
+        runId: sourceRunId,
+        turnIndex: 1,
+        role: "assistant",
+        content: [
+          "<proposed_plan>",
+          "## Runtime status plan",
+          "1. Add shared attention projection.",
+          "2. Persist plan decision gates.",
+          "</proposed_plan>",
+        ].join("\n"),
+        pattern: "orchestrator_subagent",
+        modeId: SINGLE_AGENT_MODE_ID,
+        createdAt,
+      }, {
+        id: `${implementationRunId}:user`,
+        sessionId,
+        runId: implementationRunId,
+        turnIndex: 2,
+        role: "user",
+        content: "请按照上述计划开始执行",
+        pattern: "orchestrator_subagent",
+        modeId: SINGLE_AGENT_MODE_ID,
+        createdAt: createdAt + 50,
+      }, {
+        id: `${implementationRunId}:assistant`,
+        sessionId,
+        runId: implementationRunId,
+        turnIndex: 2,
+        role: "assistant",
+        content: "Implemented the plan.",
+        pattern: "orchestrator_subagent",
+        modeId: SINGLE_AGENT_MODE_ID,
+        createdAt: createdAt + 100,
+      }],
+      turnSnapshots: {
+        [sourceRunId]: {
+          runId: sourceRunId,
+          sessionId,
+          turnIndex: 1,
+          status: "succeeded",
+          pattern: "orchestrator_subagent",
+          modeId: SINGLE_AGENT_MODE_ID,
+          input: { prompt: "Plan the runtime work", createdAt, context: {} },
+          config: {
+            modeId: SINGLE_AGENT_MODE_ID,
+            pattern: "orchestrator_subagent",
+            modeSelection: "manual",
+            profileIds: ["solo_agent"],
+            providerId: "local-smoke",
+            modelRef: "local/smoke-model",
+            approvalMode: "high_risk_only",
+            patternOptions: {},
+            metadata: { taskIntent: "plan" },
+            deterministicSeed: "chat-messages-accepted-plan-source",
+            skillIds: [],
+            toolIds: [],
+          },
+          topology: { nodes: [], edges: [] },
+          profiles: [],
+          memory: [],
+          plan: [],
+          planList: [],
+          todos: [],
+          actions: [],
+          toolCalls: [],
+          policyDecisions: [],
+          checkpoints: [],
+          events: [],
+          artifacts: [],
+          activeAgents: [],
+          queueSummary: { mode: "dag", pending: 0, inProgress: 0, completed: 1, topics: [] },
+          sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+          busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+          pendingClarifications: [],
+          pendingApprovals: [],
+          planDecisions: [],
+          updatedAt: createdAt + 20,
+        } as unknown as OraStateSnapshot,
+        [implementationRunId]: {
+          runId: implementationRunId,
+          sessionId,
+          turnIndex: 2,
+          status: "running",
+          pattern: "orchestrator_subagent",
+          modeId: SINGLE_AGENT_MODE_ID,
+          input: { prompt: "请按照上述计划开始执行", createdAt: createdAt + 50, context: {} },
+          config: {
+            modeId: SINGLE_AGENT_MODE_ID,
+            pattern: "orchestrator_subagent",
+            modeSelection: "manual",
+            profileIds: ["solo_agent"],
+            providerId: "local-smoke",
+            modelRef: "local/smoke-model",
+            approvalMode: "high_risk_only",
+            patternOptions: {},
+            metadata: { taskIntent: "implement", acceptedPlanExecutionContract: "new_turn_implementation" },
+            deterministicSeed: "chat-messages-accepted-plan-impl",
+            skillIds: [],
+            toolIds: [],
+          },
+          topology: { nodes: [], edges: [] },
+          profiles: [],
+          memory: [],
+          plan: [],
+          planList: [],
+          todos: [],
+          actions: [],
+          toolCalls: [],
+          policyDecisions: [],
+          checkpoints: [],
+          events: [],
+          artifacts: [],
+          activeAgents: [],
+          queueSummary: { mode: "dag", pending: 0, inProgress: 1, completed: 0, topics: [] },
+          sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+          busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+          pendingClarifications: [],
+          pendingApprovals: [],
+          planDecisions: [],
+          updatedAt: createdAt + 100,
+        } as unknown as OraStateSnapshot,
+      },
+      selectedSessionId: sessionId,
+      acceptedPlanDecisionTurns: [{
+        sessionId,
+        runId: sourceRunId,
+        decisionId: `${sourceRunId}:decision`,
+        createdAt: createdAt + 30,
+      }],
+    });
+
+    const html = renderToStaticMarkup(<ChatMessages chatMessages={messages} />);
+
+    expect(html.match(/请按照上述计划开始执行/g)).toHaveLength(1);
+    expect(html).not.toContain("任务计划");
   });
 
   it("keeps mode-stage delegation inside the parent assistant turn", () => {

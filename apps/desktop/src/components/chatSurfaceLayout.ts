@@ -1,3 +1,5 @@
+export const CHAT_SURFACE_FRAME_WIDTH_REM = 43.2;
+export const CHAT_SURFACE_MIN_CONTENT_EXTRA_WIDTH_REM = 2;
 export const CHAT_SURFACE_FRAME_WIDTH_CLASS = "w-full max-w-[43.2rem]";
 export const CHAT_SURFACE_VIEWPORT_GUTTER_CLASS =
   "w-full px-4 md:px-6 xl:px-8";

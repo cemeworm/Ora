@@ -1,47 +1,19 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import {
-  Bot,
-  FileStack,
-  FolderTree,
-  MessageSquareText,
-  Plus,
-  Rows3,
-  X,
-} from "lucide-react";
 import { ArtifactDrawer, ArtifactPreviewContent } from "./ArtifactDrawer";
 import { AssistantTurnCard } from "./AssistantTurnCard";
+import { Button } from "./ui/button";
+import { Conversation, ConversationContent } from "./ai-elements/conversation";
 import { DocumentsDrawer } from "./DocumentsDrawer";
 import { MarkdownContent } from "./MarkdownContent";
 import { MessageBubble } from "./MessageBubble";
 import { TrailsDrawer } from "./TrailsDrawer";
-import { Conversation, ConversationContent } from "./ai-elements/conversation";
-import { Button } from "./ui/button";
-import { cn } from "../lib/utils";
+import { Bot, FileStack, FileText, FolderTree, MessageSquareText, Plus, Rows3, X } from "lucide-react";
 import type { DesktopRunInteractionState } from "../lib/runInteractionState";
-import type {
-  OraSessionTurn,
-  OraProjectFileEntry,
-  OraProjectSummary,
-  OraSessionDetail,
-  OraStateSnapshot,
-  RuntimeClient,
-} from "../lib/runtimeClient";
-import type {
-  ArtifactRecord,
-  AssistantTurnAttachment,
-  ChatMessage,
-  CheckpointRecord,
-  PlanItem,
-  SessionRun,
-  TurnProcessStep,
-  TurnAgentConversationMessage,
-  TurnTimelineItem,
-} from "../types";
-import type {
-  RightWorkspacePage,
-  RightWorkspaceSessionState,
-} from "../lib/state";
+import type { OraProjectFileEntry, OraProjectFileReadResult, OraProjectSummary, OraSessionDetail, OraStateSnapshot, RuntimeClient } from "../lib/runtimeClient";
+import type { ArtifactRecord, AssistantTurnAttachment, ChatMessage, CheckpointRecord, PlanItem, SessionRun, TurnProcessStep, TurnAgentConversationMessage, TurnTimelineItem } from "../types";
 import { adaptChatMessages } from "../lib/viewModel";
+import { cn } from "../lib/utils";
+import type { RightWorkspacePage, RightWorkspaceSessionState } from "../lib/state";
 
 interface RightWorkspacePaneProps {
   workspace: RightWorkspaceSessionState;
@@ -142,9 +114,28 @@ export function RightWorkspacePane({
         return "Artifact";
       case "child_session":
         return "子会话";
+      case "file_preview":
+        return "文件预览";
       case "trails":
       default:
         return "轨迹";
+    }
+  }
+
+  function pageIconForKind(kind: RightWorkspacePage["kind"]) {
+    switch (kind) {
+      case "documents":
+        return <FolderTree size={13} className="shrink-0" />;
+      case "artifact":
+        return <FileStack size={13} className="shrink-0" />;
+      case "child_session":
+        return <Bot size={13} className="shrink-0" />;
+      case "file_preview":
+        return <FileText size={13} className="shrink-0" />;
+      case "trails":
+        return <Rows3 size={13} className="shrink-0" />;
+      default:
+        return <FileText size={13} className="shrink-0" />;
     }
   }
 
@@ -249,7 +240,10 @@ export function RightWorkspacePane({
                         : "text-muted-foreground hover:text-foreground",
                     )}
                   >
-                    {page.title}
+                    <span className="inline-flex items-center gap-1.5">
+                      {pageIconForKind(page.kind)}
+                      <span className="shrink-0">{page.kind === "file_preview" ? page.title.split("/").at(-1) ?? page.title : page.title}</span>
+                    </span>
                   </button>
                   <button
                     type="button"
@@ -316,9 +310,28 @@ export function RightWorkspacePane({
               projectId={selectedProject.projectId}
               projectLabel={selectedProject.label}
               runtimeClient={runtimeClient}
-              onOpenFile={() => undefined}
               onCopyPath={onCopyPath}
+              onOpenFile={(filePath) => {
+                const fileName = filePath.split("/").at(-1) ?? filePath;
+                onOpenWorkspacePage({
+                  id: `file_preview:${crypto.randomUUID()}`,
+                  kind: "file_preview",
+                  title: fileName,
+                  sessionId: selectedSession.id,
+                  projectId: selectedProject.projectId,
+                  filePath,
+                });
+              }}
               onAddFileToChat={onAddFileToChat}
+            />
+          ) : activePage?.kind === "file_preview" &&
+            activePage.projectId &&
+            activePage.filePath ? (
+            <FilePreviewPanel
+              projectId={activePage.projectId}
+              filePath={activePage.filePath}
+              title={activePage.title}
+              runtimeClient={runtimeClient}
             />
           ) : activePage?.kind === "artifact" && selectedArtifact ? (
             <ArtifactDrawer artifact={selectedArtifact} />
@@ -1153,4 +1166,123 @@ function formatTimestamp(value: number | undefined) {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+function mimeTypeToCodeLanguage(mimeType: string): string {
+  if (mimeType.startsWith("text/markdown")) return "markdown";
+  if (mimeType.startsWith("text/typescript")) return "typescript";
+  if (mimeType.startsWith("text/javascript")) return "javascript";
+  if (mimeType.startsWith("text/css")) return "css";
+  if (mimeType.startsWith("text/html")) return "html";
+  if (mimeType.startsWith("text/json")) return "json";
+  if (mimeType.startsWith("text/xml")) return "xml";
+  if (mimeType.startsWith("text/yaml")) return "yaml";
+  if (mimeType.startsWith("text/python")) return "python";
+  if (mimeType.startsWith("text/rust")) return "rust";
+  if (mimeType.startsWith("text/go")) return "go";
+  if (mimeType.startsWith("text/java")) return "java";
+  if (mimeType.startsWith("text/shell")) return "bash";
+  if (mimeType.startsWith("text/plain")) return "";
+  return "";
+}
+
+function FilePreviewPanel({
+  projectId,
+  filePath,
+  title,
+  runtimeClient,
+}: {
+  projectId: string;
+  filePath: string;
+  title: string;
+  runtimeClient: RuntimeClient;
+}) {
+  const [result, setResult] = useState<OraProjectFileReadResult | undefined>(undefined);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | undefined>(undefined);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(undefined);
+    runtimeClient.readProjectFile(projectId, filePath).then((data) => {
+      if (!cancelled) {
+        setResult(data);
+        setLoading(false);
+      }
+    }).catch((err) => {
+      if (!cancelled) {
+        setError(err instanceof Error ? err.message : "无法读取文件");
+        setLoading(false);
+      }
+    });
+    return () => { cancelled = true; };
+  }, [projectId, filePath, runtimeClient]);
+
+  if (loading) {
+    return (
+      <div className="flex h-full items-center justify-center p-8">
+        <div className="text-sm text-muted-foreground">正在加载...</div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="flex h-full items-center justify-center p-8">
+        <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-800 dark:bg-red-950 dark:text-red-400">
+          {error}
+        </div>
+      </div>
+    );
+  }
+
+  if (!result) {
+    return null;
+  }
+
+  const { previewKind, payload, mimeType, sizeBytes, modifiedAt, uri } = result;
+
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="shrink-0 border-b border-border/60 px-4 py-2.5">
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <p className="truncate text-sm font-medium text-foreground">{title}</p>
+            <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
+              {filePath} · {mimeType} · {sizeBytes !== undefined ? `${(sizeBytes / 1024).toFixed(1)} KB` : ""}
+              {modifiedAt ? ` · ${new Date(modifiedAt).toLocaleString()}` : ""}
+            </p>
+          </div>
+        </div>
+      </div>
+      <div className="min-h-0 flex-1 overflow-auto p-4" data-testid="file-preview-content">
+        {previewKind === "text" || previewKind === "json" ? (
+          typeof payload === "string" ? (
+            <MarkdownContent
+              content={`\`\`\`${mimeTypeToCodeLanguage(mimeType)}\n${payload}\n\`\`\``}
+            />
+          ) : (
+            <p className="text-sm text-muted-foreground">未找到文本内容</p>
+          )
+        ) : previewKind === "image" && uri ? (
+          <div className="flex items-center justify-center">
+            <img
+              src={uri}
+              alt={title}
+              className="max-h-[70vh] max-w-full rounded-lg object-contain"
+            />
+          </div>
+        ) : previewKind === "binary" ? (
+          <div className="flex h-full items-center justify-center">
+            <p className="text-sm text-muted-foreground">不支持预览该类型的文件</p>
+          </div>
+        ) : (
+          <div className="flex h-full items-center justify-center">
+            <p className="text-sm text-muted-foreground">不支持预览该类型的文件</p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
 }

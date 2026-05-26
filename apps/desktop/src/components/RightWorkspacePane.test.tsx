@@ -43,6 +43,7 @@ function page(overrides: Partial<RightWorkspacePage> = {}): RightWorkspacePage {
     title: overrides.title ?? "Child session",
     sessionId: overrides.sessionId ?? "session-parent",
     targetRunId: overrides.targetRunId ?? "run-child",
+    filePath: overrides.filePath,
     childSessionId: overrides.childSessionId ?? "session-child",
     artifactId: overrides.artifactId,
     projectId: overrides.projectId,
@@ -195,6 +196,14 @@ function renderPane(params: {
   const runtimeClient =
     params.runtimeClient ??
     ({
+      listProjectFiles: vi.fn().mockResolvedValue({
+        projectId: "project-1",
+        rootPath: "/tmp/ora",
+        totalFiles: 0,
+        files: [],
+        truncated: false,
+        skippedDirs: [],
+      }),
       getSession: vi.fn().mockResolvedValue(detail()),
       getRunState: vi.fn().mockResolvedValue(snapshot()),
     } as unknown as RuntimeClient);
@@ -823,5 +832,231 @@ describe("RightWorkspacePane", () => {
       root.unmount();
     });
     container.remove();
+  });
+
+  it("renders file_preview page and calls readProjectFile", async () => {
+    const readProjectFile = vi.fn().mockResolvedValue({
+      projectId: "project-1",
+      path: "src/test.ts",
+      label: "test.ts",
+      mimeType: "text/typescript",
+      previewKind: "text",
+      sizeBytes: 100,
+      modifiedAt: 1_717_000_000_000,
+      payload: "const x = 1;",
+    });
+    const runtimeClient = {
+      readProjectFile,
+      getSession: vi.fn().mockResolvedValue(detail()),
+      getRunState: vi.fn().mockResolvedValue(snapshot()),
+    } as unknown as RuntimeClient;
+
+    const view = renderPane({
+      runtimeClient,
+      workspace: workspace({
+        pages: [page({
+          id: "file-preview:1",
+          kind: "file_preview",
+          filePath: "src/test.ts",
+          projectId: "project-1",
+          title: "test.ts",
+          sessionId: "session-parent",
+        })],
+        selectedPageId: "file-preview:1",
+      }),
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(readProjectFile).toHaveBeenCalledWith("project-1", "src/test.ts");
+    view.cleanup();
+  });
+
+  it("shows loading while reading file", async () => {
+    const readProjectFile = vi.fn().mockReturnValue(new Promise(() => {}));
+    const runtimeClient = {
+      readProjectFile,
+      getSession: vi.fn().mockResolvedValue(detail()),
+      getRunState: vi.fn().mockResolvedValue(snapshot()),
+    } as unknown as RuntimeClient;
+
+    const view = renderPane({
+      runtimeClient,
+      workspace: workspace({
+        pages: [page({
+          id: "file-preview:loading",
+          kind: "file_preview",
+          filePath: "src/test.ts",
+          projectId: "project-1",
+          title: "test.ts",
+          sessionId: "session-parent",
+        })],
+        selectedPageId: "file-preview:loading",
+      }),
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(view.container.textContent).toContain("正在加载");
+    view.cleanup();
+  });
+
+  it("shows error when readProjectFile fails", async () => {
+    const readProjectFile = vi.fn().mockRejectedValue(new Error("File not found"));
+    const runtimeClient = {
+      readProjectFile,
+      getSession: vi.fn().mockResolvedValue(detail()),
+      getRunState: vi.fn().mockResolvedValue(snapshot()),
+    } as unknown as RuntimeClient;
+
+    const view = renderPane({
+      runtimeClient,
+      workspace: workspace({
+        pages: [page({
+          id: "file-preview:error",
+          kind: "file_preview",
+          filePath: "src/missing.ts",
+          projectId: "project-1",
+          title: "missing.ts",
+          sessionId: "session-parent",
+        })],
+        selectedPageId: "file-preview:error",
+      }),
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(view.container.textContent).toContain("File not found");
+    view.cleanup();
+  });
+
+  it("renders file tree when documents page is selected alongside a file_preview page", async () => {
+    const onSelectPage = vi.fn();
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const runtimeClient = {
+      listProjectFiles: vi.fn().mockResolvedValue({
+        projectId: "project-1",
+        rootPath: "/tmp/ora",
+        totalFiles: 0,
+        files: [],
+        truncated: false,
+        skippedDirs: [],
+      }),
+      readProjectFile: vi.fn().mockRejectedValue(new Error("read error")),
+      getSession: vi.fn().mockResolvedValue(detail()),
+      getRunState: vi.fn().mockResolvedValue(snapshot()),
+    } as unknown as RuntimeClient;
+
+    act(() => {
+      root.render(
+        createElement(RightWorkspacePane, {
+          workspace: workspace({
+            pages: [
+              page({ id: "docs:1", kind: "documents", title: "文件", sessionId: "session-parent", projectId: "project-1" }),
+              page({ id: "fp:1", kind: "file_preview", title: "test.ts", filePath: "src/test.ts", projectId: "project-1", sessionId: "session-parent" }),
+            ],
+            selectedPageId: "docs:1",
+          }),
+          runtimeClient,
+          selectedSession: session(),
+          selectedProject: { projectId: "project-1", label: "Ora", rootPath: "/tmp/ora", createdAt: 1_717_000_000_000, updatedAt: 1_717_000_000_100, sourceKind: "local_folder", sessionCount: 1 },
+          activeSnapshot: snapshot({ sessionId: "session-parent", runId: "run-parent" }),
+          busyCommand: undefined, commandFeedback: "Ready", checkpoints: [], planItems: [],
+          runInteractionState: { sourceRunId: "run-parent", sourceSessionId: "session-parent", authority: "active_snapshot", snapshotSource: "live", isProcessing: false, canSubmit: true, canStop: false, canResume: false, canRebuild: false, gateKind: undefined, status: "idle" },
+          chatMessages: [] as ChatMessage[],
+          turnSnapshots: {},
+          sessionDetailsById: {},
+          onForkRun: vi.fn(), onForkAndResumeRun: vi.fn(), onReplaySelection: vi.fn(), onResumeRun: vi.fn(), onCancelRun: vi.fn(),
+          onCopyPath: vi.fn(), onAddFileToChat: vi.fn(), onOpenChildSessionPage: vi.fn(),
+          onOpenWorkspacePage: vi.fn(), onCloseWorkspace: vi.fn(), onSelectPage, onClosePage: vi.fn(), onCacheSessionDetail: vi.fn(),
+        }),
+      );
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    // DocumentsDrawer shows project label; FilePreviewPanel should not be rendered
+    expect(container.textContent).toContain("Ora");
+    expect(container.textContent).not.toContain("正在加载");
+    expect(container.textContent).not.toContain("test.ts");
+    // "文件" tab title is shown in the tab bar
+    expect(container.textContent).toContain("文件");
+
+    act(() => { root.unmount(); });
+    container.remove();
+  });
+
+  it("opens file_preview page when clicking a file in the documents drawer", async () => {
+    const listProjectFiles = vi.fn().mockResolvedValue({
+      projectId: "project-1",
+      rootPath: "/tmp/ora",
+      totalFiles: 1,
+      files: [
+        {
+          path: "src/test.ts",
+          name: "test.ts",
+          sizeBytes: 100,
+          modifiedAt: 1_717_000_000_000,
+          mimeType: "text/typescript",
+        },
+      ],
+      truncated: false,
+      skippedDirs: [],
+    });
+    const runtimeClient = {
+      listProjectFiles,
+      getSession: vi.fn().mockResolvedValue(detail()),
+      getRunState: vi.fn().mockResolvedValue(snapshot()),
+    } as unknown as RuntimeClient;
+
+    const view = renderPane({
+      runtimeClient,
+      workspace: workspace({
+        pages: [
+          {
+            id: "docs:1",
+            kind: "documents" as const,
+            title: "文件",
+            sessionId: "session-parent",
+          },
+        ],
+        selectedPageId: "docs:1",
+      }),
+    });
+
+    // Wait for async listProjectFiles to resolve and trigger re-render
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    // Find the file button rendered by DocumentsDrawer tree
+    const fileButton = Array.from(view.container.querySelectorAll("button")).find(
+      (btn) => btn.textContent?.includes("test.ts"),
+    );
+    expect(fileButton).toBeTruthy();
+
+    act(() => {
+      fileButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(view.openWorkspacePage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "file_preview",
+        filePath: "src/test.ts",
+        projectId: "project-1",
+      }),
+    );
+
+    view.cleanup();
   });
 });
