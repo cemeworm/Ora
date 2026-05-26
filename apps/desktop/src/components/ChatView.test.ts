@@ -229,6 +229,43 @@ describe("chat view context state selection", () => {
       },
     })).toBe(sessionContextState);
   });
+
+  it("uses lastCompaction.beforeTokens when session-level activeTokenUsage is stale after compaction", () => {
+    const compactedSessionCtx = {
+      ...contextState(300),
+      lastCompaction: {
+        phase: "pre_turn" as const,
+        implementation: "local" as const,
+        beforeTokens: 120_000,
+        afterTokens: 300,
+        limit: 115_200,
+        reason: "context_limit" as const,
+      },
+    };
+
+    const result = getChatInputContextState({
+      activeSessionDetail: {
+        session: {
+          contextState: compactedSessionCtx,
+        },
+      },
+    });
+    // Should use beforeTokens (120K) instead of stale activeTokenUsage (300)
+    expect(result!.activeTokenUsage!.totalTokens).toBe(120_000);
+  });
+
+  it("does not override activeTokenUsage when lastCompaction is absent", () => {
+    const sessionContextState = contextState(500);
+
+    const result = getChatInputContextState({
+      activeSessionDetail: {
+        session: {
+          contextState: sessionContextState,
+        },
+      },
+    });
+    expect(result!.activeTokenUsage!.totalTokens).toBe(500);
+  });
 });
 
 describe("chat view projected gate trays", () => {
@@ -837,6 +874,55 @@ describe("chat view collaboration overlay visibility", () => {
       railRightInsetPx: CHAT_VIEW_DESKTOP_OVERLAY_RIGHT_INSET_PX,
       safeGapPx: CHAT_VIEW_DESKTOP_OVERLAY_SAFE_GAP_PX,
     })).toBeNull();
+  });
+
+  describe("deriveChatSurfaceLaneWidthPx with idealFrameWidthPx", () => {
+    it("returns null when space is ample (laneWidth >= idealFrameWidthPx)", () => {
+      // At 16px root font, idealFrameWidthPx = 43.2 * 16 ≈ 691
+      // Content row 1400, rail 320, rightInset 32, safeGap 24
+      // laneWidth = 1400 - 376 = 1024 >= 691 → null
+      expect(deriveChatSurfaceLaneWidthPx({
+        hasDesktopOverlayRail: true,
+        contentRowWidth: 1400,
+        railWidth: 320,
+        railRightInsetPx: CHAT_VIEW_DESKTOP_OVERLAY_RIGHT_INSET_PX,
+        safeGapPx: CHAT_VIEW_DESKTOP_OVERLAY_SAFE_GAP_PX,
+        idealFrameWidthPx: 691,
+      })).toBeNull();
+    });
+
+    it("returns constrained width when space is tight (laneWidth < idealFrameWidthPx)", () => {
+      // Content row 1000, rail 320, rightInset 32, safeGap 24
+      // laneWidth = 1000 - 376 = 624 < 691 → return 624
+      expect(deriveChatSurfaceLaneWidthPx({
+        hasDesktopOverlayRail: true,
+        contentRowWidth: 1000,
+        railWidth: 320,
+        railRightInsetPx: CHAT_VIEW_DESKTOP_OVERLAY_RIGHT_INSET_PX,
+        safeGapPx: CHAT_VIEW_DESKTOP_OVERLAY_SAFE_GAP_PX,
+        idealFrameWidthPx: 691,
+      })).toBe(624);
+    });
+
+    it("returns null when no rail (regardless of idealFrameWidthPx)", () => {
+      expect(deriveChatSurfaceLaneWidthPx({
+        hasDesktopOverlayRail: false,
+        contentRowWidth: 1200,
+        railWidth: 320,
+        safeGapPx: CHAT_VIEW_DESKTOP_OVERLAY_SAFE_GAP_PX,
+        idealFrameWidthPx: 691,
+      })).toBeNull();
+    });
+
+    it("keeps current behavior when idealFrameWidthPx is not passed (backward compat)", () => {
+      expect(deriveChatSurfaceLaneWidthPx({
+        hasDesktopOverlayRail: true,
+        contentRowWidth: 1400,
+        railWidth: 320,
+        railRightInsetPx: CHAT_VIEW_DESKTOP_OVERLAY_RIGHT_INSET_PX,
+        safeGapPx: CHAT_VIEW_DESKTOP_OVERLAY_SAFE_GAP_PX,
+      })).toBe(1024);
+    });
   });
 
   it("anchors the desktop overlay rail near the content area's top-right edge", () => {

@@ -41,6 +41,7 @@ import type { DesktopRunInteractionState } from "../lib/runInteractionState";
 import type { PlanDecisionResolutionOverride } from "../lib/state";
 import {
   CHAT_SURFACE_FRAME_WIDTH_CLASS,
+  CHAT_SURFACE_FRAME_WIDTH_REM,
   CHAT_SURFACE_VIEWPORT_GUTTER_CLASS,
 } from "./chatSurfaceLayout";
 
@@ -177,11 +178,28 @@ export function getChatInputContextState({
     session: { contextState?: OraStateSnapshot["contextState"] };
   };
 }) {
-  return (
+  const fallback =
     activeSnapshot?.contextState ??
     activeSessionDetail?.latestSnapshot?.contextState ??
-    activeSessionDetail?.session.contextState
-  );
+    activeSessionDetail?.session.contextState;
+
+  // 防御：如果回退到了 session 级且 lastCompaction 存在
+  // 但 activeTokenUsage < lastCompaction.beforeTokens（表明是压缩残值）
+  // 使用 beforeTokens 作为展示值
+  if (
+    fallback?.lastCompaction &&
+    fallback.activeTokenUsage &&
+    fallback.activeTokenUsage.totalTokens < fallback.lastCompaction.beforeTokens
+  ) {
+    return {
+      ...fallback,
+      activeTokenUsage: {
+        ...fallback.activeTokenUsage,
+        totalTokens: fallback.lastCompaction.beforeTokens,
+      },
+    };
+  }
+  return fallback;
 }
 
 export function deriveProjectedGateTrays({
@@ -735,12 +753,14 @@ export function deriveChatSurfaceLaneWidthPx({
   railWidth,
   railRightInsetPx,
   safeGapPx,
+  idealFrameWidthPx,
 }: {
   hasDesktopOverlayRail: boolean;
   contentRowWidth: number | null;
   railWidth?: number | null;
   railRightInsetPx?: number;
   safeGapPx?: number;
+  idealFrameWidthPx?: number;
 }) {
   if (
     !hasDesktopOverlayRail ||
@@ -755,6 +775,11 @@ export function deriveChatSurfaceLaneWidthPx({
     (safeGapPx ?? CHAT_VIEW_DESKTOP_OVERLAY_SAFE_GAP_PX);
   const laneWidth = Math.floor(contentRowWidth - occupiedRightSpace);
   if (laneWidth <= 0) {
+    return null;
+  }
+  // When space is ample to maintain the ideal frame width without
+  // squeezing the rail, keep the message area centered in the full content row.
+  if (typeof idealFrameWidthPx === "number" && laneWidth >= idealFrameWidthPx) {
     return null;
   }
   return laneWidth;
@@ -995,6 +1020,12 @@ export function ChatView({
     () => deriveChatSurfaceLaneClassName(showDesktopOverlayRail),
     [showDesktopOverlayRail],
   );
+  const idealFrameWidthPx = useMemo(() => {
+    const fontSizePx = typeof document !== "undefined"
+      ? parseFloat(getComputedStyle(document.documentElement).fontSize) || 16
+      : 16;
+    return Math.round(CHAT_SURFACE_FRAME_WIDTH_REM * fontSizePx);
+  }, []);
   const chatSurfaceLaneWidthPx = useMemo(
     () => deriveChatSurfaceLaneWidthPx({
       hasDesktopOverlayRail: showDesktopOverlayRail,
@@ -1004,12 +1035,13 @@ export function ChatView({
         ? CHAT_VIEW_DESKTOP_OVERLAY_RIGHT_INSET_XL_PX
         : CHAT_VIEW_DESKTOP_OVERLAY_RIGHT_INSET_PX,
       safeGapPx: CHAT_VIEW_DESKTOP_OVERLAY_SAFE_GAP_PX,
+      idealFrameWidthPx,
     }),
-    [contentRowWidth, isXlViewport, overlayRailWidth, showDesktopOverlayRail],
+    [contentRowWidth, idealFrameWidthPx, isXlViewport, overlayRailWidth, showDesktopOverlayRail],
   );
   const chatSurfaceLaneStyle = useMemo(
     () => deriveChatSurfaceLaneStyle(chatSurfaceLaneWidthPx),
-    [chatSurfaceLaneWidthPx],
+    [contentRowWidth, isXlViewport, overlayRailWidth, showDesktopOverlayRail],
   );
   const [overlayPlanSectionOpen, setOverlayPlanSectionOpen] = useState(true);
   const [overlayCollaborationSectionOpen, setOverlayCollaborationSectionOpen] = useState(true);
