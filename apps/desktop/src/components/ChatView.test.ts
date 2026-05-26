@@ -313,6 +313,44 @@ describe("chat view composer plan decision state", () => {
     });
   });
 
+  it("suppresses stale plan decision state when the decision was already resolved locally", () => {
+    expect(deriveComposerPlanDecisionState({
+      sessionId: "session-1",
+      activeSnapshot: {
+        runId: "run-1",
+        status: "succeeded",
+        attention: {
+          kind: "needs_plan_decision",
+          blocking: true,
+          sourceRunId: "run-1",
+          reason: "plan_decision_required",
+          planDecisionId: "decision-1",
+          pendingActionIds: [],
+          pendingToolCallIds: [],
+          pendingClarificationIds: [],
+        },
+        planDecisions: [{
+          id: "decision-1",
+          runId: "run-1",
+          sessionId: "session-1",
+          status: "pending",
+          createdAt: 1,
+        }],
+      } as any,
+      planDecisionResolutionOverrides: {
+        "session-1:decision-1": {
+          sessionId: "session-1",
+          decisionId: "decision-1",
+          status: "accepted",
+          resolvedAt: 2,
+        },
+      },
+    })).toEqual({
+      pendingPlanDecisionId: undefined,
+      planDecisionPending: false,
+    });
+  });
+
   it("hides plan decision panel while that decision is resolving", () => {
     expect(deriveComposerPlanDecisionState({
       sessionId: "session-1",

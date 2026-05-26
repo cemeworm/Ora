@@ -21,7 +21,11 @@ export function deriveAssistantTurnPresentation(params: {
     : content;
   const visibleTimelineItems = deriveVisibleTimelineItems(
     turn.timelineItems ?? legacyTimelineItems(turn.processSteps),
+    turn,
+    bodyContent,
+    isPlaceholder,
   )
+    .filter((item) => !shouldSuppressDuplicateStatusGroup(item, bodyContent, turn, isPlaceholder))
     .filter((item) => !shouldSuppressBodyEchoTimelineItem(item, bodyContent, turn, isPlaceholder))
     .filter(dedupeTimelineItemText());
   const hasPlan = Boolean(turn.hasProposedPlan && turn.planContent);
@@ -88,6 +92,24 @@ function shouldSuppressBodyEchoTimelineItem(
     return false;
   }
   return !transcriptAgentMessageOwnsFinalBody(turn, item);
+}
+
+function shouldSuppressDuplicateStatusGroup(
+  item: TurnTimelineItem,
+  bodyContent: string,
+  turn: AssistantTurnAttachment,
+  isPlaceholder: boolean,
+): boolean {
+  if (turn.status !== "running" || isPlaceholder) {
+    return false;
+  }
+  if (item.kind !== "status_group") {
+    return false;
+  }
+  if (!bodyContent.trim()) {
+    return false;
+  }
+  return isComparableDuplicate(bodyContent, item.summary);
 }
 
 function transcriptAgentMessageOwnsFinalBody(
@@ -159,8 +181,57 @@ function normalizeComparableText(text: string): string {
 
 function deriveVisibleTimelineItems(
   items: TurnTimelineItem[],
+  turn: AssistantTurnAttachment | undefined,
+  bodyContent: string,
+  isPlaceholder: boolean,
 ): TurnTimelineItem[] {
-  return items.filter((item) => item.kind !== "status_group");
+  if (turn?.status === "running" || isPlaceholder) {
+    return items;
+  }
+
+  const withoutTrivialCompletedGroups = items.filter((item) => !(
+    item.kind === "status_group" &&
+    item.status === "complete" &&
+    isTrivialCompletedStatusGroup(item)
+  ));
+
+  if (
+    !bodyContent.trim() ||
+    withoutTrivialCompletedGroups.some((item) => item.kind === "assistant_text" || item.kind === "final_text")
+  ) {
+    return withoutTrivialCompletedGroups;
+  }
+
+  const latestNonStatusIndex = findLatestNonStatusTimelineIndex(withoutTrivialCompletedGroups);
+  if (latestNonStatusIndex < 0) {
+    return withoutTrivialCompletedGroups;
+  }
+  return withoutTrivialCompletedGroups.filter((item, index) => (
+    item.kind !== "status_group" ||
+    item.status !== "complete" ||
+    index < latestNonStatusIndex
+  ));
+}
+
+function findLatestNonStatusTimelineIndex(items: TurnTimelineItem[]): number {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    if (items[index]?.kind !== "status_group") {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function isTrivialCompletedStatusGroup(
+  item: Extract<TurnTimelineItem, { kind: "status_group" }>,
+): boolean {
+  const normalizedSummary = item.summary.trim();
+  if (normalizedSummary !== "已完成") {
+    return false;
+  }
+  return item.steps.every((step) =>
+    [step.label, step.detail].every((text) => !text.trim() || text.trim() === "已完成"),
+  );
 }
 
 function legacyTimelineItems(processSteps: AssistantTurnAttachment["processSteps"]): TurnTimelineItem[] {

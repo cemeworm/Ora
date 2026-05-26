@@ -87,6 +87,7 @@ export interface PendingRunState {
   runId?: string;
   prompt: string;
   createdAt: number;
+  draftRevision?: number;
   progressText?: string;
   latency?: OraStateSnapshot["latency"];
   skillIds?: string[];
@@ -99,6 +100,7 @@ export type RunLifecycle =
       sessionId: string;
       prompt: string;
       createdAt: number;
+      draftRevision?: number;
       progressText?: string;
       latency?: OraStateSnapshot["latency"];
       skillIds?: string[];
@@ -274,6 +276,13 @@ export interface AcceptedPlanDecisionTurnProjection {
   createdAt: number;
 }
 
+export interface PlanDecisionResolutionOverride {
+  sessionId: string;
+  decisionId: string;
+  status: "accepted" | "declined";
+  resolvedAt: number;
+}
+
 export type RightWorkspacePageKind =
   | "trails"
   | "documents"
@@ -327,6 +336,7 @@ export interface WorkbenchState {
   bridgeStatus: RuntimeBridgeStatus | undefined;
   promptText: string;
   sessionPromptTexts: Record<string, string>;
+  sessionPromptRevisions: Record<string, number>;
   permissionMode: PermissionMode;
   sessionPermissionModes: Record<string, PermissionMode>;
   taskIntent: TaskIntent;
@@ -346,6 +356,7 @@ export interface WorkbenchState {
   liveMessageDeltaBuffer: LiveMessageDeltaBuffer;
   pendingPlanDecisionResolution: PendingPlanDecisionResolution | undefined;
   acceptedPlanDecisionTurnProjections: Record<string, AcceptedPlanDecisionTurnProjection>;
+  planDecisionResolutionOverrides: Record<string, PlanDecisionResolutionOverride>;
   isLoading: boolean;
   busyCommand: string | undefined;
   commandFeedback: string;
@@ -431,6 +442,7 @@ export type WorkbenchAction =
   | { type: "SELECT_BEAT"; beatId: string | undefined }
   | { type: "SELECT_NODE"; nodeId: string }
   | { type: "SET_PROMPT"; text: string }
+  | { type: "CLEAR_PROMPT_IF_MATCH"; text: string }
   | { type: "SET_SELECTED_SKILL_IDS"; skillIds: string[] }
   | {
       type: "ADD_PROJECT_FILE_ATTACHMENT";
@@ -453,12 +465,23 @@ export type WorkbenchAction =
     }
   | { type: "REMOVE_IMAGE_ATTACHMENT"; sessionId: string; name: string }
   | { type: "CLEAR_IMAGE_ATTACHMENTS"; sessionId: string }
-  | { type: "CLEAR_PROMPT_IF_MATCH"; text: string }
+  | {
+      type: "CLEAR_PROMPT_FOR_SUBMISSION";
+      sessionId: string;
+      revision: number;
+    }
+  | {
+      type: "RESTORE_PROMPT_AFTER_FAILED_SUBMISSION";
+      sessionId: string;
+      text: string;
+      revision: number;
+    }
   | {
       type: "BEGIN_RUN_REQUEST";
       sessionId: string;
       prompt: string;
       createdAt: number;
+      draftRevision?: number;
       skillIds: string[];
     }
   | {
@@ -538,6 +561,7 @@ export const initialWorkbenchState: WorkbenchState = {
   },
   promptText: "",
   sessionPromptTexts: {},
+  sessionPromptRevisions: {},
   selectedSkillIds: [],
   sessionSkillIds: {},
   permissionMode: "auto_review",
@@ -553,6 +577,7 @@ export const initialWorkbenchState: WorkbenchState = {
   liveMessageDeltaBuffer: {},
   pendingPlanDecisionResolution: undefined,
   acceptedPlanDecisionTurnProjections: {},
+  planDecisionResolutionOverrides: {},
   isLoading: false,
   busyCommand: undefined,
   commandFeedback:
@@ -1397,11 +1422,16 @@ function resolveSessionAuthoritySnapshot(params: {
   detailSnapshot?: OraStateSnapshot;
   liveSnapshot?: OraStateSnapshot;
   activeSnapshot?: OraStateSnapshot;
+  planDecisionResolutionOverrides?: Record<string, PlanDecisionResolutionOverride>;
 }): OraStateSnapshot | undefined {
-  const { detailSnapshot, liveSnapshot, activeSnapshot } = params;
-  let snapshot = mergeStateSnapshot(undefined, detailSnapshot);
-  snapshot = mergeStateSnapshot(snapshot, liveSnapshot);
-  snapshot = mergeStateSnapshot(snapshot, activeSnapshot);
+  const { detailSnapshot, liveSnapshot, activeSnapshot, planDecisionResolutionOverrides } = params;
+  const applyOverrides = (snapshot: OraStateSnapshot | undefined) =>
+    planDecisionResolutionOverrides
+      ? applyPlanDecisionResolutionOverridesToSnapshot(snapshot, planDecisionResolutionOverrides)
+      : snapshot;
+  let snapshot = mergeStateSnapshot(undefined, applyOverrides(detailSnapshot));
+  snapshot = mergeStateSnapshot(snapshot, applyOverrides(liveSnapshot));
+  snapshot = mergeStateSnapshot(snapshot, applyOverrides(activeSnapshot));
   return snapshot;
 }
 
@@ -1442,6 +1472,13 @@ function sessionPromptText(
   return sessionId ? (state.sessionPromptTexts[sessionId] ?? "") : "";
 }
 
+function sessionPromptRevision(
+  state: WorkbenchState,
+  sessionId: string | undefined,
+): number {
+  return sessionId ? (state.sessionPromptRevisions[sessionId] ?? 0) : 0;
+}
+
 function sessionSkillIds(
   state: WorkbenchState,
   sessionId: string | undefined,
@@ -1467,11 +1504,58 @@ function setSessionPromptText(
   };
 }
 
+function setSessionPromptTextForSession(
+  state: WorkbenchState,
+  sessionId: string,
+  text: string,
+): Record<string, string> {
+  if (!text) {
+    const { [sessionId]: _cleared, ...rest } = state.sessionPromptTexts;
+    return rest;
+  }
+  return {
+    ...state.sessionPromptTexts,
+    [sessionId]: text,
+  };
+}
+
+function bumpSessionPromptRevision(
+  state: WorkbenchState,
+): Record<string, number> {
+  if (!state.selectedSessionId) {
+    return state.sessionPromptRevisions;
+  }
+  const nextRevision = sessionPromptRevision(state, state.selectedSessionId) + 1;
+  return {
+    ...state.sessionPromptRevisions,
+    [state.selectedSessionId]: nextRevision,
+  };
+}
+
 function clearSessionPromptText(
   state: WorkbenchState,
   sessionId: string,
 ): Record<string, string> {
   const { [sessionId]: _cleared, ...rest } = state.sessionPromptTexts;
+  return rest;
+}
+
+function setSessionPromptRevisionForSession(
+  state: WorkbenchState,
+  sessionId: string,
+  revision: number,
+): Record<string, number> {
+  return {
+    ...state.sessionPromptRevisions,
+    [sessionId]: revision,
+  };
+}
+
+function clearSessionPromptRevision(
+  state: WorkbenchState,
+  sessionId: string,
+): Record<string, number> {
+  const { [sessionId]: _cleared, ...rest } = state.sessionPromptRevisions;
   return rest;
 }
 
@@ -2194,11 +2278,15 @@ export function deriveRenderableTurnSnapshots(params: {
   turnSnapshots: Record<string, OraStateSnapshot>;
   selectedSessionId: string | undefined;
   preservedSettledSnapshots: Record<string, OraStateSnapshot>;
+  planDecisionResolutionOverrides?: Record<string, PlanDecisionResolutionOverride>;
 }): Record<string, OraStateSnapshot> {
   const { detail, activeSnapshot: latestSnapshot, turnSnapshots, selectedSessionId, preservedSettledSnapshots } = params;
+  const overrides = params.planDecisionResolutionOverrides ?? {};
+  const applyOverrides = (snapshot: OraStateSnapshot) =>
+    applyPlanDecisionResolutionOverridesToSnapshot(snapshot, overrides) ?? snapshot;
   if (!detail) {
     if (latestSnapshot && latestSnapshot.sessionId === selectedSessionId) {
-      return { [latestSnapshot.runId]: latestSnapshot };
+      return { [latestSnapshot.runId]: applyOverrides(latestSnapshot) };
     }
     return {};
   }
@@ -2209,14 +2297,15 @@ export function deriveRenderableTurnSnapshots(params: {
   for (const [runId, snapshot] of Object.entries(turnSnapshots)) {
     const snapshotMatchesSession = !snapshot.sessionId || snapshot.sessionId === activeSessionId;
     if ((activeRunIds.has(runId) && snapshotMatchesSession) || snapshot.sessionId === activeSessionId) {
-      scopedSnapshots[runId] = snapshot;
+      scopedSnapshots[runId] = applyOverrides(snapshot);
     }
   }
 
   if (latestSnapshot && latestSnapshot.sessionId === activeSessionId) {
-    scopedSnapshots[latestSnapshot.runId] = latestSnapshot;
+    const effectiveLatestSnapshot = applyOverrides(latestSnapshot);
+    scopedSnapshots[effectiveLatestSnapshot.runId] = effectiveLatestSnapshot;
     const latestEventsByRunId = new Map<string, OraStateSnapshot["events"]>();
-    for (const event of latestSnapshot.events) {
+    for (const event of effectiveLatestSnapshot.events) {
       const existing = latestEventsByRunId.get(event.runId);
       if (existing) {
         existing.push(event);
@@ -2226,12 +2315,12 @@ export function deriveRenderableTurnSnapshots(params: {
     }
     for (const turn of detail.turns) {
       if (scopedSnapshots[turn.runId]) continue;
-      if (latestSnapshot.runId === turn.runId) {
-        scopedSnapshots[turn.runId] = latestSnapshot;
+      if (effectiveLatestSnapshot.runId === turn.runId) {
+        scopedSnapshots[turn.runId] = effectiveLatestSnapshot;
       } else {
         const turnEvents = latestEventsByRunId.get(turn.runId) ?? [];
         if (turnEvents.length > 0) {
-          scopedSnapshots[turn.runId] = { ...latestSnapshot, runId: turn.runId, turnIndex: turn.turnIndex, events: turnEvents };
+          scopedSnapshots[turn.runId] = applyOverrides({ ...effectiveLatestSnapshot, runId: turn.runId, turnIndex: turn.turnIndex, events: turnEvents });
         }
       }
     }
@@ -2240,7 +2329,7 @@ export function deriveRenderableTurnSnapshots(params: {
   for (const [runId, snapshot] of Object.entries(preservedSettledSnapshots)) {
     const snapshotMatchesSession = !snapshot.sessionId || snapshot.sessionId === activeSessionId;
     if (!scopedSnapshots[runId] && snapshotMatchesSession) {
-      scopedSnapshots[runId] = snapshot;
+      scopedSnapshots[runId] = applyOverrides(snapshot);
     }
   }
 
@@ -3393,6 +3482,158 @@ function upsertAcceptedPlanDecisionTurnProjection(
   };
 }
 
+function planDecisionResolutionOverrideKey(params: {
+  sessionId: string;
+  decisionId: string;
+}): string {
+  return `${params.sessionId}:${params.decisionId}`;
+}
+
+function upsertPlanDecisionResolutionOverride(
+  overrides: Record<string, PlanDecisionResolutionOverride>,
+  override: PlanDecisionResolutionOverride | undefined,
+): Record<string, PlanDecisionResolutionOverride> {
+  if (!override) {
+    return overrides;
+  }
+  const key = planDecisionResolutionOverrideKey(override);
+  const existing = overrides[key];
+  if (
+    existing &&
+    existing.status === override.status &&
+    existing.resolvedAt === override.resolvedAt
+  ) {
+    return overrides;
+  }
+  return {
+    ...overrides,
+    [key]: override,
+  };
+}
+
+function removePlanDecisionResolutionOverride(
+  overrides: Record<string, PlanDecisionResolutionOverride>,
+  params: { sessionId: string; decisionId: string },
+): Record<string, PlanDecisionResolutionOverride> {
+  const key = planDecisionResolutionOverrideKey(params);
+  if (!(key in overrides)) {
+    return overrides;
+  }
+  const next = { ...overrides };
+  delete next[key];
+  return next;
+}
+
+function getPlanDecisionResolutionOverride(
+  overrides: Record<string, PlanDecisionResolutionOverride>,
+  sessionId: string,
+  decisionId?: string,
+): PlanDecisionResolutionOverride | undefined {
+  if (!decisionId) {
+    return undefined;
+  }
+  return overrides[planDecisionResolutionOverrideKey({ sessionId, decisionId })];
+}
+
+function hasPlanDecisionResolutionOverride(
+  overrides: Record<string, PlanDecisionResolutionOverride>,
+  sessionId: string,
+  decisionId?: string,
+): boolean {
+  return Boolean(getPlanDecisionResolutionOverride(overrides, sessionId, decisionId));
+}
+
+function applyPlanDecisionResolutionOverridesToSnapshot(
+  snapshot: OraStateSnapshot | undefined,
+  overrides: Record<string, PlanDecisionResolutionOverride>,
+): OraStateSnapshot | undefined {
+  if (!snapshot?.sessionId) {
+    return snapshot;
+  }
+  let changed = false;
+  const nextPlanDecisions = snapshot.planDecisions.map((decision) => {
+    const override = getPlanDecisionResolutionOverride(
+      overrides,
+      decision.sessionId ?? snapshot.sessionId!,
+      decision.id,
+    );
+    if (!override || decision.status === override.status) {
+      return decision;
+    }
+    changed = true;
+    return {
+      ...decision,
+      status: override.status,
+      resolvedAt: decision.resolvedAt ?? override.resolvedAt,
+    };
+  });
+  const attentionDecisionId = snapshot.attention?.kind === "needs_plan_decision"
+    ? snapshot.attention.planDecisionId
+    : undefined;
+  const suppressAttention = hasPlanDecisionResolutionOverride(
+    overrides,
+    snapshot.sessionId,
+    attentionDecisionId,
+  );
+  if (!changed && !suppressAttention) {
+    return snapshot;
+  }
+  return normalizeDesktopSnapshot({
+    ...snapshot,
+    planDecisions: nextPlanDecisions,
+    attention: suppressAttention ? undefined : snapshot.attention,
+  });
+}
+
+function applyPlanDecisionResolutionOverridesToSessionSummary(
+  session: OraSessionSummary,
+  overrides: Record<string, PlanDecisionResolutionOverride>,
+): OraSessionSummary {
+  const decisionId = session.attention?.kind === "needs_plan_decision"
+    ? session.attention.planDecisionId
+    : undefined;
+  if (!hasPlanDecisionResolutionOverride(overrides, session.sessionId, decisionId)) {
+    return session;
+  }
+  return {
+    ...session,
+    attention: undefined,
+    interactionGate: undefined,
+  };
+}
+
+function applyPlanDecisionResolutionOverridesToSessionDetail(
+  detail: OraSessionDetail,
+  overrides: Record<string, PlanDecisionResolutionOverride>,
+): OraSessionDetail {
+  const latestSnapshot = applyPlanDecisionResolutionOverridesToSnapshot(
+    detail.latestSnapshot,
+    overrides,
+  );
+  const session = applyPlanDecisionResolutionOverridesToSessionSummary(
+    detail.session,
+    overrides,
+  );
+  const turns = detail.turns.map((turn) => {
+    const decisionId = turn.attention?.kind === "needs_plan_decision"
+      ? turn.attention.planDecisionId
+      : undefined;
+    if (!hasPlanDecisionResolutionOverride(overrides, turn.sessionId, decisionId)) {
+      return turn;
+    }
+    return { ...turn, attention: undefined };
+  });
+  if (latestSnapshot === detail.latestSnapshot && session === detail.session && turns.every((turn, index) => turn === detail.turns[index])) {
+    return detail;
+  }
+  return {
+    ...detail,
+    session,
+    turns,
+    latestSnapshot,
+  };
+}
+
 function removeAcceptedPlanDecisionTurnProjection(
   projections: Record<string, AcceptedPlanDecisionTurnProjection>,
   params: { sessionId: string; decisionId: string },
@@ -3570,6 +3811,7 @@ export function workbenchReducer(
         modes: [],
         promptText: "",
         sessionPromptTexts: {},
+        sessionPromptRevisions: {},
         selectedSkillIds: [],
         sessionSkillIds: {},
         taskIntent: "chat",
@@ -3579,6 +3821,8 @@ export function workbenchReducer(
         runLifecycle: { stage: "idle" },
         liveMessageDeltaBuffer: {},
         pendingPlanDecisionResolution: undefined,
+        planDecisionResolutionOverrides: {},
+        acceptedPlanDecisionTurnProjections: {},
         isLoading: true,
         busyCommand: undefined,
         commandFeedback: "Reconnecting to the Ora runtime bridge.",
@@ -3665,15 +3909,20 @@ export function workbenchReducer(
         detailSnapshot: preserveAcceptedPlanAuthority ? authorityDetailSnapshot : detailSnapshot,
         liveSnapshot: authorityLiveSnapshot,
         activeSnapshot: activeSnapshotForSession,
+        planDecisionResolutionOverrides: state.planDecisionResolutionOverrides,
       });
+      const effectiveDetail = applyPlanDecisionResolutionOverridesToSessionDetail(
+        action.detail,
+        state.planDecisionResolutionOverrides,
+      );
       const latestTurn = action.detail.turns.at(-1);
       const normalizedDetail = applySnapshotAuthorityToSessionDetail({
-        ...action.detail,
+        ...effectiveDetail,
         session: {
-          ...action.detail.session,
-          status: effectiveSnapshot?.status ?? action.detail.session.status,
+          ...effectiveDetail.session,
+          status: effectiveSnapshot?.status ?? effectiveDetail.session.status,
         },
-        latestSnapshot: effectiveSnapshot ?? action.detail.latestSnapshot,
+        latestSnapshot: effectiveSnapshot ?? effectiveDetail.latestSnapshot,
       }, effectiveSnapshot);
       const sessions = reconcileSessionSummariesWithLocalAuthority(
         state,
@@ -3694,10 +3943,10 @@ export function workbenchReducer(
           state,
           action.projects,
         );
-        return {
-          ...state,
-          projects: action.projects,
-          sessions,
+      return {
+        ...state,
+        projects: action.projects,
+        sessions,
           ...projectSidebarState,
           rightWorkspaceBySessionId,
           sessionLiveSnapshotsById: cacheSessionLiveSnapshot(
@@ -3768,7 +4017,10 @@ export function workbenchReducer(
           effectiveSnapshot?.topology.nodes[0]?.id ??
           "run",
         selectedBeatId: effectiveSnapshot?.events.at(-1)?.id,
-        promptText: sessionPromptText(state, action.detail.session.sessionId),
+        promptText: sessionPromptText(
+          state,
+          action.detail.session.sessionId,
+        ),
         selectedSkillIds: sessionSkillIds(
           state,
           action.detail.session.sessionId,
@@ -3789,6 +4041,7 @@ export function workbenchReducer(
         pendingPlanDecisionResolution: preserveAcceptedPlanAuthority
           ? state.pendingPlanDecisionResolution
           : undefined,
+        planDecisionResolutionOverrides: state.planDecisionResolutionOverrides,
         isLoading: preservePendingRun || preserveAcceptedPlanAuthority ? true : false,
         busyCommand: undefined,
       };
@@ -4125,6 +4378,7 @@ export function workbenchReducer(
         ? resolveSessionAuthoritySnapshot({
             detailSnapshot: selectedSnapshotFromDetail(detail, undefined, undefined),
             liveSnapshot: state.sessionLiveSnapshotsById[action.sessionId],
+            planDecisionResolutionOverrides: state.planDecisionResolutionOverrides,
           })
         : state.sessionLiveSnapshotsById[action.sessionId];
       const activeSessionDetail = detail
@@ -4734,7 +4988,56 @@ export function workbenchReducer(
         ...state,
         promptText: action.text,
         sessionPromptTexts: setSessionPromptText(state, action.text),
+        sessionPromptRevisions: bumpSessionPromptRevision(state),
       };
+
+    case "CLEAR_PROMPT_FOR_SUBMISSION": {
+      const currentRevision = sessionPromptRevision(state, action.sessionId);
+      if (currentRevision !== action.revision) {
+        return state;
+      }
+      return {
+        ...state,
+        promptText:
+          state.selectedSessionId === action.sessionId ? "" : state.promptText,
+        sessionPromptTexts: clearSessionPromptText(state, action.sessionId),
+      };
+    }
+
+    case "RESTORE_PROMPT_AFTER_FAILED_SUBMISSION": {
+      const currentRevision = sessionPromptRevision(state, action.sessionId);
+      if (currentRevision !== action.revision) {
+        return state;
+      }
+      return {
+        ...state,
+        promptText:
+          state.selectedSessionId === action.sessionId
+            ? action.text
+            : state.promptText,
+        sessionPromptTexts: setSessionPromptTextForSession(
+          state,
+          action.sessionId,
+          action.text,
+        ),
+        sessionPromptRevisions: setSessionPromptRevisionForSession(
+          state,
+          action.sessionId,
+          action.revision,
+        ),
+      };
+    }
+
+    case "CLEAR_PROMPT_IF_MATCH":
+      return state.promptText === action.text
+        ? {
+            ...state,
+            promptText: "",
+            sessionPromptTexts: state.selectedSessionId
+              ? clearSessionPromptText(state, state.selectedSessionId)
+              : state.sessionPromptTexts,
+          }
+        : state;
 
     case "SET_SELECTED_SKILL_IDS":
       return {
@@ -4836,17 +5139,6 @@ export function workbenchReducer(
         ),
       };
 
-    case "CLEAR_PROMPT_IF_MATCH":
-      return state.promptText === action.text
-        ? {
-            ...state,
-            promptText: "",
-            sessionPromptTexts: state.selectedSessionId
-              ? clearSessionPromptText(state, state.selectedSessionId)
-              : state.sessionPromptTexts,
-          }
-        : state;
-
     case "BEGIN_RUN_REQUEST": {
       const currentSnapshot = getActiveSnapshot(state.runLifecycle);
       return {
@@ -4856,6 +5148,7 @@ export function workbenchReducer(
           sessionId: action.sessionId,
           prompt: action.prompt,
           createdAt: action.createdAt,
+          draftRevision: action.draftRevision,
           skillIds: action.skillIds,
         },
         liveMessageDeltaBuffer: {},
@@ -4893,14 +5186,55 @@ export function workbenchReducer(
     }
 
     case "BEGIN_PLAN_DECISION_RESOLUTION": {
+      const override = {
+        sessionId: action.sessionId,
+        decisionId: action.decisionId,
+        status: action.status,
+        resolvedAt: action.createdAt,
+      } satisfies PlanDecisionResolutionOverride;
+      const planDecisionResolutionOverrides = upsertPlanDecisionResolutionOverride(
+        state.planDecisionResolutionOverrides,
+        override,
+      );
+      const activeSnapshot = applyPlanDecisionResolutionOverridesToSnapshot(
+        getActiveSnapshot(state.runLifecycle),
+        planDecisionResolutionOverrides,
+      );
+      const activeSessionDetail = state.activeSessionDetail
+        ? applyPlanDecisionResolutionOverridesToSessionDetail(
+            state.activeSessionDetail,
+            planDecisionResolutionOverrides,
+          )
+        : state.activeSessionDetail;
       return {
         ...state,
+        sessions: state.sessions.map((session) =>
+          applyPlanDecisionResolutionOverridesToSessionSummary(
+            activeSnapshot
+              ? applySnapshotAuthorityToSessionSummary(session, activeSnapshot)
+              : session,
+            planDecisionResolutionOverrides,
+          )
+        ),
+        activeSessionDetail,
+        sessionLiveSnapshotsById: cacheSessionLiveSnapshot(
+          state.sessionLiveSnapshotsById,
+          activeSnapshot,
+        ),
+        runLifecycle: activeSnapshot
+          ? runLifecycleFromSnapshot(activeSnapshot, {
+              previous: state.runLifecycle,
+              preserveIncomingSnapshot: true,
+              fallbackSessionId: state.selectedSessionId,
+            })
+          : state.runLifecycle,
         pendingPlanDecisionResolution: {
           sessionId: action.sessionId,
           decisionId: action.decisionId,
           status: action.status,
           createdAt: action.createdAt,
         },
+        planDecisionResolutionOverrides,
         isLoading: true,
         busyCommand: action.status === "accepted" ? "Accept plan" : "Decline plan",
         commandFeedback: action.status === "accepted"
@@ -4913,9 +5247,17 @@ export function workbenchReducer(
       const pendingResolution = state.pendingPlanDecisionResolution;
       const matches = pendingResolution?.sessionId === action.sessionId &&
         pendingResolution.decisionId === action.decisionId;
+      const planDecisionResolutionOverrides = removePlanDecisionResolutionOverride(
+        state.planDecisionResolutionOverrides,
+        {
+          sessionId: action.sessionId,
+          decisionId: action.decisionId,
+        },
+      );
       if (!pendingResolution || !matches) {
         return {
           ...state,
+          planDecisionResolutionOverrides,
           acceptedPlanDecisionTurnProjections: removeAcceptedPlanDecisionTurnProjection(
             state.acceptedPlanDecisionTurnProjections,
             {
@@ -4930,6 +5272,7 @@ export function workbenchReducer(
       return {
         ...state,
         pendingPlanDecisionResolution: undefined,
+        planDecisionResolutionOverrides,
         acceptedPlanDecisionTurnProjections: removeAcceptedPlanDecisionTurnProjection(
           state.acceptedPlanDecisionTurnProjections,
           {

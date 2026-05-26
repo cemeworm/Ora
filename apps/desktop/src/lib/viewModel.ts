@@ -61,6 +61,7 @@ import type {
 } from "./runtimeClient";
 import { USER_CANCELLED_MESSAGE, USER_INTERRUPTED_MESSAGE, USER_RESUMED_MESSAGE } from "./runtimeClient";
 import { deriveSnapshotInteractionProjection, attentionGateKind } from "./runInteractionState";
+import type { PlanDecisionResolutionOverride } from "./state";
 import { parseProposedPlan } from "./proposedPlanParser";
 import { mergeAssistantMessageTextProjection } from "./assistantMessageProjection";
 import { deriveAssistantTurnPresentation } from "./assistantTurnPresentation";
@@ -130,6 +131,7 @@ export function buildWorkbenchViewModel(
   activeSnapshot: OraStateSnapshot | undefined,
   selectedPattern: CoordinationPattern,
   selectedModeId: string,
+  planDecisionResolutionOverrides?: Record<string, PlanDecisionResolutionOverride>,
 ): WorkbenchViewModel {
   const stable = buildStableViewModel(
     patterns,
@@ -138,6 +140,7 @@ export function buildWorkbenchViewModel(
     sessionDetail,
     selectedPattern,
     selectedModeId,
+    planDecisionResolutionOverrides,
   );
   const dynamic = buildDynamicViewModel(
     patterns,
@@ -146,6 +149,7 @@ export function buildWorkbenchViewModel(
     activeSnapshot,
     selectedPattern,
     selectedModeId,
+    planDecisionResolutionOverrides,
   );
   return { ...stable, ...dynamic };
 }
@@ -157,6 +161,7 @@ export function buildStableViewModel(
   sessionDetail: OraSessionDetail,
   selectedPattern: CoordinationPattern,
   selectedModeId: string,
+  planDecisionResolutionOverrides?: Record<string, PlanDecisionResolutionOverride>,
 ) {
   const selectedMode =
     modes.find((mode) => mode.id === selectedModeId) ?? modes[0];
@@ -200,9 +205,12 @@ export function buildStableViewModel(
         detailSnapshot.sessionId === session.sessionId
           ? detailSnapshot
           : undefined,
+        planDecisionResolutionOverrides,
       ),
     ),
-    turns: sessionDetail.turns.map(adaptTurn),
+    turns: sessionDetail.turns.map((turn) =>
+      adaptTurn(turn, planDecisionResolutionOverrides),
+    ),
     topologyNodes: adaptTopologyNodes(
       selectedPatternSnapshot.topology.nodes,
       effectivePattern,
@@ -218,6 +226,7 @@ export function buildDynamicViewModel(
   activeSnapshot: OraStateSnapshot | undefined,
   selectedPattern: CoordinationPattern,
   selectedModeId: string,
+  planDecisionResolutionOverrides?: Record<string, PlanDecisionResolutionOverride>,
 ) {
   const selectedMode =
     modes.find((mode) => mode.id === selectedModeId) ?? modes[0];
@@ -444,17 +453,28 @@ function adaptSession(
   session: OraSessionSummary,
   fallbackPattern: CoordinationPattern,
   snapshot?: OraStateSnapshot,
+  planDecisionResolutionOverrides?: Record<string, PlanDecisionResolutionOverride>,
 ): SessionRun {
   const status = snapshot?.status ?? session.status ?? "succeeded";
-  const attention = snapshot?.attention ?? session.attention;
+  const sessionId = snapshot?.sessionId ?? session.sessionId;
+  const attention = suppressResolvedPlanDecisionAttention(
+    snapshot?.attention ?? session.attention,
+    sessionId,
+    planDecisionResolutionOverrides,
+  );
+  const interactionGate = suppressResolvedPlanDecisionGate(
+    session.interactionGate,
+    sessionId,
+    planDecisionResolutionOverrides,
+  );
   return {
     id: session.sessionId,
     title: session.title,
     project: session.projectId ?? "Recent chat",
     projectId: session.projectId,
     status: snapshot
-      ? adaptSnapshotRunStatus(snapshot)
-      : adaptStatusWithAttention(status, attention, session.interactionGate),
+      ? adaptSnapshotRunStatus(snapshot, planDecisionResolutionOverrides)
+      : adaptStatusWithAttention(status, attention, interactionGate),
     pattern: snapshot?.pattern ?? session.latestPattern ?? fallbackPattern,
     modeId: snapshot?.modeId ?? session.latestModeId,
     updatedAt: formatClock(snapshot?.updatedAt ?? session.updatedAt),
@@ -464,12 +484,20 @@ function adaptSession(
   };
 }
 
-function adaptTurn(turn: OraSessionDetail["turns"][number]): SessionTurnItem {
+function adaptTurn(
+  turn: OraSessionDetail["turns"][number],
+  planDecisionResolutionOverrides?: Record<string, PlanDecisionResolutionOverride>,
+): SessionTurnItem {
+  const attention = suppressResolvedPlanDecisionAttention(
+    turn.attention,
+    turn.sessionId,
+    planDecisionResolutionOverrides,
+  );
   return {
     runId: turn.runId,
     sessionId: turn.sessionId,
     turnIndex: turn.turnIndex,
-    status: adaptStatusWithAttention(turn.status, turn.attention),
+    status: adaptStatusWithAttention(turn.status, attention),
     pattern: turn.pattern,
     modeId: turn.modeId,
     providerId: turn.providerId,
@@ -483,8 +511,14 @@ function adaptAttentionStatus(attention: OraRunAttention | undefined): RunStatus
   return runtimeStatusForRunAttention(attention) as RunStatus | undefined;
 }
 
-function adaptSnapshotRunStatus(snapshot: OraStateSnapshot): RunStatus {
-  return deriveSnapshotInteractionProjection(snapshot).status as RunStatus;
+function adaptSnapshotRunStatus(
+  snapshot: OraStateSnapshot,
+  planDecisionResolutionOverrides?: Record<string, PlanDecisionResolutionOverride>,
+): RunStatus {
+  return deriveSnapshotInteractionProjection(
+    snapshot,
+    planDecisionResolutionOverrides,
+  ).status as RunStatus;
 }
 
 function adaptGateProjectionStatus(gate: GateProjection | undefined): RunStatus | undefined {
@@ -516,6 +550,52 @@ function adaptStatusWithAttention(
       : adaptRunStatus(status);
   }
   return adaptRunStatus(status);
+}
+
+function planDecisionResolutionOverrideKey(params: {
+  sessionId: string;
+  decisionId: string;
+}): string {
+  return `${params.sessionId}:${params.decisionId}`;
+}
+
+function hasPlanDecisionResolutionOverride(
+  overrides: Record<string, PlanDecisionResolutionOverride> | undefined,
+  sessionId: string | undefined,
+  decisionId: string | undefined,
+): boolean {
+  if (!overrides || !sessionId || !decisionId) {
+    return false;
+  }
+  return Boolean(overrides[planDecisionResolutionOverrideKey({ sessionId, decisionId })]);
+}
+
+function suppressResolvedPlanDecisionAttention(
+  attention: OraRunAttention | undefined,
+  sessionId: string | undefined,
+  overrides: Record<string, PlanDecisionResolutionOverride> | undefined,
+): OraRunAttention | undefined {
+  if (
+    attention?.kind === "needs_plan_decision" &&
+    hasPlanDecisionResolutionOverride(overrides, sessionId, attention.planDecisionId)
+  ) {
+    return undefined;
+  }
+  return attention;
+}
+
+function suppressResolvedPlanDecisionGate(
+  gate: GateProjection | undefined,
+  sessionId: string | undefined,
+  overrides: Record<string, PlanDecisionResolutionOverride> | undefined,
+): GateProjection | undefined {
+  if (
+    gate?.kind === "plan_decision" &&
+    hasPlanDecisionResolutionOverride(overrides, sessionId, gate.planDecisionId ?? gate.gateIds[0])
+  ) {
+    return undefined;
+  }
+  return gate;
 }
 
 function adaptRunStatus(status: OraStateSnapshot["status"], opts?: { hasPendingClarifications?: boolean }): RunStatus {

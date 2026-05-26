@@ -137,9 +137,10 @@ export function sidebarStatusForSession(
   state: Pick<
     SidebarState,
     | "selectedSessionId"
-    | "selectedTurnRunId"
-    | "activeSessionDetail"
-    | "runLifecycle"
+  | "selectedTurnRunId"
+  | "activeSessionDetail"
+  | "runLifecycle"
+  | "planDecisionResolutionOverrides"
   >,
 ): RunStatus {
   if (session.sessionId !== state.selectedSessionId) {
@@ -157,6 +158,7 @@ export function sidebarStatusForSession(
       activeSessionDetail: state.activeSessionDetail,
       selectedTurnRunId: state.selectedTurnRunId,
       runLifecycle: state.runLifecycle,
+      planDecisionResolutionOverrides: state.planDecisionResolutionOverrides,
     }),
   );
 }
@@ -680,6 +682,7 @@ export interface SidebarState {
   selectedTurnRunId: WorkbenchState["selectedTurnRunId"];
   activeSessionDetail: WorkbenchState["activeSessionDetail"];
   runLifecycle: WorkbenchState["runLifecycle"];
+  planDecisionResolutionOverrides?: WorkbenchState["planDecisionResolutionOverrides"];
   language: WorkbenchState["language"];
   settingsOpen: WorkbenchState["settingsOpen"];
 }
@@ -775,6 +778,7 @@ export const Sidebar = memo(function Sidebar({
       sidebarState.selectedTurnRunId,
       sidebarState.activeSessionDetail,
       sidebarState.runLifecycle,
+      sidebarState.planDecisionResolutionOverrides,
     ],
   );
   const sessionSearchResults = useMemo(
@@ -808,6 +812,7 @@ export const Sidebar = memo(function Sidebar({
       sidebarState.selectedTurnRunId,
       sidebarState.activeSessionDetail,
       sidebarState.runLifecycle,
+      sidebarState.planDecisionResolutionOverrides,
     ],
   );
   const showSectionDivider = projects.length > 0;

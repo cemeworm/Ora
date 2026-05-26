@@ -39,6 +39,7 @@ import type {
   TopologyNode,
 } from "../types";
 import { getSharedRuntimeClient, type OraRunTrail, type OraSessionRunSummary, type OraStateSnapshot } from "../lib/runtimeClient";
+import { useWorkbench } from "../lib/state";
 import type { DesktopRunInteractionState } from "../lib/runInteractionState";
 import { toolRendererRegistry } from "../lib/toolRendererRegistry";
 import {
@@ -140,6 +141,7 @@ export function TrailsTabs({
   onCancelRun,
 }: TrailsTabsProps) {
   const runtimeClient = getSharedRuntimeClient();
+  const { state: workbench } = useWorkbench();
   const [selectedTab, setSelectedTab] = useState<DebuggerTrailTab>("diagnosis");
   const [trail, setTrail] = useState<OraRunTrail | undefined>(undefined);
   const [trailLoading, setTrailLoading] = useState(false);
@@ -189,8 +191,14 @@ export function TrailsTabs({
   );
   const diagnosticSummary = useMemo(() => deriveRunDiagnostics(activeSnapshot), [activeSnapshot]);
   const summary = useMemo(
-    () => buildTrailDebugSummary(activeSnapshot, trail, actions, findings),
-    [activeSnapshot, trail, actions, findings],
+    () => buildTrailDebugSummary(
+      activeSnapshot,
+      trail,
+      actions,
+      findings,
+      workbench.planDecisionResolutionOverrides,
+    ),
+    [activeSnapshot, trail, actions, findings, workbench.planDecisionResolutionOverrides],
   );
   const timelineItems = useMemo(() => buildSemanticTimeline(activeSnapshot, { includeInternalEvents: showInternalEvents }), [activeSnapshot, showInternalEvents]);
   const eventKinds = useMemo(() => ["all", ...Array.from(new Set(timelineItems.map((item) => item.kind)))], [timelineItems]);

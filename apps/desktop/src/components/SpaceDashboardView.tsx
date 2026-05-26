@@ -144,6 +144,7 @@ export function SpaceDashboardView() {
       turnSnapshots: {},
       selectedTurnRunId: workbench.selectedTurnRunId,
       runLifecycle: workbench.runLifecycle,
+      planDecisionResolutionOverrides: workbench.planDecisionResolutionOverrides,
     });
   }, [
     workbench.selectedSessionId,
@@ -151,6 +152,7 @@ export function SpaceDashboardView() {
     workbench.activeSessionDetail,
     workbench.runLifecycle,
     workbench.selectedTurnRunId,
+    workbench.planDecisionResolutionOverrides,
   ]);
 
   const detailWidget = detailWidgetId

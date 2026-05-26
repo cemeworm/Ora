@@ -1796,6 +1796,36 @@ describe("desktop workbench state", () => {
     expect(state.sessionSkillIds["session-a"]).toBeUndefined();
   });
 
+  it("clears submitted prompt state by revision and ignores stale clears after new edits", () => {
+    let state: WorkbenchState = {
+      ...initialWorkbenchState,
+      selectedSessionId: "session-a",
+      promptText: "draft v1",
+    };
+
+    state = workbenchReducer(state, { type: "SET_PROMPT", text: "draft v1" });
+    const revision = state.sessionPromptRevisions["session-a"];
+
+    state = workbenchReducer(state, {
+      type: "CLEAR_PROMPT_FOR_SUBMISSION",
+      sessionId: "session-a",
+      revision,
+    });
+    expect(state.promptText).toBe("");
+    expect(state.sessionPromptTexts["session-a"]).toBeUndefined();
+
+    state = workbenchReducer(state, { type: "SET_PROMPT", text: "draft v2" });
+    expect(state.sessionPromptTexts["session-a"]).toBe("draft v2");
+
+    const staleClear = workbenchReducer(state, {
+      type: "CLEAR_PROMPT_FOR_SUBMISSION",
+      sessionId: "session-a",
+      revision,
+    });
+    expect(staleClear.promptText).toBe("draft v2");
+    expect(staleClear.sessionPromptTexts["session-a"]).toBe("draft v2");
+  });
+
   it("merges streamed approval action updates back into the active snapshot", () => {
     const createdAt = 1_714_000_000_000;
     const approvedActionId = "run-approval:action:solo_agent-tool-1";
@@ -2938,6 +2968,32 @@ describe("desktop workbench state", () => {
     expect(state.isLoading).toBe(false);
   });
 
+  it("restores the submitted prompt after a failed submission when the revision still matches", () => {
+    let state: WorkbenchState = {
+      ...initialWorkbenchState,
+      selectedSessionId: "session-failed",
+      promptText: "",
+    };
+
+    state = workbenchReducer(state, { type: "SET_PROMPT", text: "retry me" });
+    const revision = state.sessionPromptRevisions["session-failed"];
+    state = workbenchReducer(state, {
+      type: "CLEAR_PROMPT_FOR_SUBMISSION",
+      sessionId: "session-failed",
+      revision,
+    });
+    expect(state.promptText).toBe("");
+
+    state = workbenchReducer(state, {
+      type: "RESTORE_PROMPT_AFTER_FAILED_SUBMISSION",
+      sessionId: "session-failed",
+      text: "retry me",
+      revision,
+    });
+    expect(state.promptText).toBe("retry me");
+    expect(state.sessionPromptTexts["session-failed"]).toBe("retry me");
+  });
+
   it("keeps a first-turn snapshot renderable before the new session transcript hydrates", () => {
     const sessionId = "session-first-turn-snapshot-window";
     const runId = "run-first-turn-snapshot-window";
@@ -3023,6 +3079,29 @@ describe("desktop workbench state", () => {
     expect(getActiveSnapshot(next.runLifecycle)).toBeUndefined();
     expect(next.selectedTurnRunId).toBeUndefined();
     expect(getPendingRunState(next.runLifecycle)).toEqual(getPendingRunState(state.runLifecycle));
+  });
+
+  it("keeps hydrated composer text empty when there is no draft cache", () => {
+    const sessionId = "session-hydrate-prompt";
+    const session = sessionSummary(sessionId);
+    const next = workbenchReducer({
+      ...initialWorkbenchState,
+      selectedSessionId: sessionId,
+      sessions: [session],
+    }, {
+      type: "HYDRATE_SESSION",
+      projects: [],
+      sessions: [session],
+      detail: {
+        session,
+        turns: [],
+        transcript: [],
+        latestSnapshot: undefined,
+      },
+    });
+
+    expect(next.promptText).toBe("");
+    expect(next.sessionPromptTexts[sessionId]).toBeUndefined();
   });
 
   it("records only first stream latency for an initial running snapshot stream", () => {
@@ -4929,6 +5008,75 @@ describe("desktop workbench state", () => {
       expect(next.isLoading).toBe(false);
       expect(next.busyCommand).toBeUndefined();
       expect(next.commandFeedback).toBe("Plan accepted.");
+      expect(next.runLifecycle.stage).toBe("settled");
+    });
+
+    it("suppresses stale plan decision authority during hydrate when the decision is already resolved locally", () => {
+      const sessionId = "session-plan";
+      const runId = "run-plan";
+      const planDecisionId = `${runId}:plan-decision`;
+      const snapshot = testSnapshot({
+        runId,
+        sessionId,
+        status: "succeeded",
+        planDecisions: [{
+          id: planDecisionId,
+          runId,
+          sessionId,
+          status: "pending",
+          createdAt: 1_714_000_000_000,
+        }],
+        attention: {
+          kind: "needs_plan_decision",
+          blocking: true,
+          sourceRunId: runId,
+          reason: "plan_decision_required",
+          planDecisionId,
+          pendingActionIds: [],
+          pendingToolCallIds: [],
+          pendingClarificationIds: [],
+        },
+      });
+      const state = {
+        ...initialWorkbenchState,
+        selectedSessionId: sessionId,
+        selectedTurnRunId: runId,
+        planDecisionResolutionOverrides: {
+          [`${sessionId}:${planDecisionId}`]: {
+            sessionId,
+            decisionId: planDecisionId,
+            status: "accepted" as const,
+            resolvedAt: 1_714_000_000_100,
+          },
+        },
+      } satisfies WorkbenchState;
+
+      const next = workbenchReducer(state, {
+        type: "HYDRATE_SESSION",
+        projects: [],
+        sessions: [{
+          ...sessionSummary(sessionId),
+          latestRunId: runId,
+          status: "succeeded",
+          attention: snapshot.attention,
+        }],
+        detail: {
+          session: {
+            ...sessionSummary(sessionId),
+            latestRunId: runId,
+            status: "succeeded",
+            attention: snapshot.attention,
+          },
+          turns: [],
+          transcript: [],
+          latestSnapshot: snapshot,
+        },
+        snapshot,
+      });
+
+      expect(next.activeSessionDetail?.session.attention?.kind).not.toBe("needs_plan_decision");
+      expect(next.activeSessionDetail?.latestSnapshot?.attention?.kind).not.toBe("needs_plan_decision");
+      expect(next.sessions[0]?.attention?.kind).not.toBe("needs_plan_decision");
       expect(next.runLifecycle.stage).toBe("settled");
     });
 

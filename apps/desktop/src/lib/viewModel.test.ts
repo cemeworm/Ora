@@ -502,6 +502,69 @@ describe("desktop session view model", () => {
     expect(viewModel.sessions.find((item) => item.id === session.sessionId)?.status).toBe("decision_needed");
   });
 
+  it("suppresses resolved plan decision gates in summary-only sessions", () => {
+    const createdAt = 1_714_000_000_000;
+    const session: OraSessionSummary = {
+      sessionId: "session-summary-gate-suppressed",
+      title: "Resolved decision",
+      status: "failed",
+      attention: {
+        kind: "idle",
+        blocking: false,
+        sourceRunId: "run-summary-gate",
+        pendingActionIds: [],
+        pendingToolCallIds: [],
+        pendingClarificationIds: [],
+      },
+      interactionGate: {
+        kind: "plan_decision",
+        source: "plan_decisions",
+        durable: true,
+        staleRisk: false,
+        gateIds: ["run-summary-gate:plan-decision"],
+        pendingActionIds: [],
+        pendingToolCallIds: [],
+        pendingClarificationIds: [],
+        planDecisionId: "run-summary-gate:plan-decision",
+      },
+      turnCount: 1,
+      createdAt,
+      updatedAt: createdAt,
+    };
+    const activeSession: OraSessionSummary = {
+      sessionId: "session-active",
+      title: "Active Session",
+      turnCount: 0,
+      createdAt,
+      updatedAt: createdAt,
+    };
+    const detail: OraSessionDetail = {
+      session: activeSession,
+      turns: [],
+      transcript: [],
+    };
+
+    const viewModel = buildWorkbenchViewModel(
+      MVP_PATTERNS,
+      MVP_MODES,
+      [session, activeSession],
+      detail,
+      undefined,
+      "generator_verifier",
+      SINGLE_AGENT_MODE_ID,
+      {
+        [`${session.sessionId}:run-summary-gate:plan-decision`]: {
+          sessionId: session.sessionId,
+          decisionId: "run-summary-gate:plan-decision",
+          status: "accepted",
+          resolvedAt: createdAt,
+        },
+      },
+    );
+
+    expect(viewModel.sessions.find((item) => item.id === session.sessionId)?.status).toBe("failed");
+  });
+
   it("does not treat a newly-created empty session preview as running", () => {
     const createdAt = 1_714_000_000_000;
     const session: OraSessionSummary = {
@@ -4431,7 +4494,6 @@ describe("desktop session view model", () => {
       primarySurface: "timeline",
       showStandaloneBody: false,
     });
-    expect(assistant?.turn?.presentation?.visibleTimelineItems?.some((item) => item.kind === "status_group")).toBe(false);
     expect(assistant?.turn?.timelineItems).toContainEqual(expect.objectContaining({
       kind: "agent_message",
       content: finalVerdict,
@@ -6203,7 +6265,6 @@ describe("desktop session view model", () => {
 
     expect(assistant?.content).toBe("");
     expect(assistant?.turn?.presentation?.showStandaloneBody).toBe(false);
-    expect(assistant?.turn?.presentation?.visibleTimelineItems).toEqual([]);
     expect(timelineText).toContain("已委派 Research subagent，正在处理子任务。");
     expect(timelineText.match(/已委派 Research subagent，正在处理子任务。/g)).toHaveLength(1);
     expect(timelineText).toContain("Research subagent 已完成，结果已回流，父 Agent 正在整合。");

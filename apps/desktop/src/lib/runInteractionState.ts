@@ -4,7 +4,7 @@ import type {
   OraSessionSummary,
   OraStateSnapshot,
 } from "./runtimeClient";
-import type { PendingRunState, RunLifecycle } from "./state";
+import type { PendingRunState, PlanDecisionResolutionOverride, RunLifecycle } from "./state";
 import { getActiveSnapshot, getPendingRunState } from "./state";
 
 export interface DesktopRunInteractionState {
@@ -46,6 +46,7 @@ export interface DeriveRunInteractionStateParams {
   turnSnapshots?: Record<string, OraStateSnapshot>;
   selectedTurnRunId?: string;
   runLifecycle: RunLifecycle;
+  planDecisionResolutionOverrides?: Record<string, PlanDecisionResolutionOverride>;
 }
 
 const PROCESSING_STATUSES: ReadonlySet<string> = new Set([
@@ -153,9 +154,42 @@ function gateKindToInteractionStatus(kind: GateProjection["kind"]): DesktopRunIn
   }
 }
 
-export function snapshotPendingPlanDecision(snapshot: OraStateSnapshot) {
+function planDecisionResolutionOverrideKey(params: {
+  sessionId: string;
+  decisionId: string;
+}): string {
+  return `${params.sessionId}:${params.decisionId}`;
+}
+
+function hasPlanDecisionResolutionOverride(
+  overrides: Record<string, PlanDecisionResolutionOverride> | undefined,
+  sessionId: string | undefined,
+  decisionId: string | undefined,
+): boolean {
+  if (!overrides || !sessionId || !decisionId) {
+    return false;
+  }
+  return Boolean(overrides[planDecisionResolutionOverrideKey({ sessionId, decisionId })]);
+}
+
+function snapshotStatusProjection(
+  snapshot: OraStateSnapshot,
+): SnapshotInteractionProjection {
+  return {
+    status: snapshotStatusToInteractionStatus(snapshot.status),
+  };
+}
+
+export function snapshotPendingPlanDecision(
+  snapshot: OraStateSnapshot,
+  overrides?: Record<string, PlanDecisionResolutionOverride>,
+) {
   const gate = deriveSnapshotGateProjection(snapshot);
   if (gate?.kind !== "plan_decision") {
+    return undefined;
+  }
+  const pendingDecisionId = gate.planDecisionId ?? gate.gateIds[0];
+  if (hasPlanDecisionResolutionOverride(overrides, snapshot.sessionId, pendingDecisionId)) {
     return undefined;
   }
   return snapshot.planDecisions.find((decision) => decision.id === gate.planDecisionId)
@@ -164,18 +198,23 @@ export function snapshotPendingPlanDecision(snapshot: OraStateSnapshot) {
 
 export function deriveSnapshotInteractionProjection(
   snapshot: OraStateSnapshot,
+  overrides?: Record<string, PlanDecisionResolutionOverride>,
 ): SnapshotInteractionProjection {
   const gate = deriveSnapshotGateProjection(snapshot);
   if (gate) {
+    if (
+      gate.kind === "plan_decision" &&
+      hasPlanDecisionResolutionOverride(overrides, snapshot.sessionId, gate.planDecisionId ?? gate.gateIds[0])
+    ) {
+      return snapshotStatusProjection(snapshot);
+    }
     return {
       status: gateKindToInteractionStatus(gate.kind),
       gateKind: gateKindToInteractionGateKind(gate.kind),
       gate,
     };
   }
-  return {
-    status: snapshotStatusToInteractionStatus(snapshot.status),
-  };
+  return snapshotStatusProjection(snapshot);
 }
 
 function deriveFromPendingRun(
@@ -197,8 +236,9 @@ function deriveFromPendingRun(
 
 function deriveFromSnapshot(
   snapshot: OraStateSnapshot,
+  overrides?: Record<string, PlanDecisionResolutionOverride>,
 ): DesktopRunInteractionState {
-  const { status, gateKind } = deriveSnapshotInteractionProjection(snapshot);
+  const { status, gateKind } = deriveSnapshotInteractionProjection(snapshot, overrides);
 
   return {
     sourceRunId: snapshot.runId,
@@ -218,12 +258,16 @@ function deriveFromSnapshot(
 function deriveFromTurn(
   turn: NonNullable<OraSessionDetail["turns"]>[number],
   snapshotSource?: DesktopRunInteractionState["snapshotSource"],
+  overrides?: Record<string, PlanDecisionResolutionOverride>,
 ): DesktopRunInteractionState {
   const attention = turn.attention;
-  const gateKind = attentionGateKind(attention);
+  const suppressedPlanDecision = attention?.kind === "needs_plan_decision" &&
+    hasPlanDecisionResolutionOverride(overrides, turn.sessionId, attention.planDecisionId);
+  const effectiveAttention = suppressedPlanDecision ? undefined : attention;
+  const gateKind = attentionGateKind(effectiveAttention);
   const baseStatus = snapshotStatusToInteractionStatus(turn.status);
   const status = gateKind
-    ? attentionStatus(attention) ?? baseStatus
+    ? attentionStatus(effectiveAttention) ?? baseStatus
     : baseStatus;
 
   return {
@@ -242,10 +286,11 @@ function deriveFromTurn(
 }
 
 function deriveFromSession(
-  session: { status?: string; attention?: { kind?: string } },
+  session: { sessionId?: string; status?: string; attention?: { kind?: string; planDecisionId?: string } },
   sessionId: string,
   authority: DesktopRunInteractionState["authority"],
   snapshotSource?: DesktopRunInteractionState["snapshotSource"],
+  overrides?: Record<string, PlanDecisionResolutionOverride>,
 ): DesktopRunInteractionState {
   let status: DesktopRunInteractionState["status"] = "idle";
   let gateKind: DesktopRunInteractionState["gateKind"] | undefined;
@@ -256,15 +301,18 @@ function deriveFromSession(
     );
   }
 
-  if (session.attention?.kind) {
+  const suppressedPlanDecision = session.attention?.kind === "needs_plan_decision" &&
+    hasPlanDecisionResolutionOverride(overrides, sessionId, session.attention.planDecisionId);
+  const effectiveAttention = suppressedPlanDecision ? undefined : session.attention;
+  if (effectiveAttention?.kind) {
     const attnStatus = attentionStatus(
-      session.attention as OraStateSnapshot["attention"],
+      effectiveAttention as OraStateSnapshot["attention"],
     );
     if (attnStatus) {
       status = attnStatus;
     }
     gateKind = attentionGateKind(
-      session.attention as OraStateSnapshot["attention"],
+      effectiveAttention as OraStateSnapshot["attention"],
     );
   }
 
@@ -313,6 +361,7 @@ export function deriveRunInteractionState(
     turnSnapshots,
     selectedTurnRunId,
     runLifecycle,
+    planDecisionResolutionOverrides,
   } = params;
 
   const sessionId = sessionSummary?.sessionId ?? selectedSessionId;
@@ -328,7 +377,7 @@ export function deriveRunInteractionState(
     sessionId &&
     snapshotBelongsToSession(activeSnapshot, sessionId)
   ) {
-    return deriveFromSnapshot(activeSnapshot);
+    return deriveFromSnapshot(activeSnapshot, planDecisionResolutionOverrides);
   }
 
   if (
@@ -341,7 +390,7 @@ export function deriveRunInteractionState(
       selectedTurnSnapshot &&
       snapshotBelongsToSession(selectedTurnSnapshot, sessionId)
     ) {
-      return deriveFromSnapshot(selectedTurnSnapshot);
+      return deriveFromSnapshot(selectedTurnSnapshot, planDecisionResolutionOverrides);
     }
   }
 
@@ -359,17 +408,17 @@ export function deriveRunInteractionState(
         : activeSessionDetail.turns.at(-1);
 
       if (turn) {
-        return deriveFromTurn(turn, activeSessionDetail.snapshotSource);
+        return deriveFromTurn(turn, activeSessionDetail.snapshotSource, planDecisionResolutionOverrides);
       }
 
       // Fall through to session-level.
-      return deriveFromSession(activeSessionDetail.session, detailSessionId, "session_detail", activeSessionDetail.snapshotSource);
+      return deriveFromSession(activeSessionDetail.session, detailSessionId, "session_detail", activeSessionDetail.snapshotSource, planDecisionResolutionOverrides);
     }
   }
 
   // Priority 4: session summary as last resort.
   if (sessionSummary) {
-    return deriveFromSession(sessionSummary, sessionSummary.sessionId, "session_summary");
+    return deriveFromSession(sessionSummary, sessionSummary.sessionId, "session_summary", undefined, planDecisionResolutionOverrides);
   }
 
   return idleState(sessionId);

@@ -1272,6 +1272,7 @@ export function ChatInput({
       contextChips,
     }),
   );
+  const editorSeedVersionRef = useRef(0);
   const overlayRef = useRef<HTMLDivElement>(null);
   const editorRootRef = useRef<HTMLDivElement | null>(null);
   const editorApiRef = useRef<LexicalEditor | null>(null);
@@ -1397,6 +1398,7 @@ export function ChatInput({
 
     lastAppliedSeedTokenRef.current = incomingSeedToken;
     lastExportedRef.current = incomingSnapshot;
+    editorSeedVersionRef.current += 1;
     setEditorProjection(
       buildInitialProjection({
         composerPrompt,
@@ -1532,6 +1534,7 @@ export function ChatInput({
       return;
     }
 
+    const currentSeedVersion = editorSeedVersionRef.current;
     setEditorProjection(nextProjection);
     if (nextProjection.prompt.length > 0) {
       setHasPendingUserInput(false);
@@ -1548,6 +1551,9 @@ export function ChatInput({
       selectedSkills: nextSelectedSkills,
       contextChips: nextContextChips,
     });
+    if (currentSeedVersion !== editorSeedVersionRef.current) {
+      return;
+    }
     if (nextProjection.prompt !== previous.prompt) {
       onPromptChange(nextProjection.prompt);
     }
@@ -1668,9 +1674,15 @@ export function ChatInput({
       return;
     }
 
-    // Shift+Tab restores native reverse focus navigation; the previous
-    // task-intent toggle via Shift+Tab has been removed.
     if (event.key === "Tab" && event.shiftKey) {
+      event.preventDefault();
+      const nextIntent =
+        taskIntent === "implement"
+          ? "plan"
+          : taskIntent === "plan"
+            ? "implement"
+            : "plan";
+      onTaskIntentChange(nextIntent);
       return;
     }
 

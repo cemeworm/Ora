@@ -1035,6 +1035,7 @@ function WorkbenchInner() {
         turnSnapshots: activeSessionCachedTurnSnapshots,
         selectedSessionId: state.selectedSessionId,
         preservedSettledSnapshots: state.preservedSettledSnapshots,
+        planDecisionResolutionOverrides: state.planDecisionResolutionOverrides,
       }),
     [
       state.activeSessionDetail,
@@ -1042,6 +1043,7 @@ function WorkbenchInner() {
       getActiveSnapshot(state.runLifecycle),
       state.selectedSessionId,
       state.preservedSettledSnapshots,
+      state.planDecisionResolutionOverrides,
     ],
   );
 
@@ -1056,6 +1058,7 @@ function WorkbenchInner() {
       turnSnapshots: activeSessionTurnSnapshots,
       selectedTurnRunId: state.selectedTurnRunId,
       runLifecycle: state.runLifecycle,
+      planDecisionResolutionOverrides: state.planDecisionResolutionOverrides,
     });
   }, [
     state.selectedSessionId,
@@ -1064,6 +1067,7 @@ function WorkbenchInner() {
     state.runLifecycle,
     activeSessionTurnSnapshots,
     state.selectedTurnRunId,
+    state.planDecisionResolutionOverrides,
   ]);
 
   const chatMessagesCacheRef = useRef<{

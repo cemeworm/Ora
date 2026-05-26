@@ -785,6 +785,49 @@ describe("trail debugger view model", () => {
     expect(summary.blockingGate).toBe("决策 · 计划确认");
   });
 
+  it("suppresses resolved plan decisions from trail blocking summaries", () => {
+    const snapshot = baseSnapshot({
+      status: "succeeded",
+      planDecisions: [{
+        id: "run-test:plan-decision",
+        runId: "run-test",
+        sessionId: "session-test",
+        status: "pending",
+        createdAt: 5,
+      }],
+      attention: {
+        kind: "needs_plan_decision",
+        blocking: true,
+        sourceRunId: "run-test",
+        reason: "plan_decision_required",
+        planDecisionId: "run-test:plan-decision",
+        pendingActionIds: [],
+        pendingToolCallIds: [],
+        pendingClarificationIds: [],
+      },
+    });
+    const sessionId = "session-test";
+
+    const summary = buildTrailDebugSummary(
+      snapshot,
+      undefined,
+      [],
+      [],
+      {
+        [`${sessionId}:run-test:plan-decision`]: {
+          sessionId,
+          decisionId: "run-test:plan-decision",
+          status: "declined",
+          resolvedAt: 6,
+        },
+      },
+    );
+
+    expect(summary.statusLabel).toBe("已完成");
+    expect(summary.blockingGate).toBe("无");
+    expect(summary.currentStage).toBe("已完成");
+  });
+
   it("treats approval-interrupt failure text as waiting-for-approval instead of failure", () => {
     const snapshot = baseSnapshot({
       status: "failed",

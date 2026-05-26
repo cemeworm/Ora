@@ -15,6 +15,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     selectedTurnRunId: state.selectedTurnRunId,
     activeSessionDetail: state.activeSessionDetail,
     runLifecycle: state.runLifecycle,
+    planDecisionResolutionOverrides: state.planDecisionResolutionOverrides,
     language: state.language,
     settingsOpen: state.settingsOpen,
   }), [
@@ -26,6 +27,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     state.selectedTurnRunId,
     state.activeSessionDetail,
     state.runLifecycle,
+    state.planDecisionResolutionOverrides,
     state.language,
     state.settingsOpen,
   ]);

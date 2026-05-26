@@ -1231,6 +1231,42 @@ describe("ChatInput Lexical core behavior", () => {
     expect(nextEditor.textContent).not.toContain("release-helper");
   });
 
+  it("does not re-export stale prompt text after an external composer reset", async () => {
+    let prompt = "旧提示";
+    const onPromptChange = vi.fn((next: string) => {
+      prompt = next;
+    });
+    const { container, rerender } = renderElement(
+      createElement(
+        ChatInput as any,
+        createBaseProps({
+          sessionId: "session-1",
+          composerPrompt: prompt,
+          onPromptChange,
+        }),
+      ),
+    );
+
+    expect(getEditor(container).textContent).toContain("旧提示");
+
+    rerender(
+      createElement(
+        ChatInput as any,
+        createBaseProps({
+          sessionId: "session-1",
+          composerPrompt: "",
+          onPromptChange,
+        }),
+      ),
+    );
+    await flushMicrotasks();
+    await flushMicrotasks();
+
+    expect(getEditor(container).textContent).not.toContain("旧提示");
+    expect(onPromptChange).not.toHaveBeenCalledWith("旧提示");
+    expect(prompt).toBe("旧提示");
+  });
+
   it("dispatches undo/redo history commands without corrupting the composer state", async () => {
     let latestState: HarnessState = {
       prompt: "",
@@ -1447,7 +1483,7 @@ describe("chat input attachments and preview", () => {
 });
 
 describe("chat input keyboard shortcuts", () => {
-  it("does not intercept Shift+Tab — task-intent toggle is removed", () => {
+  it("switches task intent from implement to plan on Shift+Tab", () => {
     const onTaskIntentChange = vi.fn();
     const { container } = renderElement(
       createElement(
@@ -1462,8 +1498,25 @@ describe("chat input keyboard shortcuts", () => {
     const editor = getEditor(container);
     dispatchEditorKey(editor, "Tab", { shiftKey: true });
 
-    // Shift+Tab no longer toggles task intent; native focus navigation is restored.
-    expect(onTaskIntentChange).not.toHaveBeenCalled();
+    expect(onTaskIntentChange).toHaveBeenCalledWith("plan");
+  });
+
+  it("switches task intent from plan to implement on Shift+Tab", () => {
+    const onTaskIntentChange = vi.fn();
+    const { container } = renderElement(
+      createElement(
+        ChatInput as any,
+        createBaseProps({
+          taskIntent: "plan",
+          onTaskIntentChange,
+        }),
+      ),
+    );
+
+    const editor = getEditor(container);
+    dispatchEditorKey(editor, "Tab", { shiftKey: true });
+
+    expect(onTaskIntentChange).toHaveBeenCalledWith("implement");
   });
 
   it("does not prevent default on Tab without Shift when picker is closed", () => {

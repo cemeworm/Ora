@@ -9,6 +9,7 @@ import type { ActionRecord, AgentProfile } from "../types";
 import type { DebuggerTrailTab } from "./debuggerSurface";
 import { deriveSnapshotInteractionProjection, snapshotPendingPlanDecision, type SnapshotInteractionProjection } from "./runInteractionState";
 import { deriveCurrentExecutorProjection } from "./currentExecutor";
+import type { PlanDecisionResolutionOverride } from "./state";
 import {
   deriveCausalInterventionEpisodes,
   deriveCausalDecisionChains,
@@ -240,11 +241,12 @@ export function buildTrailDebugSummary(
   trail: OraRunTrail | undefined,
   actions: ActionRecord[],
   findings: TrailFinding[] = collectTrailFindings(snapshot, undefined, trail?.trace ?? snapshot.trace, actions),
+  planDecisionResolutionOverrides?: Record<string, PlanDecisionResolutionOverride>,
 ): TrailDebugSummary {
   const timeline = buildSemanticTimeline(snapshot);
   const lastImportantEvent = [...timeline].reverse().find((item) => item.kind !== "state");
-  const interaction = deriveSnapshotInteractionProjection(snapshot);
-  const blockingGate = currentBlockingGate(snapshot, interaction);
+  const interaction = deriveSnapshotInteractionProjection(snapshot, planDecisionResolutionOverrides);
+  const blockingGate = currentBlockingGate(snapshot, interaction, planDecisionResolutionOverrides);
   const firstError = findings.find((finding) => finding.severity === "error");
   const firstWarning = findings.find((finding) => finding.severity === "warning");
   const recommendedFinding = firstError ?? firstWarning;
@@ -256,7 +258,7 @@ export function buildTrailDebugSummary(
       ? `${interactionStatusLabel(interaction.status)} (实时)`
       : interactionStatusLabel(interaction.status),
     statusTone: interactionStatusTone(interaction.status),
-    currentStage: inferCurrentStage(snapshot, lastImportantEvent, interaction),
+    currentStage: inferCurrentStage(snapshot, lastImportantEvent, interaction, planDecisionResolutionOverrides),
     blockingGate,
     recommendation: recommendedFinding
       ? `建议查看：${tabLabel(recommendedFinding.suggestedTab)} · ${recommendedFinding.title}`
@@ -1604,6 +1606,7 @@ function snapshotHasReadableAssistantOutput(snapshot: OraStateSnapshot): boolean
 function currentBlockingGate(
   snapshot: OraStateSnapshot,
   interaction: SnapshotInteractionProjection = deriveSnapshotInteractionProjection(snapshot),
+  planDecisionResolutionOverrides?: Record<string, PlanDecisionResolutionOverride>,
 ) {
   const attention = snapshot.attention;
   const clarification = attention?.kind === "needs_clarification"
@@ -1623,7 +1626,7 @@ function currentBlockingGate(
   if (approval) {
     return `确认 · ${approval.nodeLabel}`;
   }
-  const planDecision = snapshotPendingPlanDecision(snapshot);
+  const planDecision = snapshotPendingPlanDecision(snapshot, planDecisionResolutionOverrides);
   if (interaction.gateKind === "plan_decision" || planDecision) {
     return "决策 · 计划确认";
   }
@@ -1646,6 +1649,7 @@ function inferCurrentStage(
   snapshot: OraStateSnapshot,
   lastImportantEvent?: SemanticTimelineItem,
   interaction: SnapshotInteractionProjection = deriveSnapshotInteractionProjection(snapshot),
+  planDecisionResolutionOverrides?: Record<string, PlanDecisionResolutionOverride>,
 ) {
   if (interaction.gateKind) {
     return "等待用户输入";

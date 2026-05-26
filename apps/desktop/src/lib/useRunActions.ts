@@ -545,6 +545,7 @@ export function useRunActions() {
         state.activeSessionDetail,
         state.selectedPattern,
         state.selectedModeId,
+        state.planDecisionResolutionOverrides,
       );
       timeEnd("stableViewModel build");
     }
@@ -565,6 +566,7 @@ export function useRunActions() {
       getActiveSnapshot(state.runLifecycle),
       state.selectedPattern,
       state.selectedModeId,
+      state.planDecisionResolutionOverrides,
     );
     timeEnd("dynamicViewModel compute");
     return result;
@@ -1057,6 +1059,7 @@ export function useRunActions() {
     const desktopLatencyMarks: DesktopLatencyMark[] = [desktopLatencyMark("submitAt")];
     const sessionId = state.selectedSessionId;
     const submittedPrompt = prompt;
+    const submittedPromptRevision = state.sessionPromptRevisions[sessionId] ?? 0;
     const submittedProjectFileAttachments = state.sessionProjectFileAttachments[sessionId] ?? [];
     const submittedLocalFileAttachments = state.sessionLocalFileAttachments[sessionId] ?? [];
     const submittedImageAttachments = state.sessionImageAttachments[sessionId] ?? [];
@@ -1084,11 +1087,16 @@ export function useRunActions() {
           sessionId,
           prompt: submittedPrompt,
           createdAt: Date.now(),
+          draftRevision: submittedPromptRevision,
           skillIds: submittedSkillIds,
         });
       }
       if (options.clearPromptIfMatched ?? true) {
-        dispatch({ type: "CLEAR_PROMPT_IF_MATCH", text: submittedPrompt });
+        dispatch({
+          type: "CLEAR_PROMPT_FOR_SUBMISSION",
+          sessionId,
+          revision: submittedPromptRevision,
+        });
       }
       if (!clarificationPatch && submittedProjectFileAttachments.length > 0) {
         dispatch({ type: "CLEAR_PROJECT_FILE_ATTACHMENTS", sessionId });
@@ -1125,7 +1133,12 @@ export function useRunActions() {
           status: { mode: "error", ok: false, label: "Resume failed", detail: error instanceof Error ? error.message : "Unable to resume run." },
         });
         dispatch({ type: "SET_LOADING", loading: false });
-        dispatch({ type: "SET_PROMPT", text: submittedPrompt });
+        dispatch({
+          type: "RESTORE_PROMPT_AFTER_FAILED_SUBMISSION",
+          sessionId,
+          text: submittedPrompt,
+          revision: submittedPromptRevision,
+        });
         return;
       }
     }
@@ -1236,7 +1249,12 @@ export function useRunActions() {
         try { await selectSession(recoverySessionId); } catch { /* best-effort */ }
       }
 
-      dispatch({ type: "SET_PROMPT", text: submittedPrompt });
+      dispatch({
+        type: "RESTORE_PROMPT_AFTER_FAILED_SUBMISSION",
+        sessionId,
+        text: submittedPrompt,
+        revision: submittedPromptRevision,
+      });
 
       if (submittedSkillIds.length > 0) {
         dispatch({ type: "SET_SELECTED_SKILL_IDS", skillIds: submittedSkillIds });
@@ -1407,15 +1425,17 @@ export function useRunActions() {
       return true;
     } catch (error) {
       const feedback = error instanceof Error ? error.message : "Plan decision update failed.";
+      dispatch({
+        type: "ROLLBACK_PLAN_DECISION_RESOLUTION",
+        sessionId,
+        decisionId,
+        feedback,
+      });
       try {
         await refreshCurrentSession(undefined, feedback);
       } catch {
-        dispatch({
-          type: "ROLLBACK_PLAN_DECISION_RESOLUTION",
-          sessionId,
-          decisionId,
-          feedback,
-        });
+        // Rollback above already restored the local decision gate; keep the
+        // original decision failure as the user-facing feedback.
       }
       return false;
     }

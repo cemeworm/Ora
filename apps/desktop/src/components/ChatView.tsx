@@ -39,6 +39,7 @@ import {
 import { derivePresentedAssistantTurnFromSnapshot } from "../lib/viewModel";
 import { getWelcomeGreeting } from "../lib/welcomeGreeting";
 import type { DesktopRunInteractionState } from "../lib/runInteractionState";
+import type { PlanDecisionResolutionOverride } from "../lib/state";
 import {
   CHAT_SURFACE_FRAME_WIDTH_CLASS,
   CHAT_SURFACE_VIEWPORT_GUTTER_CLASS,
@@ -246,10 +247,12 @@ export function deriveComposerPlanDecisionState({
   activeSnapshot,
   pendingResolution,
   sessionId,
+  planDecisionResolutionOverrides,
 }: {
   activeSnapshot?: OraStateSnapshot;
   pendingResolution?: { sessionId: string; decisionId: string };
   sessionId: string;
+  planDecisionResolutionOverrides?: Record<string, PlanDecisionResolutionOverride>;
 }) {
   if (!activeSnapshot) {
     return {
@@ -261,14 +264,18 @@ export function deriveComposerPlanDecisionState({
   const pendingPlanDecisionId = gate?.kind === "plan_decision"
     ? gate.planDecisionId ?? gate.gateIds[0]
     : undefined;
+  const overridden = Boolean(
+    pendingPlanDecisionId &&
+    planDecisionResolutionOverrides?.[`${sessionId}:${pendingPlanDecisionId}`],
+  );
   const resolvingPlanDecision = Boolean(
     pendingPlanDecisionId &&
       pendingResolution?.sessionId === sessionId &&
       pendingResolution.decisionId === pendingPlanDecisionId,
   );
   return {
-    pendingPlanDecisionId,
-    planDecisionPending: Boolean(pendingPlanDecisionId && !resolvingPlanDecision),
+    pendingPlanDecisionId: overridden ? undefined : pendingPlanDecisionId,
+    planDecisionPending: Boolean(pendingPlanDecisionId && !overridden && !resolvingPlanDecision),
   };
 }
 
@@ -833,6 +840,7 @@ export function ChatView({
     activeSnapshot: composerGateSnapshot,
     pendingResolution: state.pendingPlanDecisionResolution,
     sessionId: selectedSession.id,
+    planDecisionResolutionOverrides: state.planDecisionResolutionOverrides,
   });
   const [composerOverlayHeight, setComposerOverlayHeight] = useState(0);
   const [isDesktopViewport, setIsDesktopViewport] = useState(

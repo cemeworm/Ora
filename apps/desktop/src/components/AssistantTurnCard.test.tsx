@@ -511,7 +511,7 @@ describe("assistant turn display helpers", () => {
       <AssistantTurnCard content="这是最终回复。" turn={turn} />,
     );
 
-    expect(html).not.toContain("已搜索 2 个文件");
+    expect(html).toContain("已搜索 2 个文件");
     expect(html).toContain("已生成变更摘要");
     expect(html).toContain("这是最终回复。");
   });
@@ -623,10 +623,10 @@ describe("assistant turn display helpers", () => {
     );
 
     expect(html).toContain("我会先追踪本地运行记录。");
-    expect(html).not.toContain("已探索 1 个文件，已运行 1 条命令");
+    expect(html).toContain("已探索 1 个文件，已运行 1 条命令");
     expect(html).toContain("现在我会把 trace 的消息拼起来。");
-    expect(html).not.toContain("animate-spin");
-    expect(html).toContain("正在思考");
+    expect(html).toContain("animate-spin");
+    expect(html).not.toContain("正在思考");
     expect(html).not.toContain("已读取 .ora/runtime.db。");
     expect(html).not.toContain("正在运行 sqlite3 查询。");
     expect(html).not.toContain("运行进度");
@@ -760,9 +760,9 @@ describe("assistant turn display helpers", () => {
       <AssistantTurnCard content="我会先追踪本地运行记录。" turn={turn} />,
     );
 
-    expect(html).not.toContain("正在搜索文件");
-    expect(html).not.toContain("animate-spin");
-    expect(html).toContain("正在思考");
+    expect(html).toContain("正在搜索文件");
+    expect(html).toContain("animate-spin");
+    expect(html).not.toContain("正在思考");
   });
 
   it("renders completed progress groups without completion icons or accent colors", () => {
@@ -801,7 +801,7 @@ describe("assistant turn display helpers", () => {
       <AssistantTurnCard content="完成。" turn={turn} />,
     );
 
-    expect(html).not.toContain("已探索 3 个文件");
+    expect(html).toContain("已探索 3 个文件");
     expect(html).not.toContain("animate-spin");
     expect(html).not.toContain("text-emerald");
     expect(html).not.toContain("text-amber");
@@ -843,7 +843,7 @@ describe("assistant turn display helpers", () => {
       <AssistantTurnCard content="等待确认。" turn={turn} />,
     );
 
-    expect(html).not.toContain("等待审批");
+    expect(html).toContain("等待审批");
     expect(html).not.toContain("animate-spin");
     expect(html).not.toContain("text-amber");
     expect(html).not.toContain("text-emerald");
@@ -1347,6 +1347,42 @@ describe("assistant turn display helpers", () => {
     expect(html.split(finalVerdict).length - 1).toBe(1);
   });
 
+  it("suppresses a running status summary when it duplicates the assistant body", () => {
+    const duplicateText = "我先检查运行中的关键状态，再把结论整理出来。";
+    const turn: AssistantTurnAttachment = {
+      runId: "run-1",
+      turnIndex: 1,
+      status: "running",
+      pattern: "orchestrator_subagent",
+      sources: [],
+      processSteps: [],
+      timelineItems: [{
+        id: "status-1",
+        kind: "status_group",
+        summary: duplicateText,
+        timestamp: "+1s",
+        status: "active",
+        steps: [
+          processStep("step-1", "active", duplicateText, { label: "运行命令" }),
+        ],
+      }],
+      agentMessages: [],
+      artifacts: [],
+      todos: [],
+      planList: [],
+      approvalCount: 0,
+      clarificationCount: 0,
+      hasProposedPlan: false,
+    };
+
+    const html = renderToStaticMarkup(
+      <AssistantTurnCard content={duplicateText} turn={turn} />,
+    );
+
+    expect(html.split(duplicateText).length - 1).toBe(1);
+    expect(html).toContain("正在思考");
+  });
+
   it("keeps distinct body text visible alongside projected timeline agent messages", () => {
     const turn: AssistantTurnAttachment = {
       runId: "run-1",
@@ -1464,9 +1500,9 @@ describe("assistant turn display helpers", () => {
       <AssistantTurnCard content="" turn={turn} />,
     );
 
-    expect(html).not.toContain("已探索 2 个文件");
-    expect(html).not.toContain("animate-spin");
-    expect(html).toContain("正在思考");
+    expect(html).toContain("已探索 2 个文件");
+    expect(html).toContain("animate-spin");
+    expect(html).not.toContain("正在思考");
   });
 
   it("keeps progress loading on the latest status group when assistant text follows it", () => {
@@ -1513,8 +1549,8 @@ describe("assistant turn display helpers", () => {
 
     expect(html).toContain("我会继续检查 channels session 的权限逻辑。");
     expect(html).not.toContain("正在思考");
-    expect(html).not.toContain("已搜索 &quot;Channel&quot;");
-    expect(html).not.toContain("animate-spin");
+    expect(html).toContain("已搜索 &quot;Channel&quot;");
+    expect(html).toContain("animate-spin");
   });
 
   it("keeps the assistant body visible when the timeline only contains progress rows", () => {
@@ -1553,7 +1589,7 @@ describe("assistant turn display helpers", () => {
     );
 
     expect(html).toContain("好的，以下是我整理出的结论。");
-    expect(html).not.toContain("已访问 1 个网页/搜索");
+    expect(html).toContain("已访问 1 个网页/搜索");
   });
 
   it("keeps full actions in the default density", () => {

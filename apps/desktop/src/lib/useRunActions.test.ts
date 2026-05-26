@@ -726,6 +726,39 @@ describe("desktop run actions", () => {
     cleanup();
   });
 
+  it("rolls back local plan decision suppression when accepting fails", async () => {
+    runtimeHarness.client!.resolvePlanDecision.mockRejectedValueOnce(
+      new Error("resolve failed"),
+    );
+    const cleanup = renderElement(createElement(ActionsProbe, {
+      onReady: (actions) => {
+        runtimeHarness.actions = actions;
+      },
+    }));
+
+    await flushMicrotasks();
+    const actions = runtimeHarness.actions;
+    expect(actions).toBeTruthy();
+
+    vi.useFakeTimers();
+    let result = true;
+    await act(async () => {
+      const resultPromise = actions!.acceptPlanDecisionAndStartImplementation();
+      await vi.runAllTimersAsync();
+      result = await resultPromise;
+    });
+    vi.useRealTimers();
+
+    expect(result).toBe(false);
+    expect(runtimeHarness.dispatch).toHaveBeenCalledWith({
+      type: "ROLLBACK_PLAN_DECISION_RESOLUTION",
+      sessionId: "session-plan",
+      decisionId: "decision-1",
+      feedback: "resolve failed",
+    });
+    cleanup();
+  });
+
   describe("getPlanDecisionGateAuthority", () => {
     it("derives decisionId and sourceRunId from the same active snapshot gate", () => {
       const state = stateWithSession({
