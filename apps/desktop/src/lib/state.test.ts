@@ -895,7 +895,7 @@ describe("desktop workbench state", () => {
     });
   });
 
-  it("reuses an existing child-session page for the same childSessionId", () => {
+  it("reuses an existing session-backed child-session page for the same backingSessionId", () => {
     let state = workbenchReducer(initialWorkbenchState, {
       type: "SET_COLLECTIONS",
       projects: [],
@@ -910,7 +910,9 @@ describe("desktop workbench state", () => {
         kind: "child_session",
         title: "Research subagent",
         sessionId: "session-a",
-        childSessionId: "session-child",
+        childBacking: "session",
+        childId: "session-child",
+        backingSessionId: "session-child",
         targetRunId: "run-child-1",
       },
     });
@@ -927,7 +929,9 @@ describe("desktop workbench state", () => {
         kind: "child_session",
         title: "Research subagent v2",
         sessionId: "session-a",
-        childSessionId: "session-child",
+        childBacking: "session",
+        childId: "session-child",
+        backingSessionId: "session-child",
         targetRunId: "run-child-2",
       },
     });
@@ -941,7 +945,9 @@ describe("desktop workbench state", () => {
       id: "child-session:session-child:1",
       kind: "child_session",
       title: "Research subagent v2",
-      childSessionId: "session-child",
+      childBacking: "session",
+      childId: "session-child",
+      backingSessionId: "session-child",
       targetRunId: "run-child-2",
     });
   });

@@ -1201,9 +1201,13 @@ describe("chat view collaboration overlay visibility", () => {
     });
 
     expect(onOpenChildSessionPage).toHaveBeenCalledWith(
-      "run-parent-1:ora-sub-1",
-      "run-parent-1",
-      "Research subagent",
+      expect.objectContaining({
+        childId: "run-parent-1:ora-sub-1",
+        targetRunId: "run-parent-1:ora-sub-1",
+        title: "Research subagent",
+        backing: "replay",
+        replayParentRunId: "run-parent-1",
+      }),
     );
 
     act(() => {

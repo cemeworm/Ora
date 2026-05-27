@@ -33,6 +33,7 @@ import {
   useWorkbench,
   type ComposerImageAttachment,
   type ComposerLocalFileAttachment,
+  type RightWorkspaceReplayChildRef,
   type RightWorkspaceSessionState,
 } from "../lib/state";
 import { derivePresentedAssistantTurnFromSnapshot } from "../lib/viewModel";
@@ -131,11 +132,15 @@ interface ChatViewProps {
   onInterruptRun: () => void;
   onReplaySelection: () => void;
   onResumeRun: () => void;
-  onOpenChildSessionPage: (
-    childSessionId: string,
-    targetRunId?: string,
-    title?: string,
-  ) => void;
+  onOpenChildSessionPage: (params: {
+    childId: string;
+    targetRunId: string;
+    title?: string;
+    backing: "replay" | "session";
+    backingSessionId?: string;
+    replayParentRunId?: string;
+    replayChildRef?: RightWorkspaceReplayChildRef;
+  }) => void;
   onAcceptPlanDecisionAndStartImplementation: () =>
     | void
     | boolean
@@ -334,6 +339,34 @@ export function deriveVisibleCollaborationChildren(
   return (snapshot?.childSessions ?? []).filter((child) =>
     isDynamicSpawnOverlayChild(child) && isOverlayChildActive(child)
   );
+}
+
+function toRightWorkspaceReplayChildRef(
+  child: NonNullable<OraStateSnapshot["childSessions"]>[number],
+): RightWorkspaceReplayChildRef | undefined {
+  if (!child.replayRef || child.replayRef.kind !== "event_range") {
+    return undefined;
+  }
+  return {
+    id: child.id,
+    agentId: child.agentId,
+    label: child.label,
+    status: child.status,
+    lifecyclePhase: child.lifecyclePhase,
+    deliveryStatus: child.deliveryStatus,
+    summary: child.summary,
+    lastMessage: child.lastMessage,
+    replayRef: {
+      kind: "event_range",
+      runId: child.replayRef.runId,
+      fromSeq: child.replayRef.fromSeq,
+      toSeq: child.replayRef.toSeq,
+    },
+    sourceSessionId: child.sourceSessionId,
+    sourceRunId: child.sourceRunId,
+    updatedAt: child.updatedAt,
+    artifactIds: [...child.artifactIds],
+  };
 }
 
 export function shouldShowCollaborationOverlay(
@@ -1339,11 +1372,15 @@ export function DesktopOverlayRail({
   collaborationSectionOpen: boolean;
   onTogglePlanSection: () => void;
   onToggleCollaborationSection: () => void;
-  onOpenChildSessionPage: (
-    childSessionId: string,
-    targetRunId?: string,
-    title?: string,
-  ) => void;
+  onOpenChildSessionPage: (params: {
+    childId: string;
+    targetRunId: string;
+    title?: string;
+    backing: "replay" | "session";
+    backingSessionId?: string;
+    replayParentRunId?: string;
+    replayChildRef?: RightWorkspaceReplayChildRef;
+  }) => void;
 }) {
   const [railElement, setRailElement] = useState<HTMLDivElement | null>(null);
 
@@ -1402,7 +1439,8 @@ export function DesktopOverlayRail({
                       const childStatusText = deriveOverlayChildStatusLabel({
                         child,
                       });
-                      const childTargetRunId = child.replayRef?.runId ?? child.id;
+                      const replayChildRef = toRightWorkspaceReplayChildRef(child);
+                      const childTargetRunId = child.id;
 
                       return (
                         <section
@@ -1411,7 +1449,14 @@ export function DesktopOverlayRail({
                         >
                           <button
                             type="button"
-                            onClick={() => onOpenChildSessionPage(child.id, childTargetRunId, child.label)}
+                            onClick={() => onOpenChildSessionPage({
+                              childId: child.id,
+                              targetRunId: childTargetRunId,
+                              title: child.label,
+                              backing: "replay",
+                              replayParentRunId: child.replayRef?.runId,
+                              replayChildRef,
+                            })}
                             className="grid w-full grid-cols-[minmax(0,1fr)_auto] items-start gap-2.5 text-left"
                           >
                             <div className="min-w-0">

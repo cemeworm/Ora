@@ -57,6 +57,7 @@ import {
   updateSessionTurnSnapshotCache,
   useWorkbench,
   WorkbenchProvider,
+  type RightWorkspaceReplayChildRef,
 } from "./lib/state";
 import { clampRightWorkspaceWidth, getRightWorkspaceMaxWidth } from "./lib/rightWorkspaceLayout";
 import type { AppView, ChatMessage, ActionRecord, CheckpointRecord, PlanItem, SessionRun, TopologyNode, TopologyEdge, AgentProfile, ArtifactRecord } from "./types";
@@ -1074,10 +1075,14 @@ function WorkbenchInner() {
     state.selectedSessionId ?? selectedSession?.id;
 
   const openChildSessionWorkspacePage = useCallback((params: {
-    childSessionId: string;
-    targetRunId?: string;
+    childId: string;
+    targetRunId: string;
     title?: string;
     sessionId?: string;
+    backing: "replay" | "session";
+    backingSessionId?: string;
+    replayParentRunId?: string;
+    replayChildRef?: RightWorkspaceReplayChildRef;
   }) => {
     const sessionId =
       params.sessionId ?? fallbackChildSessionWorkspaceSessionId;
@@ -1086,14 +1091,41 @@ function WorkbenchInner() {
     }
     dispatch({
       type: "OPEN_RIGHT_WORKSPACE_PAGE",
-      page: {
-        id: `child-session:${params.childSessionId}:${crypto.randomUUID()}`,
-        kind: "child_session",
-        title: childSessionWorkspacePageTitle(params.title),
-        sessionId,
-        childSessionId: params.childSessionId,
-        targetRunId: params.targetRunId,
-      },
+      page: params.backing === "session"
+        ? {
+            id: `child-session:session:${params.backingSessionId ?? params.childId}:${crypto.randomUUID()}`,
+            kind: "child_session",
+            title: childSessionWorkspacePageTitle(params.title),
+            sessionId,
+            childBacking: "session",
+            childId: params.childId,
+            targetRunId: params.targetRunId,
+            backingSessionId: params.backingSessionId ?? params.childId,
+            ...(params.replayParentRunId
+              ? { fallbackReplayParentRunId: params.replayParentRunId }
+              : {}),
+            ...(params.replayChildRef
+              ? { fallbackReplayChildRef: params.replayChildRef }
+              : {}),
+          }
+        : {
+            id: `child-session:replay:${params.childId}:${crypto.randomUUID()}`,
+            kind: "child_session",
+            title: childSessionWorkspacePageTitle(params.title),
+            sessionId,
+            childBacking: "replay",
+            childId: params.childId,
+            targetRunId: params.targetRunId,
+            replayParentRunId: params.replayParentRunId ?? params.targetRunId,
+            replayChildRef: params.replayChildRef ?? {
+              id: params.childId,
+              agentId: params.childId,
+              label: childSessionWorkspacePageTitle(params.title),
+              status: "running",
+              updatedAt: Date.now(),
+              artifactIds: [],
+            },
+          },
     });
   }, [dispatch, fallbackChildSessionWorkspaceSessionId]);
 
@@ -1434,12 +1466,8 @@ function WorkbenchInner() {
             onInterruptRun={actions.interruptRun}
             onReplaySelection={actions.replaySelection}
             onResumeRun={actions.resumeRun}
-            onOpenChildSessionPage={(childSessionId, targetRunId, title) =>
-              openChildSessionWorkspacePage({
-                childSessionId,
-                targetRunId,
-                title,
-              })
+            onOpenChildSessionPage={(params) =>
+              openChildSessionWorkspacePage(params)
             }
             onAcceptPlanDecisionAndStartImplementation={
               actions.acceptPlanDecisionAndStartImplementation
@@ -1556,12 +1584,8 @@ function WorkbenchInner() {
                       ? handleAddProjectFileToChat(selectedSession.projectId, file)
                       : undefined
                   }
-                  onOpenChildSessionPage={(childSessionId, targetRunId, title) =>
-                    openChildSessionWorkspacePage({
-                      childSessionId,
-                      targetRunId,
-                      title,
-                    })
+                  onOpenChildSessionPage={(params) =>
+                    openChildSessionWorkspacePage(params)
                   }
                   onOpenWorkspacePage={(page) =>
                     dispatch({ type: "OPEN_RIGHT_WORKSPACE_PAGE", page })

@@ -4,7 +4,7 @@ import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ChatHeader } from "./ChatHeader";
-import type { RightWorkspacePage, RightWorkspaceSessionState } from "../lib/state";
+import type { RightWorkspaceBasePage, RightWorkspacePage, RightWorkspaceSessionState } from "../lib/state";
 import type { SessionRun } from "../types";
 
 Object.assign(globalThis, {
@@ -27,7 +27,7 @@ function session(): SessionRun {
   };
 }
 
-function page(overrides: Partial<RightWorkspacePage> = {}): RightWorkspacePage {
+function page(overrides: Partial<RightWorkspaceBasePage> = {}): RightWorkspaceBasePage {
   return {
     id: overrides.id ?? "trails:1",
     kind: overrides.kind ?? "trails",
@@ -36,7 +36,6 @@ function page(overrides: Partial<RightWorkspacePage> = {}): RightWorkspacePage {
     targetRunId: overrides.targetRunId ?? "run-1",
     projectId: overrides.projectId,
     artifactId: overrides.artifactId,
-    childSessionId: overrides.childSessionId,
   };
 }
 

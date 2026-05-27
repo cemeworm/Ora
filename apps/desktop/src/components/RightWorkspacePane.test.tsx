@@ -5,7 +5,9 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RightWorkspacePane } from "./RightWorkspacePane";
 import type {
+  RightWorkspaceChildSessionPage,
   RightWorkspacePage,
+  RightWorkspaceReplayChildRef,
   RightWorkspaceSessionState,
 } from "../lib/state";
 import type {
@@ -19,6 +21,13 @@ import type { ChatMessage, SessionRun } from "../types";
 Object.assign(globalThis, {
   IS_REACT_ACT_ENVIRONMENT: true,
 });
+
+type ReplayChildPageOverrides = Partial<
+  Extract<RightWorkspaceChildSessionPage, { childBacking: "replay" }>
+>;
+type SessionChildPageOverrides = Partial<
+  Extract<RightWorkspaceChildSessionPage, { childBacking: "session" }>
+>;
 
 function session(): SessionRun {
   return {
@@ -36,25 +45,125 @@ function session(): SessionRun {
   };
 }
 
-function page(overrides: Partial<RightWorkspacePage> = {}): RightWorkspacePage {
+function replayChildRef(
+  overrides: Partial<RightWorkspaceReplayChildRef> = {},
+): RightWorkspaceReplayChildRef {
   return {
-    id: overrides.id ?? "child-session:1",
-    kind: overrides.kind ?? "child_session",
+    id: overrides.id ?? "run-parent:ora-sub-1",
+    agentId: overrides.agentId ?? "ora-sub-1",
+    label: overrides.label ?? "Builder Child Session",
+    status: overrides.status ?? "succeeded",
+    lifecyclePhase: overrides.lifecyclePhase,
+    deliveryStatus: overrides.deliveryStatus,
+    summary: overrides.summary,
+    lastMessage: overrides.lastMessage ?? "Built the page body.",
+    replayRef: overrides.replayRef ?? {
+      kind: "event_range",
+      runId: "run-parent",
+      fromSeq: 0,
+      toSeq: 2,
+    },
+    sourceSessionId: overrides.sourceSessionId ?? "session-parent",
+    sourceRunId: overrides.sourceRunId ?? "run-parent",
+    updatedAt: overrides.updatedAt ?? 1_717_000_000_100,
+    artifactIds: overrides.artifactIds ?? ["artifact-child-1"],
+  };
+}
+
+function replayChildPage(
+  overrides: ReplayChildPageOverrides = {},
+): RightWorkspaceChildSessionPage {
+  return {
+    id: overrides.id ?? "child-session:replay:run-parent:ora-sub-1:1",
+    kind: "child_session",
     title: overrides.title ?? "Child session",
     sessionId: overrides.sessionId ?? "session-parent",
-    targetRunId: overrides.targetRunId ?? "run-child",
-    filePath: overrides.filePath,
-    childSessionId: overrides.childSessionId ?? "session-child",
-    artifactId: overrides.artifactId,
-    projectId: overrides.projectId,
+    childBacking: "replay",
+    childId: overrides.childId ?? "run-parent:ora-sub-1",
+    targetRunId: overrides.targetRunId ?? "run-parent:ora-sub-1",
+    replayParentRunId: overrides.replayParentRunId ?? "run-parent",
+    replayChildRef: overrides.replayChildRef ?? replayChildRef(),
   };
+}
+
+function sessionChildPage(
+  overrides: SessionChildPageOverrides = {},
+): RightWorkspaceChildSessionPage {
+  return {
+    id: overrides.id ?? "child-session:session:session-child:1",
+    kind: "child_session",
+    title: overrides.title ?? "Child session",
+    sessionId: overrides.sessionId ?? "session-parent",
+    childBacking: "session",
+    childId: overrides.childId ?? "session-child",
+    targetRunId: overrides.targetRunId ?? "run-child",
+    backingSessionId: overrides.backingSessionId ?? "session-child",
+    fallbackReplayParentRunId: overrides.fallbackReplayParentRunId,
+    fallbackReplayChildRef: overrides.fallbackReplayChildRef,
+  };
+}
+
+function page(overrides: Partial<RightWorkspacePage> = {}): RightWorkspacePage {
+  if (overrides.kind === "artifact") {
+    return {
+      id: overrides.id ?? "artifact:1",
+      kind: "artifact",
+      title: overrides.title ?? "Artifact",
+      sessionId: overrides.sessionId ?? "session-parent",
+      targetRunId: overrides.targetRunId,
+      artifactId: overrides.artifactId ?? "artifact-child-1",
+    };
+  }
+  if (overrides.kind === "documents") {
+    return {
+      id: overrides.id ?? "documents:1",
+      kind: "documents",
+      title: overrides.title ?? "Documents",
+      sessionId: overrides.sessionId ?? "session-parent",
+      projectId: overrides.projectId ?? "project-1",
+    };
+  }
+  if (overrides.kind === "file_preview") {
+    return {
+      id: overrides.id ?? "file-preview:1",
+      kind: "file_preview",
+      title: overrides.title ?? "test.ts",
+      sessionId: overrides.sessionId ?? "session-parent",
+      projectId: overrides.projectId ?? "project-1",
+      filePath: overrides.filePath ?? "src/test.ts",
+    };
+  }
+  if (overrides.kind === "home") {
+    return {
+      id: overrides.id ?? "home:1",
+      kind: "home",
+      title: overrides.title ?? "新页面",
+      sessionId: overrides.sessionId ?? "session-parent",
+    };
+  }
+  if (overrides.kind === "trails") {
+    return {
+      id: overrides.id ?? "trails:1",
+      kind: "trails",
+      title: overrides.title ?? "轨迹",
+      sessionId: overrides.sessionId ?? "session-parent",
+      targetRunId: overrides.targetRunId ?? "run-parent",
+    };
+  }
+  if ((overrides as Partial<RightWorkspaceChildSessionPage>).childBacking === "session") {
+    return sessionChildPage(overrides as SessionChildPageOverrides);
+  }
+  if (overrides.kind === "child_session" || Object.keys(overrides).length === 0) {
+    return sessionChildPage(overrides as SessionChildPageOverrides);
+  }
+  return replayChildPage(overrides as ReplayChildPageOverrides);
 }
 
 function workspace(overrides: Partial<RightWorkspaceSessionState> = {}): RightWorkspaceSessionState {
   return {
     open: overrides.open ?? true,
     pages: overrides.pages ?? [page()],
-    selectedPageId: overrides.selectedPageId ?? overrides.pages?.[0]?.id ?? "child-session:1",
+    selectedPageId: overrides.selectedPageId ?? overrides.pages?.[0]?.id ?? "child-session:replay:run-parent:ora-sub-1:1",
     width: overrides.width ?? 460,
   };
 }
@@ -189,6 +298,7 @@ function renderPane(params: {
   sessionDetailsById?: Record<string, OraSessionDetail>;
   runtimeClient?: RuntimeClient;
   turnSnapshots?: Record<string, OraStateSnapshot | undefined>;
+  defaultChildPageBacking?: "replay" | "session";
 }) {
   const container = document.createElement("div");
   document.body.appendChild(container);
@@ -213,7 +323,16 @@ function renderPane(params: {
   act(() => {
     root.render(
       createElement(RightWorkspacePane, {
-        workspace: params.workspace ?? workspace(),
+        workspace: params.workspace ?? workspace({
+          pages: [
+            params.defaultChildPageBacking === "replay"
+              ? replayChildPage()
+              : sessionChildPage(),
+          ],
+          selectedPageId: params.defaultChildPageBacking === "replay"
+            ? "child-session:replay:run-parent:ora-sub-1:1"
+            : "child-session:session:session-child:1",
+        }),
         runtimeClient,
         selectedSession: session(),
         selectedProject: {
@@ -244,8 +363,42 @@ function renderPane(params: {
           status: "running",
         },
         chatMessages: [] as ChatMessage[],
-        turnSnapshots: params.turnSnapshots ?? { "run-child": snapshot() },
-        sessionDetailsById: params.sessionDetailsById ?? { "session-child": detail() },
+        turnSnapshots: params.turnSnapshots ?? {
+          "run-child": snapshot(),
+          "run-parent": snapshot({
+            runId: "run-parent",
+            sessionId: "session-parent",
+            status: "running",
+            events: [],
+            agentMessages: [],
+            artifacts: [{
+              id: "artifact-child-1",
+              runId: "run-parent",
+              label: "child-report.md",
+              kind: "report",
+              mimeType: "text/markdown",
+              createdAt: 1_717_000_000_100,
+              payload: "# Child report\n\nBuilt in child session.",
+            }],
+          }),
+          "run-parent:ora-sub-1": snapshot({
+            runId: "run-parent:ora-sub-1",
+            sessionId: "session-parent",
+            status: "succeeded",
+            input: { prompt: "Build the page", createdAt: 1_717_000_000_000, context: {} },
+            output: { text: "Built the page body." },
+            artifacts: [{
+              id: "artifact-child-1",
+              runId: "run-parent:ora-sub-1",
+              label: "child-report.md",
+              kind: "report",
+              mimeType: "text/markdown",
+              createdAt: 1_717_000_000_100,
+              payload: "# Child report\n\nBuilt in child session.",
+            }],
+          }),
+        },
+        sessionDetailsById: params.sessionDetailsById ?? {},
         onForkRun: vi.fn(),
         onForkAndResumeRun: vi.fn(),
         onReplaySelection: vi.fn(),
@@ -285,7 +438,7 @@ describe("RightWorkspacePane", () => {
   });
 
   it("renders child-session transcript content instead of a summary-only card", () => {
-    const view = renderPane({});
+    const view = renderPane({ defaultChildPageBacking: "session", sessionDetailsById: { "session-child": detail() } });
 
     expect(view.container.textContent).toContain("Builder Child Session");
     expect(view.container.textContent).toContain("Build the page");
@@ -420,6 +573,7 @@ describe("RightWorkspacePane", () => {
       getRunState: vi.fn().mockResolvedValue(snapshot()),
     } as unknown as RuntimeClient;
     const view = renderPane({
+      defaultChildPageBacking: "session",
       runtimeClient,
       sessionDetailsById: { "session-child": nextDetail },
     });
@@ -463,6 +617,7 @@ describe("RightWorkspacePane", () => {
       getRunState: vi.fn().mockResolvedValue(snapshot()),
     } as unknown as RuntimeClient;
     const view = renderPane({
+      defaultChildPageBacking: "session",
       runtimeClient,
       sessionDetailsById: {
         "session-child": {
@@ -496,6 +651,8 @@ describe("RightWorkspacePane", () => {
 
   it("embeds artifact preview inside child-session artifacts view", () => {
     const view = renderPane({
+      defaultChildPageBacking: "session",
+      sessionDetailsById: { "session-child": detail() },
       turnSnapshots: {
         "run-child": snapshot({
           artifacts: [
@@ -555,6 +712,7 @@ describe("RightWorkspacePane", () => {
   it("deepens child-session turn drilldown and routes turn artifact actions into the artifacts section", () => {
     const nextDetail = detail();
     const view = renderPane({
+      defaultChildPageBacking: "session",
       sessionDetailsById: { "session-child": nextDetail },
       turnSnapshots: {
         "run-child": snapshot({
@@ -650,6 +808,7 @@ describe("RightWorkspacePane", () => {
   it("shows step-level drilldown for child-session status groups", () => {
     const nextDetail = detail();
     const view = renderPane({
+      defaultChildPageBacking: "session",
       sessionDetailsById: {
         "session-child": nextDetail,
       },
@@ -737,15 +896,19 @@ describe("RightWorkspacePane", () => {
       getRunState: vi.fn().mockResolvedValue(snapshot()),
     } as unknown as RuntimeClient;
     const view = renderPane({
+      defaultChildPageBacking: "session",
       runtimeClient,
       sessionDetailsById: {},
+      workspace: workspace({
+        pages: [sessionChildPage()],
+        selectedPageId: "child-session:session:session-child:1",
+      }),
     });
 
     expect(runtimeClient.getSession).toHaveBeenCalledWith("session-child");
 
-    await act(async () => {
-      await Promise.resolve();
-    });
+    await Promise.resolve();
+    await Promise.resolve();
 
     expect(view.cacheDetail).toHaveBeenCalledWith(nextDetail);
     view.cleanup();
@@ -760,7 +923,10 @@ describe("RightWorkspacePane", () => {
     act(() => {
       root.render(
         createElement(RightWorkspacePane, {
-          workspace: workspace(),
+          workspace: workspace({
+            pages: [sessionChildPage()],
+            selectedPageId: "child-session:session:session-child:1",
+          }),
           runtimeClient: {
             getSession: vi.fn().mockResolvedValue(detail()),
             getRunState: vi.fn().mockResolvedValue(snapshot()),
@@ -823,15 +989,78 @@ describe("RightWorkspacePane", () => {
     });
 
     expect(onOpenChildSessionPage).toHaveBeenCalledWith(
-      "session-child",
-      "run-child",
-      "Builder Child Session",
+      expect.objectContaining({
+        childId: "session-child",
+        targetRunId: "run-child",
+        title: "Builder Child Session",
+        backing: "session",
+        backingSessionId: "session-child",
+      }),
     );
 
     act(() => {
       root.unmount();
     });
     container.remove();
+  });
+
+  it("renders replay-backed child content without loading a session detail", () => {
+    const runtimeClient = {
+      getSession: vi.fn(),
+      getRunState: vi.fn().mockResolvedValue(snapshot()),
+    } as unknown as RuntimeClient;
+    const view = renderPane({
+      defaultChildPageBacking: "replay",
+      runtimeClient,
+      workspace: workspace({
+        pages: [replayChildPage({
+          title: "Research subagent",
+          replayChildRef: replayChildRef({
+            label: "Research subagent",
+            lastMessage: "Built the page body.",
+            summary: "Built the page body.",
+          }),
+        })],
+        selectedPageId: "child-session:replay:run-parent:ora-sub-1:1",
+      }),
+    });
+
+    expect(runtimeClient.getSession).not.toHaveBeenCalled();
+    expect(view.container.textContent).toContain("Research subagent");
+    expect(view.container.textContent).toContain("Built the page body.");
+
+    view.cleanup();
+  });
+
+  it("shows a non-loading waiting state when replay-backed child has no material yet", () => {
+    const view = renderPane({
+      defaultChildPageBacking: "replay",
+      turnSnapshots: {
+        "run-parent": snapshot({
+          runId: "run-parent",
+          sessionId: "session-parent",
+          events: [],
+          agentMessages: [],
+          artifacts: [],
+        }),
+      },
+      workspace: workspace({
+        pages: [replayChildPage({
+          replayChildRef: replayChildRef({
+            status: "running",
+            summary: "",
+            lastMessage: "",
+            artifactIds: [],
+          }),
+        })],
+        selectedPageId: "child-session:replay:run-parent:ora-sub-1:1",
+      }),
+    });
+
+    expect(view.container.textContent).toContain("子代理尚未产出可展示内容");
+    expect(view.container.textContent).not.toContain("正在加载子代理会话内容");
+
+    view.cleanup();
   });
 
   it("renders file_preview page and calls readProjectFile", async () => {
@@ -985,11 +1214,8 @@ describe("RightWorkspacePane", () => {
       await Promise.resolve();
     });
 
-    // DocumentsDrawer shows project label; FilePreviewPanel should not be rendered
-    expect(container.textContent).toContain("Ora");
-    expect(container.textContent).not.toContain("正在加载");
-    expect(container.textContent).not.toContain("test.ts");
-    // "文件" tab title is shown in the tab bar
+    expect(container.textContent).toContain("/tmp/ora");
+    expect(container.textContent).toContain("No files found");
     expect(container.textContent).toContain("文件");
 
     act(() => { root.unmount(); });
@@ -1037,6 +1263,15 @@ describe("RightWorkspacePane", () => {
     // Wait for async listProjectFiles to resolve and trigger re-render
     await act(async () => {
       await Promise.resolve();
+    });
+
+    const srcDirectoryButton = Array.from(view.container.querySelectorAll("button")).find(
+      (btn) => btn.textContent?.includes("src"),
+    );
+    expect(srcDirectoryButton).toBeTruthy();
+
+    act(() => {
+      srcDirectoryButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
     // Find the file button rendered by DocumentsDrawer tree

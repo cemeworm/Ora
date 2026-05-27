@@ -11,9 +11,9 @@ import { Bot, FileStack, FileText, FolderTree, Layout, MessageSquareText, Plus, 
 import type { DesktopRunInteractionState } from "../lib/runInteractionState";
 import type { OraProjectFileEntry, OraProjectFileReadResult, OraProjectSummary, OraSessionDetail, OraStateSnapshot, RuntimeClient } from "../lib/runtimeClient";
 import type { ArtifactRecord, AssistantTurnAttachment, ChatMessage, CheckpointRecord, PlanItem, SessionRun, TurnProcessStep, TurnAgentConversationMessage, TurnTimelineItem } from "../types";
-import { adaptChatMessages } from "../lib/viewModel";
+import { adaptChatMessages, derivePresentedAssistantTurnFromSnapshot } from "../lib/viewModel";
 import { cn } from "../lib/utils";
-import type { RightWorkspacePage, RightWorkspaceSessionState } from "../lib/state";
+import type { RightWorkspaceBasePage, RightWorkspaceChildSessionPage, RightWorkspacePage, RightWorkspaceReplayChildRef, RightWorkspaceSessionState } from "../lib/state";
 
 interface RightWorkspacePaneProps {
   workspace: RightWorkspaceSessionState;
@@ -36,11 +36,15 @@ interface RightWorkspacePaneProps {
   onCancelRun: () => void;
   onCopyPath: (path: string) => void;
   onAddFileToChat: (file: OraProjectFileEntry) => void;
-  onOpenChildSessionPage: (
-    childSessionId: string,
-    targetRunId?: string,
-    title?: string,
-  ) => void;
+  onOpenChildSessionPage: (params: {
+    childId: string;
+    targetRunId: string;
+    title?: string;
+    backing: "replay" | "session";
+    backingSessionId?: string;
+    replayParentRunId?: string;
+    replayChildRef?: RightWorkspaceReplayChildRef;
+  }) => void;
   onOpenWorkspacePage: (page: RightWorkspacePage) => void;
   onCloseWorkspace: () => void;
   onSelectPage: (page: RightWorkspacePage) => void;
@@ -143,8 +147,8 @@ export function RightWorkspacePane({
     }
   }
 
-  function openWorkspacePage(kind: RightWorkspacePage["kind"]) {
-    const page: RightWorkspacePage = {
+  function openWorkspacePage(kind: RightWorkspaceBasePage["kind"]) {
+    const page: RightWorkspaceBasePage = {
       id: `${kind}:${crypto.randomUUID()}`,
       kind,
       title: titleForPageKind(kind),
@@ -157,13 +161,17 @@ export function RightWorkspacePane({
     };
     onOpenWorkspacePage(page);
   }
-  const activeChildSessionDetail =
+  const activeChildSessionPage =
     activePage?.kind === "child_session"
-      ? sessionDetailsById[activePage.childSessionId ?? ""]
+      ? activePage
+      : undefined;
+  const activeChildSessionDetail =
+    activeChildSessionPage?.childBacking === "session"
+      ? sessionDetailsById[activeChildSessionPage.backingSessionId]
       : undefined;
   const activeChildSessionSnapshot =
-    activePage?.kind === "child_session" && activePage.targetRunId
-      ? turnSnapshots[activePage.targetRunId] ??
+    activeChildSessionPage?.kind === "child_session" && activeChildSessionPage.targetRunId
+      ? turnSnapshots[activeChildSessionPage.targetRunId] ??
         activeChildSessionDetail?.latestSnapshot
       : activeChildSessionDetail?.latestSnapshot;
   const selectedArtifact = useMemo(() => {
@@ -194,27 +202,6 @@ export function RightWorkspacePane({
     );
     return runtimeArtifact ? toArtifactRecord(runtimeArtifact) : undefined;
   }, [activePage, activeSnapshot?.artifacts, chatMessages]);
-
-  useEffect(() => {
-    const page = workspace.pages.find(
-      (entry) => entry.id === workspace.selectedPageId,
-    );
-    if (!page || page.kind !== "child_session" || !page.childSessionId) {
-      return;
-    }
-    if (sessionDetailsById[page.childSessionId]) {
-      return;
-    }
-    void runtimeClient.getSession(page.childSessionId).then((detail) => {
-      onCacheSessionDetail(detail);
-    });
-  }, [
-    onCacheSessionDetail,
-    runtimeClient,
-    sessionDetailsById,
-    workspace.pages,
-    workspace.selectedPageId,
-  ]);
 
   return (
     <aside className="flex h-full min-h-0 w-full min-w-0 flex-col bg-transparent">
@@ -337,9 +324,12 @@ export function RightWorkspacePane({
             <ArtifactDrawer artifact={selectedArtifact} />
           ) : activePage?.kind === "child_session" ? (
             <ChildSessionWorkspacePage
+              page={activePage}
               detail={activeChildSessionDetail}
               snapshot={activeChildSessionSnapshot}
+              turnSnapshots={turnSnapshots}
               runtimeClient={runtimeClient}
+              onCacheSessionDetail={onCacheSessionDetail}
               onOpenChildSessionPage={onOpenChildSessionPage}
             />
           ) : activePage?.kind === "home" ? (
@@ -358,7 +348,7 @@ export function RightWorkspacePane({
 }
 
 const WORKSPACE_PAGE_PICKER_OPTIONS: Array<{
-  kind: RightWorkspacePage["kind"];
+  kind: RightWorkspaceBasePage["kind"];
   title: string;
   description: string;
   icon: ReactNode;
@@ -384,7 +374,7 @@ function WorkspaceHomePage({
 }: {
   activePage: RightWorkspacePage;
   onClosePage: (page: RightWorkspacePage) => void;
-  openWorkspacePage: (kind: RightWorkspacePage["kind"]) => void;
+  openWorkspacePage: (kind: RightWorkspaceBasePage["kind"]) => void;
 }) {
   return (
     <div className="flex h-full min-h-0 flex-col justify-center p-5">
@@ -418,7 +408,7 @@ function WorkspaceHomePage({
 function WorkspaceEmptyState({
   onOpenPage,
 }: {
-  onOpenPage: (kind: RightWorkspacePage["kind"]) => void;
+  onOpenPage: (kind: RightWorkspaceBasePage["kind"]) => void;
 }) {
   return (
     <div className="flex h-full min-h-0 flex-col justify-center p-5">
@@ -447,35 +437,73 @@ function WorkspaceEmptyState({
 }
 
 function ChildSessionWorkspacePage({
+  page,
   detail,
   snapshot,
+  turnSnapshots,
   runtimeClient,
+  onCacheSessionDetail,
   onOpenChildSessionPage,
 }: {
+  page: RightWorkspaceChildSessionPage;
   detail?: OraSessionDetail;
   snapshot?: OraStateSnapshot;
+  turnSnapshots: Record<string, OraStateSnapshot | undefined>;
   runtimeClient: RuntimeClient;
-  onOpenChildSessionPage: (
-    childSessionId: string,
-    targetRunId?: string,
-    title?: string,
-  ) => void;
+  onCacheSessionDetail: (detail: OraSessionDetail) => void;
+  onOpenChildSessionPage: (params: {
+    childId: string;
+    targetRunId: string;
+    title?: string;
+    backing: "replay" | "session";
+    backingSessionId?: string;
+    replayParentRunId?: string;
+    replayChildRef?: RightWorkspaceReplayChildRef;
+  }) => void;
 }) {
   const [activeSection, setActiveSection] = useState<"conversation" | "turns" | "artifacts">("conversation");
   const [turnSnapshotsByRunId, setTurnSnapshotsByRunId] = useState<Record<string, OraStateSnapshot | undefined>>({});
   const [selectedTurnRunId, setSelectedTurnRunId] = useState<string | undefined>(snapshot?.runId ?? detail?.turns.at(-1)?.runId);
+  const [detailLoadState, setDetailLoadState] = useState<"idle" | "loading" | "succeeded" | "failed">(
+    page.childBacking === "session" && !detail ? "loading" : "idle",
+  );
+  const [detailLoadError, setDetailLoadError] = useState<string | undefined>(undefined);
+
+  const replaySnapshot = useMemo(
+    () => deriveChildReplaySnapshot(page, turnSnapshots),
+    [page, turnSnapshots],
+  );
+  const effectiveSnapshot = snapshot ?? replaySnapshot;
+  const replayChildRef = getReplayChildRef(page);
+  const [selectedArtifactId, setSelectedArtifactId] = useState<string | undefined>(undefined);
 
   useEffect(() => {
     if (!detail) {
       return;
     }
+    setDetailLoadState("succeeded");
+    setDetailLoadError(undefined);
     setSelectedTurnRunId((current) => current ?? snapshot?.runId ?? detail.turns.at(-1)?.runId);
   }, [detail, snapshot?.runId]);
 
   useEffect(() => {
+    if (page.childBacking !== "session") {
+      setDetailLoadState("idle");
+      setDetailLoadError(undefined);
+      return;
+    }
+    if (detail) {
+      setDetailLoadState("succeeded");
+      setDetailLoadError(undefined);
+      return;
+    }
+    setDetailLoadState("loading");
+  }, [detail, page.childBacking, page.id]);
+
+  useEffect(() => {
     const hasSnapshotAlready =
       Boolean(selectedTurnRunId && turnSnapshotsByRunId[selectedTurnRunId]) ||
-      snapshot?.runId === selectedTurnRunId ||
+      effectiveSnapshot?.runId === selectedTurnRunId ||
       detail?.latestSnapshot?.runId === selectedTurnRunId;
     if (!detail || !selectedTurnRunId || hasSnapshotAlready) {
       return;
@@ -496,29 +524,95 @@ function ChildSessionWorkspacePage({
     return () => {
       cancelled = true;
     };
-  }, [detail, runtimeClient, selectedTurnRunId, turnSnapshotsByRunId]);
+  }, [detail, effectiveSnapshot?.runId, runtimeClient, selectedTurnRunId, turnSnapshotsByRunId]);
 
-  if (!detail) {
+  useEffect(() => {
+    if (page.childBacking !== "session" || detail || detailLoadState === "failed") {
+      return;
+    }
+    let cancelled = false;
+    const maybeSessionPromise = runtimeClient.getSession(page.backingSessionId);
+    if (!maybeSessionPromise || typeof maybeSessionPromise.then !== "function") {
+      setDetailLoadState("failed");
+      setDetailLoadError("无法加载独立子会话");
+      return;
+    }
+    setDetailLoadState("loading");
+    setDetailLoadError(undefined);
+    void maybeSessionPromise.then((nextDetail) => {
+      if (!cancelled) {
+        onCacheSessionDetail(nextDetail);
+        setDetailLoadState("succeeded");
+      }
+    }).catch((error) => {
+      if (!cancelled) {
+        setDetailLoadState("failed");
+        setDetailLoadError(error instanceof Error ? error.message : "无法加载独立子会话");
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [detail, detailLoadState, onCacheSessionDetail, page, runtimeClient]);
+
+  if (!detail && !effectiveSnapshot) {
+    if (page.childBacking === "session" && detailLoadState === "loading") {
+      return (
+        <div className="flex h-full min-h-0 items-center justify-center p-6">
+          <div className="rounded-xl border border-border bg-card/70 p-4 text-sm text-muted-foreground">
+            正在加载子代理会话内容…
+          </div>
+        </div>
+      );
+    }
+    if (page.childBacking === "session" && detailLoadState === "failed") {
+      return (
+        <div className="flex h-full min-h-0 items-center justify-center p-6">
+          <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+            {detailLoadError ?? "无法加载独立子会话，请稍后重试"}
+          </div>
+        </div>
+      );
+    }
     return (
       <div className="flex h-full min-h-0 items-center justify-center p-6">
         <div className="rounded-xl border border-border bg-card/70 p-4 text-sm text-muted-foreground">
-          正在加载子代理会话内容…
+          {isChildLikelyStillRunning(replayChildRef)
+            ? "子代理尚未产出可展示内容，继续运行后会自动出现。"
+            : "该子代理没有独立会话内容可展示。"}
         </div>
       </div>
     );
   }
 
-  const latestTurn = detail.turns.at(-1);
-  const status = snapshot?.status ?? latestTurn?.status ?? detail.session.status;
-  const updatedAt = snapshot?.updatedAt ?? detail.session.updatedAt;
+  if (!detail && effectiveSnapshot) {
+    return (
+      <ReplayChildSessionWorkspacePage
+        page={page}
+        snapshot={effectiveSnapshot}
+        detailLoadState={detailLoadState}
+        detailLoadError={detailLoadError}
+        onOpenChildSessionPage={onOpenChildSessionPage}
+      />
+    );
+  }
+
+  if (!detail) {
+    return null;
+  }
+
+  const sessionDetail = detail;
+  const latestTurn = sessionDetail.turns.at(-1);
+  const status = effectiveSnapshot?.status ?? latestTurn?.status ?? sessionDetail.session.status;
+  const updatedAt = effectiveSnapshot?.updatedAt ?? sessionDetail.session.updatedAt;
   const effectiveTurnSnapshots = {
-    ...(detail.latestSnapshot ? { [detail.latestSnapshot.runId]: detail.latestSnapshot } : {}),
-    ...(snapshot ? { [snapshot.runId]: snapshot } : {}),
+    ...(sessionDetail.latestSnapshot ? { [sessionDetail.latestSnapshot.runId]: sessionDetail.latestSnapshot } : {}),
+    ...(effectiveSnapshot ? { [effectiveSnapshot.runId]: effectiveSnapshot } : {}),
     ...turnSnapshotsByRunId,
   };
-  const selectedTurn = detail.turns.find((turn) => turn.runId === selectedTurnRunId) ?? latestTurn;
+  const selectedTurn = sessionDetail.turns.find((turn) => turn.runId === selectedTurnRunId) ?? latestTurn;
   const selectedTurnSnapshot = selectedTurn?.runId ? effectiveTurnSnapshots[selectedTurn.runId] : undefined;
-  const childMessages = adaptChatMessages(detail.transcript, effectiveTurnSnapshots);
+  const childMessages = adaptChatMessages(sessionDetail.transcript, effectiveTurnSnapshots);
   const selectedAssistantMessage = selectedTurn
     ? childMessages.find((message) =>
       message.role === "assistant" && (message.metadata?.runId ?? message.turn?.runId) === selectedTurn.runId,
@@ -528,7 +622,6 @@ function ChildSessionWorkspacePage({
   const selectedTimelineItems = selectedAssistantTurn?.timelineItems ?? [];
   const selectedAgentMessages = selectedAssistantTurn?.agentMessages ?? [];
   const selectedArtifacts = selectedTurnSnapshot?.artifacts ?? [];
-  const [selectedArtifactId, setSelectedArtifactId] = useState<string | undefined>(undefined);
   const effectiveSelectedArtifactId =
     selectedArtifactId && selectedArtifacts.some((artifact) => artifact.id === selectedArtifactId)
       ? selectedArtifactId
@@ -546,7 +639,7 @@ function ChildSessionWorkspacePage({
   }, [effectiveSelectedArtifactId, selectedArtifacts]);
   const turnArtifactCountByRunId = useMemo(() => {
     const counts = new Map<string, number>();
-    for (const turn of detail.turns) {
+    for (const turn of sessionDetail.turns) {
       const count =
         turn.runId && effectiveTurnSnapshots[turn.runId]
           ? effectiveTurnSnapshots[turn.runId]?.artifacts.length ?? 0
@@ -554,7 +647,7 @@ function ChildSessionWorkspacePage({
       counts.set(turn.runId, count);
     }
     return counts;
-  }, [detail.turns, effectiveTurnSnapshots]);
+  }, [sessionDetail.turns, effectiveTurnSnapshots]);
 
   function openSelectedTurnArtifacts(artifactId?: string) {
     if (artifactId) {
@@ -570,10 +663,10 @@ function ChildSessionWorkspacePage({
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
               <p className="truncate text-sm font-medium text-foreground">
-                {detail.session.title}
+                {sessionDetail.session.title}
               </p>
               <p className="mt-1 truncate text-xs text-muted-foreground">
-                Session ID: {detail.session.sessionId}
+                Session ID: {sessionDetail.session.sessionId}
               </p>
             </div>
             <span className="rounded-full border border-border bg-background/80 px-2 py-0.5 text-[11px] text-muted-foreground">
@@ -581,19 +674,21 @@ function ChildSessionWorkspacePage({
             </span>
           </div>
           <div className="mt-3 flex flex-wrap gap-2 text-[11px] text-muted-foreground">
-            <span>{detail.turns.length} turns</span>
-            <span>{detail.transcript.length} messages</span>
+            <span>{sessionDetail.turns.length} turns</span>
+            <span>{sessionDetail.transcript.length} messages</span>
             <span>{formatTimestamp(updatedAt)}</span>
           </div>
           {latestTurn ? (
             <button
               type="button"
               onClick={() =>
-                onOpenChildSessionPage(
-                  detail.session.sessionId,
-                  latestTurn.runId,
-                  detail.session.title,
-                )
+                onOpenChildSessionPage({
+                  childId: sessionDetail.session.sessionId,
+                  targetRunId: latestTurn.runId,
+                  title: sessionDetail.session.title,
+                  backing: "session",
+                  backingSessionId: sessionDetail.session.sessionId,
+                })
               }
               className="mt-3 inline-flex items-center gap-2 rounded-full border border-border bg-background/80 px-3 py-1 text-xs text-foreground transition hover:bg-accent hover:text-accent-foreground"
             >
@@ -625,10 +720,10 @@ function ChildSessionWorkspacePage({
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto p-3">
         {activeSection === "conversation" ? (
-          detail.transcript.length > 0 ? (
+          sessionDetail.transcript.length > 0 ? (
           <Conversation className="min-h-0">
             <ConversationContent className="gap-4 p-0">
-              {detail.transcript.map((message) => (
+              {sessionDetail.transcript.map((message) => (
                 <div key={message.id} className="space-y-1">
                   {message.role === "assistant" && message.agentLabel ? (
                     <p className="pl-1 text-xs font-medium text-muted-foreground">
@@ -663,7 +758,7 @@ function ChildSessionWorkspacePage({
         ) : activeSection === "turns" ? (
           <div className="grid min-h-0 gap-3 lg:grid-cols-[12rem_minmax(0,1fr)]">
             <div className="space-y-2">
-              {detail.turns.map((turn) => (
+              {sessionDetail.turns.map((turn) => (
                 <button
                   key={turn.runId}
                   type="button"
@@ -693,7 +788,7 @@ function ChildSessionWorkspacePage({
                           {selectedTurn.status} · {formatTimestamp(selectedTurn.updatedAt)}
                         </p>
                       </div>
-                      {selectedArtifacts.length > 0 ? (
+                  {selectedArtifacts.length > 0 ? (
                         <button
                           type="button"
                           onClick={() => openSelectedTurnArtifacts()}
@@ -743,11 +838,11 @@ function ChildSessionWorkspacePage({
                   Artifact turns
                 </p>
                 <p className="mt-1 text-xs text-muted-foreground">
-                  {detail.turns.length} turns
+                  {sessionDetail.turns.length} turns
                 </p>
               </div>
               <div className="space-y-2">
-                {detail.turns.map((turn) => (
+                {sessionDetail.turns.map((turn) => (
                   <button
                     key={turn.runId}
                     type="button"
@@ -836,6 +931,254 @@ function ChildSessionWorkspacePage({
       </div>
     </div>
   );
+}
+
+function ReplayChildSessionWorkspacePage({
+  page,
+  snapshot,
+  detailLoadState,
+  detailLoadError,
+  onOpenChildSessionPage,
+}: {
+  page: RightWorkspaceChildSessionPage;
+  snapshot: OraStateSnapshot;
+  detailLoadState: "idle" | "loading" | "succeeded" | "failed";
+  detailLoadError?: string;
+  onOpenChildSessionPage: (params: {
+    childId: string;
+    targetRunId: string;
+    title?: string;
+    backing: "replay" | "session";
+    backingSessionId?: string;
+    replayParentRunId?: string;
+    replayChildRef?: RightWorkspaceReplayChildRef;
+  }) => void;
+}) {
+  const replayRef = page.childBacking === "replay"
+    ? page.replayChildRef
+    : page.fallbackReplayChildRef;
+  const assistantView = derivePresentedAssistantTurnFromSnapshot(snapshot);
+  const turn = assistantView?.turn;
+  const replayContent =
+    assistantView?.content.trim() ||
+    replayRef?.lastMessage?.trim() ||
+    replayRef?.summary?.trim() ||
+    "";
+  const artifacts = snapshot.artifacts ?? [];
+  const [selectedArtifactId, setSelectedArtifactId] = useState<string | undefined>(artifacts[0]?.id);
+  const selectedArtifact = useMemo(() => {
+    const artifact = artifacts.find((entry) => entry.id === selectedArtifactId) ?? artifacts[0];
+    return artifact ? toArtifactRecordForWorkspace(artifact) : undefined;
+  }, [artifacts, selectedArtifactId]);
+
+  return (
+    <div className="flex h-full min-h-0 flex-col overflow-hidden">
+      <div className="shrink-0 border-b border-border/60 p-3">
+        <div className="rounded-xl border border-border bg-card/70 p-4">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <p className="truncate text-sm font-medium text-foreground">
+                {page.title}
+              </p>
+              <p className="mt-1 truncate text-xs text-muted-foreground">
+                Replay child: {page.childId}
+              </p>
+            </div>
+            <span className="rounded-full border border-border bg-background/80 px-2 py-0.5 text-[11px] text-muted-foreground">
+              {snapshot.status}
+            </span>
+          </div>
+          <div className="mt-3 flex flex-wrap gap-2 text-[11px] text-muted-foreground">
+            <span>{formatTimestamp(snapshot.updatedAt)}</span>
+            <span>{snapshot.events.length} events</span>
+            <span>{artifacts.length} artifacts</span>
+          </div>
+          {detailLoadState === "failed" && detailLoadError ? (
+            <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+              未能载入独立子会话，已显示当前回放内容。{detailLoadError}
+            </div>
+          ) : null}
+          {replayRef && page.childBacking === "replay" ? (
+            <button
+              type="button"
+              onClick={() =>
+                onOpenChildSessionPage({
+                  childId: page.childId,
+                  targetRunId: page.targetRunId,
+                  title: page.title,
+                  backing: "replay",
+                  replayParentRunId: page.replayParentRunId,
+                  replayChildRef: page.replayChildRef,
+                })
+              }
+              className="mt-3 inline-flex items-center gap-2 rounded-full border border-border bg-background/80 px-3 py-1 text-xs text-foreground transition hover:bg-accent hover:text-accent-foreground"
+            >
+              <Bot size={12} />
+              在新页签打开当前回放
+            </button>
+          ) : null}
+        </div>
+      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto p-3">
+        <div className="space-y-3">
+          {turn ? (
+            <AssistantTurnCard
+              content={replayContent}
+              turn={turn as AssistantTurnAttachment}
+              density="compact"
+              onOpenArtifact={(artifactId) => {
+                if (artifactId) {
+                  setSelectedArtifactId(artifactId);
+                }
+              }}
+            />
+          ) : replayContent ? (
+            <div className="rounded-xl border border-border bg-card/70 p-4 text-sm text-foreground">
+              <MarkdownContent content={replayContent} className="leading-6" />
+            </div>
+          ) : (
+            <div className="rounded-xl border border-border bg-card/70 p-4 text-sm text-muted-foreground">
+              该子代理回放还没有可展示的正文内容。
+            </div>
+          )}
+          {artifacts.length > 0 ? (
+            <div className="min-h-0 overflow-hidden rounded-xl border border-border bg-card/70">
+              <div className="shrink-0 border-b border-border/60 px-4 py-3">
+                <p className="truncate text-sm font-medium text-foreground">
+                  {selectedArtifact?.label ?? "Artifacts"}
+                </p>
+                <p className="mt-1 truncate text-[11px] text-muted-foreground">
+                  {artifacts.length} items
+                </p>
+              </div>
+              <div className="min-h-0 flex-1 overflow-auto p-3" data-testid="replay-child-artifact-preview">
+                {selectedArtifact ? (
+                  <ArtifactPreviewContent artifact={selectedArtifact} />
+                ) : (
+                  <div className="text-sm text-muted-foreground">
+                    选择一个 artifact 以预览内容。
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function deriveChildReplaySnapshot(
+  page: RightWorkspaceChildSessionPage,
+  turnSnapshots: Record<string, OraStateSnapshot | undefined>,
+): OraStateSnapshot | undefined {
+  const direct = turnSnapshots[page.childId];
+  if (direct?.runId === page.childId) {
+    return direct;
+  }
+  const replayParentRunId = page.childBacking === "replay"
+    ? page.replayParentRunId
+    : page.fallbackReplayParentRunId;
+  const replayChildRef = page.childBacking === "replay"
+    ? page.replayChildRef
+    : page.fallbackReplayChildRef;
+  if (!replayParentRunId || !replayChildRef?.replayRef || replayChildRef.replayRef.kind !== "event_range") {
+    return undefined;
+  }
+  const parentSnapshot = turnSnapshots[replayParentRunId];
+  if (!parentSnapshot || parentSnapshot.runId !== replayParentRunId) {
+    return undefined;
+  }
+  const fromSeq = typeof replayChildRef.replayRef.fromSeq === "number"
+    ? replayChildRef.replayRef.fromSeq
+    : 0;
+  const toSeq = typeof replayChildRef.replayRef.toSeq === "number"
+    ? replayChildRef.replayRef.toSeq
+    : Number.MAX_SAFE_INTEGER;
+  const childEvents = parentSnapshot.events
+    .filter((event) =>
+      event.runId === parentSnapshot.runId &&
+      event.seq >= fromSeq &&
+      event.seq <= toSeq &&
+      (event.agentId === replayChildRef.agentId ||
+        event.nodeId === replayChildRef.agentId)
+    )
+    .map((event) => ({
+      ...event,
+      runId: page.childId,
+    }));
+  const childAgentMessages = parentSnapshot.agentMessages
+    .filter((message) =>
+      message.fromAgentId === replayChildRef.agentId ||
+      message.toAgentIds.includes(replayChildRef.agentId),
+    )
+    .map((message) => ({
+      ...message,
+      runId: page.childId,
+      toAgentIds: [...message.toAgentIds],
+      artifactIds: [...message.artifactIds],
+    }));
+  const artifactIds = new Set<string>([
+    ...replayChildRef.artifactIds,
+    ...childAgentMessages.flatMap((message) => message.artifactIds),
+  ]);
+  if (childEvents.length === 0 && childAgentMessages.length === 0 && artifactIds.size === 0 && !replayChildRef.lastMessage?.trim() && !replayChildRef.summary?.trim()) {
+    return undefined;
+  }
+  return {
+    ...parentSnapshot,
+    runId: page.childId,
+    sessionId: replayChildRef.sourceSessionId ?? parentSnapshot.sessionId,
+    status: normalizeReplayChildStatus(replayChildRef.status),
+    events: childEvents,
+    agentMessages: childAgentMessages,
+    childSessions: [],
+    parentCoordination: undefined,
+    artifacts: parentSnapshot.artifacts.filter((artifact) => artifactIds.has(artifact.id)),
+    activeAgents: [replayChildRef.agentId],
+    pendingClarifications: [],
+    pendingApprovals: [],
+    output: replayChildRef.lastMessage?.trim() || replayChildRef.summary?.trim()
+      ? { text: replayChildRef.lastMessage?.trim() || replayChildRef.summary?.trim() }
+      : undefined,
+    updatedAt: replayChildRef.updatedAt,
+  };
+}
+
+function getReplayChildRef(
+  page: RightWorkspaceChildSessionPage,
+): RightWorkspaceReplayChildRef | undefined {
+  return page.childBacking === "replay"
+    ? page.replayChildRef
+    : page.fallbackReplayChildRef;
+}
+
+function normalizeReplayChildStatus(
+  status: string | undefined,
+): OraStateSnapshot["status"] {
+  switch (status) {
+    case "queued":
+    case "running":
+    case "interrupted":
+    case "cancelled":
+    case "succeeded":
+    case "failed":
+      return status;
+    default:
+      return "running";
+  }
+}
+
+function isChildLikelyStillRunning(child?: RightWorkspaceReplayChildRef): boolean {
+  if (!child) {
+    return false;
+  }
+  return child.status === "queued" || child.status === "running" ||
+    child.lifecyclePhase === "queued" ||
+    child.lifecyclePhase === "running" ||
+    child.lifecyclePhase === "produced_output" ||
+    child.lifecyclePhase === "awaiting_pickup" ||
+    child.lifecyclePhase === "stalled";
 }
 
 function toArtifactRecordForWorkspace(artifact: {

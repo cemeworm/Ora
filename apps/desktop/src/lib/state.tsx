@@ -291,17 +291,65 @@ export type RightWorkspacePageKind =
   | "child_session"
   | "file_preview";
 
-export interface RightWorkspacePage {
+type RightWorkspaceStandardPageKind = Exclude<RightWorkspacePageKind, "child_session">;
+
+interface RightWorkspacePageCommon {
   id: string;
-  kind: RightWorkspacePageKind;
   title: string;
   sessionId: string;
   targetRunId?: string;
   filePath?: string;
   projectId?: string;
   artifactId?: string;
-  childSessionId?: string;
 }
+
+export interface RightWorkspaceBasePage extends RightWorkspacePageCommon {
+  kind: RightWorkspaceStandardPageKind;
+}
+
+export type RightWorkspaceReplayChildRef = {
+  id: string;
+  agentId: string;
+  label: string;
+  status: string;
+  lifecyclePhase?: string;
+  deliveryStatus?: string;
+  summary?: string;
+  lastMessage?: string;
+  replayRef?: {
+    kind: "event_range";
+    runId: string;
+    fromSeq?: number;
+    toSeq?: number;
+  };
+  sourceSessionId?: string;
+  sourceRunId?: string;
+  updatedAt: number;
+  artifactIds: string[];
+};
+
+export type RightWorkspaceChildSessionPage =
+  | (RightWorkspacePageCommon & {
+      kind: "child_session";
+      childBacking: "replay";
+      childId: string;
+      targetRunId: string;
+      replayParentRunId: string;
+      replayChildRef: RightWorkspaceReplayChildRef;
+    })
+  | (RightWorkspacePageCommon & {
+      kind: "child_session";
+      childBacking: "session";
+      childId: string;
+      targetRunId: string;
+      backingSessionId: string;
+      fallbackReplayParentRunId?: string;
+      fallbackReplayChildRef?: RightWorkspaceReplayChildRef;
+    });
+
+export type RightWorkspacePage =
+  | RightWorkspaceBasePage
+  | RightWorkspaceChildSessionPage;
 
 export interface RightWorkspaceSessionState {
   open: boolean;
@@ -667,10 +715,17 @@ function upsertRightWorkspacePage(
   page: RightWorkspacePage,
   open = true,
 ): RightWorkspaceSessionState {
-  if (page.kind === "child_session" && page.childSessionId) {
+  if (page.kind === "child_session") {
     const existingPage = workspace.pages.find((entry) =>
       entry.kind === "child_session" &&
-      entry.childSessionId === page.childSessionId
+      (
+        (page.childBacking === "replay" &&
+          entry.childBacking === "replay" &&
+          entry.childId === page.childId) ||
+        (page.childBacking === "session" &&
+          entry.childBacking === "session" &&
+          entry.backingSessionId === page.backingSessionId)
+      )
     );
     if (existingPage) {
       const mergedPage: RightWorkspacePage = {
