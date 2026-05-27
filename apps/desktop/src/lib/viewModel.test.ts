@@ -9608,6 +9608,246 @@ describe("desktop session view model", () => {
     expect(timeline[4]).toMatchObject({ content: finalText });
   });
 
+  it("keeps a structured markdown table in the standalone body when timeline only contains fragments", () => {
+    const createdAt = 1_714_000_000_000;
+    const finalMarkdown = [
+      "## MiniMax近况研究框架",
+      "",
+      "| 研究维度 | 状态 |",
+      "|---|---|",
+      "| 融资与估值近况 | 进行中 |",
+      "| 最新模型与技术产品发布 | 进行中 |",
+    ].join("\n");
+    const snapshot = {
+      runId: "run-fragmented-table-body",
+      sessionId: "session-fragmented-table-body",
+      turnIndex: 1,
+      status: "succeeded",
+      pattern: "orchestrator_subagent",
+      modeId: SINGLE_AGENT_MODE_ID,
+      input: { prompt: "研究 MiniMax 近况", createdAt, context: {} },
+      config: {
+        modeId: SINGLE_AGENT_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["orchestrator"],
+        providerId: "deepseek",
+        modelRef: "deepseek-chat",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-fragmented-table-body-test",
+        skillIds: [],
+        toolIds: ["plan.update", "agent.spawn"],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [
+        { id: "orchestrator", label: "Orchestrator", role: "Coordinate", model: "deepseek", tools: [], budget: "default", memoryScopes: [] },
+      ],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [
+        {
+          id: "run-fragmented-table-body:evt-0",
+          runId: "run-fragmented-table-body",
+          seq: 0,
+          type: "message.delta",
+          agentId: "orchestrator",
+          nodeId: "orchestrator",
+          createdAt,
+          pattern: "orchestrator_subagent",
+          payload: {
+            role: "assistant",
+            messageId: "table-message-1",
+            content: "## MiniMax近况研究框架\n\n| 研究维度 | 状态 |",
+            delta: "## MiniMax近况研究框架\n\n| 研究维度 | 状态 |",
+            streaming: true,
+            phase: "stream",
+          },
+        },
+        {
+          id: "run-fragmented-table-body:evt-1",
+          runId: "run-fragmented-table-body",
+          seq: 1,
+          type: "plan_list.updated",
+          agentId: "orchestrator",
+          nodeId: "orchestrator",
+          createdAt: createdAt + 1_000,
+          pattern: "orchestrator_subagent",
+          payload: {
+            items: [{ step: "并行研究", status: "in_progress" }],
+          },
+        },
+        {
+          id: "run-fragmented-table-body:evt-2",
+          runId: "run-fragmented-table-body",
+          seq: 2,
+          type: "message.delta",
+          agentId: "orchestrator",
+          nodeId: "orchestrator",
+          createdAt: createdAt + 2_000,
+          pattern: "orchestrator_subagent",
+          payload: {
+            role: "assistant",
+            messageId: "table-message-2",
+            content: "|---|---|\n| 融资与估值近况 | 进行中 |",
+            delta: "|---|---|\n| 融资与估值近况 | 进行中 |",
+            streaming: true,
+            phase: "stream",
+          },
+        },
+        {
+          id: "run-fragmented-table-body:evt-3",
+          runId: "run-fragmented-table-body",
+          seq: 3,
+          type: "tool.called",
+          agentId: "orchestrator",
+          nodeId: "orchestrator",
+          createdAt: createdAt + 3_000,
+          pattern: "orchestrator_subagent",
+          payload: {
+            toolId: "agent.spawn",
+            status: "succeeded",
+            description: "MiniMax 行业竞争格局研究",
+          },
+        },
+      ],
+      artifacts: [],
+      agentMessages: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 0, completed: 1, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      output: { text: finalMarkdown },
+      updatedAt: createdAt + 5_000,
+    } as unknown as OraStateSnapshot;
+
+    const assistant = adaptChatMessages(
+      [{
+        id: "run-fragmented-table-body:user",
+        sessionId: "session-fragmented-table-body",
+        runId: "run-fragmented-table-body",
+        turnIndex: 1,
+        role: "user",
+        content: "研究 MiniMax 近况",
+        pattern: "orchestrator_subagent",
+        modeId: SINGLE_AGENT_MODE_ID,
+        createdAt,
+      }],
+      { "run-fragmented-table-body": snapshot },
+    ).find((message) => message.role === "assistant");
+
+    expect(assistant?.content).toBe(finalMarkdown);
+    expect(assistant?.turn?.presentation?.showStandaloneBody).toBe(true);
+    expect(assistant?.turn?.presentation?.visibleTimelineItems.some((item) => item.kind === "plan_update")).toBe(true);
+    expect(assistant?.turn?.presentation?.visibleTimelineItems.some((item) => item.kind === "status_group")).toBe(true);
+    expect(
+      assistant?.turn?.presentation?.visibleTimelineItems.some((item) =>
+        (item.kind === "assistant_text" || item.kind === "final_text") &&
+        item.content.includes("| 研究维度 | 状态 |"),
+      ),
+    ).toBe(false);
+    expect(
+      assistant?.turn?.presentation?.visibleTimelineItems.some((item) =>
+        (item.kind === "assistant_text" || item.kind === "final_text") &&
+        item.content.includes("|---|---|"),
+      ),
+    ).toBe(false);
+  });
+
+  it("keeps completed plain-text answers timeline-owned when a final_text fully matches the body", () => {
+    const createdAt = 1_714_000_000_000;
+    const finalText = "这是完整的最终结论。";
+    const snapshot = {
+      runId: "run-plain-text-final-ownership",
+      sessionId: "session-plain-text-final-ownership",
+      turnIndex: 1,
+      status: "succeeded",
+      pattern: "orchestrator_subagent",
+      modeId: SINGLE_AGENT_MODE_ID,
+      input: { prompt: "给出结论", createdAt, context: {} },
+      config: {
+        modeId: SINGLE_AGENT_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["orchestrator"],
+        providerId: "deepseek",
+        modelRef: "deepseek-chat",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-plain-text-final-ownership-test",
+        skillIds: [],
+        toolIds: ["file.read"],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [
+        { id: "orchestrator", label: "Orchestrator", role: "Coordinate", model: "deepseek", tools: [], budget: "default", memoryScopes: [] },
+      ],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [
+        {
+          id: "run-plain-text-final-ownership:evt-0",
+          runId: "run-plain-text-final-ownership",
+          seq: 0,
+          type: "tool.called",
+          agentId: "orchestrator",
+          nodeId: "orchestrator",
+          createdAt,
+          pattern: "orchestrator_subagent",
+          payload: {
+            toolId: "file.read",
+            status: "succeeded",
+            path: "apps/desktop/src/lib/viewModel.ts",
+          },
+        },
+      ],
+      artifacts: [],
+      agentMessages: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 0, completed: 1, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      output: { text: finalText },
+      updatedAt: createdAt + 3_000,
+    } as unknown as OraStateSnapshot;
+
+    const assistant = adaptChatMessages(
+      [{
+        id: "run-plain-text-final-ownership:user",
+        sessionId: "session-plain-text-final-ownership",
+        runId: "run-plain-text-final-ownership",
+        turnIndex: 1,
+        role: "user",
+        content: "给出结论",
+        pattern: "orchestrator_subagent",
+        modeId: SINGLE_AGENT_MODE_ID,
+        createdAt,
+      }],
+      { "run-plain-text-final-ownership": snapshot },
+    ).find((message) => message.role === "assistant");
+
+    expect(assistant?.turn?.presentation?.showStandaloneBody).toBe(false);
+    expect(assistant?.turn?.timelineItems?.some((item) =>
+      item.kind === "final_text" && item.content === finalText,
+    )).toBe(true);
+  });
+
   it("keeps historical progress narration out of process steps after the run finishes", () => {
     const createdAt = 1_714_000_000_000;
     const snapshot = {

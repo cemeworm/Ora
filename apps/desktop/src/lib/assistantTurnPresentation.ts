@@ -19,19 +19,29 @@ export function deriveAssistantTurnPresentation(params: {
   const bodyContent = shouldSuppressClarificationBody(content, clarificationExchanges)
     ? ""
     : content;
-  const visibleTimelineItems = deriveVisibleTimelineItems(
+  const baseVisibleTimelineItems = deriveVisibleTimelineItems(
     turn.timelineItems ?? legacyTimelineItems(turn.processSteps),
     turn,
     bodyContent,
     isPlaceholder,
   )
-    .filter((item) => !shouldSuppressDuplicateStatusGroup(item, bodyContent, turn, isPlaceholder))
     .filter((item) => !shouldSuppressBodyEchoTimelineItem(item, bodyContent, turn, isPlaceholder))
     .filter(dedupeTimelineItemText());
-  const hasPlan = Boolean(turn.hasProposedPlan && turn.planContent);
-  const timelineContainsBody = visibleTimelineItems.some((item) =>
-    timelineItemRepresentsBody(item, bodyContent, turn),
+  const dedupedTimelineItems = baseVisibleTimelineItems.filter((item) =>
+    !shouldSuppressDuplicateStatusGroup(item, bodyContent, baseVisibleTimelineItems),
   );
+  const timelineOwnsBody = dedupedTimelineItems.some((item) =>
+    timelineItemOwnsBody(item, bodyContent, turn),
+  );
+  const hasPlan = Boolean(turn.hasProposedPlan && turn.planContent);
+  const showStandaloneBody = Boolean(
+    bodyContent.trim() &&
+    !turn.proposedPlanStatus &&
+    !timelineOwnsBody,
+  );
+  const visibleTimelineItems = showStandaloneBody && containsStructuredMarkdownTable(bodyContent)
+    ? dedupedTimelineItems.filter((item) => !shouldSuppressBodyFragmentTimelineItem(item, bodyContent))
+    : dedupedTimelineItems;
 
   return {
     primarySurface: hasPlan
@@ -40,16 +50,12 @@ export function deriveAssistantTurnPresentation(params: {
         ? "timeline"
         : "body",
     bodyContent,
-    showStandaloneBody: Boolean(
-      bodyContent.trim() &&
-      !turn.proposedPlanStatus &&
-      !(visibleTimelineItems.length > 0 && timelineContainsBody),
-    ),
+    showStandaloneBody,
     visibleTimelineItems,
   };
 }
 
-function timelineItemRepresentsBody(
+function timelineItemOwnsBody(
   item: TurnTimelineItem,
   bodyContent: string,
   turn: AssistantTurnAttachment,
@@ -59,13 +65,13 @@ function timelineItemRepresentsBody(
   }
   if (
     (item.kind === "assistant_text" || item.kind === "final_text") &&
-    isComparableDuplicate(bodyContent, item.content)
+    isExactComparableText(bodyContent, item.content)
   ) {
     return true;
   }
   if (
     item.kind === "agent_message" &&
-    isComparableDuplicate(bodyContent, item.content) &&
+    isExactComparableText(bodyContent, item.content) &&
     transcriptAgentMessageOwnsFinalBody(turn, item)
   ) {
     return true;
@@ -88,7 +94,7 @@ function shouldSuppressBodyEchoTimelineItem(
   if (item.kind !== "agent_message") {
     return false;
   }
-  if (!isComparableDuplicate(bodyContent, item.content)) {
+  if (!isExactComparableText(bodyContent, item.content)) {
     return false;
   }
   return !transcriptAgentMessageOwnsFinalBody(turn, item);
@@ -97,19 +103,29 @@ function shouldSuppressBodyEchoTimelineItem(
 function shouldSuppressDuplicateStatusGroup(
   item: TurnTimelineItem,
   bodyContent: string,
-  turn: AssistantTurnAttachment,
-  isPlaceholder: boolean,
+  visibleTimelineItems: TurnTimelineItem[],
 ): boolean {
-  if (turn.status !== "running" || isPlaceholder) {
-    return false;
-  }
   if (item.kind !== "status_group") {
     return false;
   }
-  if (!bodyContent.trim()) {
+  const authoritativeTexts = collectAuthoritativeTextCandidates(bodyContent, visibleTimelineItems);
+  if (authoritativeTexts.length === 0) {
     return false;
   }
-  return isComparableDuplicate(bodyContent, item.summary);
+  return authoritativeTexts.some((text) => isComparableDuplicate(text, item.summary));
+}
+
+function collectAuthoritativeTextCandidates(
+  bodyContent: string,
+  visibleTimelineItems: TurnTimelineItem[],
+): string[] {
+  const candidates = bodyContent.trim() ? [bodyContent] : [];
+  for (const item of visibleTimelineItems) {
+    if (item.kind === "assistant_text" || item.kind === "final_text") {
+      candidates.push(item.content);
+    }
+  }
+  return candidates;
 }
 
 function transcriptAgentMessageOwnsFinalBody(
@@ -139,6 +155,53 @@ function isComparableDuplicate(left: string, right: string): boolean {
   const shorter = normalizedLeft.length <= normalizedRight.length ? normalizedLeft : normalizedRight;
   const longer = shorter === normalizedLeft ? normalizedRight : normalizedLeft;
   return shorter.length >= 24 && longer.includes(shorter);
+}
+
+function isExactComparableText(left: string, right: string): boolean {
+  const normalizedLeft = normalizeComparableText(left);
+  const normalizedRight = normalizeComparableText(right);
+  return Boolean(normalizedLeft && normalizedRight && normalizedLeft === normalizedRight);
+}
+
+function shouldSuppressBodyFragmentTimelineItem(
+  item: TurnTimelineItem,
+  bodyContent: string,
+): boolean {
+  if (item.kind !== "assistant_text" && item.kind !== "final_text") {
+    return false;
+  }
+  return isComparableBodyFragment(item.content, bodyContent);
+}
+
+function isComparableBodyFragment(fragment: string, body: string): boolean {
+  const normalizedFragment = normalizeComparableText(fragment);
+  const normalizedBody = normalizeComparableText(body);
+  if (!normalizedFragment || !normalizedBody) {
+    return false;
+  }
+  if (normalizedFragment === normalizedBody) {
+    return false;
+  }
+  return normalizedFragment.length >= 8 && normalizedBody.includes(normalizedFragment);
+}
+
+function containsStructuredMarkdownTable(content: string): boolean {
+  const lines = content.split(/\r?\n/);
+  for (let index = 0; index < lines.length - 1; index += 1) {
+    const line = lines[index]?.trim() ?? "";
+    const nextLine = lines[index + 1]?.trim() ?? "";
+    if (!line || !nextLine || !line.includes("|")) {
+      continue;
+    }
+    if (isMarkdownTableDelimiter(nextLine)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isMarkdownTableDelimiter(line: string): boolean {
+  return /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(line);
 }
 
 function dedupeTimelineItemText(): (item: TurnTimelineItem) => boolean {

@@ -1,10 +1,18 @@
+// @vitest-environment jsdom
+
+import { act, createElement } from "react";
+import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   AssistantTurnCard,
   processSummary,
 } from "./AssistantTurnCard";
 import type { AssistantTurnAttachment, TurnAgentConversationMessage, TurnArtifactAttachment, TurnProcessStep } from "../types";
+
+Object.assign(globalThis, {
+  IS_REACT_ACT_ENVIRONMENT: true,
+});
 
 function agentMessage(
   id: string,
@@ -71,6 +79,11 @@ function artifact(
 }
 
 describe("assistant turn display helpers", () => {
+  afterEach(() => {
+    document.body.innerHTML = "";
+    vi.restoreAllMocks();
+  });
+
   it("renders the current agent label as the first line of an assistant turn", () => {
     const turn: AssistantTurnAttachment = {
       runId: "run-1",
@@ -1424,6 +1437,204 @@ describe("assistant turn display helpers", () => {
 
     expect(html.split(duplicateText).length - 1).toBe(1);
     expect(html).not.toContain("正在思考");
+  });
+
+  it("suppresses a running status summary when it duplicates timeline assistant text", () => {
+    const duplicateText = "4 个并行研究任务已全部启动，正在等待结果汇总——";
+    const turn: AssistantTurnAttachment = {
+      runId: "run-1",
+      turnIndex: 1,
+      status: "running",
+      pattern: "orchestrator_subagent",
+      sources: [],
+      processSteps: [],
+      timelineItems: [
+        {
+          id: "text-1",
+          kind: "assistant_text",
+          content: duplicateText,
+          timestamp: "+1s",
+        },
+        {
+          id: "status-1",
+          kind: "status_group",
+          summary: duplicateText,
+          timestamp: "+2s",
+          status: "active",
+          steps: [
+            processStep("step-1", "active", duplicateText, { label: "进度" }),
+          ],
+        },
+      ],
+      agentMessages: [],
+      artifacts: [],
+      todos: [],
+      planList: [],
+      approvalCount: 0,
+      clarificationCount: 0,
+      hasProposedPlan: false,
+    };
+
+    const html = renderToStaticMarkup(
+      <AssistantTurnCard content="" turn={turn} />,
+    );
+
+    expect(html.split(duplicateText).length - 1).toBe(1);
+  });
+
+  it("renders a structured markdown table from the standalone body when timeline only has fragments", async () => {
+    await import("./MarkdownRenderer");
+
+    const bodyMarkdown = [
+      "## MiniMax近况研究框架",
+      "",
+      "| 研究维度 | 状态 |",
+      "|---|---|",
+      "| 融资与估值近况 | 进行中 |",
+      "| 最新模型与技术产品发布 | 进行中 |",
+    ].join("\n");
+    const turn: AssistantTurnAttachment = {
+      runId: "run-table-render",
+      turnIndex: 1,
+      status: "done",
+      pattern: "orchestrator_subagent",
+      sources: [],
+      processSteps: [],
+      timelineItems: [
+        {
+          id: "timeline-plan-update",
+          kind: "plan_update",
+          summary: "已更新任务计划：1/6 完成",
+          timestamp: "+1s",
+        },
+        {
+          id: "timeline-table-fragment-1",
+          kind: "assistant_text",
+          content: "## MiniMax近况研究框架\n\n| 研究维度 | 状态 |",
+          timestamp: "+2s",
+        },
+        {
+          id: "timeline-table-fragment-2",
+          kind: "final_text",
+          content: "|---|---|\n| 融资与估值近况 | 进行中 |",
+          timestamp: "+3s",
+        },
+      ],
+      agentMessages: [],
+      artifacts: [],
+      todos: [],
+      planList: [],
+      approvalCount: 0,
+      clarificationCount: 0,
+      hasProposedPlan: false,
+    };
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(createElement(AssistantTurnCard, { content: bodyMarkdown, turn }));
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const html = container.innerHTML;
+
+    expect(html).toContain("<table");
+    expect(html).toContain("MiniMax近况研究框架");
+    expect(html).toContain("已更新任务计划：1/6 完成");
+    expect(html).not.toContain("&gt;|---|---|&lt;");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("suppresses a settled status summary when it duplicates final timeline text", () => {
+    const duplicateText = "4 个并行研究任务已全部启动，正在等待结果汇总——";
+    const turn: AssistantTurnAttachment = {
+      runId: "run-1",
+      turnIndex: 1,
+      status: "done",
+      pattern: "orchestrator_subagent",
+      sources: [],
+      processSteps: [],
+      timelineItems: [
+        {
+          id: "status-1",
+          kind: "status_group",
+          summary: duplicateText,
+          timestamp: "+1s",
+          status: "complete",
+          steps: [
+            processStep("step-1", "complete", duplicateText, { label: "进度" }),
+          ],
+        },
+        {
+          id: "final-1",
+          kind: "final_text",
+          content: duplicateText,
+          timestamp: "+2s",
+        },
+      ],
+      agentMessages: [],
+      artifacts: [],
+      todos: [],
+      planList: [],
+      approvalCount: 0,
+      clarificationCount: 0,
+      hasProposedPlan: false,
+    };
+
+    const html = renderToStaticMarkup(
+      <AssistantTurnCard content="" turn={turn} />,
+    );
+
+    expect(html.split(duplicateText).length - 1).toBe(1);
+  });
+
+  it("suppresses a blocked status summary when it duplicates visible text", () => {
+    const duplicateText = "研究任务卡住，正在等待结果汇总——";
+    const turn: AssistantTurnAttachment = {
+      runId: "run-1",
+      turnIndex: 1,
+      status: "done",
+      pattern: "orchestrator_subagent",
+      sources: [],
+      processSteps: [],
+      timelineItems: [
+        {
+          id: "status-1",
+          kind: "status_group",
+          summary: duplicateText,
+          timestamp: "+1s",
+          status: "blocked",
+          steps: [
+            processStep("step-1", "blocked", duplicateText, { label: "子代理卡住", tone: "warning" }),
+          ],
+        },
+        {
+          id: "final-1",
+          kind: "final_text",
+          content: duplicateText,
+          timestamp: "+2s",
+        },
+      ],
+      agentMessages: [],
+      artifacts: [],
+      todos: [],
+      planList: [],
+      approvalCount: 0,
+      clarificationCount: 0,
+      hasProposedPlan: false,
+    };
+
+    const html = renderToStaticMarkup(
+      <AssistantTurnCard content="" turn={turn} />,
+    );
+
+    expect(html.split(duplicateText).length - 1).toBe(1);
   });
 
   it("keeps distinct body text visible alongside projected timeline agent messages", () => {
