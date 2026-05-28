@@ -1,19 +1,64 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { ArtifactDrawer, ArtifactPreviewContent } from "./ArtifactDrawer";
 import { AssistantTurnCard } from "./AssistantTurnCard";
+import { BrowserWorkspaceHost } from "./BrowserWorkspaceHost";
 import { Button } from "./ui/button";
+import { Input } from "./ui/input";
 import { Conversation, ConversationContent } from "./ai-elements/conversation";
 import { DocumentsDrawer } from "./DocumentsDrawer";
 import { MarkdownContent } from "./MarkdownContent";
 import { MessageBubble } from "./MessageBubble";
 import { TrailsDrawer } from "./TrailsDrawer";
-import { Bot, FileStack, FileText, FolderTree, Layout, MessageSquareText, Plus, Rows3, X } from "lucide-react";
+import {
+  Bot,
+  ChevronLeft,
+  ChevronRight,
+  FileStack,
+  FileText,
+  FolderTree,
+  Globe,
+  Layout,
+  LoaderCircle,
+  MessageSquareText,
+  Plus,
+  RefreshCw,
+  Rows3,
+  Send,
+  X,
+} from "lucide-react";
 import type { DesktopRunInteractionState } from "../lib/runInteractionState";
-import type { OraProjectFileEntry, OraProjectFileReadResult, OraProjectSummary, OraSessionDetail, OraStateSnapshot, RuntimeClient } from "../lib/runtimeClient";
-import type { ArtifactRecord, AssistantTurnAttachment, ChatMessage, CheckpointRecord, PlanItem, SessionRun, TurnProcessStep, TurnAgentConversationMessage, TurnTimelineItem } from "../types";
-import { adaptChatMessages, derivePresentedAssistantTurnFromSnapshot } from "../lib/viewModel";
+import type {
+  OraProjectFileEntry,
+  OraProjectFileReadResult,
+  OraProjectSummary,
+  OraSessionDetail,
+  OraStateSnapshot,
+  RuntimeClient,
+} from "../lib/runtimeClient";
+import type {
+  ArtifactRecord,
+  AssistantTurnAttachment,
+  ChatMessage,
+  CheckpointRecord,
+  PlanItem,
+  SessionRun,
+  TurnProcessStep,
+  TurnAgentConversationMessage,
+  TurnTimelineItem,
+} from "../types";
+import {
+  adaptChatMessages,
+  derivePresentedAssistantTurnFromSnapshot,
+} from "../lib/viewModel";
 import { cn } from "../lib/utils";
-import type { RightWorkspaceBasePage, RightWorkspaceChildSessionPage, RightWorkspacePage, RightWorkspaceReplayChildRef, RightWorkspaceSessionState } from "../lib/state";
+import type {
+  RightWorkspaceBasePage,
+  RightWorkspaceBrowserPage,
+  RightWorkspaceChildSessionPage,
+  RightWorkspacePage,
+  RightWorkspaceReplayChildRef,
+  RightWorkspaceSessionState,
+} from "../lib/state";
 
 interface RightWorkspacePaneProps {
   workspace: RightWorkspaceSessionState;
@@ -50,6 +95,56 @@ interface RightWorkspacePaneProps {
   onSelectPage: (page: RightWorkspacePage) => void;
   onClosePage: (page: RightWorkspacePage) => void;
   onCacheSessionDetail: (detail: OraSessionDetail) => void;
+}
+
+type OpenableWorkspacePageKind = RightWorkspaceBasePage["kind"] | "browser";
+
+const LOCAL_BROWSER_HOST_PATTERN =
+  /^(localhost|127(?:\.\d{1,3}){3}|\[::1\])(?::\d+)?(?:[/?#].*)?$/i;
+
+export function normalizeBrowserUrl(raw: string): string | undefined {
+  const trimmed = raw.trim();
+  if (trimmed.length === 0 || /\s/.test(trimmed)) {
+    return undefined;
+  }
+
+  if (/^https?:\/\//i.test(trimmed)) {
+    try {
+      const url = new URL(trimmed);
+      return /^https?:$/.test(url.protocol) ? url.toString() : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  if (LOCAL_BROWSER_HOST_PATTERN.test(trimmed)) {
+    try {
+      return new URL(`http://${trimmed}`).toString();
+    } catch {
+      return undefined;
+    }
+  }
+
+  if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed)) {
+    return undefined;
+  }
+
+  const normalized = `https://${trimmed}`;
+
+  try {
+    return new URL(normalized).toString();
+  } catch {
+    return undefined;
+  }
+}
+
+function browserTabTitle(url: string): string {
+  try {
+    const parsed = new URL(url);
+    return parsed.host || url;
+  } catch {
+    return url;
+  }
 }
 
 export function RightWorkspacePane({
@@ -109,11 +204,12 @@ export function RightWorkspacePane({
     workspace.pages.find((page) => page.id === workspace.selectedPageId) ??
     workspace.pages.at(-1);
 
-
   function titleForPageKind(kind: RightWorkspacePage["kind"]) {
     switch (kind) {
       case "documents":
         return "文件";
+      case "browser":
+        return "浏览器";
       case "artifact":
         return "Artifact";
       case "child_session":
@@ -128,51 +224,113 @@ export function RightWorkspacePane({
     }
   }
 
-  function pageIconForKind(kind: RightWorkspacePage["kind"]) {
-    switch (kind) {
+  function pageIconForKind(page: RightWorkspacePage) {
+    const iconWrapperClassName =
+      "relative inline-flex h-[13px] w-[13px] shrink-0 items-center justify-center";
+    switch (page.kind) {
       case "documents":
-        return <FolderTree size={13} className="shrink-0" />;
+        return (
+          <span className={iconWrapperClassName}>
+            <FolderTree size={13} className="shrink-0" />
+          </span>
+        );
+      case "browser":
+        return page.isLoading ? (
+          <span className={iconWrapperClassName}>
+            <svg
+              viewBox="0 0 16 16"
+              aria-hidden="true"
+              className="absolute inset-0 h-full w-full animate-spin origin-center"
+            >
+              <circle
+                cx="8"
+                cy="8"
+                r="6"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeDasharray="18 20"
+              />
+            </svg>
+          </span>
+        ) : (
+          <span className={iconWrapperClassName}>
+            <Globe size={13} className="shrink-0" />
+          </span>
+        );
       case "artifact":
-        return <FileStack size={13} className="shrink-0" />;
+        return (
+          <span className={iconWrapperClassName}>
+            <FileStack size={13} className="shrink-0" />
+          </span>
+        );
       case "child_session":
-        return <Bot size={13} className="shrink-0" />;
+        return (
+          <span className={iconWrapperClassName}>
+            <Bot size={13} className="shrink-0" />
+          </span>
+        );
       case "file_preview":
-        return <FileText size={13} className="shrink-0" />;
+        return (
+          <span className={iconWrapperClassName}>
+            <FileText size={13} className="shrink-0" />
+          </span>
+        );
       case "home":
-        return <Layout size={13} className="shrink-0" />;
+        return (
+          <span className={iconWrapperClassName}>
+            <Layout size={13} className="shrink-0" />
+          </span>
+        );
       case "trails":
-        return <Rows3 size={13} className="shrink-0" />;
+        return (
+          <span className={iconWrapperClassName}>
+            <Rows3 size={13} className="shrink-0" />
+          </span>
+        );
       default:
-        return <FileText size={13} className="shrink-0" />;
+        return (
+          <span className={iconWrapperClassName}>
+            <FileText size={13} className="shrink-0" />
+          </span>
+        );
     }
   }
 
-  function openWorkspacePage(kind: RightWorkspaceBasePage["kind"]) {
-    const page: RightWorkspaceBasePage = {
-      id: `${kind}:${crypto.randomUUID()}`,
-      kind,
-      title: titleForPageKind(kind),
-      sessionId: selectedSession.id,
-      ...(kind === "trails"
-        ? { targetRunId: selectedSession.latestRunId }
-        : kind === "documents"
-          ? { projectId: selectedSession.projectId }
-          : {}),
-    };
+  function openWorkspacePage(kind: OpenableWorkspacePageKind) {
+    const page: RightWorkspacePage =
+      kind === "browser"
+        ? {
+            id: `${kind}:${crypto.randomUUID()}`,
+            kind,
+            title: titleForPageKind(kind),
+            sessionId: selectedSession.id,
+          }
+        : {
+            id: `${kind}:${crypto.randomUUID()}`,
+            kind,
+            title: titleForPageKind(kind),
+            sessionId: selectedSession.id,
+            ...(kind === "trails"
+              ? { targetRunId: selectedSession.latestRunId }
+              : kind === "documents"
+                ? { projectId: selectedSession.projectId }
+                : {}),
+          };
     onOpenWorkspacePage(page);
   }
   const activeChildSessionPage =
-    activePage?.kind === "child_session"
-      ? activePage
-      : undefined;
+    activePage?.kind === "child_session" ? activePage : undefined;
   const activeChildSessionDetail =
     activeChildSessionPage?.childBacking === "session"
       ? sessionDetailsById[activeChildSessionPage.backingSessionId]
       : undefined;
   const activeChildSessionSnapshot =
-    activeChildSessionPage?.kind === "child_session" && activeChildSessionPage.targetRunId
-      ? turnSnapshots[activeChildSessionPage.targetRunId] ??
-        activeChildSessionDetail?.latestSnapshot
+    activeChildSessionPage?.kind === "child_session" &&
+    activeChildSessionPage.targetRunId
+      ? (turnSnapshots[activeChildSessionPage.targetRunId] ??
+        activeChildSessionDetail?.latestSnapshot)
       : activeChildSessionDetail?.latestSnapshot;
   const selectedArtifact = useMemo(() => {
     if (activePage?.kind !== "artifact") {
@@ -213,7 +371,7 @@ export function RightWorkspacePane({
                 <div
                   key={page.id}
                   className={cn(
-                    "inline-flex shrink-0 items-center rounded-md px-1.5 py-0.5 transition",
+                    "inline-flex h-7 shrink-0 items-center rounded-md px-1.5 transition",
                     page.id === workspace.selectedPageId
                       ? "bg-black/[0.04]"
                       : "bg-transparent hover:bg-black/[0.03]",
@@ -224,24 +382,28 @@ export function RightWorkspacePane({
                     onClick={() => onSelectPage(page)}
                     aria-label={`Select ${page.title}`}
                     className={cn(
-                      "rounded-sm px-1.5 py-0.5 text-[11px] font-medium transition",
+                      "inline-flex h-full items-center rounded-sm px-1.5 text-[11px] font-medium transition",
                       page.id === workspace.selectedPageId
                         ? "text-foreground"
                         : "text-muted-foreground hover:text-foreground",
                     )}
                   >
-                    <span className="inline-flex items-center gap-1.5">
-                      {pageIconForKind(page.kind)}
-                      <span className="shrink-0">{page.kind === "file_preview" ? page.title.split("/").at(-1) ?? page.title : page.title}</span>
+                    <span className="inline-flex items-center gap-1.5 leading-none">
+                      {pageIconForKind(page)}
+                      <span className="shrink-0">
+                        {page.kind === "file_preview"
+                          ? (page.title.split("/").at(-1) ?? page.title)
+                          : page.title}
+                      </span>
                     </span>
                   </button>
                   <button
                     type="button"
                     aria-label={`Close ${page.title}`}
-                    className="rounded-sm p-0.5 text-[11px] text-muted-foreground transition hover:text-foreground"
+                    className="inline-flex h-5 w-5 items-center justify-center rounded-sm text-muted-foreground transition hover:text-foreground"
                     onClick={() => onClosePage(page)}
                   >
-                    ×
+                    <X size={12} strokeWidth={2.1} />
                   </button>
                 </div>
               ))}
@@ -332,6 +494,11 @@ export function RightWorkspacePane({
               onCacheSessionDetail={onCacheSessionDetail}
               onOpenChildSessionPage={onOpenChildSessionPage}
             />
+          ) : activePage?.kind === "browser" ? (
+            <BrowserWorkspacePage
+              page={activePage}
+              onCommitPage={(page) => onOpenWorkspacePage(page)}
+            />
           ) : activePage?.kind === "home" ? (
             <WorkspaceHomePage
               activePage={activePage}
@@ -348,7 +515,7 @@ export function RightWorkspacePane({
 }
 
 const WORKSPACE_PAGE_PICKER_OPTIONS: Array<{
-  kind: RightWorkspaceBasePage["kind"];
+  kind: OpenableWorkspacePageKind;
   title: string;
   description: string;
   icon: ReactNode;
@@ -365,6 +532,12 @@ const WORKSPACE_PAGE_PICKER_OPTIONS: Array<{
     description: "浏览项目文件树，并继续把文件加入当前对话。",
     icon: <FolderTree size={16} />,
   },
+  {
+    kind: "browser",
+    title: "浏览器",
+    description: "在右侧工作区里打开任意网址，继续留在当前会话上下文。",
+    icon: <Globe size={16} />,
+  },
 ];
 
 function WorkspaceHomePage({
@@ -374,7 +547,7 @@ function WorkspaceHomePage({
 }: {
   activePage: RightWorkspacePage;
   onClosePage: (page: RightWorkspacePage) => void;
-  openWorkspacePage: (kind: RightWorkspaceBasePage["kind"]) => void;
+  openWorkspacePage: (kind: OpenableWorkspacePageKind) => void;
 }) {
   return (
     <div className="flex h-full min-h-0 flex-col justify-center p-5">
@@ -408,7 +581,7 @@ function WorkspaceHomePage({
 function WorkspaceEmptyState({
   onOpenPage,
 }: {
-  onOpenPage: (kind: RightWorkspaceBasePage["kind"]) => void;
+  onOpenPage: (kind: OpenableWorkspacePageKind) => void;
 }) {
   return (
     <div className="flex h-full min-h-0 flex-col justify-center p-5">
@@ -431,6 +604,171 @@ function WorkspaceEmptyState({
             </span>
           </button>
         ))}
+      </div>
+    </div>
+  );
+}
+
+function BrowserWorkspacePage({
+  page,
+  onCommitPage,
+}: {
+  page: RightWorkspaceBrowserPage;
+  onCommitPage: (page: RightWorkspaceBrowserPage) => void;
+}) {
+  const [draftUrl, setDraftUrl] = useState(page.url ?? "");
+  const [urlError, setUrlError] = useState<string | undefined>(undefined);
+  const [reloadKey, setReloadKey] = useState(0);
+
+  useEffect(() => {
+    setDraftUrl(page.url ?? "");
+    setUrlError(undefined);
+    setReloadKey(0);
+  }, [page.id]);
+
+  const committedUrl = page.url;
+  const history = page.history ?? (page.url ? [page.url] : []);
+  const historyIndex =
+    page.historyIndex ?? (history.length > 0 ? history.length - 1 : -1);
+  const canGoBack = historyIndex > 0;
+  const canGoForward = historyIndex >= 0 && historyIndex < history.length - 1;
+
+  function commitDraftUrl() {
+    const normalized = normalizeBrowserUrl(draftUrl);
+    if (!normalized) {
+      setUrlError(
+        "请输入有效的 http(s) 地址，或直接输入域名 / localhost 地址。",
+      );
+      return;
+    }
+    setUrlError(undefined);
+    setDraftUrl(normalized);
+    const nextHistoryBase =
+      historyIndex >= 0 ? history.slice(0, historyIndex + 1) : [];
+    const nextHistory =
+      nextHistoryBase.at(-1) === normalized
+        ? nextHistoryBase
+        : [...nextHistoryBase, normalized];
+    onCommitPage({
+      ...page,
+      url: normalized,
+      title: browserTabTitle(normalized),
+      history: nextHistory,
+      historyIndex: nextHistory.length - 1,
+      isLoading: true,
+    });
+  }
+
+  function commitHistoryAt(index: number) {
+    const nextUrl = history[index];
+    if (!nextUrl) {
+      return;
+    }
+    setUrlError(undefined);
+    setDraftUrl(nextUrl);
+    onCommitPage({
+      ...page,
+      url: nextUrl,
+      title: browserTabTitle(nextUrl),
+      history,
+      historyIndex: index,
+      isLoading: true,
+    });
+  }
+
+  function setLoadingState(loading: boolean) {
+    if ((page.isLoading ?? false) === loading) {
+      return;
+    }
+    onCommitPage({
+      ...page,
+      isLoading: loading,
+    });
+  }
+
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="shrink-0 border-b border-border/60 px-4 py-3">
+        <div className="flex items-center gap-2">
+          <Button
+            type="button"
+            size="icon-sm"
+            variant="ghost"
+            aria-label="后退"
+            title="后退"
+            onClick={() => commitHistoryAt(historyIndex - 1)}
+            disabled={!canGoBack}
+            className="h-5 w-5 rounded-full text-muted-foreground hover:text-foreground"
+          >
+            <ChevronLeft size={14} />
+          </Button>
+          <Button
+            type="button"
+            size="icon-sm"
+            variant="ghost"
+            aria-label="前进"
+            title="前进"
+            onClick={() => commitHistoryAt(historyIndex + 1)}
+            disabled={!canGoForward}
+            className="h-5 w-5 rounded-full text-muted-foreground hover:text-foreground"
+          >
+            <ChevronRight size={14} />
+          </Button>
+          <Button
+            type="button"
+            size="icon-sm"
+            variant="ghost"
+            aria-label="刷新页面"
+            title="刷新页面"
+            onClick={() => setReloadKey((value) => value + 1)}
+            disabled={!committedUrl}
+            className="h-5 w-5 rounded-full text-muted-foreground hover:text-foreground"
+          >
+            <RefreshCw size={14} />
+          </Button>
+          <div className="relative min-w-0 flex-1">
+            <Input
+              value={draftUrl}
+              onChange={(event) => {
+                setDraftUrl(event.target.value);
+                if (urlError) {
+                  setUrlError(undefined);
+                }
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  commitDraftUrl();
+                }
+              }}
+              placeholder="输入URL"
+              aria-label="浏览器地址"
+              className="h-9 pr-10"
+            />
+            <Button
+              type="button"
+              size="icon-sm"
+              variant="ghost"
+              aria-label="打开页面"
+              title="打开页面"
+              onClick={commitDraftUrl}
+              className="absolute right-1 top-1/2 h-7 w-7 -translate-y-1/2 rounded-full text-muted-foreground hover:text-foreground"
+            >
+              <Send size={14} />
+            </Button>
+          </div>
+        </div>
+        {urlError ? (
+          <p className="mt-2 text-xs text-red-600">{urlError}</p>
+        ) : null}
+      </div>
+      <div className="min-h-0 flex-1 px-2 pb-2 pt-2">
+        <BrowserWorkspaceHost
+          pageId={page.id}
+          url={committedUrl}
+          reloadKey={reloadKey}
+          onLoadingChange={setLoadingState}
+        />
       </div>
     </div>
   );
@@ -461,13 +799,21 @@ function ChildSessionWorkspacePage({
     replayChildRef?: RightWorkspaceReplayChildRef;
   }) => void;
 }) {
-  const [activeSection, setActiveSection] = useState<"conversation" | "turns" | "artifacts">("conversation");
-  const [turnSnapshotsByRunId, setTurnSnapshotsByRunId] = useState<Record<string, OraStateSnapshot | undefined>>({});
-  const [selectedTurnRunId, setSelectedTurnRunId] = useState<string | undefined>(snapshot?.runId ?? detail?.turns.at(-1)?.runId);
-  const [detailLoadState, setDetailLoadState] = useState<"idle" | "loading" | "succeeded" | "failed">(
-    page.childBacking === "session" && !detail ? "loading" : "idle",
+  const [activeSection, setActiveSection] = useState<
+    "conversation" | "turns" | "artifacts"
+  >("conversation");
+  const [turnSnapshotsByRunId, setTurnSnapshotsByRunId] = useState<
+    Record<string, OraStateSnapshot | undefined>
+  >({});
+  const [selectedTurnRunId, setSelectedTurnRunId] = useState<
+    string | undefined
+  >(snapshot?.runId ?? detail?.turns.at(-1)?.runId);
+  const [detailLoadState, setDetailLoadState] = useState<
+    "idle" | "loading" | "succeeded" | "failed"
+  >(page.childBacking === "session" && !detail ? "loading" : "idle");
+  const [detailLoadError, setDetailLoadError] = useState<string | undefined>(
+    undefined,
   );
-  const [detailLoadError, setDetailLoadError] = useState<string | undefined>(undefined);
 
   const replaySnapshot = useMemo(
     () => deriveChildReplaySnapshot(page, turnSnapshots),
@@ -475,7 +821,9 @@ function ChildSessionWorkspacePage({
   );
   const effectiveSnapshot = snapshot ?? replaySnapshot;
   const replayChildRef = getReplayChildRef(page);
-  const [selectedArtifactId, setSelectedArtifactId] = useState<string | undefined>(undefined);
+  const [selectedArtifactId, setSelectedArtifactId] = useState<
+    string | undefined
+  >(undefined);
 
   useEffect(() => {
     if (!detail) {
@@ -483,7 +831,9 @@ function ChildSessionWorkspacePage({
     }
     setDetailLoadState("succeeded");
     setDetailLoadError(undefined);
-    setSelectedTurnRunId((current) => current ?? snapshot?.runId ?? detail.turns.at(-1)?.runId);
+    setSelectedTurnRunId(
+      (current) => current ?? snapshot?.runId ?? detail.turns.at(-1)?.runId,
+    );
   }, [detail, snapshot?.runId]);
 
   useEffect(() => {
@@ -509,47 +859,67 @@ function ChildSessionWorkspacePage({
       return;
     }
     let cancelled = false;
-    void runtimeClient.getRunState(selectedTurnRunId, {
-      priority: "background",
-      tag: "child-session-turn",
-    }).then((nextSnapshot) => {
-      if (cancelled) {
-        return;
-      }
-      setTurnSnapshotsByRunId((current) => ({
-        ...current,
-        [selectedTurnRunId]: nextSnapshot,
-      }));
-    }).catch(() => undefined);
+    void runtimeClient
+      .getRunState(selectedTurnRunId, {
+        priority: "background",
+        tag: "child-session-turn",
+      })
+      .then((nextSnapshot) => {
+        if (cancelled) {
+          return;
+        }
+        setTurnSnapshotsByRunId((current) => ({
+          ...current,
+          [selectedTurnRunId]: nextSnapshot,
+        }));
+      })
+      .catch(() => undefined);
     return () => {
       cancelled = true;
     };
-  }, [detail, effectiveSnapshot?.runId, runtimeClient, selectedTurnRunId, turnSnapshotsByRunId]);
+  }, [
+    detail,
+    effectiveSnapshot?.runId,
+    runtimeClient,
+    selectedTurnRunId,
+    turnSnapshotsByRunId,
+  ]);
 
   useEffect(() => {
-    if (page.childBacking !== "session" || detail || detailLoadState === "failed") {
+    if (
+      page.childBacking !== "session" ||
+      detail ||
+      detailLoadState === "failed"
+    ) {
       return;
     }
     let cancelled = false;
     const maybeSessionPromise = runtimeClient.getSession(page.backingSessionId);
-    if (!maybeSessionPromise || typeof maybeSessionPromise.then !== "function") {
+    if (
+      !maybeSessionPromise ||
+      typeof maybeSessionPromise.then !== "function"
+    ) {
       setDetailLoadState("failed");
       setDetailLoadError("无法加载独立子会话");
       return;
     }
     setDetailLoadState("loading");
     setDetailLoadError(undefined);
-    void maybeSessionPromise.then((nextDetail) => {
-      if (!cancelled) {
-        onCacheSessionDetail(nextDetail);
-        setDetailLoadState("succeeded");
-      }
-    }).catch((error) => {
-      if (!cancelled) {
-        setDetailLoadState("failed");
-        setDetailLoadError(error instanceof Error ? error.message : "无法加载独立子会话");
-      }
-    });
+    void maybeSessionPromise
+      .then((nextDetail) => {
+        if (!cancelled) {
+          onCacheSessionDetail(nextDetail);
+          setDetailLoadState("succeeded");
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setDetailLoadState("failed");
+          setDetailLoadError(
+            error instanceof Error ? error.message : "无法加载独立子会话",
+          );
+        }
+      });
     return () => {
       cancelled = true;
     };
@@ -603,27 +973,46 @@ function ChildSessionWorkspacePage({
 
   const sessionDetail = detail;
   const latestTurn = sessionDetail.turns.at(-1);
-  const status = effectiveSnapshot?.status ?? latestTurn?.status ?? sessionDetail.session.status;
-  const updatedAt = effectiveSnapshot?.updatedAt ?? sessionDetail.session.updatedAt;
+  const status =
+    effectiveSnapshot?.status ??
+    latestTurn?.status ??
+    sessionDetail.session.status;
+  const updatedAt =
+    effectiveSnapshot?.updatedAt ?? sessionDetail.session.updatedAt;
   const effectiveTurnSnapshots = {
-    ...(sessionDetail.latestSnapshot ? { [sessionDetail.latestSnapshot.runId]: sessionDetail.latestSnapshot } : {}),
-    ...(effectiveSnapshot ? { [effectiveSnapshot.runId]: effectiveSnapshot } : {}),
+    ...(sessionDetail.latestSnapshot
+      ? { [sessionDetail.latestSnapshot.runId]: sessionDetail.latestSnapshot }
+      : {}),
+    ...(effectiveSnapshot
+      ? { [effectiveSnapshot.runId]: effectiveSnapshot }
+      : {}),
     ...turnSnapshotsByRunId,
   };
-  const selectedTurn = sessionDetail.turns.find((turn) => turn.runId === selectedTurnRunId) ?? latestTurn;
-  const selectedTurnSnapshot = selectedTurn?.runId ? effectiveTurnSnapshots[selectedTurn.runId] : undefined;
-  const childMessages = adaptChatMessages(sessionDetail.transcript, effectiveTurnSnapshots);
+  const selectedTurn =
+    sessionDetail.turns.find((turn) => turn.runId === selectedTurnRunId) ??
+    latestTurn;
+  const selectedTurnSnapshot = selectedTurn?.runId
+    ? effectiveTurnSnapshots[selectedTurn.runId]
+    : undefined;
+  const childMessages = adaptChatMessages(
+    sessionDetail.transcript,
+    effectiveTurnSnapshots,
+  );
   const selectedAssistantMessage = selectedTurn
-    ? childMessages.find((message) =>
-      message.role === "assistant" && (message.metadata?.runId ?? message.turn?.runId) === selectedTurn.runId,
-    )
+    ? childMessages.find(
+        (message) =>
+          message.role === "assistant" &&
+          (message.metadata?.runId ?? message.turn?.runId) ===
+            selectedTurn.runId,
+      )
     : undefined;
   const selectedAssistantTurn = selectedAssistantMessage?.turn;
   const selectedTimelineItems = selectedAssistantTurn?.timelineItems ?? [];
   const selectedAgentMessages = selectedAssistantTurn?.agentMessages ?? [];
   const selectedArtifacts = selectedTurnSnapshot?.artifacts ?? [];
   const effectiveSelectedArtifactId =
-    selectedArtifactId && selectedArtifacts.some((artifact) => artifact.id === selectedArtifactId)
+    selectedArtifactId &&
+    selectedArtifacts.some((artifact) => artifact.id === selectedArtifactId)
       ? selectedArtifactId
       : selectedArtifacts[0]?.id;
 
@@ -631,7 +1020,9 @@ function ChildSessionWorkspacePage({
     if (!effectiveSelectedArtifactId) {
       return undefined;
     }
-    const artifact = selectedArtifacts.find((entry) => entry.id === effectiveSelectedArtifactId);
+    const artifact = selectedArtifacts.find(
+      (entry) => entry.id === effectiveSelectedArtifactId,
+    );
     if (!artifact) {
       return undefined;
     }
@@ -642,7 +1033,7 @@ function ChildSessionWorkspacePage({
     for (const turn of sessionDetail.turns) {
       const count =
         turn.runId && effectiveTurnSnapshots[turn.runId]
-          ? effectiveTurnSnapshots[turn.runId]?.artifacts.length ?? 0
+          ? (effectiveTurnSnapshots[turn.runId]?.artifacts.length ?? 0)
           : turn.artifactCount;
       counts.set(turn.runId, count);
     }
@@ -721,35 +1112,38 @@ function ChildSessionWorkspacePage({
       <div className="min-h-0 flex-1 overflow-y-auto p-3">
         {activeSection === "conversation" ? (
           sessionDetail.transcript.length > 0 ? (
-          <Conversation className="min-h-0">
-            <ConversationContent className="gap-4 p-0">
-              {sessionDetail.transcript.map((message) => (
-                <div key={message.id} className="space-y-1">
-                  {message.role === "assistant" && message.agentLabel ? (
-                    <p className="pl-1 text-xs font-medium text-muted-foreground">
-                      {message.agentLabel}
+            <Conversation className="min-h-0">
+              <ConversationContent className="gap-4 p-0">
+                {sessionDetail.transcript.map((message) => (
+                  <div key={message.id} className="space-y-1">
+                    {message.role === "assistant" && message.agentLabel ? (
+                      <p className="pl-1 text-xs font-medium text-muted-foreground">
+                        {message.agentLabel}
+                      </p>
+                    ) : null}
+                    <MessageBubble
+                      role={message.role}
+                      content=""
+                      inlineContent={
+                        message.role === "assistant" ? (
+                          <MarkdownContent
+                            content={message.content}
+                            className="text-sm leading-6"
+                          />
+                        ) : (
+                          <span className="block whitespace-pre-wrap break-words leading-5 [overflow-wrap:anywhere]">
+                            {message.content}
+                          </span>
+                        )
+                      }
+                    />
+                    <p className="pl-1 text-[11px] text-muted-foreground">
+                      {formatTimestamp(message.createdAt)}
                     </p>
-                  ) : null}
-                  <MessageBubble
-                    role={message.role}
-                    content=""
-                    inlineContent={
-                      message.role === "assistant" ? (
-                        <MarkdownContent content={message.content} className="text-sm leading-6" />
-                      ) : (
-                        <span className="block whitespace-pre-wrap break-words leading-5 [overflow-wrap:anywhere]">
-                          {message.content}
-                        </span>
-                      )
-                    }
-                  />
-                  <p className="pl-1 text-[11px] text-muted-foreground">
-                    {formatTimestamp(message.createdAt)}
-                  </p>
-                </div>
-              ))}
-            </ConversationContent>
-          </Conversation>
+                  </div>
+                ))}
+              </ConversationContent>
+            </Conversation>
           ) : (
             <div className="rounded-xl border border-border bg-card/70 p-4 text-sm text-muted-foreground">
               这个子代理会话还没有可展示的 transcript。
@@ -785,10 +1179,11 @@ function ChildSessionWorkspacePage({
                           Turn {selectedTurn.turnIndex}
                         </p>
                         <p className="mt-1 text-xs text-muted-foreground">
-                          {selectedTurn.status} · {formatTimestamp(selectedTurn.updatedAt)}
+                          {selectedTurn.status} ·{" "}
+                          {formatTimestamp(selectedTurn.updatedAt)}
                         </p>
                       </div>
-                  {selectedArtifacts.length > 0 ? (
+                      {selectedArtifacts.length > 0 ? (
                         <button
                           type="button"
                           onClick={() => openSelectedTurnArtifacts()}
@@ -865,7 +1260,9 @@ function ChildSessionWorkspacePage({
             <div className="space-y-3 min-h-0">
               <div className="rounded-xl border border-border bg-card/70 p-4">
                 <p className="text-sm font-medium text-foreground">
-                  {selectedTurn ? `Turn ${selectedTurn.turnIndex} artifacts` : "Artifacts"}
+                  {selectedTurn
+                    ? `Turn ${selectedTurn.turnIndex} artifacts`
+                    : "Artifacts"}
                 </p>
                 <p className="mt-1 text-xs text-muted-foreground">
                   {selectedArtifacts.length} items
@@ -909,10 +1306,14 @@ function ChildSessionWorkspacePage({
                       {selectedArtifactRecord.label}
                     </p>
                     <p className="mt-1 truncate text-[11px] text-muted-foreground">
-                      {selectedArtifactRecord.kind} · {selectedArtifactRecord.mimeType}
+                      {selectedArtifactRecord.kind} ·{" "}
+                      {selectedArtifactRecord.mimeType}
                     </p>
                   </div>
-                  <div className="min-h-0 flex-1 overflow-auto" data-testid="child-session-artifact-preview">
+                  <div
+                    className="min-h-0 flex-1 overflow-auto"
+                    data-testid="child-session-artifact-preview"
+                  >
                     <ArtifactPreviewContent artifact={selectedArtifactRecord} />
                   </div>
                 </div>
@@ -954,9 +1355,10 @@ function ReplayChildSessionWorkspacePage({
     replayChildRef?: RightWorkspaceReplayChildRef;
   }) => void;
 }) {
-  const replayRef = page.childBacking === "replay"
-    ? page.replayChildRef
-    : page.fallbackReplayChildRef;
+  const replayRef =
+    page.childBacking === "replay"
+      ? page.replayChildRef
+      : page.fallbackReplayChildRef;
   const assistantView = derivePresentedAssistantTurnFromSnapshot(snapshot);
   const turn = assistantView?.turn;
   const replayContent =
@@ -965,9 +1367,13 @@ function ReplayChildSessionWorkspacePage({
     replayRef?.summary?.trim() ||
     "";
   const artifacts = snapshot.artifacts ?? [];
-  const [selectedArtifactId, setSelectedArtifactId] = useState<string | undefined>(artifacts[0]?.id);
+  const [selectedArtifactId, setSelectedArtifactId] = useState<
+    string | undefined
+  >(artifacts[0]?.id);
   const selectedArtifact = useMemo(() => {
-    const artifact = artifacts.find((entry) => entry.id === selectedArtifactId) ?? artifacts[0];
+    const artifact =
+      artifacts.find((entry) => entry.id === selectedArtifactId) ??
+      artifacts[0];
     return artifact ? toArtifactRecordForWorkspace(artifact) : undefined;
   }, [artifacts, selectedArtifactId]);
 
@@ -1051,7 +1457,10 @@ function ReplayChildSessionWorkspacePage({
                   {artifacts.length} items
                 </p>
               </div>
-              <div className="min-h-0 flex-1 overflow-auto p-3" data-testid="replay-child-artifact-preview">
+              <div
+                className="min-h-0 flex-1 overflow-auto p-3"
+                data-testid="replay-child-artifact-preview"
+              >
                 {selectedArtifact ? (
                   <ArtifactPreviewContent artifact={selectedArtifact} />
                 ) : (
@@ -1076,41 +1485,51 @@ function deriveChildReplaySnapshot(
   if (direct?.runId === page.childId) {
     return direct;
   }
-  const replayParentRunId = page.childBacking === "replay"
-    ? page.replayParentRunId
-    : page.fallbackReplayParentRunId;
-  const replayChildRef = page.childBacking === "replay"
-    ? page.replayChildRef
-    : page.fallbackReplayChildRef;
-  if (!replayParentRunId || !replayChildRef?.replayRef || replayChildRef.replayRef.kind !== "event_range") {
+  const replayParentRunId =
+    page.childBacking === "replay"
+      ? page.replayParentRunId
+      : page.fallbackReplayParentRunId;
+  const replayChildRef =
+    page.childBacking === "replay"
+      ? page.replayChildRef
+      : page.fallbackReplayChildRef;
+  if (
+    !replayParentRunId ||
+    !replayChildRef?.replayRef ||
+    replayChildRef.replayRef.kind !== "event_range"
+  ) {
     return undefined;
   }
   const parentSnapshot = turnSnapshots[replayParentRunId];
   if (!parentSnapshot || parentSnapshot.runId !== replayParentRunId) {
     return undefined;
   }
-  const fromSeq = typeof replayChildRef.replayRef.fromSeq === "number"
-    ? replayChildRef.replayRef.fromSeq
-    : 0;
-  const toSeq = typeof replayChildRef.replayRef.toSeq === "number"
-    ? replayChildRef.replayRef.toSeq
-    : Number.MAX_SAFE_INTEGER;
+  const fromSeq =
+    typeof replayChildRef.replayRef.fromSeq === "number"
+      ? replayChildRef.replayRef.fromSeq
+      : 0;
+  const toSeq =
+    typeof replayChildRef.replayRef.toSeq === "number"
+      ? replayChildRef.replayRef.toSeq
+      : Number.MAX_SAFE_INTEGER;
   const childEvents = parentSnapshot.events
-    .filter((event) =>
-      event.runId === parentSnapshot.runId &&
-      event.seq >= fromSeq &&
-      event.seq <= toSeq &&
-      (event.agentId === replayChildRef.agentId ||
-        event.nodeId === replayChildRef.agentId)
+    .filter(
+      (event) =>
+        event.runId === parentSnapshot.runId &&
+        event.seq >= fromSeq &&
+        event.seq <= toSeq &&
+        (event.agentId === replayChildRef.agentId ||
+          event.nodeId === replayChildRef.agentId),
     )
     .map((event) => ({
       ...event,
       runId: page.childId,
     }));
   const childAgentMessages = parentSnapshot.agentMessages
-    .filter((message) =>
-      message.fromAgentId === replayChildRef.agentId ||
-      message.toAgentIds.includes(replayChildRef.agentId),
+    .filter(
+      (message) =>
+        message.fromAgentId === replayChildRef.agentId ||
+        message.toAgentIds.includes(replayChildRef.agentId),
     )
     .map((message) => ({
       ...message,
@@ -1122,7 +1541,13 @@ function deriveChildReplaySnapshot(
     ...replayChildRef.artifactIds,
     ...childAgentMessages.flatMap((message) => message.artifactIds),
   ]);
-  if (childEvents.length === 0 && childAgentMessages.length === 0 && artifactIds.size === 0 && !replayChildRef.lastMessage?.trim() && !replayChildRef.summary?.trim()) {
+  if (
+    childEvents.length === 0 &&
+    childAgentMessages.length === 0 &&
+    artifactIds.size === 0 &&
+    !replayChildRef.lastMessage?.trim() &&
+    !replayChildRef.summary?.trim()
+  ) {
     return undefined;
   }
   return {
@@ -1134,13 +1559,20 @@ function deriveChildReplaySnapshot(
     agentMessages: childAgentMessages,
     childSessions: [],
     parentCoordination: undefined,
-    artifacts: parentSnapshot.artifacts.filter((artifact) => artifactIds.has(artifact.id)),
+    artifacts: parentSnapshot.artifacts.filter((artifact) =>
+      artifactIds.has(artifact.id),
+    ),
     activeAgents: [replayChildRef.agentId],
     pendingClarifications: [],
     pendingApprovals: [],
-    output: replayChildRef.lastMessage?.trim() || replayChildRef.summary?.trim()
-      ? { text: replayChildRef.lastMessage?.trim() || replayChildRef.summary?.trim() }
-      : undefined,
+    output:
+      replayChildRef.lastMessage?.trim() || replayChildRef.summary?.trim()
+        ? {
+            text:
+              replayChildRef.lastMessage?.trim() ||
+              replayChildRef.summary?.trim(),
+          }
+        : undefined,
     updatedAt: replayChildRef.updatedAt,
   };
 }
@@ -1169,16 +1601,21 @@ function normalizeReplayChildStatus(
   }
 }
 
-function isChildLikelyStillRunning(child?: RightWorkspaceReplayChildRef): boolean {
+function isChildLikelyStillRunning(
+  child?: RightWorkspaceReplayChildRef,
+): boolean {
   if (!child) {
     return false;
   }
-  return child.status === "queued" || child.status === "running" ||
+  return (
+    child.status === "queued" ||
+    child.status === "running" ||
     child.lifecyclePhase === "queued" ||
     child.lifecyclePhase === "running" ||
     child.lifecyclePhase === "produced_output" ||
     child.lifecyclePhase === "awaiting_pickup" ||
-    child.lifecyclePhase === "stalled";
+    child.lifecyclePhase === "stalled"
+  );
 }
 
 function toArtifactRecordForWorkspace(artifact: {
@@ -1223,11 +1660,12 @@ function ChildSessionTurnDrilldown({
       ),
     [timelineItems],
   );
-  const [selectedStatusGroupId, setSelectedStatusGroupId] = useState<string | undefined>(undefined);
-  const effectiveSelectedStatusGroup =
-    selectedStatusGroupId
-      ? statusGroups.find((item) => item.id === selectedStatusGroupId)
-      : statusGroups[0];
+  const [selectedStatusGroupId, setSelectedStatusGroupId] = useState<
+    string | undefined
+  >(undefined);
+  const effectiveSelectedStatusGroup = selectedStatusGroupId
+    ? statusGroups.find((item) => item.id === selectedStatusGroupId)
+    : statusGroups[0];
 
   useEffect(() => {
     if (statusGroups.length === 0) {
@@ -1246,13 +1684,20 @@ function ChildSessionTurnDrilldown({
       <div className="grid gap-3 xl:grid-cols-[minmax(0,1.2fr)_minmax(0,0.95fr)]">
         <div className="rounded-xl border border-border bg-card/70 p-4">
           <div className="flex items-center justify-between gap-3">
-            <p className="text-sm font-medium text-foreground">Timeline drilldown</p>
-            <span className="text-[11px] text-muted-foreground">{timelineItems.length} items</span>
+            <p className="text-sm font-medium text-foreground">
+              Timeline drilldown
+            </p>
+            <span className="text-[11px] text-muted-foreground">
+              {timelineItems.length} items
+            </span>
           </div>
           {timelineItems.length > 0 ? (
             <div className="mt-3 space-y-2">
               {timelineItems.map((item) => (
-                <div key={item.id} className="rounded-lg border border-border/70 bg-background/70 p-3">
+                <div
+                  key={item.id}
+                  className="rounded-lg border border-border/70 bg-background/70 p-3"
+                >
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
@@ -1305,17 +1750,27 @@ function ChildSessionTurnDrilldown({
         </div>
         <div className="rounded-xl border border-border bg-card/70 p-4">
           <div className="flex items-center justify-between gap-3">
-            <p className="text-sm font-medium text-foreground">Agent messages</p>
-            <span className="text-[11px] text-muted-foreground">{agentMessages.length} items</span>
+            <p className="text-sm font-medium text-foreground">
+              Agent messages
+            </p>
+            <span className="text-[11px] text-muted-foreground">
+              {agentMessages.length} items
+            </span>
           </div>
           {agentMessages.length > 0 ? (
             <div className="mt-3 space-y-2">
               {agentMessages.map((message) => (
-                <div key={message.id} className="rounded-lg border border-border/70 bg-background/70 p-3">
+                <div
+                  key={message.id}
+                  className="rounded-lg border border-border/70 bg-background/70 p-3"
+                >
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <p className="text-xs font-medium text-foreground">
-                        {[message.fromAgentLabel, message.toAgentLabels.join(", ") || "broadcast"].join(" -> ")}
+                        {[
+                          message.fromAgentLabel,
+                          message.toAgentLabels.join(", ") || "broadcast",
+                        ].join(" -> ")}
                       </p>
                       <p className="mt-1 text-[11px] uppercase tracking-wide text-muted-foreground">
                         {message.kind} · {message.status}
@@ -1326,7 +1781,10 @@ function ChildSessionTurnDrilldown({
                     </span>
                   </div>
                   <div className="mt-2 text-sm leading-6 text-foreground">
-                    <MarkdownContent content={message.content} className="text-sm leading-6" />
+                    <MarkdownContent
+                      content={message.content}
+                      className="text-sm leading-6"
+                    />
                   </div>
                   {message.artifactIds.length > 0 ? (
                     <div className="mt-3 flex flex-wrap gap-2">
@@ -1370,11 +1828,16 @@ function ChildSessionStatusGroupDrilldown({
   selectedStatusGroup?: Extract<TurnTimelineItem, { kind: "status_group" }>;
 }) {
   return (
-    <div className="grid gap-3 xl:grid-cols-[16rem_minmax(0,1fr)]" data-testid="child-session-status-group-drilldown">
+    <div
+      className="grid gap-3 xl:grid-cols-[16rem_minmax(0,1fr)]"
+      data-testid="child-session-status-group-drilldown"
+    >
       <div className="rounded-xl border border-border bg-card/70 p-4">
         <div className="flex items-center justify-between gap-3">
           <p className="text-sm font-medium text-foreground">Status groups</p>
-          <span className="text-[11px] text-muted-foreground">{statusGroups.length} groups</span>
+          <span className="text-[11px] text-muted-foreground">
+            {statusGroups.length} groups
+          </span>
         </div>
         <div className="mt-3 space-y-2">
           {statusGroups.map((group) => (
@@ -1387,7 +1850,9 @@ function ChildSessionStatusGroupDrilldown({
                   : "border-border/70 bg-background/70",
               )}
             >
-              <p className="text-xs font-medium text-foreground">{group.summary}</p>
+              <p className="text-xs font-medium text-foreground">
+                {group.summary}
+              </p>
               <p className="mt-1 text-[11px] text-muted-foreground">
                 {group.status} · {group.steps.length} steps · {group.timestamp}
               </p>
@@ -1405,7 +1870,9 @@ function ChildSessionStatusGroupDrilldown({
         {selectedStatusGroup ? (
           <div className="mt-3 space-y-3">
             <div className="rounded-xl border border-border/70 bg-background/70 p-4">
-              <p className="text-sm font-medium text-foreground">{selectedStatusGroup.summary}</p>
+              <p className="text-sm font-medium text-foreground">
+                {selectedStatusGroup.summary}
+              </p>
               <p className="mt-1 text-xs text-muted-foreground">
                 {selectedStatusGroup.status} · {selectedStatusGroup.timestamp}
               </p>
@@ -1417,7 +1884,10 @@ function ChildSessionStatusGroupDrilldown({
             </div>
             <div className="space-y-2">
               {selectedStatusGroup.steps.map((step, index) => (
-                <ChildSessionProcessStepCard key={`${selectedStatusGroup.id}:${step.id}:${step.timestamp}:${index}`} step={step} />
+                <ChildSessionProcessStepCard
+                  key={`${selectedStatusGroup.id}:${step.id}:${step.timestamp}:${index}`}
+                  step={step}
+                />
               ))}
             </div>
           </div>
@@ -1557,7 +2027,9 @@ function FilePreviewPanel({
   title: string;
   runtimeClient: RuntimeClient;
 }) {
-  const [result, setResult] = useState<OraProjectFileReadResult | undefined>(undefined);
+  const [result, setResult] = useState<OraProjectFileReadResult | undefined>(
+    undefined,
+  );
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | undefined>(undefined);
 
@@ -1565,18 +2037,23 @@ function FilePreviewPanel({
     let cancelled = false;
     setLoading(true);
     setError(undefined);
-    runtimeClient.readProjectFile(projectId, filePath).then((data) => {
-      if (!cancelled) {
-        setResult(data);
-        setLoading(false);
-      }
-    }).catch((err) => {
-      if (!cancelled) {
-        setError(err instanceof Error ? err.message : "无法读取文件");
-        setLoading(false);
-      }
-    });
-    return () => { cancelled = true; };
+    runtimeClient
+      .readProjectFile(projectId, filePath)
+      .then((data) => {
+        if (!cancelled) {
+          setResult(data);
+          setLoading(false);
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : "无法读取文件");
+          setLoading(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [projectId, filePath, runtimeClient]);
 
   if (loading) {
@@ -1608,15 +2085,23 @@ function FilePreviewPanel({
       <div className="shrink-0 border-b border-border/60 px-4 py-2.5">
         <div className="flex items-center justify-between gap-3">
           <div className="min-w-0">
-            <p className="truncate text-sm font-medium text-foreground">{title}</p>
+            <p className="truncate text-sm font-medium text-foreground">
+              {title}
+            </p>
             <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
-              {filePath} · {mimeType} · {sizeBytes !== undefined ? `${(sizeBytes / 1024).toFixed(1)} KB` : ""}
+              {filePath} · {mimeType} ·{" "}
+              {sizeBytes !== undefined
+                ? `${(sizeBytes / 1024).toFixed(1)} KB`
+                : ""}
               {modifiedAt ? ` · ${new Date(modifiedAt).toLocaleString()}` : ""}
             </p>
           </div>
         </div>
       </div>
-      <div className="min-h-0 flex-1 overflow-auto p-4" data-testid="file-preview-content">
+      <div
+        className="min-h-0 flex-1 overflow-auto p-4"
+        data-testid="file-preview-content"
+      >
         {previewKind === "text" || previewKind === "json" ? (
           typeof payload === "string" ? (
             <MarkdownContent
@@ -1635,11 +2120,15 @@ function FilePreviewPanel({
           </div>
         ) : previewKind === "binary" ? (
           <div className="flex h-full items-center justify-center">
-            <p className="text-sm text-muted-foreground">不支持预览该类型的文件</p>
+            <p className="text-sm text-muted-foreground">
+              不支持预览该类型的文件
+            </p>
           </div>
         ) : (
           <div className="flex h-full items-center justify-center">
-            <p className="text-sm text-muted-foreground">不支持预览该类型的文件</p>
+            <p className="text-sm text-muted-foreground">
+              不支持预览该类型的文件
+            </p>
           </div>
         )}
       </div>

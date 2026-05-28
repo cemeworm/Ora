@@ -3,7 +3,7 @@
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { RightWorkspacePane } from "./RightWorkspacePane";
+import { RightWorkspacePane, normalizeBrowserUrl } from "./RightWorkspacePane";
 import type {
   RightWorkspaceChildSessionPage,
   RightWorkspacePage,
@@ -121,6 +121,18 @@ function page(overrides: Partial<RightWorkspacePage> = {}): RightWorkspacePage {
       title: overrides.title ?? "Documents",
       sessionId: overrides.sessionId ?? "session-parent",
       projectId: overrides.projectId ?? "project-1",
+    };
+  }
+  if (overrides.kind === "browser") {
+    return {
+      id: overrides.id ?? "browser:1",
+      kind: "browser",
+      title: overrides.title ?? "浏览器",
+      sessionId: overrides.sessionId ?? "session-parent",
+      url: (overrides as Extract<RightWorkspacePage, { kind: "browser" }>).url,
+      history: (overrides as Extract<RightWorkspacePage, { kind: "browser" }>).history,
+      historyIndex: (overrides as Extract<RightWorkspacePage, { kind: "browser" }>).historyIndex,
+      isLoading: (overrides as Extract<RightWorkspacePage, { kind: "browser" }>).isLoading,
     };
   }
   if (overrides.kind === "file_preview") {
@@ -460,6 +472,7 @@ describe("RightWorkspacePane", () => {
     expect(view.container.textContent).not.toContain("先从这里打开轨迹");
     expect(view.container.textContent).toContain("轨迹");
     expect(view.container.textContent).toContain("文件");
+    expect(view.container.textContent).toContain("浏览器");
 
     const trailsButton = Array.from(view.container.querySelectorAll("button")).find((button) =>
       button.textContent?.includes("轨迹"),
@@ -476,6 +489,129 @@ describe("RightWorkspacePane", () => {
         title: "轨迹",
         sessionId: "session-parent",
         targetRunId: "run-parent",
+      }),
+    );
+
+    view.cleanup();
+  });
+
+  it("opens a browser page from the empty workspace picker", () => {
+    const view = renderPane({
+      workspace: workspace({
+        pages: [],
+        selectedPageId: undefined,
+      }),
+    });
+
+    const browserButton = Array.from(view.container.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("浏览器"),
+    );
+    expect(browserButton).toBeTruthy();
+
+    act(() => {
+      browserButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(view.openWorkspacePage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "browser",
+        title: "浏览器",
+        sessionId: "session-parent",
+      }),
+    );
+
+    view.cleanup();
+  });
+
+  it("normalizes browser URLs for domain and localhost inputs", () => {
+    expect(normalizeBrowserUrl("example.com")).toBe("https://example.com/");
+    expect(normalizeBrowserUrl("localhost:3000")).toBe("http://localhost:3000/");
+    expect(normalizeBrowserUrl("https://example.com/docs")).toBe("https://example.com/docs");
+    expect(normalizeBrowserUrl("file:///tmp/test.html")).toBeUndefined();
+  });
+
+  it("shows the non-tauri browser fallback shell for browser pages", () => {
+    const view = renderPane({
+      workspace: workspace({
+        pages: [page({ kind: "browser", id: "browser:1", title: "example.com", url: "https://example.com/" })],
+        selectedPageId: "browser:1",
+      }),
+    });
+
+    const fallback = view.container.querySelector('[data-testid="browser-workspace-fallback"]');
+    expect(fallback).toBeTruthy();
+    expect(fallback?.textContent).toContain("当前环境不支持原生内置浏览器");
+    expect(fallback?.textContent).toContain("https://example.com/");
+
+    view.cleanup();
+  });
+
+  it("shows browser history controls and disables them when there is no history to traverse", () => {
+    const view = renderPane({
+      workspace: workspace({
+        pages: [page({ kind: "browser", id: "browser:1", title: "example.com", url: "https://example.com/" })],
+        selectedPageId: "browser:1",
+      }),
+    });
+
+    const backButton = view.container.querySelector('button[aria-label="后退"]') as HTMLButtonElement | null;
+    const forwardButton = view.container.querySelector('button[aria-label="前进"]') as HTMLButtonElement | null;
+    expect(backButton).toBeTruthy();
+    expect(forwardButton).toBeTruthy();
+    expect(backButton?.disabled).toBe(true);
+    expect(forwardButton?.disabled).toBe(true);
+
+    view.cleanup();
+  });
+
+  it("shows a loading icon for browser pages while the native webview is being created", () => {
+    const view = renderPane({
+      workspace: workspace({
+        pages: [page({
+          kind: "browser",
+          id: "browser:1",
+          title: "baidu.com",
+          url: "https://baidu.com/",
+          isLoading: true,
+        })],
+        selectedPageId: "browser:1",
+      }),
+    });
+
+    const icon = view.container.querySelector('svg.animate-spin circle[stroke-dasharray="18 20"]');
+    expect(icon).toBeTruthy();
+
+    view.cleanup();
+  });
+
+  it("navigates browser history with the back and forward buttons", () => {
+    const view = renderPane({
+      workspace: workspace({
+        pages: [page({
+          kind: "browser",
+          id: "browser:1",
+          title: "beta.test",
+          url: "https://beta.test/",
+          history: ["https://alpha.test/", "https://beta.test/"],
+          historyIndex: 1,
+        })],
+        selectedPageId: "browser:1",
+      }),
+    });
+
+    const backButton = view.container.querySelector('button[aria-label="后退"]');
+    expect(backButton).toBeTruthy();
+
+    act(() => {
+      backButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(view.openWorkspacePage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "browser",
+        url: "https://alpha.test/",
+        history: ["https://alpha.test/", "https://beta.test/"],
+        historyIndex: 0,
       }),
     );
 

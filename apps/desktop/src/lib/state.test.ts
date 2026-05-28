@@ -2977,6 +2977,55 @@ describe("desktop workbench state", () => {
     expect(hydrated.isLoading).toBe(true);
   });
 
+  it("keeps a pending run alive across slim hydrate after the handle is attached", () => {
+    const sessionId = "session-pending-slim";
+    const runId = "run-pending-slim";
+    const prompt = "解释一下这个项目。";
+    const createdAt = 1_714_000_000_100;
+    const session = sessionSummary(sessionId);
+    const started = workbenchReducer({
+      ...initialWorkbenchState,
+      selectedSessionId: sessionId,
+      activeSessionDetail: {
+        session,
+        turns: [],
+        transcript: [],
+        latestSnapshot: undefined,
+      },
+    }, {
+      type: "BEGIN_RUN_REQUEST",
+      sessionId,
+      prompt,
+      createdAt,
+      skillIds: [],
+    });
+    const attached = workbenchReducer(started, {
+      type: "ATTACH_PENDING_RUN_HANDLE",
+      sessionId,
+      prompt,
+      runId,
+    });
+    const hydrated = workbenchReducer(attached, {
+      type: "HYDRATE_SESSION",
+      projects: [],
+      sessions: [session],
+      detail: {
+        session,
+        turns: [],
+        transcript: [],
+        latestSnapshot: undefined,
+      },
+    });
+
+    expect(getPendingRunState(hydrated.runLifecycle)).toMatchObject({
+      sessionId,
+      runId,
+      prompt,
+      createdAt,
+    });
+    expect(hydrated.isLoading).toBe(true);
+  });
+
   it("clears a normal pending run once hydrated transcript can render the user message", () => {
     const sessionId = "session-pending-materialized";
     const runId = "run-materialized";
@@ -6587,6 +6636,78 @@ describe("preservedSettledSnapshots limit enforcement", () => {
     });
 
 describe("right workspace page management", () => {
+  it("stores browser page metadata when a browser page is opened", () => {
+    const state: WorkbenchState = {
+      ...initialWorkbenchState,
+      selectedSessionId: "session-test",
+    };
+
+    const next = workbenchReducer(state, {
+      type: "OPEN_RIGHT_WORKSPACE_PAGE",
+      page: {
+        id: "browser:1",
+        kind: "browser",
+        title: "example.com",
+        sessionId: "session-test",
+        url: "https://example.com",
+      },
+    });
+
+    const ws = next.rightWorkspaceBySessionId["session-test"];
+    expect(ws.open).toBe(true);
+    expect(ws.selectedPageId).toBe("browser:1");
+    expect(ws.pages[0]).toMatchObject({
+      id: "browser:1",
+      kind: "browser",
+      title: "example.com",
+      url: "https://example.com",
+    });
+  });
+
+  it("stores browser history metadata when a browser page is updated", () => {
+    const state: WorkbenchState = {
+      ...initialWorkbenchState,
+      selectedSessionId: "session-test",
+      rightWorkspaceBySessionId: {
+        "session-test": {
+          open: true,
+          pages: [{
+            id: "browser:1",
+            kind: "browser",
+            title: "alpha.test",
+            sessionId: "session-test",
+            url: "https://alpha.test/",
+            history: ["https://alpha.test/"],
+            historyIndex: 0,
+          }],
+          selectedPageId: "browser:1",
+          width: 460,
+        },
+      },
+    };
+
+    const next = workbenchReducer(state, {
+      type: "OPEN_RIGHT_WORKSPACE_PAGE",
+      page: {
+        id: "browser:1",
+        kind: "browser",
+        title: "beta.test",
+        sessionId: "session-test",
+        url: "https://beta.test/",
+        history: ["https://alpha.test/", "https://beta.test/"],
+        historyIndex: 1,
+      },
+    });
+
+    const ws = next.rightWorkspaceBySessionId["session-test"];
+    expect(ws.pages[0]).toMatchObject({
+      id: "browser:1",
+      url: "https://beta.test/",
+      history: ["https://alpha.test/", "https://beta.test/"],
+      historyIndex: 1,
+    });
+  });
+
   it("preserves documents selection when file_preview page is opened", () => {
     const state: WorkbenchState = {
       ...initialWorkbenchState,
@@ -6646,6 +6767,49 @@ describe("right workspace page management", () => {
     const ws = next.rightWorkspaceBySessionId["session-test"];
     expect(ws.pages).toHaveLength(1);
     expect(ws.selectedPageId).toBe("docs:1");
+  });
+
+  it("keeps browser pages isolated per session", () => {
+    let state: WorkbenchState = {
+      ...initialWorkbenchState,
+      selectedSessionId: "session-a",
+    };
+
+    state = workbenchReducer(state, {
+      type: "OPEN_RIGHT_WORKSPACE_PAGE",
+      page: {
+        id: "browser:a:1",
+        kind: "browser",
+        title: "alpha.test",
+        sessionId: "session-a",
+        url: "https://alpha.test",
+      },
+    });
+
+    state = {
+      ...state,
+      selectedSessionId: "session-b",
+    };
+
+    const next = workbenchReducer(state, {
+      type: "OPEN_RIGHT_WORKSPACE_PAGE",
+      page: {
+        id: "browser:b:1",
+        kind: "browser",
+        title: "beta.test",
+        sessionId: "session-b",
+        url: "https://beta.test",
+      },
+    });
+
+    expect(next.rightWorkspaceBySessionId["session-a"]?.pages[0]).toMatchObject({
+      id: "browser:a:1",
+      url: "https://alpha.test",
+    });
+    expect(next.rightWorkspaceBySessionId["session-b"]?.pages[0]).toMatchObject({
+      id: "browser:b:1",
+      url: "https://beta.test",
+    });
   });
 });
 

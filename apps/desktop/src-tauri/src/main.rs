@@ -8,6 +8,10 @@ fn main() {
         .plugin(tauri_plugin_process::init())
         .manage(commands::sidecar::RuntimeFacade::default())
         .setup(|app| {
+            let app_data_dir = app.path().app_data_dir()?;
+            let instance_lock =
+                commands::instance_lock::DesktopInstanceLock::acquire(&app_data_dir)?;
+            app.manage(instance_lock);
             app.handle()
                 .plugin(tauri_plugin_updater::Builder::new().build())?;
             app.manage(commands::sidecar::RuntimeSidecarManager::new(app.handle().clone()));
@@ -26,6 +30,7 @@ fn main() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            commands::browser::round_browser_webview,
             commands::sidecar::desktop_build_info,
             commands::sidecar::runtime_sidecar_status,
             commands::sidecar::preview_sidecar_command,

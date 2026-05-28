@@ -287,11 +287,12 @@ export type RightWorkspacePageKind =
   | "home"
   | "trails"
   | "documents"
+  | "browser"
   | "artifact"
   | "child_session"
   | "file_preview";
 
-type RightWorkspaceStandardPageKind = Exclude<RightWorkspacePageKind, "child_session">;
+type RightWorkspaceStandardPageKind = Exclude<RightWorkspacePageKind, "child_session" | "browser">;
 
 interface RightWorkspacePageCommon {
   id: string;
@@ -305,6 +306,14 @@ interface RightWorkspacePageCommon {
 
 export interface RightWorkspaceBasePage extends RightWorkspacePageCommon {
   kind: RightWorkspaceStandardPageKind;
+}
+
+export interface RightWorkspaceBrowserPage extends RightWorkspacePageCommon {
+  kind: "browser";
+  url?: string;
+  history?: string[];
+  historyIndex?: number;
+  isLoading?: boolean;
 }
 
 export type RightWorkspaceReplayChildRef = {
@@ -349,6 +358,7 @@ export type RightWorkspaceChildSessionPage =
 
 export type RightWorkspacePage =
   | RightWorkspaceBasePage
+  | RightWorkspaceBrowserPage
   | RightWorkspaceChildSessionPage;
 
 export interface RightWorkspaceSessionState {
@@ -3918,7 +3928,37 @@ function pendingRunMatchesSnapshot(
   if (pendingRun.runId && snapshot.runId !== pendingRun.runId) {
     return false;
   }
+  if (pendingRun.runId) {
+    return true;
+  }
   return snapshot.input.prompt === pendingRun.prompt;
+}
+
+function detailContainsPendingRun(
+  pendingRun: PendingRunState | undefined,
+  detail: OraSessionDetail,
+): boolean {
+  if (!pendingRun || detail.session.sessionId !== pendingRun.sessionId) {
+    return false;
+  }
+  if (pendingRun.runId && detail.latestSnapshot?.runId === pendingRun.runId) {
+    return true;
+  }
+  if (pendingRun.runId && detail.turns.some((turn) => turn.runId === pendingRun.runId)) {
+    return true;
+  }
+  if (!pendingRun.runId) {
+    return detail.turns.some(
+      (turn) => turn.prompt === pendingRun.prompt &&
+        turn.status !== "queued" &&
+        turn.status !== "running",
+    ) || detail.transcript.some((message) =>
+      message.role === "user" &&
+      message.sessionId === pendingRun.sessionId &&
+      message.content === pendingRun.prompt,
+    );
+  }
+  return false;
 }
 
 function pendingRunHasTranscriptUser(
@@ -3949,6 +3989,9 @@ function shouldPreserveHydratingPendingRun(params: {
     return false;
   }
   if (pendingRunMatchesSnapshot(pendingRun, snapshot)) {
+    return false;
+  }
+  if (detailContainsPendingRun(pendingRun, detail)) {
     return false;
   }
   if (pendingRunHasTranscriptUser(pendingRun, detail)) {
