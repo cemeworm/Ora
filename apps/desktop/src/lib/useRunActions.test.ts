@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
 
-import { act, createElement, useEffect } from "react";
+import { act, createElement, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ACCEPTED_PLAN_USER_MESSAGE } from "@cemeworm/shared";
-import { initialWorkbenchState, type WorkbenchState } from "./state";
+import { ACCEPTED_PLAN_USER_MESSAGE, RunConfigSchema } from "@cemeworm/shared";
+import { initialWorkbenchState, type WorkbenchState, workbenchReducer } from "./state";
 import { USER_RESUMED_MESSAGE, type OraAcceptedPlanResumeHandle, type OraSessionDetail, type OraSessionSummary, type OraStateSnapshot } from "./runtimeClient";
 import {
   buildClarificationSubmissionPrompt,
@@ -25,6 +25,7 @@ import {
 const runtimeHarness = vi.hoisted(() => ({
   client: undefined as unknown as ReturnType<typeof createRuntimeClientMock> | undefined,
   state: undefined as WorkbenchState | undefined,
+  setState: undefined as unknown as ((updater: (current: WorkbenchState) => WorkbenchState) => void) | undefined,
   dispatch: vi.fn(),
   actions: undefined as ReturnType<typeof useRunActions>["actions"] | undefined,
 }));
@@ -79,6 +80,16 @@ function createRuntimeClientMock() {
       return currentSessionDetail;
     }),
     startStreamingRun: vi.fn(),
+    createSession: vi.fn(async (params?: { projectId?: string }) => ({
+      sessionId: params?.projectId ? `session-created:${params.projectId}` : "session-created",
+      title: "新建对话",
+      projectId: params?.projectId,
+      archivedAt: undefined,
+      status: undefined,
+      latestRunId: undefined,
+      attention: undefined,
+      updatedAt: 1_700_000_000_120,
+    })),
     acceptPlanDecisionAndResume: vi.fn(async (params: { sessionId: string; runId: string; decisionId: string; reason?: string }): Promise<OraAcceptedPlanResumeHandle> => {
       currentSnapshot = implementationSnapshot({
         runId: "run-implementation",
@@ -107,7 +118,11 @@ function createRuntimeClientMock() {
     getRunState: vi.fn(async () => currentSnapshot),
     listProjects: vi.fn(async () => []),
     listSessions: vi.fn(async () => [currentSessionDetail.session]),
-    getSession: vi.fn(async () => currentSessionDetail),
+    getSession: vi.fn(async (
+      _sessionId?: string,
+      _options?: { includeLatestSnapshot?: boolean },
+      _dispatchOptions?: { priority?: "background" | "interactive" | "urgent"; tag?: string },
+    ) => currentSessionDetail),
     getHealth: vi.fn(() => undefined),
   };
 }
@@ -363,11 +378,26 @@ function ActionsProbe({ onReady }: { onReady: (actions: ReturnType<typeof useRun
   return null;
 }
 
+function WorkbenchHarness({ children }: { children: React.ReactNode }) {
+  const [state, setState] = useState(() => runtimeHarness.state!);
+  runtimeHarness.state = state;
+  runtimeHarness.setState = setState;
+  return children;
+}
+
+function renderHarnessElement(element: ReturnType<typeof createElement>) {
+  return renderElement(createElement(WorkbenchHarness, { children: element }));
+}
+
 describe("desktop run actions", () => {
   beforeEach(() => {
     runtimeHarness.state = acceptedPlanWorkbenchState();
     runtimeHarness.client = createRuntimeClientMock();
     runtimeHarness.dispatch.mockReset();
+    runtimeHarness.setState = undefined;
+    runtimeHarness.dispatch.mockImplementation((action: Parameters<typeof workbenchReducer>[1]) => {
+      runtimeHarness.setState?.((current) => workbenchReducer(current, action));
+    });
   });
 
   afterEach(() => {
@@ -689,7 +719,7 @@ describe("desktop run actions", () => {
   });
 
   it("accepts a plan decision by starting a new implementation turn through the runtime-owned path", async () => {
-    const cleanup = renderElement(createElement(ActionsProbe, {
+    let cleanup = renderHarnessElement(createElement(ActionsProbe, {
       onReady: (actions) => {
         runtimeHarness.actions = actions;
       },
@@ -735,6 +765,522 @@ describe("desktop run actions", () => {
     cleanup();
   });
 
+  it("keeps a first submit on a new session alive when slim hydrate lags behind the run snapshot", async () => {
+    const createdAt = 1_714_000_000_100;
+    const sessionId = "session-new-first-run";
+    const runId = "run-new-first-run";
+    const prompt = "解释一下这个项目。";
+    runtimeHarness.state = {
+      ...initialWorkbenchState,
+      selectedSessionId: sessionId,
+      promptText: prompt,
+      sessions: [sessionSummary(sessionId)],
+      activeSessionDetail: {
+        session: sessionSummary(sessionId),
+        turns: [],
+        transcript: [],
+        latestSnapshot: undefined,
+      },
+      providerRegistry: {
+        providers: [{
+          id: "provider-1",
+          label: "Provider 1",
+          type: "local_smoke",
+          modelId: "provider-model",
+          capabilities: ["chat"],
+          headers: {},
+        }],
+      } as never,
+      selectedProviderId: "provider-1",
+      selectedPattern: "orchestrator_subagent",
+      selectedModeId: "single_agent",
+      selectedModeSelection: "manual",
+      modes: [{
+        id: "single_agent",
+        family: "single_agent",
+        label: "Single Agent",
+        summary: "Single agent mode",
+        capabilityFlags: {
+          toolIds: [],
+          skillIds: [],
+        },
+      }] as never,
+      patterns: [],
+    } as WorkbenchState;
+
+    const runningSnapshot = {
+      ...implementationSnapshot({ runId, sessionId, prompt }),
+      turnIndex: 1,
+      input: { prompt, createdAt, context: {} },
+      updatedAt: createdAt + 10,
+    } as OraStateSnapshot;
+    runtimeHarness.client!.startStreamingRun.mockImplementationOnce(async (_input, config) => {
+      RunConfigSchema.partial().parse(config);
+      return { runId } as never;
+    });
+    runtimeHarness.client!.getRunState.mockResolvedValueOnce(runningSnapshot);
+    runtimeHarness.client!.getSession.mockResolvedValueOnce({
+      session: sessionSummary(sessionId),
+      turns: [],
+      transcript: [],
+      latestSnapshot: undefined,
+    } as OraSessionDetail);
+    runtimeHarness.client!.listSessions.mockResolvedValueOnce([sessionSummary(sessionId)]);
+
+    let cleanup = renderHarnessElement(createElement(ActionsProbe, {
+      onReady: (actions) => {
+        runtimeHarness.actions = actions;
+      },
+    }));
+
+    await flushMicrotasks();
+    vi.useFakeTimers();
+    await act(async () => {
+      const resultPromise = runtimeHarness.actions!.startRun();
+      await vi.runAllTimersAsync();
+      await resultPromise;
+    });
+    vi.useRealTimers();
+
+    expect(runtimeHarness.client!.startStreamingRun).toHaveBeenCalled();
+    expect(runtimeHarness.client!.startStreamingRun.mock.calls[0]?.[1]).not.toHaveProperty("customAgentId");
+    expect(runtimeHarness.client!.getRunState).toHaveBeenCalledWith(runId);
+    expect(runtimeHarness.client!.getSession).toHaveBeenCalledWith(
+      sessionId,
+      { includeLatestSnapshot: false },
+      expect.any(Object),
+    );
+    expect(runtimeHarness.state!.runLifecycle.stage).toBe("streaming");
+    expect(runtimeHarness.state!.runLifecycle).toMatchObject({
+      sessionId,
+      runId,
+      prompt,
+    });
+    expect(runtimeHarness.state!.isLoading).toBe(false);
+    expect(runtimeHarness.dispatch).not.toHaveBeenCalledWith(expect.objectContaining({
+      type: "RESTORE_PROMPT_AFTER_FAILED_SUBMISSION",
+    }));
+    cleanup();
+  });
+
+  it("keeps a started run alive when the post-start refresh fails", async () => {
+    const createdAt = 1_714_000_000_300;
+    const sessionId = "session-refresh-failure";
+    const runId = "run-refresh-failure";
+    const prompt = "解释一下这个项目。";
+    runtimeHarness.state = {
+      ...initialWorkbenchState,
+      selectedSessionId: sessionId,
+      promptText: prompt,
+      sessions: [sessionSummary(sessionId)],
+      activeSessionDetail: {
+        session: sessionSummary(sessionId),
+        turns: [],
+        transcript: [],
+        latestSnapshot: undefined,
+      },
+      providerRegistry: {
+        providers: [{
+          id: "provider-1",
+          label: "Provider 1",
+          type: "local_smoke",
+          modelId: "provider-model",
+          capabilities: ["chat"],
+          headers: {},
+        }],
+      } as never,
+      selectedProviderId: "provider-1",
+      selectedPattern: "orchestrator_subagent",
+      selectedModeId: "single_agent",
+      selectedModeSelection: "manual",
+      modes: [{
+        id: "single_agent",
+        family: "single_agent",
+        label: "Single Agent",
+        summary: "Single agent mode",
+        capabilityFlags: {
+          toolIds: [],
+          skillIds: [],
+        },
+      }] as never,
+      patterns: [],
+    } as WorkbenchState;
+
+    const runningSnapshot = {
+      ...implementationSnapshot({ runId, sessionId, prompt }),
+      turnIndex: 1,
+      input: { prompt, createdAt, context: {} },
+      updatedAt: createdAt + 10,
+    } as OraStateSnapshot;
+    runtimeHarness.client!.startStreamingRun.mockResolvedValueOnce({ runId } as never);
+    runtimeHarness.client!.getRunState.mockResolvedValueOnce(runningSnapshot);
+    runtimeHarness.client!.listProjects.mockRejectedValueOnce(new Error("refresh failed"));
+
+    let cleanup = renderHarnessElement(createElement(ActionsProbe, {
+      onReady: (actions) => {
+        runtimeHarness.actions = actions;
+      },
+    }));
+
+    await flushMicrotasks();
+    vi.useFakeTimers();
+    await act(async () => {
+      const resultPromise = runtimeHarness.actions!.startRun();
+      await vi.runAllTimersAsync();
+      await resultPromise;
+    });
+    vi.useRealTimers();
+
+    expect(runtimeHarness.client!.startStreamingRun).toHaveBeenCalled();
+    expect(runtimeHarness.client!.getRunState).toHaveBeenCalledWith(runId);
+    expect(runtimeHarness.state!.runLifecycle.stage).toBe("streaming");
+    expect(runtimeHarness.state!.runLifecycle).toMatchObject({
+      sessionId,
+      runId,
+      prompt,
+    });
+    expect(runtimeHarness.dispatch).not.toHaveBeenCalledWith(expect.objectContaining({
+      type: "RESTORE_PROMPT_AFTER_FAILED_SUBMISSION",
+    }));
+    cleanup();
+  });
+
+  it("rehydrates the original missing selected session before retrying the first submit", async () => {
+    const missingSessionId = "session-missing";
+    const recoveredSessionId = "session-recovered";
+    const runId = "run-recovered";
+    const prompt = "smoke-run-20260527 unique";
+    runtimeHarness.state = {
+      ...initialWorkbenchState,
+      selectedSessionId: missingSessionId,
+      promptText: prompt,
+      sessions: [sessionSummary(missingSessionId)],
+      activeSessionDetail: {
+        session: sessionSummary(missingSessionId),
+        turns: [],
+        transcript: [],
+        latestSnapshot: undefined,
+      },
+      providerRegistry: {
+        providers: [{
+          id: "provider-1",
+          label: "Provider 1",
+          type: "local_smoke",
+          modelId: "provider-model",
+          capabilities: ["chat"],
+          headers: {},
+        }],
+      } as never,
+      selectedProviderId: "provider-1",
+      selectedPattern: "orchestrator_subagent",
+      selectedModeId: "single_agent",
+      selectedModeSelection: "manual",
+      modes: [{
+        id: "single_agent",
+        family: "single_agent",
+        label: "Single Agent",
+        summary: "Single agent mode",
+        capabilityFlags: {
+          toolIds: [],
+          skillIds: [],
+        },
+      }] as never,
+      patterns: [],
+    } as WorkbenchState;
+
+    const runningSnapshot = {
+      ...implementationSnapshot({ runId, sessionId: missingSessionId, prompt }),
+      turnIndex: 1,
+      updatedAt: 1_714_000_000_410,
+    } as OraStateSnapshot;
+    runtimeHarness.client!.startStreamingRun
+      .mockRejectedValueOnce(new Error(`Session not found: ${missingSessionId}`))
+      .mockResolvedValueOnce({ runId } as never);
+    runtimeHarness.client!.getRunState.mockResolvedValueOnce(runningSnapshot);
+    runtimeHarness.client!.listProjects.mockResolvedValueOnce([]);
+    runtimeHarness.client!.listSessions.mockResolvedValueOnce([sessionSummary(missingSessionId)]);
+    runtimeHarness.client!.getSession.mockResolvedValueOnce({
+      session: sessionSummary(missingSessionId),
+      turns: [],
+      transcript: [],
+      latestSnapshot: undefined,
+    } as OraSessionDetail);
+
+    let cleanup = renderHarnessElement(createElement(ActionsProbe, {
+      onReady: (actions) => {
+        runtimeHarness.actions = actions;
+      },
+    }));
+
+    await flushMicrotasks();
+    vi.useFakeTimers();
+    await act(async () => {
+      const resultPromise = runtimeHarness.actions!.startRun();
+      await vi.runAllTimersAsync();
+      await resultPromise;
+    });
+    vi.useRealTimers();
+
+    expect(runtimeHarness.client!.startStreamingRun).toHaveBeenCalledTimes(2);
+    expect(runtimeHarness.client!.startStreamingRun.mock.calls[0]?.[2]).toBe(missingSessionId);
+    expect(runtimeHarness.client!.startStreamingRun.mock.calls[1]?.[2]).toBe(missingSessionId);
+    expect(runtimeHarness.client!.getSession).toHaveBeenCalledWith(
+      missingSessionId,
+      { includeLatestSnapshot: true },
+      expect.any(Object),
+    );
+    expect(runtimeHarness.client!.createSession).not.toHaveBeenCalled();
+    expect(runtimeHarness.state!.selectedSessionId).toBe(missingSessionId);
+    expect(runtimeHarness.state!.runLifecycle.stage).toBe("streaming");
+    expect(runtimeHarness.state!.runLifecycle).toMatchObject({
+      sessionId: missingSessionId,
+      runId,
+      prompt,
+    });
+    expect(runtimeHarness.dispatch).not.toHaveBeenCalledWith(expect.objectContaining({
+      type: "RESTORE_PROMPT_AFTER_FAILED_SUBMISSION",
+      sessionId: missingSessionId,
+    }));
+    cleanup();
+  });
+
+  it("creates a replacement session only when the original missing session cannot rehydrate", async () => {
+    const missingSessionId = "session-missing";
+    const recoveredSessionId = "session-recovered";
+    const runId = "run-recovered";
+    const prompt = "smoke-run-replacement-session";
+    runtimeHarness.state = {
+      ...initialWorkbenchState,
+      selectedSessionId: missingSessionId,
+      promptText: prompt,
+      sessions: [sessionSummary(missingSessionId)],
+      activeSessionDetail: {
+        session: sessionSummary(missingSessionId),
+        turns: [],
+        transcript: [],
+        latestSnapshot: undefined,
+      },
+      providerRegistry: {
+        providers: [{
+          id: "provider-1",
+          label: "Provider 1",
+          type: "local_smoke",
+          modelId: "provider-model",
+          capabilities: ["chat"],
+          headers: {},
+        }],
+      } as never,
+      selectedProviderId: "provider-1",
+      selectedPattern: "orchestrator_subagent",
+      selectedModeId: "single_agent",
+      selectedModeSelection: "manual",
+      modes: [{
+        id: "single_agent",
+        family: "single_agent",
+        label: "Single Agent",
+        summary: "Single agent mode",
+        capabilityFlags: {
+          toolIds: [],
+          skillIds: [],
+        },
+      }] as never,
+      patterns: [],
+    } as WorkbenchState;
+
+    const runningSnapshot = {
+      ...implementationSnapshot({ runId, sessionId: recoveredSessionId, prompt }),
+      turnIndex: 1,
+      updatedAt: 1_714_000_000_410,
+    } as OraStateSnapshot;
+    runtimeHarness.client!.startStreamingRun
+      .mockRejectedValueOnce(new Error(`Session not found: ${missingSessionId}`))
+      .mockResolvedValueOnce({ runId } as never);
+    runtimeHarness.client!.getSession
+      .mockRejectedValueOnce(new Error(`Session not found: ${missingSessionId}`))
+      .mockResolvedValueOnce({
+        session: sessionSummary(recoveredSessionId),
+        turns: [],
+        transcript: [],
+        latestSnapshot: undefined,
+      } as OraSessionDetail);
+    runtimeHarness.client!.createSession.mockResolvedValueOnce({
+      sessionId: recoveredSessionId,
+      title: "新建对话",
+      projectId: undefined,
+      archivedAt: undefined,
+      status: undefined,
+      latestRunId: undefined,
+      attention: undefined,
+      updatedAt: 1_714_000_000_350,
+    } as never);
+    runtimeHarness.client!.getRunState.mockResolvedValueOnce(runningSnapshot);
+    runtimeHarness.client!.listProjects.mockResolvedValue([]);
+    runtimeHarness.client!.listSessions.mockResolvedValueOnce([sessionSummary(missingSessionId)]);
+    runtimeHarness.client!.listSessions.mockResolvedValueOnce([sessionSummary(recoveredSessionId)]);
+
+    let cleanup = renderHarnessElement(createElement(ActionsProbe, {
+      onReady: (actions) => {
+        runtimeHarness.actions = actions;
+      },
+    }));
+
+    await flushMicrotasks();
+    vi.useFakeTimers();
+    await act(async () => {
+      const resultPromise = runtimeHarness.actions!.startRun();
+      await vi.runAllTimersAsync();
+      await resultPromise;
+    });
+    vi.useRealTimers();
+
+    expect(runtimeHarness.client!.startStreamingRun).toHaveBeenCalledTimes(2);
+    expect(runtimeHarness.client!.startStreamingRun.mock.calls[0]?.[2]).toBe(missingSessionId);
+    expect(runtimeHarness.client!.startStreamingRun.mock.calls[1]?.[2]).toBe(recoveredSessionId);
+    expect(runtimeHarness.client!.createSession).toHaveBeenCalledTimes(1);
+    expect(runtimeHarness.state!.selectedSessionId).toBe(recoveredSessionId);
+    expect(runtimeHarness.state!.runLifecycle).toMatchObject({
+      stage: "streaming",
+      sessionId: recoveredSessionId,
+      runId,
+      prompt,
+    });
+    cleanup();
+  });
+
+  it("waits for a newly created session to hydrate before first submit so runtime can see it", async () => {
+    const priorSessionId = "session-prior";
+    const newSessionId = "session-new";
+    const runId = "run-new";
+    const prompt = "fresh-create-session-submit";
+    const durableSessions = new Set<string>([priorSessionId]);
+    runtimeHarness.state = {
+      ...initialWorkbenchState,
+      selectedSessionId: priorSessionId,
+      sessions: [sessionSummary(priorSessionId)],
+      activeSessionDetail: {
+        session: sessionSummary(priorSessionId),
+        turns: [],
+        transcript: [],
+        latestSnapshot: undefined,
+      },
+      providerRegistry: {
+        providers: [{
+          id: "provider-1",
+          label: "Provider 1",
+          type: "local_smoke",
+          modelId: "provider-model",
+          capabilities: ["chat"],
+          headers: {},
+        }],
+      } as never,
+      selectedProviderId: "provider-1",
+      selectedPattern: "orchestrator_subagent",
+      selectedModeId: "single_agent",
+      selectedModeSelection: "manual",
+      modes: [{
+        id: "single_agent",
+        family: "single_agent",
+        label: "Single Agent",
+        summary: "Single Agent mode",
+        capabilityFlags: {
+          toolIds: [],
+          skillIds: [],
+        },
+      }] as never,
+      patterns: [],
+    } as WorkbenchState;
+
+    runtimeHarness.client!.createSession.mockResolvedValueOnce({
+      sessionId: newSessionId,
+      title: "新建对话",
+      projectId: undefined,
+      archivedAt: undefined,
+      status: undefined,
+      latestRunId: undefined,
+      attention: undefined,
+      updatedAt: 1_714_000_000_500,
+    } as never);
+    runtimeHarness.client!.getSession.mockImplementation(async (
+      sessionId?: string,
+      _options?: { includeLatestSnapshot?: boolean },
+      _dispatchOptions?: { priority?: "background" | "interactive" | "urgent"; tag?: string },
+    ) => {
+      const durableSessionId = sessionId ?? newSessionId;
+      durableSessions.add(durableSessionId);
+      return {
+        session: sessionSummary(durableSessionId),
+        turns: [],
+        transcript: [],
+        latestSnapshot: undefined,
+      } as OraSessionDetail;
+    });
+    runtimeHarness.client!.listProjects.mockResolvedValue([]);
+    runtimeHarness.client!.listSessions.mockImplementation(async () => [
+      sessionSummary(newSessionId),
+      sessionSummary(priorSessionId),
+    ]);
+    runtimeHarness.client!.startStreamingRun.mockImplementation(async (_input, _config, sessionId?: string) => {
+      if (!sessionId || !durableSessions.has(sessionId)) {
+        throw new Error(`Session not found: ${sessionId ?? ""}`);
+      }
+      return { runId } as never;
+    });
+    runtimeHarness.client!.getRunState.mockResolvedValueOnce({
+      ...implementationSnapshot({ runId, sessionId: newSessionId, prompt }),
+      turnIndex: 1,
+      updatedAt: 1_714_000_000_520,
+    } as OraStateSnapshot);
+
+    let cleanup = renderHarnessElement(createElement(ActionsProbe, {
+      onReady: (actions) => {
+        runtimeHarness.actions = actions;
+      },
+    }));
+
+    await flushMicrotasks();
+    vi.useFakeTimers();
+    await act(async () => {
+      const createPromise = runtimeHarness.actions!.createSession();
+      await vi.runAllTimersAsync();
+      await createPromise;
+    });
+    vi.useRealTimers();
+
+    expect(runtimeHarness.client!.getSession).toHaveBeenCalledWith(
+      newSessionId,
+      { includeLatestSnapshot: true },
+      expect.any(Object),
+    );
+    expect(runtimeHarness.state!.selectedSessionId).toBe(newSessionId);
+    cleanup();
+
+    cleanup = renderHarnessElement(createElement(ActionsProbe, {
+      onReady: (actions) => {
+        runtimeHarness.actions = actions;
+      },
+    }));
+
+    await flushMicrotasks();
+
+    vi.useFakeTimers();
+    await act(async () => {
+      const startPromise = runtimeHarness.actions!.startRunWithPrompt({ prompt });
+      await vi.runAllTimersAsync();
+      await startPromise;
+    });
+    vi.useRealTimers();
+
+    expect(runtimeHarness.client!.startStreamingRun).toHaveBeenCalledTimes(1);
+    expect(runtimeHarness.client!.startStreamingRun.mock.calls[0]?.[2]).toBe(newSessionId);
+    expect(runtimeHarness.state!.runLifecycle.stage).toBe("streaming");
+    expect(runtimeHarness.state!.runLifecycle).toMatchObject({
+      sessionId: newSessionId,
+      runId,
+      prompt,
+    });
+    cleanup();
+  });
+
   it("refreshes terminal accepted-plan resumes with the runtime snapshot immediately", async () => {
     runtimeHarness.client!.acceptPlanDecisionAndResume.mockResolvedValueOnce({
       runId: "run-plan",
@@ -747,7 +1293,7 @@ describe("desktop run actions", () => {
       decisionId: "decision-1",
       resumePhase: "resume_terminal",
     });
-    const cleanup = renderElement(createElement(ActionsProbe, {
+    const cleanup = renderHarnessElement(createElement(ActionsProbe, {
       onReady: (actions) => {
         runtimeHarness.actions = actions;
       },
@@ -773,7 +1319,7 @@ describe("desktop run actions", () => {
     runtimeHarness.client!.acceptPlanDecisionAndResume.mockRejectedValueOnce(
       new Error("resolve failed"),
     );
-    const cleanup = renderElement(createElement(ActionsProbe, {
+    const cleanup = renderHarnessElement(createElement(ActionsProbe, {
       onReady: (actions) => {
         runtimeHarness.actions = actions;
       },

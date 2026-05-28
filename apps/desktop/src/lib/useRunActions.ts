@@ -639,9 +639,10 @@ export function useRunActions() {
     } = {},
   ) {
     const refreshCollections = options.refreshCollections ?? true;
+    const currentState = stateRef.current;
     const [projects, sessions, detail] = await Promise.all([
-      refreshCollections ? runtimeClient.listProjects() : Promise.resolve(state.projects),
-      refreshCollections ? runtimeClient.listSessions() : Promise.resolve(state.sessions),
+      refreshCollections ? runtimeClient.listProjects() : Promise.resolve(currentState.projects),
+      refreshCollections ? runtimeClient.listSessions() : Promise.resolve(currentState.sessions),
       dedupedGetSession(
         sessionId,
         { includeLatestSnapshot: options.includeLatestSnapshot ?? false },
@@ -669,14 +670,15 @@ export function useRunActions() {
   }
 
   function cleanupPreviousSessionIfDisposable(previousSessionId: string | undefined, nextSessionId: string) {
-    if (previousSessionId && previousSessionId !== nextSessionId && isDisposableEmptySession(state, previousSessionId)) {
+    const currentState = stateRef.current;
+    if (previousSessionId && previousSessionId !== nextSessionId && isDisposableEmptySession(currentState, previousSessionId)) {
       void archiveDisposableEmptySession(previousSessionId);
     }
   }
 
   async function selectSession(sessionId: string) {
     timeStart("selectSession");
-    const previousSessionId = state.selectedSessionId;
+    const previousSessionId = stateRef.current.selectedSessionId;
     const requestId = ++sessionRequestRef.current;
     dispatch({ type: "SET_LOADING", loading: true });
     if (state.sessionDetailsById[sessionId]) {
@@ -737,24 +739,16 @@ export function useRunActions() {
   }
 
   async function createSession() {
-    const previousSessionId = state.selectedSessionId;
+    const previousSessionId = stateRef.current.selectedSessionId;
     const requestId = ++sessionRequestRef.current;
     dispatch({ type: "SET_LOADING", loading: true });
     try {
       dispatch({ type: "SELECT_PROJECT", projectId: undefined });
       const created = await runtimeClient.createSession();
       if (sessionRequestRef.current !== requestId) return;
-      const detail = emptySessionDetail(created);
-      const sessions = [
-        detail.session,
-        ...state.sessions.filter((s) => s.sessionId !== created.sessionId),
-      ];
-      dispatch({
-        type: "HYDRATE_SESSION",
-        projects: state.projects,
-        sessions,
-        detail,
-        feedback: "Created a new empty chat session.",
+      await hydrateSession(created.sessionId, undefined, "Created a new empty chat session.", {
+        shouldApply: () => sessionRequestRef.current === requestId,
+        includeLatestSnapshot: true,
       });
       cleanupPreviousSessionIfDisposable(previousSessionId, created.sessionId);
     } catch (error) {
@@ -765,29 +759,16 @@ export function useRunActions() {
   }
 
   async function createProjectSession(projectId: string) {
-    const previousSessionId = state.selectedSessionId;
+    const previousSessionId = stateRef.current.selectedSessionId;
     const requestId = ++sessionRequestRef.current;
     dispatch({ type: "SET_LOADING", loading: true });
     try {
       const created = await runtimeClient.createSession({ projectId });
       if (sessionRequestRef.current !== requestId) return;
       dispatch({ type: "SELECT_PROJECT", projectId });
-      const detail = emptySessionDetail(created);
-      const sessions = [
-        detail.session,
-        ...state.sessions.filter((s) => s.sessionId !== created.sessionId),
-      ];
-      const projects = state.projects.map((p) =>
-        p.projectId === projectId
-          ? { ...p, sessionCount: p.sessionCount + 1 }
-          : p,
-      );
-      dispatch({
-        type: "HYDRATE_SESSION",
-        projects,
-        sessions,
-        detail,
-        feedback: "Created a new project session.",
+      await hydrateSession(created.sessionId, undefined, "Created a new project session.", {
+        shouldApply: () => sessionRequestRef.current === requestId,
+        includeLatestSnapshot: true,
       });
       cleanupPreviousSessionIfDisposable(previousSessionId, created.sessionId);
     } catch (error) {
@@ -1150,126 +1131,190 @@ export function useRunActions() {
       ...(selectedMode?.capabilityFlags.skillIds ?? []),
       ...state.selectedSkillIds,
     ])];
-    try {
+    const attemptStartStreamingRun = async (attemptSessionId: string) => {
+      let startedRunHandle:
+        | {
+            runId: string;
+          }
+        | undefined;
       const resolvedToolIds = toolIdsForRun(selectedMode?.capabilityFlags.toolIds, projectId);
       const filteredToolIds = (taskIntent === "chat" || taskIntent === "plan")
         ? resolvedToolIds.filter((id) => !(FILE_MODIFICATION_TOOL_IDS as readonly string[]).includes(id))
         : resolvedToolIds;
-      desktopLatencyMarks.push(desktopLatencyMark("startStreamingRunCalledAt"));
-      const attachedSkills = state.selectedSkillIds.length > 0 && state.skillRegistry?.skills
-        ? (() => {
-            const result: { id: string; name: string }[] = [];
-            for (const id of state.selectedSkillIds) {
-              const skill = state.skillRegistry!.skills.find((s) => s.id === id);
-              if (skill) result.push({ id: skill.id, name: skill.name });
-            }
-            return result;
-          })()
-        : undefined;
-      const handle = await runtimeClient.startStreamingRun(
-        {
-          prompt: submittedPrompt,
-          projectId,
-          context: buildDesktopRunContext(
-            submittedProjectFileAttachments,
-            submittedLocalFileAttachments,
-            submittedImageAttachments,
-            {
-              ...options.extraContext,
-              ...(attachedSkills ? { attachedSkills } : {}),
-            },
-          ),
-        },
-        {
-          pattern: selectedRunPattern,
-          modeId: selectedRunModeId,
-          modeSelection: selectedRunModeSelection,
-          providerId: state.selectedProviderId,
-          providerConfig: provider,
-          customAgentId: state.selectedCustomAgentId,
-          modelRef: provider?.modelId ?? "",
-          ...(selectedRunSkillIds.length > 0 ? { skillIds: selectedRunSkillIds } : {}),
-          toolIds: filteredToolIds,
-          hostFilesystem: buildInitialHostFilesystemState(submittedLocalFileAttachments),
-          permissionMode: state.permissionMode,
-          searchProvider: searchConfig.searchProvider,
-          metadata: {
-            providerId: state.selectedProviderId,
-            clarificationPreflight: shouldEnableClarificationPreflight(taskIntent),
-            disableDefaultWebTools: modeDisablesDefaultWebTools(selectedMode?.capabilityFlags.toolIds),
-            taskIntent,
-            toolModelProviderId: toolModelSettings.providerId,
-            ...searchConfig.metadata,
-            ...(options.extraMetadata ?? {}),
-            ...(state.selectedSkillIds.length > 0 ? { selectedSkillIds: state.selectedSkillIds } : {}),
-            ...(state.selectedCustomAgentId ? { customAgentId: state.selectedCustomAgentId } : {}),
+      try {
+        desktopLatencyMarks.push(desktopLatencyMark("startStreamingRunCalledAt"));
+        const attachedSkills = state.selectedSkillIds.length > 0 && state.skillRegistry?.skills
+          ? (() => {
+              const result: { id: string; name: string }[] = [];
+              for (const id of state.selectedSkillIds) {
+                const skill = state.skillRegistry!.skills.find((s) => s.id === id);
+                if (skill) result.push({ id: skill.id, name: skill.name });
+              }
+              return result;
+            })()
+          : undefined;
+        const handle = await runtimeClient.startStreamingRun(
+          {
+            prompt: submittedPrompt,
+            projectId,
+            context: buildDesktopRunContext(
+              submittedProjectFileAttachments,
+              submittedLocalFileAttachments,
+              submittedImageAttachments,
+              {
+                ...options.extraContext,
+                ...(attachedSkills ? { attachedSkills } : {}),
+              },
+            ),
           },
-        },
-        sessionId,
-      );
-      desktopLatencyMarks.push(desktopLatencyMark("handleReceivedAt", Date.now(), { runId: handle.runId }));
-      dispatch({
-        type: "ATTACH_PENDING_RUN_HANDLE",
-        sessionId,
-        prompt: submittedPrompt,
-        runId: handle.runId,
-      });
-      const snapshot = appendDesktopLatencyMarks(
-        await runtimeClient.getRunState(handle.runId),
-        [...desktopLatencyMarks, desktopLatencyMark("getRunStateReceivedAt", Date.now(), { runId: handle.runId })],
-      );
-      dispatch({ type: "SELECT_TURN", runId: handle.runId, snapshot });
-      await refreshCurrentSession(snapshot, `Started turn ${snapshot.turnIndex ?? "?"}.`);
-      const health = runtimeClient.getHealth();
-      if (health) {
-        dispatch({ type: "SET_BRIDGE_STATUS", status: { mode: health.mode, ok: health.ok, label: health.service, detail: health.detail } });
-      }
-    } catch (error) {
-      dispatch({
-        type: "SET_BRIDGE_STATUS",
-        status: { mode: "error", ok: false, label: "Run failed", detail: error instanceof Error ? error.message : "Unable to start run." },
-      });
-      dispatch({ type: "SET_LOADING", loading: false });
-
-      let recoverySessionId: string | undefined;
-      if (isSessionNotFoundError(error)) {
-        try {
-          const sessions = await runtimeClient.listSessions();
-          recoverySessionId = sessions[0]?.sessionId;
-          if (!recoverySessionId) {
-            const created = await runtimeClient.createSession();
-            recoverySessionId = created.sessionId;
-          }
-        } catch {
-          // Double failure: neither listSessions nor createSession worked.
+          {
+            pattern: selectedRunPattern,
+            modeId: selectedRunModeId,
+            modeSelection: selectedRunModeSelection,
+            providerId: state.selectedProviderId,
+            providerConfig: provider,
+            modelRef: provider?.modelId ?? "",
+            ...(state.selectedCustomAgentId ? { customAgentId: state.selectedCustomAgentId } : {}),
+            ...(selectedRunSkillIds.length > 0 ? { skillIds: selectedRunSkillIds } : {}),
+            toolIds: filteredToolIds,
+            hostFilesystem: buildInitialHostFilesystemState(submittedLocalFileAttachments),
+            permissionMode: state.permissionMode,
+            searchProvider: searchConfig.searchProvider,
+            metadata: {
+              providerId: state.selectedProviderId,
+              clarificationPreflight: shouldEnableClarificationPreflight(taskIntent),
+              disableDefaultWebTools: modeDisablesDefaultWebTools(selectedMode?.capabilityFlags.toolIds),
+              taskIntent,
+              toolModelProviderId: toolModelSettings.providerId,
+              ...searchConfig.metadata,
+              ...(options.extraMetadata ?? {}),
+              ...(state.selectedSkillIds.length > 0 ? { selectedSkillIds: state.selectedSkillIds } : {}),
+              ...(state.selectedCustomAgentId ? { customAgentId: state.selectedCustomAgentId } : {}),
+            },
+          },
+          attemptSessionId,
+        );
+        startedRunHandle = handle;
+        desktopLatencyMarks.push(desktopLatencyMark("handleReceivedAt", Date.now(), { runId: handle.runId }));
+        dispatch({
+          type: "ATTACH_PENDING_RUN_HANDLE",
+          sessionId: attemptSessionId,
+          prompt: submittedPrompt,
+          runId: handle.runId,
+        });
+        const snapshot = appendDesktopLatencyMarks(
+          await runtimeClient.getRunState(handle.runId),
+          [...desktopLatencyMarks, desktopLatencyMark("getRunStateReceivedAt", Date.now(), { runId: handle.runId })],
+        );
+        dispatch({ type: "SELECT_TURN", runId: handle.runId, snapshot });
+        await refreshCurrentSession(snapshot, `Started turn ${snapshot.turnIndex ?? "?"}.`);
+        const health = runtimeClient.getHealth();
+        if (health) {
+          dispatch({ type: "SET_BRIDGE_STATUS", status: { mode: health.mode, ok: health.ok, label: health.service, detail: health.detail } });
         }
+        return { ok: true as const };
+      } catch (error) {
+        if (startedRunHandle) {
+          dispatch({
+            type: "SET_BRIDGE_STATUS",
+            status: { mode: "error", ok: false, label: "Run refresh failed", detail: error instanceof Error ? error.message : "Unable to refresh started run." },
+          });
+          dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: error instanceof Error ? error.message : `Started run ${startedRunHandle.runId}, but refresh failed.` });
+          return { ok: true as const };
+        }
+        return { ok: false as const, error };
       }
+    };
 
-      if (recoverySessionId && recoverySessionId !== sessionId) {
-        try { await selectSession(recoverySessionId); } catch { /* best-effort */ }
+    const hydrateExistingSessionForRetry = async (retrySessionId: string): Promise<string | undefined> => {
+      try {
+        await hydrateSession(retrySessionId, undefined, "Recovered a missing chat session before retrying.", {
+          includeLatestSnapshot: true,
+        });
+        return retrySessionId;
+      } catch {
+        return undefined;
       }
+    };
 
-      dispatch({
-        type: "RESTORE_PROMPT_AFTER_FAILED_SUBMISSION",
-        sessionId,
-        text: submittedPrompt,
-        revision: submittedPromptRevision,
-      });
+    const createRecoveredSession = async (): Promise<string | undefined> => {
+      try {
+        const created = await runtimeClient.createSession(projectId ? { projectId } : {});
+        await hydrateSession(created.sessionId, undefined, "Recovered a missing chat session before retrying.", {
+          includeLatestSnapshot: true,
+        });
+        return created.sessionId;
+      } catch {
+        return undefined;
+      }
+    };
 
-      if (submittedSkillIds.length > 0) {
-        dispatch({ type: "SET_SELECTED_SKILL_IDS", skillIds: submittedSkillIds });
-      }
+    let failureSessionId = sessionId;
+    let failurePromptRevision = submittedPromptRevision;
+    let attempt = await attemptStartStreamingRun(sessionId);
+    if (attempt.ok) {
+      return;
+    }
 
-      const targetSessionId = recoverySessionId ?? sessionId;
-      for (const file of submittedProjectFileAttachments) {
-        dispatch({ type: "ADD_PROJECT_FILE_ATTACHMENT", sessionId: targetSessionId, file });
+    let error = attempt.error;
+    if (isSessionNotFoundError(error) && !clarificationPatch) {
+      const recoverySessionId = await hydrateExistingSessionForRetry(sessionId)
+        ?? await createRecoveredSession();
+      if (recoverySessionId) {
+        const recoveryPromptRevision = stateRef.current.sessionPromptRevisions[recoverySessionId] ?? 0;
+        failureSessionId = recoverySessionId;
+        failurePromptRevision = recoveryPromptRevision;
+        flushSync(() => {
+          dispatch({
+            type: "BEGIN_RUN_REQUEST",
+            sessionId: recoverySessionId,
+            prompt: submittedPrompt,
+            createdAt: Date.now(),
+            draftRevision: recoveryPromptRevision,
+            skillIds: submittedSkillIds,
+          });
+        });
+        await waitForPendingRunPaint();
+        if (selectedRunModeSelection === "auto") {
+          dispatch({
+            type: "SET_PENDING_RUN_PROGRESS",
+            sessionId: recoverySessionId,
+            progressText: "正在选择合适的工作模式",
+          });
+        }
+        attempt = await attemptStartStreamingRun(recoverySessionId);
+        if (attempt.ok) {
+          return;
+        }
+        error = attempt.error;
       }
-      for (const file of submittedLocalFileAttachments) {
-        dispatch({ type: "ADD_LOCAL_FILE_ATTACHMENT", sessionId: targetSessionId, file });
-      }
-      for (const image of submittedImageAttachments) {
-        dispatch({ type: "ADD_IMAGE_ATTACHMENT", sessionId: targetSessionId, image });
-      }
+    }
+
+    dispatch({
+      type: "SET_BRIDGE_STATUS",
+      status: { mode: "error", ok: false, label: "Run failed", detail: error instanceof Error ? error.message : "Unable to start run." },
+    });
+    dispatch({ type: "SET_LOADING", loading: false });
+    dispatch({
+      type: "RESTORE_PROMPT_AFTER_FAILED_SUBMISSION",
+      sessionId: failureSessionId,
+      text: submittedPrompt,
+      revision: failurePromptRevision,
+    });
+
+    if (submittedSkillIds.length > 0) {
+      dispatch({ type: "SET_SELECTED_SKILL_IDS", skillIds: submittedSkillIds });
+    }
+
+    const targetSessionId = failureSessionId;
+    for (const file of submittedProjectFileAttachments) {
+      dispatch({ type: "ADD_PROJECT_FILE_ATTACHMENT", sessionId: targetSessionId, file });
+    }
+    for (const file of submittedLocalFileAttachments) {
+      dispatch({ type: "ADD_LOCAL_FILE_ATTACHMENT", sessionId: targetSessionId, file });
+    }
+    for (const image of submittedImageAttachments) {
+      dispatch({ type: "ADD_IMAGE_ATTACHMENT", sessionId: targetSessionId, image });
     }
   }
 
@@ -1397,10 +1442,11 @@ export function useRunActions() {
     try {
       if (status === "declined") {
         const detail = await runtimeClient.resolvePlanDecision({ sessionId, runId: resumeRunId, decisionId, status });
+        const currentState = stateRef.current;
         dispatch({
           type: "HYDRATE_SESSION",
-          projects: state.projects,
-          sessions: state.sessions,
+          projects: currentState.projects,
+          sessions: currentState.sessions,
           detail,
           feedback: "Plan declined. Add your revision to continue.",
         });
