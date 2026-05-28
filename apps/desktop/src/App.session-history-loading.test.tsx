@@ -448,4 +448,119 @@ describe("App session history loading", () => {
 
     view.unmount();
   });
+
+  it("suppresses native text selection while resizing the right workspace", async () => {
+    const baseBootstrap = await createRuntimeClient().bootstrap();
+    const session = sessionSummary("session-a", "Session A", "run-a-1", 1_714_000_000_200);
+    const latestSnapshot = snapshot({
+      runId: "run-a-1",
+      sessionId: "session-a",
+      turnIndex: 1,
+      updatedAt: 1_714_000_000_200,
+    });
+    const sessionDetail = detail(
+      session,
+      [sessionTurn("run-a-1", "session-a", 1, 1_714_000_000_200)],
+      latestSnapshot,
+    );
+
+    runtimeHarness.client = {
+      ...createRuntimeClient(),
+      workbenchBootstrap: vi.fn(async () => ({
+        bootstrap: baseBootstrap,
+        projects: [],
+        sessions: [session],
+        activeSessionDetail: sessionDetail,
+      })),
+      listProjects: vi.fn(async () => []),
+      listSessions: vi.fn(async () => [session]),
+      getSession: vi.fn(async () => sessionDetail),
+      getRunState: vi.fn(async () => latestSnapshot),
+      subscribeRunEvents: vi.fn(async () => () => {}),
+      subscribeChannelSessionUpdates: vi.fn(async () => () => {}),
+    } as RuntimeClient;
+
+    window.localStorage.setItem(ONBOARDING_STORAGE_KEY, "completed");
+    document.body.style.userSelect = "text";
+    const view = renderApp();
+
+    await waitFor(() => {
+      expect(view.container.querySelector('button[aria-label="Open right workspace"]')).toBeTruthy();
+    });
+
+    await act(async () => {
+      view.container.querySelector<HTMLButtonElement>('button[aria-label="Open right workspace"]')?.click();
+    });
+
+    const separator = await waitForElement<HTMLElement>(
+      view.container,
+      '[role="separator"][aria-label="调整侧边栏宽度"]',
+    );
+    const setPointerCapture = vi.fn();
+    Object.defineProperty(separator, "setPointerCapture", {
+      configurable: true,
+      value: setPointerCapture,
+    });
+    const preventDefault = vi.fn();
+    const stopPropagation = vi.fn();
+
+    await act(async () => {
+      const pointerDown = createPointerLikeEvent("pointerdown", {
+        clientX: 900,
+        pointerId: 17,
+      });
+      Object.assign(pointerDown, {
+        preventDefault,
+        stopPropagation,
+      });
+      separator.dispatchEvent(pointerDown);
+    });
+
+    expect(preventDefault).toHaveBeenCalled();
+    expect(stopPropagation).toHaveBeenCalled();
+    expect(setPointerCapture).toHaveBeenCalledWith(17);
+    expect(document.body.style.userSelect).toBe("none");
+
+    await act(async () => {
+      window.dispatchEvent(createPointerLikeEvent("pointerup", {
+        clientX: 880,
+        pointerId: 17,
+      }));
+    });
+
+    expect(document.body.style.userSelect).toBe("text");
+
+    view.unmount();
+  });
 });
+
+async function waitForElement<T extends Element>(
+  container: ParentNode,
+  selector: string,
+): Promise<T> {
+  let found: T | null = null;
+  await waitFor(() => {
+    found = container.querySelector<T>(selector);
+    expect(found).toBeTruthy();
+  });
+  if (!found) {
+    throw new Error(`Element not found: ${selector}`);
+  }
+  return found;
+}
+
+function createPointerLikeEvent(
+  type: string,
+  init: { clientX: number; pointerId: number },
+): PointerEvent {
+  const event = new MouseEvent(type, {
+    bubbles: true,
+    cancelable: true,
+    clientX: init.clientX,
+  });
+  Object.defineProperty(event, "pointerId", {
+    configurable: true,
+    value: init.pointerId,
+  });
+  return event as PointerEvent;
+}

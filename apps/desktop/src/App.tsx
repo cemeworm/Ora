@@ -269,6 +269,7 @@ function WorkbenchInner() {
   >();
   const splitContainerRef = useRef<HTMLDivElement>(null);
   const resizePointerIdRef = useRef<number | null>(null);
+  const resizePreviousUserSelectRef = useRef<string | null>(null);
   const closeWorkspaceTimerRef = useRef<number | undefined>(undefined);
   const openWorkspaceFrameRef = useRef<number | undefined>(undefined);
   const providerSecretRefreshKeyRef = useRef<string>("");
@@ -510,18 +511,30 @@ function WorkbenchInner() {
     if (resizePointerIdRef.current !== event.pointerId) {
       return;
     }
+    event.preventDefault();
     handleRightWorkspaceResize(event.clientX);
   }, [handleRightWorkspaceResize]);
+
+  const restoreRightWorkspaceResizeSelection = useCallback(() => {
+    if (resizePreviousUserSelectRef.current === null) {
+      return;
+    }
+    document.body.style.userSelect = resizePreviousUserSelectRef.current;
+    resizePreviousUserSelectRef.current = null;
+  }, []);
 
   const handleResizePointerUp = useCallback((event: PointerEvent) => {
     if (resizePointerIdRef.current !== event.pointerId) {
       return;
     }
+    event.preventDefault();
     resizePointerIdRef.current = null;
     setIsResizingRightWorkspace(false);
+    restoreRightWorkspaceResizeSelection();
     window.removeEventListener("pointermove", handleResizePointerMove);
     window.removeEventListener("pointerup", handleResizePointerUp);
-  }, [handleResizePointerMove]);
+    window.removeEventListener("pointercancel", handleResizePointerUp);
+  }, [handleResizePointerMove, restoreRightWorkspaceResizeSelection]);
 
   useEffect(() => {
     return () => {
@@ -531,10 +544,12 @@ function WorkbenchInner() {
       if (openWorkspaceFrameRef.current !== undefined) {
         window.cancelAnimationFrame(openWorkspaceFrameRef.current);
       }
+      restoreRightWorkspaceResizeSelection();
       window.removeEventListener("pointermove", handleResizePointerMove);
       window.removeEventListener("pointerup", handleResizePointerUp);
+      window.removeEventListener("pointercancel", handleResizePointerUp);
     };
-  }, [handleResizePointerMove, handleResizePointerUp]);
+  }, [handleResizePointerMove, handleResizePointerUp, restoreRightWorkspaceResizeSelection]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1527,10 +1542,19 @@ function WorkbenchInner() {
                 if (!selectedSessionWorkspace.open) {
                   return;
                 }
+                event.preventDefault();
+                event.stopPropagation();
+                event.currentTarget.setPointerCapture(event.pointerId);
+                window.getSelection()?.removeAllRanges();
+                if (resizePreviousUserSelectRef.current === null) {
+                  resizePreviousUserSelectRef.current = document.body.style.userSelect;
+                }
+                document.body.style.userSelect = "none";
                 setIsResizingRightWorkspace(true);
                 resizePointerIdRef.current = event.pointerId;
                 window.addEventListener("pointermove", handleResizePointerMove);
                 window.addEventListener("pointerup", handleResizePointerUp);
+                window.addEventListener("pointercancel", handleResizePointerUp);
               }}
             >
               <div className="absolute left-1/2 top-1/2 h-10 w-[2px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-black/85" />
