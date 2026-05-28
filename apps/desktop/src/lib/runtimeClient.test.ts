@@ -529,4 +529,129 @@ describe("desktop runtime client agent catalog", () => {
       }),
     );
   });
+
+  it("does not fall back to the browser mock when Tauri returns a JSON-RPC session error", async () => {
+    const invoke = vi.fn(async (_command: string, payload: Record<string, unknown>) => {
+      const request = payload.request as { id: number; method: string };
+      if (request.method === "sessions.create") {
+        return {
+          jsonrpc: "2.0",
+          id: request.id,
+          error: {
+            code: -32058,
+            message: "Runtime sidecar request bridge failed",
+          },
+        };
+      }
+      throw new Error(`Unexpected method: ${request.method}`);
+    });
+
+    vi.doMock("@tauri-apps/api/core", () => ({ invoke }));
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: { __TAURI_INTERNALS__: {} },
+    });
+
+    try {
+      const client = createRuntimeClient();
+      await expect(client.createSession()).rejects.toThrow("Runtime sidecar request bridge failed");
+    } finally {
+      vi.doUnmock("@tauri-apps/api/core");
+      Reflect.deleteProperty(globalThis, "window");
+    }
+
+    expect(invoke).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not fall back to the browser mock when Tauri returns a JSON-RPC run start error", async () => {
+    const invoke = vi.fn(async (_command: string, payload: Record<string, unknown>) => {
+      const request = payload.request as { id: number; method: string };
+      if (request.method === "runs.startStreaming") {
+        return {
+          jsonrpc: "2.0",
+          id: request.id,
+          error: {
+            code: -32004,
+            message: "Session not found: session-0202",
+          },
+        };
+      }
+      throw new Error(`Unexpected method: ${request.method}`);
+    });
+
+    vi.doMock("@tauri-apps/api/core", () => ({ invoke }));
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: { __TAURI_INTERNALS__: {} },
+    });
+
+    try {
+      const client = createRuntimeClient();
+      await expect(client.startStreamingRun(
+        { prompt: "hello", context: {} },
+        { modeId: "single_agent", providerId: "provider-1", modelRef: "model-1" },
+        "session-0202",
+      )).rejects.toThrow("Session not found: session-0202");
+    } finally {
+      vi.doUnmock("@tauri-apps/api/core");
+      Reflect.deleteProperty(globalThis, "window");
+    }
+
+    expect(invoke).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries startStreaming once when Tauri returns a transient session-not-found JSON-RPC error", async () => {
+    const invoke = vi.fn(async (_command: string, payload: Record<string, unknown>) => {
+      const request = payload.request as { id: number; method: string };
+      if (request.method !== "runs.startStreaming") {
+        throw new Error(`Unexpected method: ${request.method}`);
+      }
+      if (invoke.mock.calls.length === 1) {
+        return {
+          jsonrpc: "2.0",
+          id: request.id,
+          error: {
+            code: -32004,
+            message: "Session not found: session-0202",
+          },
+        };
+      }
+      return {
+        jsonrpc: "2.0",
+        id: request.id,
+        result: {
+          runId: "run-0202",
+          sessionId: "session-0202",
+          turnIndex: 1,
+          status: "running",
+          pattern: "orchestrator_subagent",
+          modeId: "single_agent",
+          startedAt: 1,
+        },
+      };
+    });
+
+    vi.doMock("@tauri-apps/api/core", () => ({ invoke }));
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: { __TAURI_INTERNALS__: {} },
+    });
+
+    try {
+      const client = createRuntimeClient();
+      await expect(client.startStreamingRun(
+        { prompt: "hello", context: {} },
+        { modeId: "single_agent", providerId: "provider-1", modelRef: "model-1" },
+        "session-0202",
+      )).resolves.toMatchObject({
+        runId: "run-0202",
+        sessionId: "session-0202",
+      });
+    } finally {
+      vi.doUnmock("@tauri-apps/api/core");
+      Reflect.deleteProperty(globalThis, "window");
+    }
+
+    expect(invoke).toHaveBeenCalledTimes(2);
+  });
 });

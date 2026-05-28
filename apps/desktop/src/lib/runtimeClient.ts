@@ -364,15 +364,19 @@ export function createRuntimeClient() {
       const tauriResponse = tauriAvailable
         ? await tryTauriJsonRpc(request, mergedDispatchOptions)
         : { ok: false as const, tauriAvailable };
-      // When the Tauri bridge returns a JSON-RPC error or is unavailable,
-      // fall through to the local handler — same behavior as browser mode.
-      const tauriBridgeOk =
-        tauriResponse.ok &&
-        !("error" in tauriResponse.response);
-
-      if (tauriBridgeOk) {
+      if (tauriAvailable && method === "runs.startStreaming") {
+        const retryResponse = await retryStartStreamingThroughTauri(request, mergedDispatchOptions, tauriResponse);
+        if (retryResponse) {
+          return unwrapJsonRpc<T>(retryResponse);
+        }
+      }
+      if (tauriResponse.ok) {
+        const tauriResponseHasError = "error" in tauriResponse.response;
+        // In desktop mode, a structured JSON-RPC error still comes from the
+        // authoritative runtime path. Falling back to the browser mock here
+        // would create split-brain session/run state.
         lastHealth = {
-          ok: true,
+          ok: !tauriResponseHasError,
           mode: "tauri",
           service: "ora-runtime",
           detail: processBridgeEnabled
@@ -406,6 +410,69 @@ export function createRuntimeClient() {
     } finally {
       if (isSessionGet) timeEnd("RPC sessions.get (bridge)");
     }
+  }
+
+  async function retryStartStreamingThroughTauri<T>(
+    request: JsonRpcRequest,
+    dispatch: RuntimeRpcDispatchOptions,
+    firstAttempt:
+      | { ok: true; response: JsonRpcResponse; tauriAvailable: true }
+      | { ok: false; tauriAvailable: true; error?: unknown }
+      | { ok: false; tauriAvailable: false },
+  ): Promise<JsonRpcResponse | null> {
+    if (firstAttempt.ok) {
+      if (!isTransientStartStreamingError(firstAttempt.response)) {
+        return null;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const retry = await tryTauriJsonRpc(request, dispatch);
+      if (retry.ok) {
+        lastHealth = {
+          ok: !("error" in retry.response),
+          mode: "tauri",
+          service: "ora-runtime",
+          detail: processBridgeEnabled
+            ? compactDetails([
+              "Tauri command bridge is serving Ora JSON-RPC.",
+              managedLangfuseDetail,
+            ])
+            : tauriUnavailableReason,
+        };
+        return retry.response;
+      }
+      throw retry.error instanceof Error
+        ? retry.error
+        : new Error("Runtime sidecar startStreaming bridge failed.");
+    }
+    if (!firstAttempt.ok && firstAttempt.tauriAvailable) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const retry = await tryTauriJsonRpc(request, dispatch);
+      if (retry.ok) {
+        lastHealth = {
+          ok: !("error" in retry.response),
+          mode: "tauri",
+          service: "ora-runtime",
+          detail: processBridgeEnabled
+            ? compactDetails([
+              "Tauri command bridge is serving Ora JSON-RPC.",
+              managedLangfuseDetail,
+            ])
+            : tauriUnavailableReason,
+        };
+        return retry.response;
+      }
+      throw retry.error instanceof Error
+        ? retry.error
+        : new Error("Runtime sidecar startStreaming bridge failed.");
+    }
+    return null;
+  }
+
+  function isTransientStartStreamingError(response: JsonRpcResponse): boolean {
+    if (!("error" in response)) {
+      return false;
+    }
+    return response.error.code === -32004 && /Session not found/i.test(response.error.message);
   }
 
   async function normalizeRuntimeBootstrap(
