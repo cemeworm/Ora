@@ -54,6 +54,27 @@ interface PersistedSkillState {
   viewCount?: number;
   patchCount?: number;
   autoCreateTrigger?: string;
+  governance?: {
+    origin?: string;
+    lastAction?: string;
+    lastActionAt?: number;
+    lastRunId?: string;
+    lastCandidateId?: string;
+    history?: Array<{
+      action: string;
+      at: number;
+      runId?: string;
+      candidateId?: string;
+      note?: string;
+    }>;
+    rollback?: {
+      lastAction?: string;
+      before?: string;
+      at?: number;
+      runId?: string;
+      candidateId?: string;
+    };
+  };
 }
 
 const SKILL_FILE_NAME = "SKILL.md";
@@ -62,6 +83,21 @@ interface SupportingSkillFile {
   path: string;
   content: string;
   executable?: boolean;
+}
+
+export interface SkillStateRestoreSnapshot {
+  enabled?: boolean;
+  createdAt?: number;
+  updatedAt?: number;
+  provenance?: "foreground" | "background_auto";
+  lifecycle?: "active" | "stale" | "archived";
+  telemetry?: {
+    useCount?: number;
+    viewCount?: number;
+    patchCount?: number;
+    lastUsedAt?: number;
+  };
+  governance?: PersistedSkillState["governance"];
 }
 
 export interface SkillFileStoreOptions {
@@ -147,6 +183,16 @@ export class SkillFileStore {
       updatedAt: now,
       provenance: parsed.provenance,
       autoCreateTrigger: parsed.autoCreateTrigger,
+      governance: {
+        origin: parsed.provenance ?? "foreground",
+        lastAction: "create",
+        lastActionAt: now,
+        history: [{
+          action: "create",
+          at: now,
+          note: parsed.autoCreateTrigger,
+        }],
+      },
     });
     return this.get({ name });
   }
@@ -172,23 +218,58 @@ export class SkillFileStore {
     this.writeSkillPackage(targetDir, parsed.content, parsed.files, parsed.files !== undefined);
     const now = this.clock();
     if (nextName !== name) {
+      const currentGovernance = this.readState()[toSkillId(name)]?.governance;
       if (existing.category === "public") {
         fs.rmSync(this.publicSkillDir(name), { recursive: true, force: true });
-        this.updateState(name, { deleted: true, enabled: false, updatedAt: now });
+        this.updateState(name, {
+          deleted: true,
+          enabled: false,
+          updatedAt: now,
+          governance: appendGovernance(currentGovernance, {
+            action: "rename_from",
+            at: now,
+            note: `${name} -> ${nextName}`,
+          }),
+        });
+        this.updateState(nextName, {
+          enabled: existing.enabled,
+          createdAt: existing.createdAt,
+          deleted: false,
+          updatedAt: now,
+          governance: appendGovernance(currentGovernance, {
+            action: "rename",
+            at: now,
+            note: `${name} -> ${nextName}`,
+          }),
+        });
+        return this.get({ name: nextName });
       } else {
         fs.rmSync(this.privateSkillDir(name), { recursive: true, force: true });
         fs.rmSync(this.legacyCustomSkillDir(name), { recursive: true, force: true });
+        const source = currentGovernance;
         this.removeState(name);
+        this.updateState(nextName, {
+          enabled: existing.enabled,
+          createdAt: existing.createdAt,
+          deleted: false,
+          updatedAt: now,
+          governance: appendGovernance(source, {
+            action: "rename",
+            at: now,
+            note: `${name} -> ${nextName}`,
+          }),
+        });
+        return this.get({ name: nextName });
       }
-      this.updateState(nextName, {
-        enabled: existing.enabled,
-        createdAt: existing.createdAt,
-        deleted: false,
-        updatedAt: now,
-      });
-      return this.get({ name: nextName });
     }
-    this.updateState(name, { deleted: false, updatedAt: now });
+    this.updateState(name, {
+      deleted: false,
+      updatedAt: now,
+      governance: appendGovernance(this.readState()[toSkillId(name)]?.governance, {
+        action: "update",
+        at: now,
+      }),
+    });
     return this.get({ name });
   }
 
@@ -202,7 +283,17 @@ export class SkillFileStore {
 
     if (existing.category === "public") {
       fs.rmSync(this.publicSkillDir(name), { recursive: true, force: true });
-      this.updateState(name, { deleted: true, enabled: false, updatedAt: this.clock() });
+      const now = this.clock();
+      const currentGovernance = this.readState()[toSkillId(name)]?.governance;
+      this.updateState(name, {
+        deleted: true,
+        enabled: false,
+        updatedAt: now,
+        governance: appendGovernance(currentGovernance, {
+          action: "delete",
+          at: now,
+        }),
+      });
       return { deleted: true, name };
     }
 
@@ -225,7 +316,15 @@ export class SkillFileStore {
     const parsed = SkillSetEnabledParamsSchema.parse(params);
     const name = normalizeSkillName(parsed.name);
     this.get({ name });
-    this.updateState(name, { enabled: parsed.enabled, updatedAt: this.clock() });
+    const now = this.clock();
+    this.updateState(name, {
+      enabled: parsed.enabled,
+      updatedAt: now,
+      governance: appendGovernance(this.readState()[toSkillId(name)]?.governance, {
+        action: parsed.enabled ? "enable" : "disable",
+        at: now,
+      }),
+    });
     return this.get({ name });
   }
 
@@ -266,11 +365,20 @@ export class SkillFileStore {
     validateSkillContent(name, newFileContent);
     const packageDir = this.skillPackageDir(existing) ?? this.privateSkillDir(name);
     this.writeSkillPackage(packageDir, newFileContent, undefined, false);
-    this.updateState(name, { deleted: false, updatedAt: this.clock() });
+    const now = this.clock();
+    this.updateState(name, {
+      deleted: false,
+      updatedAt: now,
+      patchCount: (this.readState()[toSkillId(name)]?.patchCount ?? 0) + 1,
+      governance: appendGovernance(this.readState()[toSkillId(name)]?.governance, {
+        action: "patch",
+        at: now,
+      }),
+    });
     return this.get({ name });
   }
 
-  transitionLifecycle(name: string, lifecycle: "active" | "stale" | "archived"): void {
+  transitionLifecycle(name: string, lifecycle: "active" | "stale" | "archived", note?: string): void {
     const id = toSkillId(name);
     const state = this.readState();
     const current = state[id]?.lifecycle ?? "active";
@@ -280,7 +388,40 @@ export class SkillFileStore {
     if (toIdx < fromIdx) {
       throw new Error(`Invalid lifecycle transition: ${current} → ${lifecycle}. Only forward transitions are allowed.`);
     }
-    this.updateState(name, { lifecycle });
+    const now = this.clock();
+    this.updateState(name, {
+      lifecycle,
+      updatedAt: now,
+      governance: appendGovernance(this.readState()[toSkillId(name)]?.governance, {
+        action: `lifecycle_${lifecycle}`,
+        at: now,
+        note,
+      }),
+    });
+  }
+
+  restoreState(name: string, snapshot: SkillStateRestoreSnapshot): SkillDetail {
+    const normalized = normalizeSkillName(name);
+    this.get({ name: normalized });
+    const id = toSkillId(normalized);
+    const state = this.readState();
+    const existing = state[id] ?? {};
+    state[id] = {
+      ...existing,
+      enabled: snapshot.enabled ?? existing.enabled ?? true,
+      createdAt: snapshot.createdAt ?? existing.createdAt,
+      updatedAt: snapshot.updatedAt ?? existing.updatedAt,
+      deleted: false,
+      provenance: snapshot.provenance ?? existing.provenance,
+      lifecycle: snapshot.lifecycle ?? existing.lifecycle ?? "active",
+      useCount: snapshot.telemetry?.useCount ?? existing.useCount,
+      viewCount: snapshot.telemetry?.viewCount ?? existing.viewCount,
+      patchCount: snapshot.telemetry?.patchCount ?? existing.patchCount,
+      lastUsedAt: snapshot.telemetry?.lastUsedAt ?? existing.lastUsedAt,
+      governance: snapshot.governance ?? existing.governance,
+    };
+    this.writeState(state);
+    return this.get({ name: normalized });
   }
 
   flushTelemetryBatch(batch: ReadonlyMap<string, { useCount?: number; viewCount?: number; patchCount?: number; lastUsedAt?: number }>): void {
@@ -339,7 +480,17 @@ export class SkillFileStore {
       content: parsed.content,
       executable: parsed.executable,
     });
-    this.updateState(name, { deleted: false, updatedAt: this.clock() });
+    const now = this.clock();
+    this.updateState(name, {
+      deleted: false,
+      updatedAt: now,
+      patchCount: (this.readState()[toSkillId(name)]?.patchCount ?? 0) + 1,
+      governance: appendGovernance(this.readState()[toSkillId(name)]?.governance, {
+        action: "file_write",
+        at: now,
+        note: parsed.path,
+      }),
+    });
     return this.get({ name });
   }
 
@@ -362,7 +513,17 @@ export class SkillFileStore {
     }
     fs.rmSync(target, { force: true });
     this.removeEmptyDirectories(targetDir, targetDir);
-    this.updateState(name, { deleted: false, updatedAt: this.clock() });
+    const now = this.clock();
+    this.updateState(name, {
+      deleted: false,
+      updatedAt: now,
+      patchCount: (this.readState()[toSkillId(name)]?.patchCount ?? 0) + 1,
+      governance: appendGovernance(this.readState()[toSkillId(name)]?.governance, {
+        action: "file_delete",
+        at: now,
+        note: parsed.path,
+      }),
+    });
     return this.get({ name });
   }
 
@@ -420,6 +581,7 @@ export class SkillFileStore {
         content: defaultSkillContent(skill.name, skill.promptSnippet ?? skill.description),
         provenance: record.provenance ?? "foreground",
         lifecycle: record.lifecycle ?? "active",
+        governance: record.governance,
         telemetry: (record.useCount || record.viewCount || record.patchCount || record.lastUsedAt)
           ? { useCount: record.useCount ?? 0, viewCount: record.viewCount ?? 0, patchCount: record.patchCount ?? 0, lastUsedAt: record.lastUsedAt }
           : undefined,
@@ -493,6 +655,7 @@ export class SkillFileStore {
           content,
           provenance: record.provenance ?? "foreground",
           lifecycle: record.lifecycle ?? "active",
+          governance: record.governance,
           telemetry: (record.useCount || record.viewCount || record.patchCount || record.lastUsedAt)
             ? { useCount: record.useCount ?? 0, viewCount: record.viewCount ?? 0, patchCount: record.patchCount ?? 0, lastUsedAt: record.lastUsedAt }
             : undefined,
@@ -528,6 +691,7 @@ export class SkillFileStore {
     state[id] = {
       ...state[id],
       ...patch,
+      governance: mergeGovernance(state[id]?.governance, patch.governance),
     };
     this.writeState(state);
   }
@@ -847,4 +1011,33 @@ function normalizeSkillName(name: string): string {
 
 function toSkillId(name: string): string {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+}
+
+function appendGovernance(
+  existing: PersistedSkillState["governance"] | undefined,
+  entry: { action: string; at: number; runId?: string; candidateId?: string; note?: string },
+): PersistedSkillState["governance"] {
+  const history = [...(existing?.history ?? []), entry].slice(-20);
+  return {
+    ...existing,
+    lastAction: entry.action,
+    lastActionAt: entry.at,
+    lastRunId: entry.runId ?? existing?.lastRunId,
+    lastCandidateId: entry.candidateId ?? existing?.lastCandidateId,
+    history,
+  };
+}
+
+function mergeGovernance(
+  existing: PersistedSkillState["governance"] | undefined,
+  incoming: PersistedSkillState["governance"] | undefined,
+): PersistedSkillState["governance"] | undefined {
+  if (!existing) return incoming;
+  if (!incoming) return existing;
+  return {
+    ...existing,
+    ...incoming,
+    history: incoming.history ?? existing.history,
+    rollback: incoming.rollback ?? existing.rollback,
+  };
 }

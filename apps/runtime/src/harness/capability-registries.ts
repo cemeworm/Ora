@@ -27,7 +27,7 @@ import {
   type ToolDescriptorInput,
   type ToolRegistry,
 } from "@cemeworm/shared";
-import { SkillFileStore, type SkillFileStoreOptions } from "../skills.js";
+import { SkillFileStore, type SkillFileStoreOptions, type SkillStateRestoreSnapshot } from "../skills.js";
 import { SkillCurator, DEFAULT_CURATOR_CONFIG, type SkillCuratorConfig } from "../skill-curator.js";
 
 export interface RuntimeToolResultPreview {
@@ -231,6 +231,14 @@ export class RuntimeSkillRegistry {
 
   patch(params: unknown): SkillDetail {
     return this.store.patchContent(params);
+  }
+
+  transitionLifecycle(name: string, lifecycle: "active" | "stale" | "archived", note?: string): void {
+    this.store.transitionLifecycle(name, lifecycle, note);
+  }
+
+  restoreState(name: string, snapshot: SkillStateRestoreSnapshot) {
+    return this.store.restoreState(name, snapshot);
   }
 
   recordTelemetry(name: string, event: "use" | "view" | "patch"): void {

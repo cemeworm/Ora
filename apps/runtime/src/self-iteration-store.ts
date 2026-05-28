@@ -20,6 +20,7 @@ import {
   type ProjectInsight,
   type ProjectSignal,
   type ProjectSignalEvidence,
+  type SkillDescriptor,
   type SelfIterationCandidate,
   type SelfIterationCuratorTrigger,
   type SelfIterationPolicy,
@@ -54,6 +55,7 @@ export interface SelfIterationDerivationInput {
   runs: StateSnapshot[];
   evaluationRuns: EvaluationRun[];
   feedbackRecords: EvaluationFeedbackRecord[];
+  skills?: SkillDescriptor[];
   enrichCandidate?: (candidate: SelfIterationCandidate, input: SelfIterationDerivationInput) => Promise<SelfIterationCandidate>;
 }
 
@@ -64,6 +66,10 @@ export interface SelfIterationApplyDeps {
   applyModeCandidate(candidate: SelfIterationCandidate): unknown;
   captureBeforeSnapshot?(candidate: SelfIterationCandidate): unknown;
   rollbackSnapshot?(candidate: SelfIterationCandidate): unknown;
+}
+
+export interface SelfIterationScanDeps extends SelfIterationApplyDeps {
+  evaluateCandidate(candidate: SelfIterationCandidate): SelfIterationEvaluationOutcome | Promise<SelfIterationEvaluationOutcome>;
 }
 
 export interface SelfIterationEvaluationOutcome {
@@ -91,7 +97,7 @@ export class LocalSelfIterationStore {
     this.recoverOrphanedEvaluations();
   }
 
-  async scan(params: unknown, input: SelfIterationDerivationInput, deps: Pick<SelfIterationApplyDeps, "applyEvaluationCandidate">) {
+  async scan(params: unknown, input: SelfIterationDerivationInput, deps: SelfIterationScanDeps) {
     const parsed = SelfIterationScanParamsSchema.parse(params ?? {});
     const projectId = parsed.projectId ?? firstProjectId(input) ?? DEFAULT_PROJECT_ID;
     const generated = candidateGenerators(projectId, input, this.clock())
@@ -120,7 +126,7 @@ export class LocalSelfIterationStore {
     return SelfIterationScanResultSchema.parse({ run, candidates: upserted, autoApplied });
   }
 
-  async triggerCuratorScan(params: unknown, input: SelfIterationDerivationInput, deps: Pick<SelfIterationApplyDeps, "applyEvaluationCandidate">) {
+  async triggerCuratorScan(params: unknown, input: SelfIterationDerivationInput, deps: SelfIterationScanDeps) {
     const parsed = SelfIterationCuratorTriggerParamsSchema.parse(params ?? {});
     const projectId = parsed.projectId ?? firstProjectId(input) ?? DEFAULT_PROJECT_ID;
     const policy = this.policyForProject(projectId);
@@ -135,7 +141,15 @@ export class LocalSelfIterationStore {
     if (!parsed.force && typeof lastScanAt === "number" && now - lastScanAt < policy.scanCadenceMs) {
       return { scanned: false as const, reason: "cadence", projectId, trigger: parsed.trigger, lastScanAt };
     }
-    const result = await this.scan({ projectId }, input, deps);
+    const result = await this.scan({ projectId }, input, deps as SelfIterationScanDeps);
+    for (const candidate of result.candidates.filter((item) =>
+      item.targetKind === "skill" && item.targetRef.skillProvenance === "background_auto" && item.status === "draft"
+    )) {
+      const evaluated = await this.evaluateCandidate({ candidateId: candidate.id }, { evaluateCandidate: deps.evaluateCandidate });
+      if (evaluated.status === "ready") {
+        result.autoApplied.push(this.applyCandidate({ candidateId: evaluated.id, confirmed: true }, deps));
+      }
+    }
     this.state.curator[projectId] = { lastScanAt: now, lastTrigger: parsed.trigger };
     this.saveState();
     return { scanned: true as const, projectId, trigger: parsed.trigger, result };
@@ -561,15 +575,77 @@ function modeCandidates(projectId: string, input: SelfIterationDerivationInput, 
 }
 
 function skillCandidates(projectId: string, input: SelfIterationDerivationInput, now: number): SelfIterationCandidate[] {
+  const skills = input.skills ?? [];
+  const backgroundSkills = skills.filter((skill) => skill.provenance === "background_auto");
+  const candidates: SelfIterationCandidate[] = [];
+
+  for (const skill of backgroundSkills) {
+    const usage = skill.telemetry?.useCount ?? 0;
+    const patchCount = skill.telemetry?.patchCount ?? 0;
+    const lastUsedAt = skill.telemetry?.lastUsedAt ?? skill.updatedAt ?? skill.createdAt ?? now;
+    const ageMs = now - lastUsedAt;
+    const history = skill.governance?.history ?? [];
+
+    if ((skill.name.includes("auto-") || skill.lifecycle === "active") && usage <= 1 && ageMs >= 30 * 24 * 60 * 60 * 1000) {
+      candidates.push(buildSkillGovernanceCandidate({
+        projectId,
+        now,
+        skill,
+        operation: "skills.archive",
+        title: `Archive stale skill ${skill.name}`,
+        summary: "A background-created skill has gone unused long enough to archive safely.",
+        evidence: skillEvidence(skill, "stale", "Low-usage background skill is a candidate for archival."),
+        after: { name: skill.name, lifecycle: "archived" },
+      }));
+      continue;
+    }
+
+    if (skill.lifecycle === "active" && usage <= 2 && ageMs >= 14 * 24 * 60 * 60 * 1000) {
+      candidates.push(buildSkillGovernanceCandidate({
+        projectId,
+        now,
+        skill,
+        operation: "skills.transitionLifecycle",
+        title: `Mark ${skill.name} as stale`,
+        summary: "Background-created skill usage is low enough to mark stale before archival review.",
+        evidence: skillEvidence(skill, "stale", "Usage is low and the skill is aging."),
+        after: { name: skill.name, lifecycle: "stale" },
+      }));
+    }
+
+    if (patchCount >= 3 && history.some((entry) => entry.action === "patch")) {
+      const sibling = backgroundSkills.find((other) =>
+        other.name !== skill.name
+        && other.description === skill.description
+        && (other.telemetry?.useCount ?? 0) <= (usage + 1)
+      );
+      if (sibling) {
+        candidates.push(buildSkillGovernanceCandidate({
+          projectId,
+          now,
+          skill,
+          operation: "skills.merge",
+          title: `Merge ${skill.name} with ${sibling.name}`,
+          summary: "Two background-created skills appear redundant and should be consolidated.",
+          evidence: [
+            skillEvidence(skill, "merge", "This skill has repeated patch history and looks similar to a sibling skill."),
+            skillEvidence(sibling, "merge", "A similar background skill exists with comparable usage."),
+          ],
+          after: { name: skill.name, mergeInto: sibling.name },
+        }));
+      }
+    }
+  }
+
   const successful = input.runs.filter((run) => run.status === "succeeded" && run.toolCalls.length >= 2).slice(0, 1);
-  return successful.map((run) => {
+  for (const run of successful) {
     const skillName = `learned-${run.modeId ?? run.pattern}`.replace(/[^a-z0-9-]/gi, "-").toLowerCase().replace(/-+/g, "-").replace(/^-|-$/g, "").slice(0, 48) || "learned-workflow";
     const content = `---\nname: ${skillName}\ndescription: Evidence-backed workflow distilled from a successful Ora run.\n---\nUse this skill when a request resembles run ${run.runId}. Start by restating success criteria, inspect relevant context, execute the minimum necessary tools, and verify the outcome before final response.\n`;
-    return buildCandidate({
+    candidates.push(buildCandidate({
       id: `${projectId}:self:skill:${run.runId}`,
       projectId,
       targetKind: "skill",
-      targetRef: { kind: "skill", id: skillName, skillName },
+      targetRef: { kind: "skill", id: skillName, skillName, skillProvenance: "background_auto" },
       title: `Create skill draft from ${run.runId}`,
       summary: "A successful multi-tool workflow can be captured as procedural memory.",
       evidence: [runEvidence(run)],
@@ -578,12 +654,67 @@ function skillCandidates(projectId: string, input: SelfIterationDerivationInput,
         title: `Create ${skillName}`,
         summary: "Create a private editable skill draft from the observed workflow.",
         after: { name: skillName, description: "Evidence-backed workflow distilled from a successful Ora run.", content },
-        metadata: { runId: run.runId, skillName },
+        metadata: { runId: run.runId, skillName, skillProvenance: "background_auto" },
       },
       riskLevel: "high",
       now,
-    });
+    }));
+  }
+
+  return candidates;
+}
+
+function buildSkillGovernanceCandidate(params: {
+  projectId: string;
+  now: number;
+  skill: SkillDescriptor;
+  operation: string;
+  title: string;
+  summary: string;
+  evidence: ProjectSignalEvidence[];
+  after: Record<string, unknown>;
+}): SelfIterationCandidate {
+  return buildCandidate({
+    id: `${params.projectId}:self:skill:${params.operation}:${params.skill.name}`,
+    projectId: params.projectId,
+    targetKind: "skill",
+    targetRef: {
+      kind: "skill",
+      id: params.skill.name,
+      skillName: params.skill.name,
+      skillProvenance: "background_auto",
+    },
+    title: params.title,
+    summary: params.summary,
+    evidence: params.evidence,
+    proposedChange: {
+      operation: params.operation,
+      title: params.title,
+      summary: params.summary,
+      after: params.after,
+      metadata: {
+        skillName: params.skill.name,
+        skillProvenance: "background_auto",
+        lifecycle: params.skill.lifecycle,
+      },
+    },
+    riskLevel: "high",
+    now: params.now,
   });
+}
+
+function skillEvidence(skill: SkillDescriptor, kind: string, summary: string): ProjectSignalEvidence {
+  return {
+    id: `${kind}:${skill.id}`,
+    label: `Skill governance evidence (${kind})`,
+    summary,
+    target: {
+      kind: "project_file",
+      id: skill.id,
+      projectFilePath: skill.path,
+      tabHint: "skill",
+    },
+  };
 }
 
 function buildCandidate(params: Omit<SelfIterationCandidate, "status" | "createdAt" | "updatedAt"> & { now: number }) {
@@ -599,14 +730,19 @@ function buildCandidate(params: Omit<SelfIterationCandidate, "status" | "created
 function requiresConfirmation(candidate: SelfIterationCandidate, policy: SelfIterationPolicy) {
   if (candidate.targetKind === "prompt") return policy.promptApplyRequiresConfirmation;
   if (candidate.targetKind === "mode") return policy.modeApplyRequiresConfirmation;
-  if (candidate.targetKind === "skill") return policy.skillApplyRequiresConfirmation;
+  if (candidate.targetKind === "skill") {
+    if (candidate.targetRef.skillProvenance === "background_auto") {
+      return false;
+    }
+    return policy.skillApplyRequiresConfirmation;
+  }
   return false;
 }
 
 function applyCandidateChange(candidate: SelfIterationCandidate, deps: Partial<SelfIterationApplyDeps>) {
   const result = candidate.targetKind === "evaluation" ? deps.applyEvaluationCandidate?.(candidate) ?? { applied: true }
     : candidate.targetKind === "prompt" ? deps.applyPromptCandidate?.(candidate) ?? { applied: true }
-      : candidate.targetKind === "skill" ? deps.applySkillCandidate?.(candidate) ?? { applied: true }
+      : candidate.targetKind === "skill" ? applySkillCandidateChange(candidate, deps)
         : candidate.targetKind === "mode" ? deps.applyModeCandidate?.(candidate) ?? { applied: true }
           : { applied: true };
   const evaluation = selfIterationEvaluationMetadata(candidate);
@@ -614,6 +750,20 @@ function applyCandidateChange(candidate: SelfIterationCandidate, deps: Partial<S
   return evaluation.scoreEvidence
     ? { result, evaluation, scoreEvidence: evaluation.scoreEvidence }
     : { result, evaluation };
+}
+
+function applySkillCandidateChange(candidate: SelfIterationCandidate, deps: Partial<SelfIterationApplyDeps>) {
+  const operation = String(candidate.proposedChange.operation);
+  if (operation === "skills.merge") {
+    return deps.applySkillCandidate?.(candidate) ?? { applied: true, operation };
+  }
+  if (operation === "skills.archive") {
+    return deps.applySkillCandidate?.(candidate) ?? { applied: true, operation };
+  }
+  if (candidate.proposedChange.after && typeof candidate.proposedChange.after === "object" && "lifecycle" in candidate.proposedChange.after) {
+    return deps.applySkillCandidate?.(candidate) ?? { applied: true, operation };
+  }
+  return deps.applySkillCandidate?.(candidate) ?? { applied: true, operation };
 }
 
 function selfIterationEvaluationMetadata(candidate: SelfIterationCandidate): Record<string, unknown> | undefined {

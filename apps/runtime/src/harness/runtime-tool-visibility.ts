@@ -293,10 +293,8 @@ function bundlePreflightForVisibility(
         blockWith(["repo_search", "repo_explore"], "repo_read_surface_unavailable");
         break;
       }
-      if (!hasApplyPatch && hasFilePatch) {
-        degradeWith(["repo_apply_patch"], "apply_patch_unavailable_fallback_patch");
-      } else if (!hasApplyPatch) {
-        blockWith(["repo_apply_patch", "repo_patch"], "builder_write_without_patch_capability");
+      if (!hasFilePatch && !hasApplyPatch) {
+        blockWith(["repo_patch", "repo_apply_patch"], "builder_write_without_patch_capability");
       }
       break;
     case "review_readonly":

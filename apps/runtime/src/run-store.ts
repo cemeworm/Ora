@@ -3379,6 +3379,27 @@ export class LocalRunStore {
   async scanSelfIteration(params: unknown = {}) {
     const result = await this.selfIterationStore.scan(params, this.selfIterationInput(), {
       applyEvaluationCandidate: (candidate) => this.applyEvaluationSelfIterationCandidate(candidate),
+      applySkillCandidate: (candidate) => this.applySkillSelfIterationCandidate(candidate),
+      applyPromptCandidate: (candidate) => this.applyPromptSelfIterationCandidate(candidate),
+      applyModeCandidate: (candidate) => this.applyModeSelfIterationCandidate(candidate),
+      captureBeforeSnapshot: (candidate) => this.captureSelfIterationBeforeSnapshot(candidate),
+      evaluateCandidate: async (candidate) => {
+        const safetyResult = await this.runSelfIterationEvaluation(candidate);
+        if (candidate.targetKind === "evaluation" || !safetyResult.passed) {
+          return safetyResult;
+        }
+        const impactResult = await this.runSelfIterationImpactEvaluation(candidate);
+        if (!impactResult) return safetyResult;
+        return {
+          ...safetyResult,
+          passed: impactResult.passed,
+          message: impactResult.message,
+          metadata: {
+            ...safetyResult.metadata,
+            ...(impactResult.impactEvaluation ? { impactEvaluation: impactResult.impactEvaluation } : {}),
+          },
+        };
+      },
     });
     await this.verifyPendingSelfIterationCandidates();
     return result;
@@ -3478,7 +3499,29 @@ export class LocalRunStore {
     if (candidate.targetKind === "skill") {
       const skillName = candidate.targetRef.skillName ?? String(candidate.proposedChange.metadata.skillName ?? "");
       const skill = skillName ? this.skillRegistry.get({ name: skillName }) : undefined;
-      return { kind: "skill", skillName, content: skill?.content };
+      const files = skill?.files?.map((file) => {
+        const detail = this.skillRegistry.getFile({ skillName, path: file.path });
+        return {
+          path: detail.path,
+          content: detail.content,
+          executable: detail.executable,
+        };
+      }) ?? [];
+      return {
+        kind: "skill",
+        skillName,
+        existed: Boolean(skill),
+        createdAt: skill?.createdAt,
+        updatedAt: skill?.updatedAt,
+        description: skill?.description,
+        enabled: skill?.enabled,
+        content: skill?.content,
+        files,
+        telemetry: skill?.telemetry,
+        governance: skill?.governance,
+        provenance: skill?.provenance,
+        lifecycle: skill?.lifecycle,
+      };
     }
     return { kind: candidate.targetKind };
   }
@@ -3501,13 +3544,54 @@ export class LocalRunStore {
         });
       }
     }
-    if (snapshot.kind === "skill" && typeof snapshot.skillName === "string" && typeof snapshot.content === "string") {
+    if (snapshot.kind === "skill" && typeof snapshot.skillName === "string") {
+      const lifecycle = typeof snapshot.lifecycle === "string" ? snapshot.lifecycle : undefined;
       try { this.skillRegistry.delete({ name: snapshot.skillName }); } catch { /* ignore */ }
+      if (snapshot.existed !== true || typeof snapshot.content !== "string") {
+        return;
+      }
       this.skillRegistry.create({
         name: snapshot.skillName,
+        description: typeof snapshot.description === "string" ? snapshot.description : "",
         content: snapshot.content,
-        enabled: true,
+        files: Array.isArray(snapshot.files) ? snapshot.files as Array<{ path: string; content: string; executable?: boolean }> : undefined,
+        enabled: snapshot.enabled !== false,
+        provenance: snapshot.provenance === "background_auto" ? "background_auto" : "foreground",
       });
+      try {
+        this.skillRegistry.restoreState(snapshot.skillName, {
+          enabled: snapshot.enabled !== false,
+          createdAt: typeof snapshot.createdAt === "number" ? snapshot.createdAt : undefined,
+          updatedAt: typeof snapshot.updatedAt === "number" ? snapshot.updatedAt : undefined,
+          provenance: snapshot.provenance === "background_auto" ? "background_auto" : "foreground",
+          lifecycle: lifecycle as "active" | "stale" | "archived" | undefined,
+          telemetry: snapshot.telemetry && typeof snapshot.telemetry === "object" ? snapshot.telemetry as {
+            useCount?: number;
+            viewCount?: number;
+            patchCount?: number;
+            lastUsedAt?: number;
+          } : undefined,
+          governance: snapshot.governance && typeof snapshot.governance === "object"
+            ? snapshot.governance as {
+              origin?: string;
+              lastAction?: string;
+              lastActionAt?: number;
+              lastRunId?: string;
+              lastCandidateId?: string;
+              history?: Array<{ action: string; at: number; runId?: string; candidateId?: string; note?: string }>;
+              rollback?: { lastAction?: string; before?: string; at?: number; runId?: string; candidateId?: string };
+            }
+            : undefined,
+        });
+      } catch {
+        if (lifecycle && lifecycle !== "active") {
+          try {
+            this.skillRegistry.transitionLifecycle(snapshot.skillName, lifecycle as "stale" | "archived");
+          } catch {
+            // best-effort rollback
+          }
+        }
+      }
     }
     if (snapshot.kind === "mode" && typeof snapshot.modeId === "string" && snapshot.spec) {
       const tempId = `${snapshot.modeId}-rollback-tmp-${this.now()}`;
@@ -4771,6 +4855,27 @@ export class LocalRunStore {
     try {
       await this.selfIterationStore.triggerCuratorScan({ projectId, trigger }, this.selfIterationInput(), {
         applyEvaluationCandidate: (candidate) => this.applyEvaluationSelfIterationCandidate(candidate),
+        applySkillCandidate: (candidate) => this.applySkillSelfIterationCandidate(candidate),
+        applyPromptCandidate: (candidate) => this.applyPromptSelfIterationCandidate(candidate),
+        applyModeCandidate: (candidate) => this.applyModeSelfIterationCandidate(candidate),
+        captureBeforeSnapshot: (candidate) => this.captureSelfIterationBeforeSnapshot(candidate),
+        evaluateCandidate: async (candidate) => {
+          const safetyResult = await this.runSelfIterationEvaluation(candidate);
+          if (candidate.targetKind === "evaluation" || !safetyResult.passed) {
+            return safetyResult;
+          }
+          const impactResult = await this.runSelfIterationImpactEvaluation(candidate);
+          if (!impactResult) return safetyResult;
+          return {
+            ...safetyResult,
+            passed: impactResult.passed,
+            message: impactResult.message,
+            metadata: {
+              ...safetyResult.metadata,
+              ...(impactResult.impactEvaluation ? { impactEvaluation: impactResult.impactEvaluation } : {}),
+            },
+          };
+        },
       });
     } catch {
       // Curator scans are opportunistic and must not affect the foreground run.
@@ -5954,6 +6059,7 @@ export class LocalRunStore {
       runs: feedbackLoopInput.runs,
       evaluationRuns: feedbackLoopInput.evaluationRuns,
       feedbackRecords: feedbackLoopInput.feedbackRecords,
+      skills: this.skillRegistry.list(),
       enrichCandidate: (candidate: SelfIterationCandidate, _input: SelfIterationDerivationInput) => this.enrichSelfIterationCandidate(candidate),
     };
   }
@@ -6126,6 +6232,19 @@ export class LocalRunStore {
   private async runSkillImpactEvaluation(candidate: SelfIterationCandidate) {
     const after = candidate.proposedChange.after;
     if (!after || typeof after !== "object") return undefined;
+    const operation = String(candidate.proposedChange.operation);
+    if (operation === "skills.archive" || operation === "skills.transitionLifecycle" || operation === "skills.merge") {
+      return {
+        evaluationRunId: candidate.evaluationRunId,
+        passed: true,
+        message: `Governance impact check passed for skill candidate ${candidate.id}.`,
+        impactEvaluation: {
+          targetKind: candidate.targetKind,
+          governanceOnly: true,
+          operation,
+        },
+      };
+    }
     const draft = after as { name?: unknown; description?: unknown; content?: unknown };
     const skillContent = typeof draft.content === "string" ? draft.content : undefined;
     if (!skillContent) return undefined;
@@ -6389,12 +6508,47 @@ export class LocalRunStore {
   private applySkillSelfIterationCandidate(candidate: SelfIterationCandidate) {
     const after = candidate.proposedChange.after;
     if (!after || typeof after !== "object") return { applied: false, reason: "Skill candidate has no package draft." };
+    const operation = String(candidate.proposedChange.operation);
     const draft = after as { name?: unknown; description?: unknown; content?: unknown };
+    const name = String(draft.name ?? candidate.targetRef.skillName ?? "learned-workflow");
+    const content = typeof draft.content === "string" ? draft.content : undefined;
+    if (operation === "skills.archive") {
+      this.skillRegistry.transitionLifecycle(name, "archived", `auto governance: ${candidate.id}`);
+      return { applied: true, operation, skillName: name, lifecycle: "archived" };
+    }
+    if (operation === "skills.transitionLifecycle" || typeof (draft as { lifecycle?: unknown }).lifecycle === "string") {
+      const lifecycle = String((draft as { lifecycle?: unknown }).lifecycle ?? "stale") as "stale" | "archived";
+      this.skillRegistry.transitionLifecycle(name, lifecycle, `auto governance: ${candidate.id}`);
+      return { applied: true, operation, skillName: name, lifecycle };
+    }
+    if (operation === "skills.merge") {
+      const mergeInto = String((draft as { mergeInto?: unknown }).mergeInto ?? "");
+      if (!mergeInto) {
+        return { applied: false, reason: "Merge candidate is missing mergeInto." };
+      }
+      this.skillRegistry.transitionLifecycle(name, "archived", `merged into ${mergeInto} by ${candidate.id}`);
+      return { applied: true, operation, skillName: name, mergedInto: mergeInto };
+    }
+    const existing = (() => {
+      try {
+        return this.skillRegistry.get({ name });
+      } catch {
+        return undefined;
+      }
+    })();
+    if (existing?.editable) {
+      return this.skillRegistry.update({
+        name,
+        content: content ?? existing.content,
+      });
+    }
     return this.skillRegistry.create({
-      name: String(draft.name ?? candidate.targetRef.skillName ?? "learned-workflow"),
+      name,
       description: String(draft.description ?? candidate.proposedChange.summary),
-      content: typeof draft.content === "string" ? draft.content : undefined,
+      content,
       enabled: true,
+      provenance: candidate.targetRef.skillProvenance === "background_auto" ? "background_auto" : "foreground",
+      autoCreateTrigger: String(candidate.proposedChange.metadata.runId ?? candidate.id),
     });
   }
 

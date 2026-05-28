@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { readTextFile, sniffTextFile } from "./text-file-sniffer.js";
 import { relativeWorkspacePath, resolveWorkspacePath } from "./runtime-tool-utils.js";
 import { getShellExecutionContext } from "./shell-snapshot.js";
 
@@ -88,7 +89,8 @@ export const localWorkspaceOperations: WorkspaceOperations = {
         skippedReason: "too_large",
       };
     }
-    if (isBinaryFile(absolutePath)) {
+    const sniffed = sniffTextFile(absolutePath);
+    if (sniffed.kind === "binary") {
       return {
         path: relativePath,
         absolutePath,
@@ -102,7 +104,7 @@ export const localWorkspaceOperations: WorkspaceOperations = {
       path: relativePath,
       absolutePath,
       sizeBytes: stat.size,
-      content: fs.readFileSync(absolutePath, "utf8"),
+      content: readTextFile(absolutePath, sniffed.encoding),
       binary: false,
     };
   },
@@ -156,8 +158,9 @@ export const localWorkspaceOperations: WorkspaceOperations = {
       if (include && !include.test(relative)) continue;
       const stat = fs.statSync(filePath);
       if (stat.size > options.maxBytes) continue;
-      if (isBinaryFile(filePath)) continue;
-      const lines = fs.readFileSync(filePath, "utf8").split(/\r?\n/);
+      const sniffed = sniffTextFile(filePath);
+      if (sniffed.kind === "binary") continue;
+      const lines = readTextFile(filePath, sniffed.encoding).split(/\r?\n/);
       for (let index = 0; index < lines.length; index += 1) {
         const line = lines[index]!;
         const haystack = caseSensitive ? line : line.toLowerCase();
@@ -261,24 +264,6 @@ function killProcessTree(child: ReturnType<typeof spawn>): void {
     }
   } catch {
     child.kill("SIGTERM");
-  }
-}
-
-const BINARY_SNIFF_BYTES = 4096;
-
-function isBinaryFile(filePath: string): boolean {
-  const fd = fs.openSync(filePath, "r");
-  try {
-    const buffer = Buffer.alloc(BINARY_SNIFF_BYTES);
-    const bytesRead = fs.readSync(fd, buffer, 0, buffer.length, 0);
-    if (bytesRead === 0) return false;
-    for (let index = 0; index < bytesRead; index += 1) {
-      if (buffer[index] === 0) return true;
-    }
-    const sample = buffer.subarray(0, bytesRead).toString("utf8");
-    return sample.includes("�");
-  } finally {
-    fs.closeSync(fd);
   }
 }
 

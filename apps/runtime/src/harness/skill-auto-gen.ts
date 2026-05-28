@@ -23,6 +23,7 @@ export interface FingerprintEntry {
   firstSeenAt: number;
   lastSeenAt: number;
   created: boolean;
+  creating?: boolean;
   createdSkillName?: string;
 }
 
@@ -95,6 +96,11 @@ export class SkillAutoGenService {
 
     const entry = upsertFingerprint(state, fingerprint, runId, this.options.clock());
 
+    if (entry.created || entry.creating) {
+      saveState(this.options.statePath, state);
+      return null;
+    }
+
     // L2 gate: min occurrences AND min time span
     if (!passesAggregateGate(entry, this.options)) {
       saveState(this.options.statePath, state);
@@ -116,8 +122,8 @@ export class SkillAutoGenService {
       return null;
     }
 
-    // Mark as created immediately to prevent race conditions
-    entry.created = true;
+    // Mark as creating so repeated scans do not re-queue while the async create is in flight.
+    entry.creating = true;
     entry.createdSkillName = candidateName;
     saveState(this.options.statePath, state);
 
@@ -137,6 +143,7 @@ export class SkillAutoGenService {
     try {
       const skillContent = await generateSkillBody(action, config);
       if (!skillContent) {
+        this.clearCreatingState(action.fingerprint.fingerprintKey);
         return;
       }
 
@@ -147,11 +154,13 @@ export class SkillAutoGenService {
         provenance: "background_auto",
       });
 
+      this.markCreated(action.fingerprint.fingerprintKey, action.candidateName);
       // Tag is embedded in the skill body's frontmatter; re-reading the skill
       // would confirm it, but the registry stores the tag via the state.
     } catch (err) {
+      this.clearCreatingState(action.fingerprint.fingerprintKey);
       // Fire-and-forget: log but don't crash. The fingerprint is already
-      // marked as created so it won't be re-triggered.
+      // marked as in-flight so it won't be re-triggered until recovery.
       console.error(
         `[SkillAutoGen] Failed to create skill "${action.candidateName}":`,
         err instanceof Error ? err.message : String(err),
@@ -165,6 +174,28 @@ export class SkillAutoGenService {
     return this.skillRegistry
       .list()
       .find((skill) => (skill.tags ?? []).includes(tag));
+  }
+
+  private markCreated(fingerprintKey: string, createdSkillName: string): void {
+    const state = loadState(this.options.statePath);
+    const entry = state.fingerprints[fingerprintKey];
+    if (!entry) {
+      return;
+    }
+    entry.created = true;
+    entry.creating = false;
+    entry.createdSkillName = createdSkillName;
+    saveState(this.options.statePath, state);
+  }
+
+  private clearCreatingState(fingerprintKey: string): void {
+    const state = loadState(this.options.statePath);
+    const entry = state.fingerprints[fingerprintKey];
+    if (!entry) {
+      return;
+    }
+    entry.creating = false;
+    saveState(this.options.statePath, state);
   }
 }
 

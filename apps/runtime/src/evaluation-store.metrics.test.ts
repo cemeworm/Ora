@@ -18,6 +18,9 @@ const resolverWorkflowObjective = EvaluationObjectiveSchema.parse({
     "atomic_tool_hops",
     "first_locate_success",
     "shell_explore_restraint",
+    "read_first_score",
+    "tool_hop_efficiency",
+    "first_search_success",
   ],
 });
 
@@ -133,6 +136,10 @@ describe("resolver-aware evaluation metrics", () => {
     expect(byId.get("atomic_tool_hops")?.passed).toBe(true);
     expect(byId.get("first_locate_success")?.score).toBe(1);
     expect(byId.get("shell_explore_restraint")?.score).toBe(1);
+    // New atomic-tool-aligned alias metrics return identical scores
+    expect(byId.get("read_first_score")?.score).toBe(byId.get("explore_first_score")?.score);
+    expect(byId.get("tool_hop_efficiency")?.score).toBe(byId.get("atomic_tool_hops")?.score);
+    expect(byId.get("first_search_success")?.score).toBe(byId.get("first_locate_success")?.score);
   });
 
   it("penalizes shell-first atomic fallback workflows", () => {
@@ -187,6 +194,10 @@ describe("resolver-aware evaluation metrics", () => {
     expect(byId.get("atomic_tool_hops")?.score).toBeLessThan(0.7);
     expect(byId.get("first_locate_success")?.score).toBeLessThan(0.7);
     expect(byId.get("shell_explore_restraint")?.score).toBeLessThan(0.7);
+    // Shell-first workflow: new atomic-aligned aliases match old metrics
+    expect(byId.get("read_first_score")?.score).toBeLessThan(0.7);
+    expect(byId.get("tool_hop_efficiency")?.score).toBeLessThan(0.7);
+    expect(byId.get("first_search_success")?.score).toBeLessThan(0.7);
   });
 
   it("respects single_agent chat surface when rebuilding resolver visibility", () => {

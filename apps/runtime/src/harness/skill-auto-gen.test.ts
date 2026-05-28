@@ -405,6 +405,37 @@ describe("executeCreation", () => {
     // Skill should NOT exist
     expect(() => registry.get({ name: "auto-file-ops-complex-test2" })).toThrow();
   });
+
+  it("keeps fingerprint retryable when async creation fails", async () => {
+    const registry = freshRegistry();
+    const statePath = freshStatePath();
+    const service = new SkillAutoGenService(registry, {
+      statePath,
+      minOccurrences: 1,
+      minTimeSpanHours: 0,
+    });
+
+    const calls = [
+      toolCall({ id: "a", toolId: "file.read" }),
+      toolCall({ id: "b", toolId: "file.write" }),
+      toolCall({ id: "c", toolId: "git.status" }),
+    ];
+    const action = service.analyzeRun("run-1", "succeeded", calls);
+    expect(action).not.toBeNull();
+
+    const analyzedState = loadState(statePath);
+    const analyzedEntry = analyzedState.fingerprints[action!.fingerprint.fingerprintKey];
+    expect(analyzedEntry?.creating).toBe(true);
+    expect(analyzedEntry?.created).toBe(false);
+
+    (invokeRunProvider as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("Provider unavailable"));
+    await service.executeCreation(action!, mockRunConfig());
+
+    const failedState = loadState(statePath);
+    const failedEntry = failedState.fingerprints[action!.fingerprint.fingerprintKey];
+    expect(failedEntry?.creating).toBe(false);
+    expect(failedEntry?.created).toBe(false);
+  });
 });
 
 // ─── Test 11: persistence round-trip ─────────────────────────────────────────

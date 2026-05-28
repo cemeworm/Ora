@@ -95,8 +95,10 @@ function applyRuntimeSelfIterationCandidate(registry: SelfIterationRegistryTools
   if (!registry) {
     throw new Error("A Self-Iteration registry is required for selfIteration.apply.");
   }
-  if (!approved) {
+  const candidate = registry.getSelfIterationCandidate(args);
+  const autoManagedSkill = candidate.targetKind === "skill" && candidate.targetRef.skillProvenance === "background_auto";
+  if (!approved && !autoManagedSkill) {
     throw new Error("selfIteration.apply requires user approval before execution.");
   }
-  return registry.applySelfIterationCandidate({ ...args, confirmed: approved });
+  return registry.applySelfIterationCandidate({ ...args, confirmed: approved || autoManagedSkill });
 }

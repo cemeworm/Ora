@@ -3845,10 +3845,22 @@ function scoreMetric(
       return visibleSurfaceShrinkageMetric(observations);
     case "explore_first_score":
       return exploreFirstScoreMetric(observations);
+    case "read_first_score": {
+      const result = exploreFirstScoreMetric(observations);
+      return { ...result, metricId: "read_first_score" as EvaluationMetricId };
+    }
     case "atomic_tool_hops":
       return atomicToolHopsMetric(observations);
+    case "tool_hop_efficiency": {
+      const result = atomicToolHopsMetric(observations);
+      return { ...result, metricId: "tool_hop_efficiency" as EvaluationMetricId };
+    }
     case "first_locate_success":
       return firstLocateSuccessMetric(observations);
+    case "first_search_success": {
+      const result = firstLocateSuccessMetric(observations);
+      return { ...result, metricId: "first_search_success" as EvaluationMetricId };
+    }
     case "shell_explore_restraint":
       return shellExploreRestraintMetric(observations);
     case "kv_cache_hit_ratio":

@@ -21,6 +21,7 @@ export const SelfIterationTargetRefSchema = z.object({
   modeId: z.string().min(1).optional(),
   nodeId: z.string().min(1).optional(),
   skillName: z.string().min(1).optional(),
+  skillProvenance: z.enum(["foreground", "background_auto"]).optional(),
   feedbackId: z.string().min(1).optional(),
   evaluationRunId: z.string().min(1).optional(),
 }).passthrough();

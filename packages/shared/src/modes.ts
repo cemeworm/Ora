@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { ActionRiskLevelSchema, DEFAULT_MODE_RECOVERY_POLICY, ModeRecoveryPolicySchema } from "./actions.js";
 import { DEFAULT_AGENT_MODE_TOOL_IDS, ToolCapabilityGroupSchema, visibleToolIdsForPreset } from "./capabilities.js";
-import { AgentProfileSchema, BuiltInCoordinationPatternSchema, CODE_DEVELOPMENT_MODE_ID, COMPLETION_POLICY_PRESETS, CoordinationPatternSchema, DEBATE_MODE_ID, DEEP_RESEARCH_MODE_ID, DEFAULT_MODE_RUNTIME_POLICY, MODE_STUDIO_BUILDER_MODE_ID, ModeCompletionPolicySchema, ModeIdSchema, ModeRuntimePolicySchema, ORA_ROOT_AGENT_ID, ORA_ROOT_AGENT_LABEL, ResourceBudgetSchema, REVIEW_CRITIQUE_MODE_ID, SINGLE_AGENT_MODE_ID, completionPolicyForPreset } from "./primitives.js";
+import { AgentProfileSchema, BuiltInCoordinationPatternSchema, CODE_DEVELOPMENT_MODE_ID, COMPLETION_POLICY_PRESETS, CoordinationPatternSchema, DEBATE_MODE_ID, DEEP_RESEARCH_MODE_ID, DEFAULT_MODE_RUNTIME_POLICY, DEERFLOW_HARNESS_MODE_ID, DYNAMIC_ORCHESTRATOR_MODE_ID, MODE_STUDIO_BUILDER_MODE_ID, ModeCompletionPolicySchema, ModeIdSchema, ModeRuntimePolicySchema, ORA_ROOT_AGENT_ID, ORA_ROOT_AGENT_LABEL, ORA_SELF_BUILDER_MODE_ID, ResourceBudgetSchema, REVIEW_CRITIQUE_MODE_ID, SINGLE_AGENT_MODE_ID, completionPolicyForPreset } from "./primitives.js";
 import type { AgentProfile, BuiltInCoordinationPattern, CoordinationPattern, ModeCompletionPolicy, ModeRuntimePolicy, ResourceBudget } from "./primitives.js";
 import { TopologyEdgeSchema, TopologyNodeSchema } from "./topology.js";
 import type { TopologyEdge, TopologyNode } from "./topology.js";
@@ -2973,6 +2973,86 @@ export const MVP_MODES = [
 
 export const SYSTEM_MODE_PRESETS = [
   ...MVP_MODES,
+  createModeSpecFromPattern("generator_verifier"),
+  createModeSpecFromPattern("orchestrator_subagent"),
+  createModeSpecFromPattern("agent_teams"),
+  createModeSpecFromPattern("message_bus"),
+  createModeSpecFromPattern("shared_state"),
+  autoLayoutModeSpec(ModeSpecSchema.parse({
+    ...createModeSpecFromPattern("orchestrator_subagent"),
+    id: DYNAMIC_ORCHESTRATOR_MODE_ID,
+    label: "Dynamic Orchestrator",
+    summary: "Dynamic delegation orchestrator that decides whether to run research and review before synthesis.",
+    description: "System preset that reuses the orchestrator_subagent family but enables dynamic delegation planning.",
+    recommendedUse: "Use when the task may skip research or review depending on a structured delegation plan.",
+    failureMode: "If delegation planning is malformed, the preset falls back to the full orchestrator flow.",
+    systemPreset: true,
+    visibility: "user",
+    editorConstraints: {
+      ...createModeSpecFromPattern("orchestrator_subagent").editorConstraints,
+      readOnly: false,
+    },
+    runtimeAtoms: [...defaultRuntimeAtomsForFamily("orchestrator_subagent"), "dynamic_delegation"],
+    nodes: createModeSpecFromPattern("orchestrator_subagent").nodes.map((node) => ({
+      ...node,
+      config: node.id === "decompose"
+        ? {
+            ...node.config,
+            atoms: [...(node.config.atoms ?? []), "dynamic_delegation"],
+          }
+        : node.id === "research" || node.id === "review"
+          ? {
+              ...node.config,
+              atoms: [...(node.config.atoms ?? []), "subagent_delegate"],
+            }
+          : node.config,
+    })),
+  })),
+  autoLayoutModeSpec(ModeSpecSchema.parse({
+    ...createModeSpecFromPattern("agent_teams"),
+    id: ORA_SELF_BUILDER_MODE_ID,
+    label: "Ora Self Builder",
+    summary: "Ora self-iteration mode for package-aware build, verify, and promote flows.",
+    description: "System preset that reuses the agent_teams family for Ora self-upgrade and package governance.",
+    recommendedUse: "Use for Ora-owned self-build tasks that must produce build candidates and promotion-ready packages.",
+    failureMode: "If package build or promotion capability is unavailable, the build path should fail before model execution.",
+    systemPreset: true,
+    visibility: "user",
+    editorConstraints: {
+      ...createModeSpecFromPattern("agent_teams").editorConstraints,
+      readOnly: false,
+    },
+    nodes: createModeSpecFromPattern("agent_teams").nodes.map((node) => ({
+      ...node,
+      config: node.id === "build"
+        ? {
+            ...node.config,
+            requiredCapabilityGroups: ["repo_read", "repo_explore", "repo_apply_patch", "package_build_candidate"],
+          }
+        : node.id === "check"
+          ? {
+              ...node.config,
+              requiredCapabilityGroups: ["package_verify"],
+            }
+          : node.id === "handoff"
+            ? {
+                ...node.config,
+                requiredCapabilityGroups: ["package_promote"],
+              }
+            : node.config,
+    })),
+  })),
+  autoLayoutModeSpec(ModeSpecSchema.parse({
+    ...createModeSpecFromPattern("orchestrator_subagent"),
+    id: DEERFLOW_HARNESS_MODE_ID,
+    label: "DeerFlow Harness",
+    summary: "DeerFlow-style orchestrator harness for mode selection and evaluation flows.",
+    description: "System preset that reuses the orchestrator_subagent family for DeerFlow-compatible harness scenarios.",
+    recommendedUse: "Use for harness and evaluation flows that expect orchestrator_subagent behavior with DeerFlow naming.",
+    failureMode: "If the harness is misrouted, the run should still fall back to the standard orchestrator_subagent flow.",
+    systemPreset: true,
+    visibility: "user",
+  })),
 ];
 
 export function getModePreset(modeId: string): ModeSpec | undefined {

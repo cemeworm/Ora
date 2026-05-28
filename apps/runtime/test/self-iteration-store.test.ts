@@ -619,6 +619,92 @@ describe("LocalSelfIterationStore", () => {
     });
   });
 
+  it("rolls back governed background_auto skills with package files and state metadata restored", async () => {
+    const dayMs = 24 * 60 * 60 * 1000;
+    let now = 0;
+    const dataDir = tempDir();
+    const runtime = new LocalRunStore({ dataDir, clock: () => now++ });
+    const projectId = "local-project";
+
+    runtime.createSkill({
+      name: "auto-skill-archive-target",
+      description: "Original archived target",
+      provenance: "background_auto",
+      content: [
+        "---",
+        "name: auto-skill-archive-target",
+        "description: Original archived target",
+        "---",
+        "",
+        "Original body",
+      ].join("\n"),
+      files: [{ path: "scripts/run.sh", content: "echo original\n", executable: true }],
+    });
+    runtime.setSkillEnabled({ name: "auto-skill-archive-target", enabled: false });
+    runtime.upsertSkillFile({
+      skillName: "auto-skill-archive-target",
+      path: "templates/example.txt",
+      content: "template v1\n",
+    });
+    runtime.updateSkill({
+      name: "auto-skill-archive-target",
+      content: [
+        "---",
+        "name: auto-skill-archive-target",
+        "description: Original archived target v2",
+        "---",
+        "",
+        "Original body v2",
+      ].join("\n"),
+    });
+
+    const baseline = runtime.getSkill({ name: "auto-skill-archive-target" });
+    expect(baseline.enabled).toBe(false);
+    expect(baseline.provenance).toBe("background_auto");
+    expect(baseline.files?.map((file) => file.path)).toEqual(expect.arrayContaining(["scripts/run.sh", "templates/example.txt"]));
+    expect(baseline.governance?.history?.length).toBeGreaterThan(1);
+    expect(baseline.telemetry?.patchCount).toBeGreaterThanOrEqual(1);
+
+    now = 100 * dayMs;
+
+    await runtime.scanSelfIteration({
+      projectId,
+      autoApplyEvaluation: false,
+    });
+
+    const candidate = runtime.listSelfIterationCandidates({ projectId, targetKind: "skill" })
+      .find((item) => item.proposedChange.operation === "skills.archive" && item.targetRef.skillName === "auto-skill-archive-target");
+    expect(candidate).toBeDefined();
+
+    const evaluated = await runtime.evaluateSelfIterationCandidate({ candidateId: candidate!.id });
+    expect(evaluated.status).toBe("ready");
+
+    const applied = runtime.applySelfIterationCandidate({ candidateId: candidate!.id });
+    expect(applied.status).toBe("applied");
+    expect(runtime.getSkill({ name: "auto-skill-archive-target" }).lifecycle).toBe("archived");
+
+    const rolled = runtime.rollbackSelfIterationCandidate({ candidateId: candidate!.id });
+    expect(rolled.status).toBe("rejected");
+
+    const restored = runtime.getSkill({ name: "auto-skill-archive-target" });
+    expect(restored.description).toBe(baseline.description);
+    expect(restored.enabled).toBe(baseline.enabled);
+    expect(restored.lifecycle).toBe(baseline.lifecycle);
+    expect(restored.provenance).toBe(baseline.provenance);
+    expect(restored.createdAt).toBe(baseline.createdAt);
+    expect(restored.updatedAt).toBe(baseline.updatedAt);
+    expect(restored.governance).toEqual(baseline.governance);
+    expect(restored.telemetry).toEqual(baseline.telemetry);
+    expect(restored.files?.map((file) => file.path).sort()).toEqual(baseline.files?.map((file) => file.path).sort());
+
+    const restoredScript = runtime.getSkillFile({ skillName: "auto-skill-archive-target", path: "scripts/run.sh" });
+    expect(restoredScript.content).toBe("echo original\n");
+    expect(restoredScript.executable).toBe(true);
+
+    const restoredTemplate = runtime.getSkillFile({ skillName: "auto-skill-archive-target", path: "templates/example.txt" });
+    expect(restoredTemplate.content).toBe("template v1\n");
+  });
+
   it("updates candidate verification status", async () => {
     const store = new LocalSelfIterationStore(tempDir(), () => 14000);
     const signal = recoverySignal();

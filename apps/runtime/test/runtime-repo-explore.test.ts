@@ -92,4 +92,27 @@ describe("repo.explore runtime tool", () => {
     expect(Array.isArray(output.gaps)).toBe(true);
     expect((output.nextActions as Array<Record<string, unknown>>)[0]?.kind).toBe("none");
   });
+
+  it("can explore utf16 text files without misclassifying them as binary", async () => {
+    const { workspace } = createWorkspace();
+    fs.writeFileSync(
+      path.join(workspace.rootPath, "src", "utf16-note.md"),
+      Buffer.from([0xff, 0xfe, ...Buffer.from("auth middleware lives here\n", "utf16le")]),
+    );
+    const executor = new RuntimeToolExecutor({ workspace, toolDescriptors: MVP_TOOLS });
+
+    const result = await executor.execute({
+      tool: "repo.explore" as never,
+      args: {
+        goal: "Find auth middleware notes",
+        kind: "trace",
+        subject: "middleware",
+        scope: { includeGlobs: ["**/*.md"] },
+      },
+    });
+
+    const output = result as Record<string, unknown>;
+    expect(output.status).toBe("answered");
+    expect(output.relatedPaths).toContain("src/utf16-note.md");
+  });
 });
