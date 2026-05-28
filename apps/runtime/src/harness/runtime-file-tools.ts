@@ -14,6 +14,7 @@ import {
 import { approvalRequestLanguage, stringArg } from "./runtime-tool-approval.js";
 import { withWorkspaceFileMutationQueue } from "./runtime-file-mutation-queue.js";
 import { applyPatchToolRuntimeFields } from "./runtime-patch-tool.js";
+import { readTextFile, sniffTextFile } from "./text-file-sniffer.js";
 
 const SKIPPED_DIRS = new Set([".git", ".next", ".turbo", ".ora", "build", "coverage", "dist", "node_modules", "target"]);
 const SKIPPED_FILE_SUFFIXES = [
@@ -25,8 +26,6 @@ const SKIPPED_FILE_SUFFIXES = [
   ".sqlite-wal",
   ".wal",
 ];
-const BINARY_SNIFF_BYTES = 4096;
-
 type SkippedWorkspaceFile = {
   path: string;
   reason: "default_excluded" | "too_large" | "binary" | "missing_during_walk";
@@ -246,7 +245,8 @@ async function readLocalFile(
   if (stat.size > context.limits.fileReadMaxBytes) {
     throw new Error(`file.read target is too large (${stat.size} bytes).`);
   }
-  if (isProbablyBinaryFile(absolutePath)) {
+  const sniffed = sniffTextFile(absolutePath);
+  if (sniffed.kind === "binary") {
     return {
       ...targetScopeOutput(target),
       path: resolvedTarget.displayPath,
@@ -262,7 +262,7 @@ async function readLocalFile(
         : {}),
     };
   }
-  const content = fs.readFileSync(absolutePath, "utf8");
+  const content = readTextFile(absolutePath, sniffed.encoding);
   const range = readLineRange(content, args);
   if (range) {
     return {
@@ -608,11 +608,12 @@ function grepLocalFiles(target: ResolvedFileToolTarget, args: Record<string, unk
       skipped.push({ path: displayPathFor(target, filePath), reason: "too_large", sizeBytes: stat.size });
       continue;
     }
-    if (isProbablyBinaryFile(filePath)) {
+    const sniffed = sniffTextFile(filePath);
+    if (sniffed.kind === "binary") {
       skipped.push({ path: displayPathFor(target, filePath), reason: "binary", sizeBytes: stat.size });
       continue;
     }
-    const lines = fs.readFileSync(filePath, "utf8").split(/\r?\n/);
+    const lines = readTextFile(filePath, sniffed.encoding).split(/\r?\n/);
     for (let index = 0; index < lines.length; index += 1) {
       const line = lines[index]!;
       const haystack = caseSensitive ? line : line.toLowerCase();
@@ -1026,26 +1027,6 @@ function isDefaultExcludedFile(relativePath: string): boolean {
   const normalized = relativePath.split(path.sep).join("/");
   const basename = path.basename(normalized).toLowerCase();
   return SKIPPED_FILE_SUFFIXES.some((suffix) => basename.endsWith(suffix));
-}
-
-function isProbablyBinaryFile(filePath: string): boolean {
-  const fd = fs.openSync(filePath, "r");
-  try {
-    const buffer = Buffer.alloc(BINARY_SNIFF_BYTES);
-    const bytesRead = fs.readSync(fd, buffer, 0, buffer.length, 0);
-    if (bytesRead === 0) {
-      return false;
-    }
-    for (let index = 0; index < bytesRead; index += 1) {
-      if (buffer[index] === 0) {
-        return true;
-      }
-    }
-    const sample = buffer.subarray(0, bytesRead).toString("utf8");
-    return sample.includes("\uFFFD");
-  } finally {
-    fs.closeSync(fd);
-  }
 }
 
 function globToRegExp(pattern: string): RegExp {

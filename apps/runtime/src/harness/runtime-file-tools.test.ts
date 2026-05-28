@@ -810,4 +810,56 @@ describe("runtime file tools", () => {
       content: "export const stateTsx = 1;\n",
     });
   });
+
+  it("reads utf16 markdown files instead of treating them as binary", async () => {
+    const rootPath = tempWorkspace();
+    const filePath = path.join(rootPath, "notes.md");
+    fs.writeFileSync(filePath, Buffer.from([0xff, 0xfe, ...Buffer.from("# hi\n", "utf16le")]));
+
+    const result = await executor(rootPath).executeWithMetadata({
+      tool: "file.read",
+      args: { path: "notes.md" },
+    });
+
+    expect(result.output).toMatchObject({
+      path: "notes.md",
+      content: "# hi\n",
+    });
+  });
+
+  it("still skips true binary files", async () => {
+    const rootPath = tempWorkspace();
+    const filePath = path.join(rootPath, "blob.bin");
+    fs.writeFileSync(filePath, Buffer.from([0x00, 0x13, 0x37, 0x00, 0xff, 0x01]));
+
+    const result = await executor(rootPath).executeWithMetadata({
+      tool: "file.read",
+      args: { path: "blob.bin" },
+    });
+
+    expect(result.output).toMatchObject({
+      path: "blob.bin",
+      binary: true,
+      skippedReason: "binary_file",
+      content: "",
+    });
+  });
+
+  it("grep scans utf16 text files", async () => {
+    const rootPath = tempWorkspace();
+    const filePath = path.join(rootPath, "docs");
+    fs.mkdirSync(filePath, { recursive: true });
+    fs.writeFileSync(path.join(filePath, "note.md"), Buffer.from([0xff, 0xfe, ...Buffer.from("needle\n", "utf16le")]));
+
+    const result = await executor(rootPath).executeWithMetadata({
+      tool: "file.grep",
+      args: { pattern: "needle", include: "**/*.md" },
+    });
+
+    expect(result.output).toMatchObject({
+      matches: expect.arrayContaining([
+        expect.objectContaining({ path: "docs/note.md", text: "needle" }),
+      ]),
+    });
+  });
 });
