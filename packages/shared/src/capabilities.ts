@@ -1935,7 +1935,7 @@ export const COMPUTER_TOOL_IDS = [
 ] as const;
 export type ComputerToolId = typeof COMPUTER_TOOL_IDS[number];
 
-export const COMPUTER_TARGET_KINDS = ["native_app", "browser_page", "ora_view"] as const;
+export const COMPUTER_TARGET_KINDS = ["native_app", "browser_page", "builtin_browser", "ora_view"] as const;
 export type ComputerTargetKind = typeof COMPUTER_TARGET_KINDS[number];
 
 // ---------------------------------------------------------------------------
@@ -1945,7 +1945,7 @@ export type ComputerTargetKind = typeof COMPUTER_TARGET_KINDS[number];
 const computerTargetKindParameter = {
   type: "string",
   enum: COMPUTER_TARGET_KINDS as unknown as string[],
-  description: "Target kind: native_app (macOS desktop app), browser_page (local dev server or web page), ora_view (Ora Dashboard, Widget Detail, Builder Session).",
+  description: "Target kind: native_app (macOS desktop app), browser_page (local dev server or web page), builtin_browser (Ora's in-app browser surface), ora_view (Ora Dashboard, Widget Detail, Builder Session).",
 };
 
 const computerSnapshotIdParameter = {

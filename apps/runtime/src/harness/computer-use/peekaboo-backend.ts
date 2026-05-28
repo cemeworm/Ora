@@ -118,7 +118,7 @@ type PeekabooSessionState =
 export class PeekabooMcpBackend implements ComputerUseBackend {
   readonly id = "peekaboo";
   readonly label = "Peekaboo (macOS GUI)";
-  readonly supportedTargetKinds = ["native_app" as const];
+  readonly supportedTargetKinds = ["native_app" as const, "builtin_browser" as const];
 
   private sessionState: PeekabooSessionState = { kind: "uninitialized" };
   private readonly logBuffer: string[] = [];

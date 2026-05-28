@@ -25,7 +25,7 @@ import type {
 class FakeBackend implements ComputerUseBackend {
   id = "fake";
   readonly label = "Fake Test Backend";
-  supportedTargetKinds: ComputerUseBackend["supportedTargetKinds"] = ["native_app", "browser_page", "ora_view"];
+  supportedTargetKinds: ComputerUseBackend["supportedTargetKinds"] = ["native_app", "browser_page", "builtin_browser", "ora_view"];
 
   private statusOverride: ComputerPermissionStatus | null = null;
   private observeResult: ComputerObserveResult | null = null;
@@ -225,7 +225,7 @@ describe("Computer Use", () => {
     it("selectBackend routes native_app to peekaboo when available", () => {
       const manager = new ComputerBackendManager();
       const fake = new FakeBackend();
-      fake.supportedTargetKinds.splice(0, fake.supportedTargetKinds.length, "native_app");
+      fake.supportedTargetKinds.splice(0, fake.supportedTargetKinds.length, "native_app", "builtin_browser");
       fake.id = "peekaboo" as never;
       manager.register(fake);
       const page = new FakeBackend();
@@ -234,13 +234,14 @@ describe("Computer Use", () => {
       manager.register(page);
 
       expect(manager.selectBackend("native_app")?.id).toBe("peekaboo");
+      expect(manager.selectBackend("builtin_browser")?.id).toBe("peekaboo");
     });
 
     it("selectBackend routes browser_page/ora_view to page when available", () => {
       const manager = new ComputerBackendManager();
       const peekaboo = new FakeBackend();
       peekaboo.id = "peekaboo" as never;
-      peekaboo.supportedTargetKinds.splice(0, peekaboo.supportedTargetKinds.length, "native_app");
+      peekaboo.supportedTargetKinds.splice(0, peekaboo.supportedTargetKinds.length, "native_app", "builtin_browser");
       manager.register(peekaboo);
       const page = new FakeBackend();
       page.id = "page" as never;
@@ -248,6 +249,7 @@ describe("Computer Use", () => {
       manager.register(page);
 
       expect(manager.selectBackend("browser_page")?.id).toBe("page");
+      expect(manager.selectBackend("builtin_browser")?.id).toBe("peekaboo");
       expect(manager.selectBackend("ora_view")?.id).toBe("page");
     });
 
@@ -255,10 +257,11 @@ describe("Computer Use", () => {
       const manager = new ComputerBackendManager();
       const peekaboo = new FakeBackend();
       peekaboo.id = "peekaboo" as never;
-      peekaboo.supportedTargetKinds.splice(0, peekaboo.supportedTargetKinds.length, "native_app", "ora_view");
+      peekaboo.supportedTargetKinds.splice(0, peekaboo.supportedTargetKinds.length, "native_app", "builtin_browser", "ora_view");
       manager.register(peekaboo);
 
       expect(manager.selectBackend("ora_view")?.id).toBe("peekaboo");
+      expect(manager.selectBackend("builtin_browser")?.id).toBe("peekaboo");
     });
 
     it("respects degraded state", () => {
@@ -298,6 +301,20 @@ describe("Computer Use", () => {
       const status = await manager.permissionStatus();
       expect(status.available).toBe(true);
       expect(status.permissions.length).toBe(1);
+    });
+
+    it("permissionStatus returns the requested target kind when a suitable backend exists", async () => {
+      const manager = new ComputerBackendManager();
+      const peekaboo = new FakeBackend();
+      peekaboo.id = "peekaboo" as never;
+      peekaboo.supportedTargetKinds.splice(0, peekaboo.supportedTargetKinds.length, "native_app", "builtin_browser");
+      peekaboo.setStatus({ backend: "peekaboo", targetKind: "native_app", available: true, permissions: [] });
+      manager.register(peekaboo);
+
+      const status = await manager.permissionStatus("builtin_browser");
+      expect(status.available).toBe(true);
+      expect(status.targetKind).toBe("builtin_browser");
+      expect(status.backend).toBe("peekaboo");
     });
 
     it("disposes all backends", () => {
@@ -553,6 +570,7 @@ describe("Computer Use", () => {
 
       expect(context.system).toMatch(/native_app/);
       expect(context.system).toMatch(/browser_page/);
+      expect(context.system).toMatch(/builtin_browser/);
       expect(context.system).toMatch(/ora_view/);
     });
 

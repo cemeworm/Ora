@@ -12,7 +12,7 @@ const COMPUTER_CLICK_EXAMPLE = '{"tool":"computer.click","args":{"target":"eleme
 
 function resolveTargetKind(args: Record<string, unknown>): ComputerTargetKind {
   const kind = stringArg(args, "targetKind", "");
-  if (kind === "native_app" || kind === "browser_page" || kind === "ora_view") {
+  if (kind === "native_app" || kind === "browser_page" || kind === "builtin_browser" || kind === "ora_view") {
     return kind;
   }
   return "native_app";

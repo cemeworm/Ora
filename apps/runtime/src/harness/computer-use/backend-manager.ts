@@ -46,8 +46,12 @@ export class ComputerBackendManager {
     if (all.length === 0) return undefined;
 
     // Routing rule: prefer page backend for browser_page and ora_view;
-    // prefer Peekaboo for native_app
+    // prefer Peekaboo for native_app and builtin_browser
     if (targetKind === "native_app") {
+      const peekaboo = all.find((b) => b.id === "peekaboo");
+      if (peekaboo) return peekaboo;
+    }
+    if (targetKind === "builtin_browser") {
       const peekaboo = all.find((b) => b.id === "peekaboo");
       if (peekaboo) return peekaboo;
     }
@@ -82,6 +86,8 @@ export class ComputerBackendManager {
           code: "backend_unavailable",
           message: `No available backend for target kind: ${targetKind}`,
         };
+      } else {
+        merged.targetKind = targetKind;
       }
     }
     return merged;
