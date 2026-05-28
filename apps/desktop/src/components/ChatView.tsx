@@ -1421,7 +1421,9 @@ export function DesktopOverlayRail({
               open={planSectionOpen}
               onToggle={onTogglePlanSection}
             >
-              {planSectionOpen ? <PlanStepsList planSteps={planSteps} /> : null}
+              {planSectionOpen ? (
+                <PlanStepsList planSteps={planSteps} variant="floating" />
+              ) : null}
             </OverlayRailSection>
           ) : null}
           {childSessions.length > 0 ? (

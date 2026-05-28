@@ -10,7 +10,6 @@ import {
 import {
   CHAT_SURFACE_FRAME_WIDTH_CLASS,
   CHAT_SURFACE_OVERLAY_SCROLLBAR_PADDING_CLASS,
-  CHAT_SURFACE_SCROLLBAR_COMPENSATION_CLASS,
   CHAT_SURFACE_VIEWPORT_GUTTER_CLASS,
 } from "./chatSurfaceLayout";
 import { adaptRenderableChatMessages } from "../lib/viewModel";
@@ -124,20 +123,19 @@ describe("ChatMessages bottom inset", () => {
     expect(html).not.toContain("relative flex flex-1 flex-col overflow-y-auto");
   });
 
-  it("uses a dedicated surface frame width inside the scroll-compensated message coordinate space", () => {
+  it("uses a dedicated surface frame width inside the full-width message scroll rail", () => {
     const html = renderToStaticMarkup(<ChatMessages chatMessages={[]} />);
 
     expect(html).toContain('data-testid="chat-messages-surface-frame"');
     expect(html).toContain('data-testid="chat-messages-content"');
     expect(html).toContain(CHAT_SURFACE_FRAME_WIDTH_CLASS);
     expect(html).toContain(CHAT_SURFACE_VIEWPORT_GUTTER_CLASS);
-    expect(CHAT_MESSAGES_SCROLL_CLASS).toContain(
-      CHAT_SURFACE_SCROLLBAR_COMPENSATION_CLASS,
-    );
+    expect(CHAT_MESSAGES_SCROLL_CLASS).not.toContain("lg:px-4");
+    expect(CHAT_MESSAGES_SCROLL_CLASS).not.toContain("xl:px-6");
     expect(html).not.toContain("max-w-[88rem]");
   });
 
-  it("keeps messages and composer on compatible compensated surface frame contracts", () => {
+  it("keeps messages and composer on compatible surface frame contracts while only the composer keeps overlay padding", () => {
     const surfaceFrameWidthClassName = "w-full max-w-[54rem]";
 
     const messagesHtml = renderToStaticMarkup(
@@ -150,21 +148,19 @@ describe("ChatMessages bottom inset", () => {
 
     expect(messagesHtml).toContain(surfaceFrameWidthClassName);
     expect(inputHtml).toContain(surfaceFrameWidthClassName);
-    expect(CHAT_MESSAGES_SCROLL_CLASS).toContain(
-      CHAT_SURFACE_SCROLLBAR_COMPENSATION_CLASS,
-    );
     expect(inputHtml).toContain(CHAT_SURFACE_OVERLAY_SCROLLBAR_PADDING_CLASS);
+    expect(messagesHtml).not.toContain(CHAT_SURFACE_OVERLAY_SCROLLBAR_PADDING_CLASS);
     expect(messagesHtml).not.toContain("lg:-mr-4");
     expect(messagesHtml).not.toContain("xl:-mr-6");
     expect(inputHtml).not.toContain("lg:-mr-4");
     expect(inputHtml).not.toContain("xl:-mr-6");
   });
 
-  it("keeps message rail padding symmetric so content stays on the same center line as the composer", () => {
-    expect(CHAT_SURFACE_SCROLLBAR_COMPENSATION_CLASS).toContain("lg:px-4");
-    expect(CHAT_SURFACE_SCROLLBAR_COMPENSATION_CLASS).toContain("xl:px-6");
-    expect(CHAT_SURFACE_SCROLLBAR_COMPENSATION_CLASS).not.toContain("lg:-mr-4");
-    expect(CHAT_SURFACE_SCROLLBAR_COMPENSATION_CLASS).not.toContain("xl:-mr-6");
+  it("keeps the message scroll rail free of extra horizontal compensation", () => {
+    expect(CHAT_MESSAGES_SCROLL_CLASS).not.toContain("lg:px-4");
+    expect(CHAT_MESSAGES_SCROLL_CLASS).not.toContain("xl:px-6");
+    expect(CHAT_MESSAGES_SCROLL_CLASS).not.toContain("lg:-mr-4");
+    expect(CHAT_MESSAGES_SCROLL_CLASS).not.toContain("xl:-mr-6");
   });
 
   it("renders user messages without an avatar icon", () => {

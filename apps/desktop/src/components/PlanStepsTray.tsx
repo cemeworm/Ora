@@ -20,6 +20,11 @@ interface PlanStepsTrayProps {
   variant?: "inline" | "floating";
 }
 
+interface PlanStepsListProps {
+  planSteps: TurnPlanListStep[];
+  variant?: "inline" | "floating";
+}
+
 export const FLOATING_OVERLAY_PANEL_CLASS =
   "rounded-3xl border border-border/65 bg-background/94 p-2.5 shadow-[0_1px_2px_rgba(23,23,23,0.03),0_8px_20px_rgba(23,23,23,0.04)] backdrop-blur-md";
 export const FLOATING_OVERLAY_ICON_PLATE_CLASS =
@@ -80,6 +85,7 @@ export function PlanStepsTray({
     <div className={planStepsTrayRootClassName(variant)}>
       <PlanStepsContent
         planSteps={planSteps}
+        variant={variant}
         open={open}
         onToggleOpen={() => setOpen((current) => !current)}
       />
@@ -89,10 +95,12 @@ export function PlanStepsTray({
 
 export function PlanStepsContent({
   planSteps,
+  variant = "inline",
   open,
   onToggleOpen,
 }: {
   planSteps: TurnPlanListStep[];
+  variant?: "inline" | "floating";
   open: boolean;
   onToggleOpen: () => void;
 }) {
@@ -119,18 +127,21 @@ export function PlanStepsContent({
           />
         </TaskListHeader>
       </button>
-      {open ? <PlanStepsList planSteps={planSteps} /> : null}
+      {open ? <PlanStepsList planSteps={planSteps} variant={variant} /> : null}
     </TaskList>
   );
 }
 
 export function PlanStepsList({
   planSteps,
-}: {
-  planSteps: TurnPlanListStep[];
-}) {
+  variant = "inline",
+}: PlanStepsListProps) {
   return (
-    <TaskListBody>
+    <TaskListBody
+      className={cn(
+        variant === "floating" && "border-l-0 pl-0",
+      )}
+    >
       {planSteps.map((item, index) => (
         <PlanListStepItem key={index} item={item} />
       ))}

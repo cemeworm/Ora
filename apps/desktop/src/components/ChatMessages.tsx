@@ -10,7 +10,6 @@ import { cn } from "../lib/utils";
 import type { AppLanguage } from "../lib/i18n";
 import {
   CHAT_SURFACE_FRAME_WIDTH_CLASS,
-  CHAT_SURFACE_SCROLLBAR_COMPENSATION_CLASS,
   CHAT_SURFACE_VIEWPORT_GUTTER_CLASS,
 } from "./chatSurfaceLayout";
 
@@ -36,7 +35,7 @@ interface ChatMessagesProps {
 }
 
 export const CHAT_MESSAGES_SCROLL_CLASS =
-  `h-full min-h-0 w-full flex-1 overflow-x-hidden overflow-y-auto overscroll-contain ${CHAT_SURFACE_SCROLLBAR_COMPENSATION_CLASS}`;
+  "h-full min-h-0 w-full flex-1 overflow-x-hidden overflow-y-auto overscroll-contain";
 
 const EMPTY_BRANCH_GROUPS: OraSessionBranchGroup[] = [];
 const EMPTY_TURN_SNAPSHOTS: Record<string, OraStateSnapshot | undefined> = {};

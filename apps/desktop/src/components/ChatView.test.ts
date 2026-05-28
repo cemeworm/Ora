@@ -1392,6 +1392,21 @@ describe("chat view layout classes", () => {
   });
 });
 
+describe("chat view shared chat surface contract", () => {
+  it("passes the same surface frame width contract to messages and composer", () => {
+    renderToStaticMarkup(
+      createElement(ChatView, baseChatViewProps()),
+    );
+
+    expect(mocks.latestChatMessagesProps?.surfaceFrameWidthClassName).toBe(
+      mocks.latestChatInputProps?.surfaceFrameWidthClassName,
+    );
+    expect(mocks.latestChatMessagesProps?.surfaceFrameWidthClassName).toBe(
+      CHAT_VIEW_STABLE_CONTENT_WIDTH_CLASS,
+    );
+  });
+});
+
 function contextState(totalTokens: number) {
   return {
     activeTokenUsage: {

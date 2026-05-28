@@ -143,6 +143,22 @@ describe("plan steps tray open state", () => {
     expect(html).toContain(PLAN_STEP_TEXT_CLASS);
     expect(html).not.toContain("rounded-3xl");
     expect(html).not.toContain("mb-2");
+    expect(html).toContain("mt-3 border-l border-border/80 pl-4");
+  });
+
+  it("renders the floating list variant without the left timeline rail", () => {
+    const html = renderToStaticMarkup(
+      createElement(PlanStepsList, {
+        variant: "floating",
+        planSteps: plan("in_progress", "pending"),
+      }),
+    );
+
+    expect(html).toContain(PLAN_STEP_TEXT_CLASS);
+    expect(html).toContain("mt-3");
+    expect(html).toContain("border-l-0");
+    expect(html).toContain("pl-0");
+    expect(html).not.toContain("border-l border-border/80 pl-4");
   });
 });
 
