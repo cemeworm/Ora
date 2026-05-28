@@ -1231,11 +1231,65 @@ pub async fn runtime_json_rpc(
     app: AppHandle,
 ) -> Result<RuntimeJsonRpcResponse, String> {
     let dispatch = dispatch.unwrap_or_default();
-    Ok(if let Some(response) = manager.try_process_json_rpc(&request, Some(&app), dispatch) {
+    let debug_runtime_rpc = debug_runtime_rpc_enabled(&request.method);
+    if debug_runtime_rpc {
+        eprintln!(
+            "[ora-debug] runtime_json_rpc request method={} sessionId={} providerId={}",
+            request.method,
+            debug_runtime_request_session_id(&request).unwrap_or_else(|| "-".to_string()),
+            debug_runtime_request_provider_id(&request).unwrap_or_else(|| "-".to_string())
+        );
+    }
+    let response = if let Some(response) = manager.try_process_json_rpc(&request, Some(&app), dispatch) {
         response
     } else {
+        if debug_runtime_rpc {
+            eprintln!("[ora-debug] runtime_json_rpc facade fallback method={}", request.method);
+        }
         facade.handle_runtime_json_rpc(request)
-    })
+    };
+    if debug_runtime_rpc {
+        eprintln!(
+            "[ora-debug] runtime_json_rpc response result={} error={} data={}",
+            response.result.is_some(),
+            response
+                .error
+                .as_ref()
+                .map(|error| format!("{} {}", error.code, error.message))
+                .unwrap_or_else(|| "-".to_string()),
+            response
+                .error
+                .as_ref()
+                .and_then(|error| error.data.as_ref())
+                .map(Value::to_string)
+                .unwrap_or_else(|| "-".to_string())
+        );
+    }
+    Ok(response)
+}
+
+fn debug_runtime_rpc_enabled(method: &str) -> bool {
+    env::var("ORA_DEBUG_RUNTIME_RPC").ok().as_deref() == Some("1")
+        && matches!(method, "runs.startStreaming" | "sessions.create" | "sessions.get")
+}
+
+fn debug_runtime_request_session_id(request: &RuntimeJsonRpcRequest) -> Option<String> {
+    request
+        .params
+        .as_ref()
+        .and_then(|value| value.get("sessionId"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+fn debug_runtime_request_provider_id(request: &RuntimeJsonRpcRequest) -> Option<String> {
+    request
+        .params
+        .as_ref()
+        .and_then(|value| value.get("config"))
+        .and_then(|config| config.get("providerId"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
 }
 
 #[tauri::command]
@@ -4101,8 +4155,16 @@ fn dev_runtime_command() -> Option<RuntimeCommandSpec> {
             sidecar_entry.to_string_lossy().into_owned(),
         ],
         Some(repo_root),
-        optional_langfuse_runtime_env(),
+        runtime_process_environment(optional_langfuse_runtime_env()),
     ))
+}
+
+fn runtime_process_environment(mut environment: Vec<(String, String)>) -> Vec<(String, String)> {
+    environment.push((
+        "ORA_RUNTIME_HOST_PID".to_string(),
+        std::process::id().to_string(),
+    ));
+    environment
 }
 
 fn optional_langfuse_runtime_env() -> Vec<(String, String)> {
@@ -4179,7 +4241,7 @@ fn bundled_runtime_command(app: &AppHandle) -> Option<RuntimeCommandSpec> {
 
     let runtime_data_dir = app_data_dir.join("runtime");
     let runtime_db_path = runtime_data_dir.join(BUNDLED_RUNTIME_STORE_DB);
-    let mut environment = optional_langfuse_runtime_env();
+    let mut environment = runtime_process_environment(optional_langfuse_runtime_env());
     environment.extend([
         (
             "ORA_RUNTIME_STORE_DIR".to_string(),
@@ -6979,6 +7041,58 @@ mod tests {
         assert_eq!(response.result.unwrap()["bridge"], json!("restarted"));
         manager.cleanup_streaming_children();
         let _ = fs::remove_file(marker_path);
+    }
+
+    #[test]
+    fn stateful_process_bridge_transport_errors_fall_back_to_facade_state() {
+        let manager = process_bridge_manager(
+            RuntimeCommandSpec::new(
+                "sh -c failing-runtime-json-rpc",
+                "sh",
+                vec!["-c".to_string(), "exit 1".to_string()],
+                None,
+                Vec::new(),
+            ),
+            true,
+        );
+
+        let response =
+            manager.try_process_json_rpc(&request("sessions.create", None), None, interactive_dispatch());
+
+        assert!(
+            response.is_none(),
+            "transport-level process bridge failures should let runtime_json_rpc use the facade fallback"
+        );
+        manager.cleanup_streaming_children();
+    }
+
+    #[test]
+    fn stateful_process_bridge_json_rpc_errors_remain_authoritative() {
+        let manager = process_bridge_manager(
+            RuntimeCommandSpec::new(
+                "sh -c runtime-json-rpc-error",
+                "sh",
+                vec![
+                    "-c".to_string(),
+                    "while read line; do printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32004,\"message\":\"Session not found: session-1\"}}'; done".to_string(),
+                ],
+                None,
+                Vec::new(),
+            ),
+            true,
+        );
+
+        let response = manager
+            .try_process_json_rpc(&request("sessions.create", None), None, interactive_dispatch())
+            .expect("runtime JSON-RPC errors should stay authoritative");
+
+        assert!(response.result.is_none());
+        assert_eq!(response.error.as_ref().map(|error| error.code), Some(-32004));
+        assert_eq!(
+            response.error.as_ref().map(|error| error.message.as_str()),
+            Some("Session not found: session-1")
+        );
+        manager.cleanup_streaming_children();
     }
 
     #[test]

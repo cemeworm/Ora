@@ -1205,7 +1205,7 @@ export class LocalRunStore {
     const t0 = Date.now();
     const sessionId = (params as Record<string, unknown>)?.sessionId as string;
     // Fast-fail: don't hydrate a session we've never seen.
-    if (!this.allSessionIds.has(sessionId)) {
+    if (!this.rememberPersistedSessionIfPresent(sessionId)) {
       throw new OraRuntimeError(`Session not found: ${sessionId}`, -32004, { sessionId });
     }
     this.refreshSessionIfStale(sessionId);
@@ -4953,10 +4953,16 @@ export class LocalRunStore {
   }
 
   private nextSessionId(): string {
-    const sessionId = `session-${String(this.manifest.nextSessionNumber).padStart(4, "0")}`;
+    this.refreshKnownSessionIdsFromPersistence();
+    let nextSessionNumber = this.manifest.nextSessionNumber;
+    let sessionId = `session-${String(nextSessionNumber).padStart(4, "0")}`;
+    while (this.allSessionIds.has(sessionId) || this.isLedgerBackedSession(sessionId)) {
+      nextSessionNumber += 1;
+      sessionId = `session-${String(nextSessionNumber).padStart(4, "0")}`;
+    }
     this.manifest = {
       ...this.manifest,
-      nextSessionNumber: this.manifest.nextSessionNumber + 1,
+      nextSessionNumber: nextSessionNumber + 1,
     };
     return sessionId;
   }
@@ -5046,10 +5052,34 @@ export class LocalRunStore {
     const session = this.sessions.get(sessionId);
     if (session) return session;
     // Lazy-load from ledger if the session exists but wasn't loaded at boot
-    if (this.allSessionIds.has(sessionId) && this.isLedgerBackedSession(sessionId)) {
+    if (this.rememberPersistedSessionIfPresent(sessionId)) {
       return this.refreshSessionFromLedger(sessionId, undefined, { excludeEvents: true });
     }
     throw new OraRuntimeError(`Session not found: ${sessionId}`, -32004, { sessionId });
+  }
+
+  private rememberPersistedSessionIfPresent(sessionId: string | undefined): boolean {
+    if (!sessionId) {
+      return false;
+    }
+    if (this.allSessionIds.has(sessionId)) {
+      return true;
+    }
+    if (!this.isLedgerBackedSession(sessionId)) {
+      return false;
+    }
+    this.allSessionIds.add(sessionId);
+    return true;
+  }
+
+  private refreshKnownSessionIdsFromPersistence(): void {
+    const persistedIds = this.backend.listAllSessionIds?.();
+    if (!persistedIds) {
+      return;
+    }
+    for (const sessionId of persistedIds) {
+      this.allSessionIds.add(sessionId);
+    }
   }
 
   private getProjectOrThrow(projectId: string): ProjectSummary {

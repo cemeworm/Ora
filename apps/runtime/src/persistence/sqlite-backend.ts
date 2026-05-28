@@ -229,9 +229,9 @@ export class SqliteRuntimePersistence implements RuntimePersistenceBackend {
   constructor(private readonly dbPath: string) {
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 
-    this.db = new Database(dbPath);
-    this.db.pragma("journal_mode = WAL");
+    this.db = new Database(dbPath, { timeout: 5000 });
     this.db.pragma("busy_timeout = 5000");
+    this.db.pragma("journal_mode = WAL");
     this.db.pragma("foreign_keys = ON");
 
     // Create tables

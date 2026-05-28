@@ -56,7 +56,8 @@ export class MemoryIndexStore {
   constructor(dataDir: string) {
     fs.mkdirSync(dataDir, { recursive: true });
     const dbPath = path.join(dataDir, "memory-index.db");
-    this.db = new Database(dbPath);
+    this.db = new Database(dbPath, { timeout: 5000 });
+    this.db.pragma("busy_timeout = 5000");
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("synchronous = NORMAL");
     this.ensureSchema();

@@ -69,8 +69,9 @@ export function buildRunSearchConfig(settings = loadDesktopSearchSettings()): {
   if (settings.providerId !== "auto") {
     searchProvider.id = settings.providerId;
   }
-  if (settings.apiKeyEnv.trim()) {
-    searchProvider.apiKeyEnv = settings.apiKeyEnv.trim().toUpperCase();
+  const apiKeyEnv = normalizeSearchApiKeyEnv(settings.apiKeyEnv);
+  if (apiKeyEnv) {
+    searchProvider.apiKeyEnv = apiKeyEnv;
   }
   if (settings.providerId === "mcp") {
     if (settings.mcpServerId.trim()) {
@@ -85,6 +86,11 @@ export function buildRunSearchConfig(settings = loadDesktopSearchSettings()): {
     searchProvider: Object.keys(searchProvider).length > 0 ? searchProvider : undefined,
     metadata: {},
   };
+}
+
+export function normalizeSearchApiKeyEnv(value: string): string | undefined {
+  const normalized = value.trim().toUpperCase();
+  return /^[A-Z_][A-Z0-9_]*$/.test(normalized) ? normalized : undefined;
 }
 
 const DEFAULT_SEARCH_SETTINGS_MAX_RESULTS = 5;

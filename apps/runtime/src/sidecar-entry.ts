@@ -14,6 +14,8 @@ void warmShellSnapshot().catch((error) => {
   process.stderr.write(`[ShellSnapshot] warmup failed: ${error instanceof Error ? error.message : String(error)}\n`);
 });
 
+installHostProcessWatchdog();
+
 async function runChannelDaemon(): Promise<void> {
   const lock = acquireChannelDaemonLock();
   const keepAlive = setInterval(() => undefined, 60_000);
@@ -35,6 +37,24 @@ async function runChannelDaemon(): Promise<void> {
   clearInterval(keepAlive);
   lock.release();
   await shutdownLangfuseTelemetry();
+}
+
+function installHostProcessWatchdog(): void {
+  const rawPid = process.env.ORA_RUNTIME_HOST_PID;
+  if (!rawPid) {
+    return;
+  }
+  const hostPid = Number(rawPid);
+  if (!Number.isInteger(hostPid) || hostPid <= 0 || hostPid === process.pid) {
+    return;
+  }
+  const timer = setInterval(() => {
+    if (!processIsAlive(hostPid)) {
+      process.stderr.write(`[RuntimeSidecar] host process ${hostPid} is gone; exiting sidecar ${process.pid}\n`);
+      process.exit(0);
+    }
+  }, 5_000);
+  timer.unref();
 }
 
 function acquireChannelDaemonLock(): { release: () => void } {
