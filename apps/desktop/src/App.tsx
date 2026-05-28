@@ -264,6 +264,9 @@ function WorkbenchInner() {
   const [onboardingStatus, setOnboardingStatus] = useState<
     OnboardingStatus | undefined
   >(() => readOnboardingStatus());
+  const forceOnboardingPreview =
+    typeof window !== "undefined" &&
+    new URLSearchParams(window.location.search).get("onboarding") === "1";
   const [onboardingRequired, setOnboardingRequired] = useState<
     boolean | undefined
   >();
@@ -1289,7 +1292,8 @@ function WorkbenchInner() {
       onOpenChange={(open) => dispatch({ type: "SET_SETTINGS_OPEN", open })}
     />
   ) : null;
-  const shouldShowOnboarding = !onboardingStatus && onboardingRequired === true;
+  const shouldShowOnboarding =
+    forceOnboardingPreview || (!onboardingStatus && onboardingRequired === true);
 
   if (shouldShowOnboarding) {
     return (

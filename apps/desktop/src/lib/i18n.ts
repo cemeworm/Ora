@@ -355,20 +355,38 @@ const ZH_COPY: Record<string, string> = {
     "API 密钥已保存。运行验证以确认连通性。",
   "API key required before verification.": "验证前需要 API 密钥。",
   "Local smoke provider is ready.": "本地 smoke 提供方已就绪。",
-  "Official OpenAI Responses API provider.":
-    "官方 OpenAI Responses API 提供方。",
-  "Official Claude Messages API provider.": "官方 Claude Messages API 提供方。",
+  "Use OpenAI's official models and tool-capable Responses API.":
+    "接入 OpenAI 官方模型和工具能力。",
+  "Use Claude through Anthropic's official Messages API.":
+    "接入 Anthropic 官方 Claude 模型。",
   "Deterministic local smoke provider for offline testing.":
     "用于离线测试的确定性本地 smoke 提供方。",
-  "Any provider that speaks the OpenAI chat or responses protocol.":
-    "任何兼容 OpenAI Chat 或 Responses 协议的提供方。",
-  "Any provider that speaks the Anthropic Messages API.":
-    "任何兼容 Anthropic Messages API 的提供方。",
-  "OpenAI-compatible Qwen via Bailian/DashScope.":
-    "通过百炼/DashScope 使用兼容 OpenAI 的 Qwen。",
-  "DeepSeek OpenAI-compatible API.": "DeepSeek 兼容 OpenAI 的 API。",
-  "Zhipu OpenAI-compatible API.": "智谱兼容 OpenAI 的 API。",
-  "Moonshot OpenAI-compatible API.": "Moonshot 兼容 OpenAI 的 API。",
+  "Connect any OpenAI-compatible chat or responses endpoint.":
+    "连接任意兼容 OpenAI 的模型服务。",
+  "Connect any endpoint compatible with Anthropic Messages.":
+    "连接任意兼容 Anthropic Messages 的服务。",
+  "Use Qwen models through Alibaba Cloud Model Studio.":
+    "通过阿里云百炼接入 Qwen 模型。",
+  "Use DeepSeek models through an OpenAI-compatible endpoint.":
+    "适合先接入 DeepSeek 模型。",
+  "Use Zhipu GLM models through its OpenAI-compatible API.":
+    "接入智谱 GLM 系列模型。",
+  "Use Kimi models through Moonshot's API.":
+    "接入 Moonshot 的 Kimi 模型。",
+  "Use Gemini through Google's OpenAI-compatible endpoint.":
+    "通过 Google 端点接入 Gemini 模型。",
+  "Use Kimi coding models through Moonshot's API.":
+    "接入 Kimi 编程模型。",
+  "Use Z.AI GLM coding models with an OpenAI-compatible API.":
+    "接入 Z.AI 的 GLM 编程模型。",
+  "Use one AiHubMix key to access multiple model providers.":
+    "用一个 AiHubMix 密钥接入多家模型。",
+  "Use one OpenRouter key to try models from many providers.":
+    "用一个 OpenRouter 密钥试用多家模型。",
+  "OpenRouter lists free models in its catalog.":
+    "OpenRouter 模型目录里有免费选项。",
+  "Start quickly with one key for many models.":
+    "一把密钥就能快速试多家模型。",
   "Generic OpenAI-compatible": "通用 OpenAI 兼容",
   "Generic Anthropic-compatible": "通用 Anthropic 兼容",
   "Local Smoke": "本地 Smoke",

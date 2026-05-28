@@ -2821,8 +2821,11 @@ export function buildCacheHitRatio(snapshot: OraStateSnapshot): { ratio?: string
   let hasOpenAIFamily = false;
   let hasAnthropicFamily = false;
 
-  for (const event of snapshot.events) {
-    if (event.type !== "context.usage.updated") continue;
+  const usageEvents = snapshot.events
+    .filter((e) => e.type === "context.usage.updated")
+    ;
+
+  for (const event of usageEvents) {
     const payload = event.payload as Record<string, unknown> | undefined;
     const usage = payload?.usage as Record<string, unknown> | undefined;
     if (!usage) continue;
