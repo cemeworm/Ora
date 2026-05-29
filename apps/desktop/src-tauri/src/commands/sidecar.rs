@@ -82,6 +82,9 @@ struct FacadeState {
     run_order: Vec<String>,
     projects: HashMap<String, Value>,
     sessions: HashMap<String, Value>,
+    memory: Option<Value>,
+    feedback_loop_rules: HashMap<String, Value>,
+    self_iteration_policies: HashMap<String, Value>,
     next_project_number: u64,
     next_run_number: u64,
     next_session_number: u64,
@@ -1422,6 +1425,8 @@ impl RuntimeFacade {
             "runtime.health" => Ok(runtime_health()),
             "patterns.list" => Ok(patterns_list()),
             "providers.list" => Ok(providers_list()),
+            "memory.get" => self.memory_get(),
+            "memory.clear" => self.memory_clear(),
             "packages.list" | "packages.active" => package_store_snapshot(),
             "packages.buildCandidate" => packages_build_candidate(params.as_ref()),
             "packages.verify" => packages_verify(params.as_ref()),
@@ -1467,6 +1472,23 @@ impl RuntimeFacade {
             "runs.replay" => self.runs_replay(params.as_ref()),
             "runs.fork" => self.runs_fork(params.as_ref()),
             "runs.exportReport" => self.runs_export_report(params.as_ref()),
+            "feedbackLoop.signals.list" => self.feedback_loop_signals_list(params.as_ref()),
+            "feedbackLoop.insights.list" => self.feedback_loop_insights_list(params.as_ref()),
+            "feedbackLoop.insights.get" => self.feedback_loop_insights_get(params.as_ref()),
+            "feedbackLoop.insights.dismiss" => self.feedback_loop_insights_dismiss(params.as_ref()),
+            "feedbackLoop.actions.preview" => self.feedback_loop_actions_preview(params.as_ref()),
+            "feedbackLoop.actions.apply" => self.feedback_loop_actions_apply(params.as_ref()),
+            "feedbackLoop.rules.list" => self.feedback_loop_rules_list(params.as_ref()),
+            "feedbackLoop.rules.update" => self.feedback_loop_rules_update(params.as_ref()),
+            "selfIteration.scan" => self.self_iteration_scan(params.as_ref()),
+            "selfIteration.candidates.list" => self.self_iteration_candidates_list(params.as_ref()),
+            "selfIteration.candidates.get" => self.self_iteration_candidates_get(params.as_ref()),
+            "selfIteration.candidates.evaluate" => self.self_iteration_candidates_evaluate(params.as_ref()),
+            "selfIteration.candidates.reject" => self.self_iteration_candidates_reject(params.as_ref()),
+            "selfIteration.candidates.apply" => self.self_iteration_candidates_apply(params.as_ref()),
+            "selfIteration.candidates.rollback" => self.self_iteration_candidates_rollback(params.as_ref()),
+            "selfIteration.policy.get" => self.self_iteration_policy_get(params.as_ref()),
+            "selfIteration.policy.update" => self.self_iteration_policy_update(params.as_ref()),
             _ => Err(runtime_error(
                 -32601,
                 "Method not found",
@@ -1517,6 +1539,22 @@ impl RuntimeFacade {
         let path = custom_agent_dir(&name)?;
         let agent = read_custom_agent_detail(&path)?;
         Ok(custom_agent_detail_value(&agent))
+    }
+
+    fn memory_get(&self) -> Result<Value, RuntimeJsonRpcError> {
+        let mut state = self.lock_state()?;
+        let memory = state
+            .memory
+            .get_or_insert_with(|| default_long_term_memory("0"))
+            .clone();
+        Ok(memory)
+    }
+
+    fn memory_clear(&self) -> Result<Value, RuntimeJsonRpcError> {
+        let mut state = self.lock_state()?;
+        let memory = default_long_term_memory(&now_ms().to_string());
+        state.memory = Some(memory.clone());
+        Ok(memory)
     }
 
     fn agents_create(&self, params: Option<&Value>) -> Result<Value, RuntimeJsonRpcError> {
@@ -1733,6 +1771,162 @@ impl RuntimeFacade {
         let value = Value::Object(next);
         write_system_agent_override(&value)?;
         Ok(value)
+    }
+
+    fn feedback_loop_signals_list(&self, params: Option<&Value>) -> Result<Value, RuntimeJsonRpcError> {
+        let _ = params;
+        Ok(Value::Array(Vec::new()))
+    }
+
+    fn feedback_loop_insights_list(&self, params: Option<&Value>) -> Result<Value, RuntimeJsonRpcError> {
+        let _ = params;
+        Ok(Value::Array(Vec::new()))
+    }
+
+    fn feedback_loop_insights_get(&self, params: Option<&Value>) -> Result<Value, RuntimeJsonRpcError> {
+        let insight_id = params
+            .and_then(|value| value.get("insightId"))
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("");
+        Err(runtime_error(
+            -32004,
+            "Feedback-loop insight not found",
+            Some(json!({ "insightId": insight_id })),
+        ))
+    }
+
+    fn feedback_loop_insights_dismiss(&self, params: Option<&Value>) -> Result<Value, RuntimeJsonRpcError> {
+        self.feedback_loop_insights_get(params)
+    }
+
+    fn feedback_loop_actions_preview(&self, params: Option<&Value>) -> Result<Value, RuntimeJsonRpcError> {
+        let action_id = params
+            .and_then(|value| value.get("actionId"))
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("");
+        Err(runtime_error(
+            -32004,
+            "Feedback-loop action not found",
+            Some(json!({ "actionId": action_id })),
+        ))
+    }
+
+    fn feedback_loop_actions_apply(&self, params: Option<&Value>) -> Result<Value, RuntimeJsonRpcError> {
+        self.feedback_loop_actions_preview(params)
+    }
+
+    fn feedback_loop_rules_list(&self, params: Option<&Value>) -> Result<Value, RuntimeJsonRpcError> {
+        let state = self.lock_state()?;
+        let project_id = feedback_loop_project_id(&state, params);
+        let defaults = default_feedback_loop_rules(&project_id);
+        let rules = defaults
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|rule| {
+                let id = rule["id"].as_str().unwrap_or_default();
+                state.feedback_loop_rules.get(id).cloned().unwrap_or(rule)
+            })
+            .collect::<Vec<Value>>();
+        Ok(Value::Array(rules))
+    }
+
+    fn feedback_loop_rules_update(&self, params: Option<&Value>) -> Result<Value, RuntimeJsonRpcError> {
+        let rule = params
+            .and_then(|value| value.get("rule"))
+            .cloned()
+            .ok_or_else(|| runtime_error(-32602, "Missing feedback-loop rule", None))?;
+        let rule_id = rule["id"]
+            .as_str()
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| runtime_error(-32602, "Feedback-loop rule id is required", None))?
+            .to_string();
+        let mut state = self.lock_state()?;
+        state.feedback_loop_rules.insert(rule_id, rule.clone());
+        Ok(rule)
+    }
+
+    fn self_iteration_scan(&self, params: Option<&Value>) -> Result<Value, RuntimeJsonRpcError> {
+        let state = self.lock_state()?;
+        let project_id = self_iteration_project_id(&state, params);
+        let now = now_ms();
+        Ok(json!({
+            "run": {
+                "id": format!("{project_id}:self:scan:{now}"),
+                "projectId": project_id,
+                "kind": "scan",
+                "candidateIds": [],
+                "status": "succeeded",
+                "message": "Facade Self-Iteration scan completed with no candidates.",
+                "createdAt": now,
+                "metadata": { "transport": BRIDGE_MODE_FACADE }
+            },
+            "candidates": [],
+            "autoApplied": []
+        }))
+    }
+
+    fn self_iteration_candidates_list(&self, params: Option<&Value>) -> Result<Value, RuntimeJsonRpcError> {
+        let _ = params;
+        Ok(Value::Array(Vec::new()))
+    }
+
+    fn self_iteration_candidates_get(&self, params: Option<&Value>) -> Result<Value, RuntimeJsonRpcError> {
+        let candidate_id = params
+            .and_then(|value| value.get("candidateId"))
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("");
+        Err(runtime_error(
+            -32004,
+            "Self-Iteration candidate not found",
+            Some(json!({ "candidateId": candidate_id })),
+        ))
+    }
+
+    fn self_iteration_candidates_evaluate(&self, params: Option<&Value>) -> Result<Value, RuntimeJsonRpcError> {
+        self.self_iteration_candidates_get(params)
+    }
+
+    fn self_iteration_candidates_reject(&self, params: Option<&Value>) -> Result<Value, RuntimeJsonRpcError> {
+        self.self_iteration_candidates_get(params)
+    }
+
+    fn self_iteration_candidates_apply(&self, params: Option<&Value>) -> Result<Value, RuntimeJsonRpcError> {
+        self.self_iteration_candidates_get(params)
+    }
+
+    fn self_iteration_candidates_rollback(&self, params: Option<&Value>) -> Result<Value, RuntimeJsonRpcError> {
+        self.self_iteration_candidates_get(params)
+    }
+
+    fn self_iteration_policy_get(&self, params: Option<&Value>) -> Result<Value, RuntimeJsonRpcError> {
+        let mut state = self.lock_state()?;
+        let project_id = self_iteration_project_id(&state, params);
+        let policy = state
+            .self_iteration_policies
+            .entry(project_id.clone())
+            .or_insert_with(|| default_self_iteration_policy(&project_id, now_ms()))
+            .clone();
+        Ok(policy)
+    }
+
+    fn self_iteration_policy_update(&self, params: Option<&Value>) -> Result<Value, RuntimeJsonRpcError> {
+        let policy = params
+            .and_then(|value| value.get("policy"))
+            .cloned()
+            .ok_or_else(|| runtime_error(-32602, "Missing Self-Iteration policy", None))?;
+        let project_id = policy["projectId"]
+            .as_str()
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| runtime_error(-32602, "Self-Iteration policy projectId is required", None))?
+            .to_string();
+        let mut state = self.lock_state()?;
+        state.self_iteration_policies.insert(project_id, policy.clone());
+        Ok(policy)
     }
 
     fn agents_reset_system_override(&self, params: Option<&Value>) -> Result<Value, RuntimeJsonRpcError> {
@@ -6055,6 +6249,132 @@ fn sync_project_summary(state: &mut FacadeState, project_id: &str) {
     state.projects.insert(project_id.to_string(), next);
 }
 
+fn default_long_term_memory(last_updated: &str) -> Value {
+    json!({
+        "version": "1.0",
+        "_version": 1,
+        "lastUpdated": last_updated,
+        "user": {
+            "workContext": { "summary": "", "updatedAt": "" },
+            "personalContext": { "summary": "", "updatedAt": "" },
+            "topOfMind": { "summary": "", "updatedAt": "" }
+        },
+        "history": {
+            "recentMonths": { "summary": "", "updatedAt": "" },
+            "earlierContext": { "summary": "", "updatedAt": "" },
+            "longTermBackground": { "summary": "", "updatedAt": "" }
+        },
+        "facts": []
+    })
+}
+
+fn default_feedback_loop_rules(project_id: &str) -> Value {
+    json!([
+        {
+            "id": format!("{project_id}:rule:repeated_recovery_exhausted"),
+            "projectId": project_id,
+            "name": "Repeated recovery exhausted",
+            "enabled": true,
+            "sourceFilters": ["recovery_event"],
+            "severityThreshold": "warning",
+            "humanReviewRequired": true,
+            "actionPolicy": { "allowedActionKinds": ["open_trails", "create_evaluation_case", "draft_self_iteration_candidate"] }
+        },
+        {
+            "id": format!("{project_id}:rule:feedback_pending_review"),
+            "projectId": project_id,
+            "name": "Feedback pending review",
+            "enabled": true,
+            "sourceFilters": ["evaluation_feedback"],
+            "severityThreshold": "info",
+            "humanReviewRequired": true,
+            "actionPolicy": { "allowedActionKinds": ["open_evaluation_feedback", "draft_self_iteration_candidate"] }
+        },
+        {
+            "id": format!("{project_id}:rule:eval_regression"),
+            "projectId": project_id,
+            "name": "Evaluation regression",
+            "enabled": true,
+            "sourceFilters": ["evaluation_result"],
+            "severityThreshold": "warning",
+            "humanReviewRequired": true,
+            "actionPolicy": { "allowedActionKinds": ["open_evaluation_run", "draft_self_iteration_candidate"] }
+        },
+        {
+            "id": format!("{project_id}:rule:approval_bottleneck"),
+            "projectId": project_id,
+            "name": "Approval bottleneck",
+            "enabled": true,
+            "sourceFilters": ["approval_event"],
+            "severityThreshold": "info",
+            "humanReviewRequired": true,
+            "actionPolicy": { "allowedActionKinds": ["review_mode_rules", "draft_self_iteration_candidate"] }
+        },
+        {
+            "id": format!("{project_id}:rule:repeated_run_failures"),
+            "projectId": project_id,
+            "name": "Repeated run failures",
+            "enabled": true,
+            "sourceFilters": ["run_event"],
+            "severityThreshold": "warning",
+            "humanReviewRequired": true,
+            "actionPolicy": { "allowedActionKinds": ["open_trails", "draft_self_iteration_candidate"] }
+        },
+        {
+            "id": format!("{project_id}:rule:environment_observer_review"),
+            "projectId": project_id,
+            "name": "Environment observer review",
+            "enabled": true,
+            "sourceFilters": ["project_file"],
+            "severityThreshold": "info",
+            "humanReviewRequired": true,
+            "actionPolicy": { "allowedActionKinds": ["draft_self_iteration_candidate"] }
+        }
+    ])
+}
+
+fn default_self_iteration_policy(project_id: &str, now: u64) -> Value {
+    json!({
+        "projectId": project_id,
+        "autonomy": "low_risk_auto",
+        "evaluationAutoApply": true,
+        "promptApplyRequiresConfirmation": true,
+        "modeApplyRequiresConfirmation": true,
+        "skillApplyRequiresConfirmation": true,
+        "curatorEnabled": true,
+        "scanCadenceMs": 300_000u64,
+        "idleScanDelayMs": 30_000u64,
+        "candidateGenerationLLM": false,
+        "environmentObserver": {
+            "enabled": false,
+            "paused": false,
+            "watchedPaths": ["."],
+            "excludedGlobs": [".git/**", "node_modules/**", "dist/**", "build/**", "target/**", ".turbo/**"],
+            "scanBudgetFiles": 200,
+            "maxFileBytes": 512_000
+        },
+        "updatedAt": now
+    })
+}
+
+fn feedback_loop_project_id(state: &FacadeState, params: Option<&Value>) -> String {
+    params
+        .and_then(|value| value.get("projectId"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| state.projects.values().next().and_then(|project| project["projectId"].as_str().map(str::to_string)))
+        .unwrap_or_else(|| "local-project".to_string())
+}
+
+fn self_iteration_project_id(state: &FacadeState, params: Option<&Value>) -> String {
+    params
+        .and_then(|value| value.get("projectId"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| state.projects.values().next().and_then(|project| project["projectId"].as_str().map(str::to_string)))
+        .unwrap_or_else(|| "local-project".to_string())
+}
+
 fn normalize_project_root_path(root_path: &str) -> String {
     let trimmed = root_path.trim();
     let path = PathBuf::from(trimmed);
@@ -8242,6 +8562,57 @@ mod tests {
 
         fs::remove_dir_all(root).unwrap();
         fs::remove_file(outside_path).unwrap();
+    }
+
+    #[test]
+    fn facade_supports_feedback_loop_and_self_iteration_methods() {
+        let facade = RuntimeFacade::default();
+        let project = facade
+            .handle_method(
+                "projects.create",
+                Some(json!({ "rootPath": env::temp_dir().join(format!("ora-feedback-loop-{}", now_ms())).to_string_lossy(), "label": "feedback-loop" })),
+            )
+            .unwrap();
+        let project_id = project["projectId"].as_str().unwrap().to_string();
+
+        let rules = facade
+            .handle_method("feedbackLoop.rules.list", Some(json!({ "projectId": project_id.clone() })))
+            .unwrap();
+        assert!(rules.as_array().unwrap().iter().any(|rule| rule["id"].as_str().unwrap_or("").ends_with(":rule:feedback_pending_review")));
+
+        let policy = facade
+            .handle_method("selfIteration.policy.get", Some(json!({ "projectId": project_id.clone() })))
+            .unwrap();
+        assert_eq!(policy["projectId"], json!(project_id));
+        assert_eq!(policy["environmentObserver"]["enabled"], json!(false));
+
+        let updated_rule = facade
+            .handle_method(
+                "feedbackLoop.rules.update",
+                Some(json!({
+                    "rule": {
+                        "id": format!("{project_id}:rule:feedback_pending_review"),
+                        "projectId": project_id,
+                        "name": "Feedback pending review",
+                        "enabled": false,
+                        "sourceFilters": ["evaluation_feedback"],
+                        "severityThreshold": "info",
+                        "humanReviewRequired": true,
+                        "actionPolicy": { "allowedActionKinds": ["open_evaluation_feedback"] }
+                    }
+                })),
+            )
+            .unwrap();
+        assert_eq!(updated_rule["enabled"], json!(false));
+
+        let memory = facade.handle_method("memory.get", None).unwrap();
+        assert_eq!(memory["version"], json!("1.0"));
+        assert_eq!(memory["facts"], json!([]));
+
+        let cleared = facade.handle_method("memory.clear", None).unwrap();
+        assert_eq!(cleared["version"], json!("1.0"));
+        assert_eq!(cleared["facts"], json!([]));
+        assert!(cleared["lastUpdated"].as_str().unwrap_or("").parse::<u64>().is_ok());
     }
 
     #[test]
