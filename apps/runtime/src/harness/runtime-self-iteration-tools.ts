@@ -1,3 +1,4 @@
+import { SelfIterationCandidateSchema } from "@cemeworm/shared";
 import type { RuntimeToolDefinition } from "./capability-registries.js";
 import type { RuntimeToolExecutionContext, SelfIterationRegistryTools } from "./runtime-tool-executor.js";
 import { approvalRequestLanguage, stringArg } from "./runtime-tool-approval.js";
@@ -95,7 +96,7 @@ function applyRuntimeSelfIterationCandidate(registry: SelfIterationRegistryTools
   if (!registry) {
     throw new Error("A Self-Iteration registry is required for selfIteration.apply.");
   }
-  const candidate = registry.getSelfIterationCandidate(args);
+  const candidate = SelfIterationCandidateSchema.parse(registry.getSelfIterationCandidate(args));
   const autoManagedSkill = candidate.targetKind === "skill" && candidate.targetRef.skillProvenance === "background_auto";
   if (!approved && !autoManagedSkill) {
     throw new Error("selfIteration.apply requires user approval before execution.");

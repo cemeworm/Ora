@@ -116,6 +116,16 @@ export class LocalSelfIterationStore {
         autoApplied.push(this.applyCandidate({ candidateId: candidate.id, confirmed: true }, deps));
       }
     }
+    if (policy.autonomy === "low_risk_auto" || policy.autonomy === "experimental_auto") {
+      for (const candidate of upserted.filter(isAutoApplicableScanSkillCandidate)) {
+        try {
+          autoApplied.push(this.applyCandidate({ candidateId: candidate.id, confirmed: true }, deps));
+        } catch (error) {
+          this.markCandidateAutoApplyFailed(candidate.id, error);
+        }
+      }
+    }
+    const candidates = upserted.map((candidate) => this.getCandidate({ candidateId: candidate.id }));
     const run = this.recordRun({
       projectId,
       kind: "scan",
@@ -123,7 +133,7 @@ export class LocalSelfIterationStore {
       message: `Self-Iteration scan created or refreshed ${upserted.length} candidate${upserted.length === 1 ? "" : "s"}.`,
     });
     this.saveState();
-    return SelfIterationScanResultSchema.parse({ run, candidates: upserted, autoApplied });
+    return SelfIterationScanResultSchema.parse({ run, candidates, autoApplied });
   }
 
   async triggerCuratorScan(params: unknown, input: SelfIterationDerivationInput, deps: SelfIterationScanDeps) {
@@ -305,6 +315,10 @@ export class LocalSelfIterationStore {
     }
     const beforeSnapshot = "captureBeforeSnapshot" in deps ? deps.captureBeforeSnapshot?.(candidate) : undefined;
     const applyResult = applyCandidateChange(candidate, deps);
+    const applyFailureReason = applyResultFailureReason(applyResult);
+    if (applyFailureReason) {
+      throw new Error(applyFailureReason);
+    }
     const evaluationMeta = selfIterationEvaluationMetadata(candidate);
     const verification = candidate.targetKind !== "evaluation" && evaluationMeta?.score != null ? {
       status: "pending" as const,
@@ -326,6 +340,32 @@ export class LocalSelfIterationStore {
       candidateIds: [next.id],
       message: `Applied Self-Iteration candidate ${next.id}.`,
       metadata: { targetKind: next.targetKind },
+    });
+    this.saveState();
+    return next;
+  }
+
+  private markCandidateAutoApplyFailed(candidateId: string, error: unknown): SelfIterationCandidate {
+    const candidate = this.getCandidate({ candidateId });
+    const message = error instanceof Error ? error.message : String(error);
+    const next = SelfIterationCandidateSchema.parse({
+      ...candidate,
+      status: "failed",
+      applyResult: {
+        applied: false,
+        phase: "auto_apply",
+        reason: message,
+      },
+      updatedAt: this.clock(),
+    });
+    this.state.candidates[next.id] = next;
+    this.recordRun({
+      projectId: next.projectId,
+      kind: "apply",
+      candidateIds: [next.id],
+      status: "failed",
+      message: `Auto-apply failed for Self-Iteration candidate ${next.id}: ${message}`,
+      metadata: { targetKind: next.targetKind, phase: "auto_apply" },
     });
     this.saveState();
     return next;
@@ -594,7 +634,7 @@ function skillCandidates(projectId: string, input: SelfIterationDerivationInput,
         operation: "skills.archive",
         title: `Archive stale skill ${skill.name}`,
         summary: "A background-created skill has gone unused long enough to archive safely.",
-        evidence: skillEvidence(skill, "stale", "Low-usage background skill is a candidate for archival."),
+        evidence: [skillEvidence(skill, "stale", "Low-usage background skill is a candidate for archival.")],
         after: { name: skill.name, lifecycle: "archived" },
       }));
       continue;
@@ -608,7 +648,7 @@ function skillCandidates(projectId: string, input: SelfIterationDerivationInput,
         operation: "skills.transitionLifecycle",
         title: `Mark ${skill.name} as stale`,
         summary: "Background-created skill usage is low enough to mark stale before archival review.",
-        evidence: skillEvidence(skill, "stale", "Usage is low and the skill is aging."),
+        evidence: [skillEvidence(skill, "stale", "Usage is low and the skill is aging.")],
         after: { name: skill.name, lifecycle: "stale" },
       }));
     }
@@ -739,6 +779,13 @@ function requiresConfirmation(candidate: SelfIterationCandidate, policy: SelfIte
   return false;
 }
 
+function isAutoApplicableScanSkillCandidate(candidate: SelfIterationCandidate) {
+  return candidate.targetKind === "skill"
+    && candidate.targetRef.skillProvenance === "background_auto"
+    && candidate.proposedChange.operation === "skills.create"
+    && candidate.status === "draft";
+}
+
 function applyCandidateChange(candidate: SelfIterationCandidate, deps: Partial<SelfIterationApplyDeps>) {
   const result = candidate.targetKind === "evaluation" ? deps.applyEvaluationCandidate?.(candidate) ?? { applied: true }
     : candidate.targetKind === "prompt" ? deps.applyPromptCandidate?.(candidate) ?? { applied: true }
@@ -750,6 +797,17 @@ function applyCandidateChange(candidate: SelfIterationCandidate, deps: Partial<S
   return evaluation.scoreEvidence
     ? { result, evaluation, scoreEvidence: evaluation.scoreEvidence }
     : { result, evaluation };
+}
+
+function applyResultFailureReason(value: unknown): string | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const record = value as Record<string, unknown>;
+  if (record.applied === false) {
+    return typeof record.reason === "string" && record.reason.trim()
+      ? record.reason
+      : "Apply returned applied=false.";
+  }
+  return applyResultFailureReason(record.result);
 }
 
 function applySkillCandidateChange(candidate: SelfIterationCandidate, deps: Partial<SelfIterationApplyDeps>) {

@@ -3498,7 +3498,17 @@ export class LocalRunStore {
     }
     if (candidate.targetKind === "skill") {
       const skillName = candidate.targetRef.skillName ?? String(candidate.proposedChange.metadata.skillName ?? "");
-      const skill = skillName ? this.skillRegistry.get({ name: skillName }) : undefined;
+      let skill: SkillDetail | undefined;
+      if (skillName) {
+        try {
+          skill = this.skillRegistry.get({ name: skillName });
+        } catch (error) {
+          if (candidate.proposedChange.operation === "skills.create") {
+            return { kind: "skill", skillName, existed: false };
+          }
+          throw error;
+        }
+      }
       const files = skill?.files?.map((file) => {
         const detail = this.skillRegistry.getFile({ skillName, path: file.path });
         return {
