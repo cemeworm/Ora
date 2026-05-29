@@ -462,6 +462,28 @@ export function shouldAutoRefreshChannelStatus(
   return open && activeSection === "channels" && channelTabId === "wechat";
 }
 
+export function visibleLongTermMemorySections(memory: OraLongTermMemoryProfile | undefined) {
+  return memory
+    ? [
+        { label: "Work Context", value: memory.user.workContext },
+        {
+          label: "Personal Context",
+          value: memory.user.personalContext,
+        },
+        { label: "Top of Mind", value: memory.user.topOfMind },
+        { label: "Recent Months", value: memory.history.recentMonths },
+        {
+          label: "Earlier Context",
+          value: memory.history.earlierContext,
+        },
+        {
+          label: "Long-term Background",
+          value: memory.history.longTermBackground,
+        },
+      ].filter((section) => section.value.summary.trim().length > 0)
+    : [];
+}
+
 function buildInfoValue(value: string | undefined) {
   return value && value.trim().length > 0 ? value.trim() : "Unavailable";
 }
@@ -619,25 +641,7 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
   const activeSnapshot = getActiveSnapshot(state.runLifecycle);
   const memoryRecords = activeSnapshot?.memory ?? [];
   const longTermFacts = longTermMemory?.facts ?? [];
-  const longTermSections = longTermMemory
-    ? [
-        { label: "Work Context", value: longTermMemory.user.workContext },
-        {
-          label: "Personal Context",
-          value: longTermMemory.user.personalContext,
-        },
-        { label: "Top of Mind", value: longTermMemory.user.topOfMind },
-        { label: "Recent Months", value: longTermMemory.history.recentMonths },
-        {
-          label: "Earlier Context",
-          value: longTermMemory.history.earlierContext,
-        },
-        {
-          label: "Long-term Background",
-          value: longTermMemory.history.longTermBackground,
-        },
-      ].filter((section) => section.value.summary.trim().length > 0)
-    : [];
+  const longTermSections = visibleLongTermMemorySections(longTermMemory);
   const memoryNamespaces = useMemo(() => {
     const namespaces = new Set<string>();
     for (const record of memoryRecords) {

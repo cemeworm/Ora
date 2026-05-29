@@ -5,8 +5,9 @@ import {
   isWechatReconnectRequired,
   normalizeChannelLocalReadRoots,
   shouldAutoRefreshChannelStatus,
+  visibleLongTermMemorySections,
 } from "./SettingsView";
-import type { OraChannelConfig } from "../lib/runtimeClient";
+import type { OraChannelConfig, OraLongTermMemoryProfile } from "../lib/runtimeClient";
 
 function makeChannel(overrides: Partial<OraChannelConfig> = {}): OraChannelConfig {
   return {
@@ -64,5 +65,50 @@ describe("SettingsView channel helpers", () => {
 
     expect(channelLocalReadRootsText(channel)).toBe("/Users/me/a\n/Users/me/b");
     expect(channelLocalReadRootsText(makeChannel({ config: { bound: true, localReadRoots: [] } }))).toBe("");
+  });
+});
+
+describe("SettingsView memory helpers", () => {
+  it("treats an empty fallback memory profile as a valid empty state", () => {
+    const memory: OraLongTermMemoryProfile = {
+      version: "1.0",
+      _version: 1,
+      lastUpdated: "0",
+      user: {
+        workContext: { summary: "", updatedAt: "" },
+        personalContext: { summary: "", updatedAt: "" },
+        topOfMind: { summary: "", updatedAt: "" },
+      },
+      history: {
+        recentMonths: { summary: "", updatedAt: "" },
+        earlierContext: { summary: "", updatedAt: "" },
+        longTermBackground: { summary: "", updatedAt: "" },
+      },
+      facts: [],
+    };
+
+    expect(visibleLongTermMemorySections(memory)).toEqual([]);
+  });
+
+  it("shows only non-empty long-term memory sections", () => {
+    const memory: OraLongTermMemoryProfile = {
+      version: "1.0",
+      _version: 1,
+      lastUpdated: "now",
+      user: {
+        workContext: { summary: "Uses Ora for desktop agent work.", updatedAt: "now" },
+        personalContext: { summary: "", updatedAt: "" },
+        topOfMind: { summary: "Debug bridge coverage first.", updatedAt: "now" },
+      },
+      history: {
+        recentMonths: { summary: "", updatedAt: "" },
+        earlierContext: { summary: "", updatedAt: "" },
+        longTermBackground: { summary: "", updatedAt: "" },
+      },
+      facts: [],
+    };
+
+    expect(visibleLongTermMemorySections(memory).map((section) => section.label))
+      .toEqual(["Work Context", "Top of Mind"]);
   });
 });
