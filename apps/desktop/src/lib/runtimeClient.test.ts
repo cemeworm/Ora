@@ -1,11 +1,11 @@
-import { MVP_MODES, ORA_ROOT_AGENT_ID } from "@cemeworm/shared";
+import { ORA_ROOT_AGENT_ID, SYSTEM_MODE_PRESETS } from "@cemeworm/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createRuntimeClient } from "./runtimeClient";
 
 function expectedBrowserFallbackSystemAgentIds(): string[] {
   return [...new Set([
     ORA_ROOT_AGENT_ID,
-    ...MVP_MODES
+    ...SYSTEM_MODE_PRESETS
       .filter((mode) => mode.visibility !== "internal")
       .flatMap((mode) => mode.profiles.map((profile) => profile.id)),
   ])].sort();

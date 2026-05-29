@@ -136,7 +136,7 @@ import type {
   ToolRegistry as OraToolRegistry,
   UserTaskInput as OraUserTaskInput,
 } from "@cemeworm/shared";
-import { ACCEPTED_PLAN_USER_MESSAGE, AutomationCreateParamsSchema, AutomationPreviewScheduleParamsSchema, AutomationSchema, AutomationUpdateParamsSchema, DEFAULT_AGENT_MODE_TOOL_IDS, DEFAULT_PROVIDERS, DEBATE_MODE_ID, FeedbackLoopActionApplyParamsSchema, FeedbackLoopActionResultSchema, FeedbackLoopCalibrationRuleSchema, FeedbackLoopRuleUpdateParamsSchema, LongTermMemoryProfileSchema, MVP_MODE_RUNTIME_ATOMS, MVP_MODES, MVP_PATTERNS, MVP_SKILLS, MVP_TOOLS, ORA_HOST_ABI_VERSION, ORA_ROOT_AGENT_ID, ORA_ROOT_AGENT_LABEL, ORA_RUNTIME_ABI_VERSION, ProjectInsightSchema, ProjectSignalSchema, ProviderConfigSchema, SessionForkParamsSchema, SINGLE_AGENT_MODE_ID, SYSTEM_AGENT_ID_ALIASES, SelfIterationCandidateApplyParamsSchema, SelfIterationCandidateSchema, SelfIterationPolicySchema, SelfIterationScanResultSchema, SystemAgentOverrideUpdateParamsSchema, agentLabelFromSnapshot, canonicalSystemAgentId, deriveRunAttention, deriveSessionBranchGroupsForSession, extractProposedPlanDecisionCandidate, legacySystemAgentIdsFor, modeSpecToPatternDefinition, projectAssistantTextFromSnapshot, projectForkSettledSnapshot, projectForkVisibleAssistantText, validateModeSpec, visibleToolIdsForPreset } from "@cemeworm/shared";
+import { ACCEPTED_PLAN_USER_MESSAGE, AutomationCreateParamsSchema, AutomationPreviewScheduleParamsSchema, AutomationSchema, AutomationUpdateParamsSchema, DEFAULT_AGENT_MODE_TOOL_IDS, DEFAULT_PROVIDERS, DEBATE_MODE_ID, FeedbackLoopActionApplyParamsSchema, FeedbackLoopActionResultSchema, FeedbackLoopCalibrationRuleSchema, FeedbackLoopRuleUpdateParamsSchema, LongTermMemoryProfileSchema, MVP_MODE_RUNTIME_ATOMS, MVP_MODES, MVP_PATTERNS, MVP_SKILLS, MVP_TOOLS, ORA_HOST_ABI_VERSION, ORA_ROOT_AGENT_ID, ORA_ROOT_AGENT_LABEL, ORA_RUNTIME_ABI_VERSION, ProjectInsightSchema, ProjectSignalSchema, ProviderConfigSchema, SYSTEM_MODE_PRESETS, SessionForkParamsSchema, SINGLE_AGENT_MODE_ID, SYSTEM_AGENT_ID_ALIASES, SelfIterationCandidateApplyParamsSchema, SelfIterationCandidateSchema, SelfIterationPolicySchema, SelfIterationScanResultSchema, SystemAgentOverrideUpdateParamsSchema, agentLabelFromSnapshot, canonicalSystemAgentId, deriveRunAttention, deriveSessionBranchGroupsForSession, extractProposedPlanDecisionCandidate, legacySystemAgentIdsFor, modeSpecToPatternDefinition, projectAssistantTextFromSnapshot, projectForkSettledSnapshot, projectForkVisibleAssistantText, validateModeSpec, visibleToolIdsForPreset } from "@cemeworm/shared";
 import { PROVIDER_PRESETS } from "./providerPresets";
 
 export const USER_CANCELLED_MESSAGE = "Stopped processing as instructed.";
@@ -529,7 +529,7 @@ export function createRuntimeClient() {
             detail: tauriUnavailableReason,
           },
           patterns,
-          modes: MVP_MODES.filter((mode) => mode.visibility !== "internal"),
+          modes: SYSTEM_MODE_PRESETS.filter((mode) => mode.visibility !== "internal"),
           atoms: MVP_MODE_RUNTIME_ATOMS,
           providerRegistry,
           toolRegistry: { tools: MVP_TOOLS, defaultPolicyId: "runtime.default_policy" },
@@ -1520,7 +1520,7 @@ class LocalJsonRpcRuntime {
           detail: "Browser dev fallback is serving deterministic Ora JSON-RPC.",
         },
         patterns: MVP_PATTERNS,
-        modes: MVP_MODES.filter((mode) => mode.visibility !== "internal"),
+        modes: SYSTEM_MODE_PRESETS.filter((mode) => mode.visibility !== "internal"),
         atoms: MVP_MODE_RUNTIME_ATOMS,
         tools: {
           tools: MVP_TOOLS,
@@ -3835,7 +3835,7 @@ class LocalJsonRpcRuntime {
   }
 
   private listModes(): OraModeSpec[] {
-    return [...MVP_MODES, ...this.modes.values()]
+    return [...SYSTEM_MODE_PRESETS, ...this.modes.values()]
       .filter((mode) => mode.visibility !== "internal")
       .map((mode) => this.applySystemAgentOverridesToMode(mode))
       .sort((left, right) =>
@@ -3878,7 +3878,7 @@ class LocalJsonRpcRuntime {
   private systemAgentIds(): Set<string> {
     return new Set([
       ORA_ROOT_AGENT_ID,
-      ...MVP_MODES.flatMap((mode) => mode.profiles.map((profile) => profile.id)),
+      ...SYSTEM_MODE_PRESETS.flatMap((mode) => mode.profiles.map((profile) => profile.id)),
       ...Object.keys(SYSTEM_AGENT_ID_ALIASES),
     ]);
   }
@@ -4021,7 +4021,7 @@ class LocalJsonRpcRuntime {
     const bundle = this.mockModeStudioDraftBundle(params);
     const runId = `run-${this.runs.size + 1}`;
     const now = Date.now();
-    const mode = MVP_MODES.find((candidate) => candidate.id === "mode_studio_builder")
+    const mode = SYSTEM_MODE_PRESETS.find((candidate) => candidate.id === "mode_studio_builder")
       ?? this.resolveMode(undefined, "agent_teams");
     const snapshot = this.createSnapshot(
       runId,
@@ -4252,7 +4252,7 @@ class LocalJsonRpcRuntime {
 
     systemProfiles.set(ORA_ROOT_AGENT_ID, this.rootAgentCatalogItem());
 
-    for (const mode of MVP_MODES.filter((candidate) => candidate.visibility !== "internal")) {
+    for (const mode of SYSTEM_MODE_PRESETS.filter((candidate) => candidate.visibility !== "internal")) {
       const effectiveMode = this.applySystemAgentOverridesToMode(mode);
       for (const profile of mode.profiles) {
         if (systemProfiles.has(profile.id)) continue;
@@ -6075,7 +6075,7 @@ class LocalJsonRpcRuntime {
   private resolveMode(modeId: string | undefined, fallbackPattern: CoordinationPattern): OraModeSpec {
     return this.listModes().find((mode) => mode.id === (modeId ?? fallbackPattern))
       ?? this.listModes().find((mode) => mode.family === fallbackPattern)
-      ?? MVP_MODES[0]!;
+      ?? SYSTEM_MODE_PRESETS[0]!;
   }
 }
 

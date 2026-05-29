@@ -285,7 +285,7 @@ export function modeStudioRolePlans(family: CoordinationPattern, text: string): 
   if (family === "orchestrator_subagent" && modeStudioStructuredLayoutIntent(text).style === "two_sided_duel") {
     const duel = modeStudioDuelSides(text);
     return [
-      { profileId: "moderator", label: "Moderator", role: "Frame the staged review and synthesize the final judgment.", style: plannerStyle, toolIntent: "minimal" },
+      { profileId: ORA_ROOT_AGENT_ID, label: ORA_ROOT_AGENT_LABEL, role: "Frame the staged review and synthesize the final judgment.", style: plannerStyle, toolIntent: "minimal" },
       { profileId: duel.left.id, label: duel.left.label, role: duel.left.role, style: "adversarial reviewer", toolIntent: "review" },
       { profileId: duel.right.id, label: duel.right.label, role: duel.right.role, style: "defensive reviewer", toolIntent: "review" },
     ];
