@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import type { ProviderConfig } from "@cemeworm/shared";
 import {
   activeUsageForMessages,
   compactedContextFromSummary,
@@ -27,6 +28,20 @@ function sessionCtxWithActiveUsage(totalTokens: number) {
     compactedThroughTurnIndex: 0,
     compactionCount: 0,
   });
+}
+
+function providerWithContextWindow(contextWindow: number): ProviderConfig {
+  return {
+    id: "test",
+    type: "local_smoke",
+    label: "Test Provider",
+    enabled: true,
+    modelId: "test-model",
+    contextWindow,
+    capabilities: ["chat"],
+    dropParams: [],
+    headers: {},
+  };
 }
 
 describe("activeUsageForMessages", () => {
@@ -79,7 +94,7 @@ describe("shouldCompactContext", () => {
     const messages: ModelMessage[] = [makeMessage("user", "short prompt")];
     const result = shouldCompactContext({
       contextState: current,
-      provider: { id: "test", contextWindow: 128_000 },
+      provider: providerWithContextWindow(128_000),
       messages,
     });
     // After compaction, messages are small => usage should reflect actual message size
@@ -92,7 +107,7 @@ describe("shouldCompactContext", () => {
     ];
     const result = shouldCompactContext({
       contextState: sessionCtxWithActiveUsage(0),
-      provider: { id: "test", contextWindow: 10_000 },
+      provider: providerWithContextWindow(10_000),
       messages,
     });
     expect(result.shouldCompact).toBe(false);
