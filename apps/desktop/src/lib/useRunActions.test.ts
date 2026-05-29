@@ -945,6 +945,97 @@ describe("desktop run actions", () => {
     cleanup();
   });
 
+  it("retries the post-start run snapshot refresh when the run is not visible yet", async () => {
+    const createdAt = 1_714_000_000_320;
+    const sessionId = "session-refresh-retry";
+    const runId = "run-refresh-retry";
+    const prompt = "解释一下这个项目。";
+    runtimeHarness.state = {
+      ...initialWorkbenchState,
+      selectedSessionId: sessionId,
+      promptText: prompt,
+      sessions: [sessionSummary(sessionId)],
+      activeSessionDetail: {
+        session: sessionSummary(sessionId),
+        turns: [],
+        transcript: [],
+        latestSnapshot: undefined,
+      },
+      providerRegistry: {
+        providers: [{
+          id: "provider-1",
+          label: "Provider 1",
+          type: "local_smoke",
+          modelId: "provider-model",
+          capabilities: ["chat"],
+          headers: {},
+        }],
+      } as never,
+      selectedProviderId: "provider-1",
+      selectedPattern: "orchestrator_subagent",
+      selectedModeId: "single_agent",
+      selectedModeSelection: "manual",
+      modes: [{
+        id: "single_agent",
+        family: "single_agent",
+        label: "Single Agent",
+        summary: "Single agent mode",
+        capabilityFlags: {
+          toolIds: [],
+          skillIds: [],
+        },
+      }] as never,
+      patterns: [],
+    } as WorkbenchState;
+
+    const runningSnapshot = {
+      ...implementationSnapshot({ runId, sessionId, prompt }),
+      turnIndex: 1,
+      input: { prompt, createdAt, context: {} },
+      updatedAt: createdAt + 10,
+    } as OraStateSnapshot;
+    runtimeHarness.client!.startStreamingRun.mockResolvedValueOnce({ runId } as never);
+    runtimeHarness.client!.getRunState
+      .mockRejectedValueOnce(new Error(`Run not found: ${runId}`))
+      .mockResolvedValueOnce(runningSnapshot);
+    runtimeHarness.client!.getSession.mockResolvedValueOnce({
+      session: sessionSummary(sessionId),
+      turns: [],
+      transcript: [],
+      latestSnapshot: runningSnapshot,
+    } as OraSessionDetail);
+    runtimeHarness.client!.listProjects.mockResolvedValueOnce([]);
+    runtimeHarness.client!.listSessions.mockResolvedValueOnce([sessionSummary(sessionId)]);
+
+    let cleanup = renderHarnessElement(createElement(ActionsProbe, {
+      onReady: (actions) => {
+        runtimeHarness.actions = actions;
+      },
+    }));
+
+    await flushMicrotasks();
+    vi.useFakeTimers();
+    await act(async () => {
+      const resultPromise = runtimeHarness.actions!.startRun();
+      await vi.runAllTimersAsync();
+      await resultPromise;
+    });
+    vi.useRealTimers();
+
+    expect(runtimeHarness.client!.getRunState).toHaveBeenCalledTimes(2);
+    expect(runtimeHarness.state!.runLifecycle).toMatchObject({
+      stage: "streaming",
+      sessionId,
+      runId,
+      prompt,
+    });
+    expect(runtimeHarness.dispatch).not.toHaveBeenCalledWith(expect.objectContaining({
+      type: "SET_BRIDGE_STATUS",
+      status: expect.objectContaining({ label: "Run refresh failed" }),
+    }));
+    cleanup();
+  });
+
   it("rehydrates the original missing selected session before retrying the first submit", async () => {
     const missingSessionId = "session-missing";
     const recoveredSessionId = "session-recovered";

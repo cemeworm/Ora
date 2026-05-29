@@ -1203,7 +1203,7 @@ export function useRunActions() {
           runId: handle.runId,
         });
         const snapshot = appendDesktopLatencyMarks(
-          await runtimeClient.getRunState(handle.runId),
+          await refreshStartedRunSnapshot(handle.runId),
           [...desktopLatencyMarks, desktopLatencyMark("getRunStateReceivedAt", Date.now(), { runId: handle.runId })],
         );
         dispatch({ type: "SELECT_TURN", runId: handle.runId, snapshot });
@@ -1223,6 +1223,18 @@ export function useRunActions() {
           return { ok: true as const };
         }
         return { ok: false as const, error };
+      }
+    };
+
+    const refreshStartedRunSnapshot = async (runId: string): Promise<OraStateSnapshot> => {
+      try {
+        return await runtimeClient.getRunState(runId);
+      } catch (error) {
+        if (!(error instanceof Error) || !error.message.includes("Run not found")) {
+          throw error;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        return runtimeClient.getRunState(runId);
       }
     };
 
