@@ -93,15 +93,91 @@ describe("LocalSelfIterationStore", () => {
 
     const skillCandidate = result.candidates.find((candidate) => candidate.targetKind === "skill");
     expect(skillCandidate?.targetRef.skillProvenance).toBe("background_auto");
+    expect(skillCandidate?.status).toBe("applied");
+    expect(result.autoApplied.some((candidate) => candidate.targetKind === "skill")).toBe(true);
+  });
+
+  it("does not auto-apply background_auto skill candidates when policy requires human review", async () => {
+    const store = new LocalSelfIterationStore(tempDir(), () => 1_000);
+    store.updatePolicy({ policy: { projectId: "local-project", autonomy: "human_review", updatedAt: 1_000 } });
+    const result = await store.scan({}, makeInput(), {
+      applyEvaluationCandidate: () => ({ applied: true }),
+      applyPromptCandidate: () => ({ applied: true }),
+      applyModeCandidate: () => ({ applied: true }),
+      applySkillCandidate: (candidate) => ({ applied: true, candidateId: candidate.id }),
+      captureBeforeSnapshot: () => ({ kind: "skill", existed: false }),
+      evaluateCandidate: async () => ({ passed: true }),
+    });
+
+    const skillCandidate = result.candidates.find((candidate) => candidate.targetKind === "skill");
+    expect(skillCandidate?.status).toBe("draft");
+    expect(result.autoApplied.some((candidate) => candidate.targetKind === "skill")).toBe(false);
+  });
+
+  it("marks background_auto skill auto-apply failures without failing the scan", async () => {
+    const store = new LocalSelfIterationStore(tempDir(), () => 1_000);
+    const result = await store.scan({}, makeInput(), {
+      applyEvaluationCandidate: () => ({ applied: true }),
+      applyPromptCandidate: () => ({ applied: true }),
+      applyModeCandidate: () => ({ applied: true }),
+      applySkillCandidate: () => {
+        throw new Error("skill registry unavailable");
+      },
+      captureBeforeSnapshot: () => ({ kind: "skill", existed: false }),
+      evaluateCandidate: async () => ({ passed: true }),
+    });
+
+    const skillCandidate = result.candidates.find((candidate) => candidate.targetKind === "skill");
+    expect(skillCandidate?.status).toBe("failed");
+    expect(skillCandidate?.applyResult).toMatchObject({
+      applied: false,
+      phase: "auto_apply",
+      reason: "skill registry unavailable",
+    });
+    expect(result.autoApplied.some((candidate) => candidate.targetKind === "skill")).toBe(false);
+  });
+
+  it("marks explicit applied=false skill results as failed during scan auto-apply", async () => {
+    const store = new LocalSelfIterationStore(tempDir(), () => 1_000);
+    const result = await store.scan({}, makeInput(), {
+      applyEvaluationCandidate: () => ({ applied: true }),
+      applyPromptCandidate: () => ({ applied: true }),
+      applyModeCandidate: () => ({ applied: true }),
+      applySkillCandidate: () => ({ applied: false, reason: "skill draft is invalid" }),
+      captureBeforeSnapshot: () => ({ kind: "skill", existed: false }),
+      evaluateCandidate: async () => ({ passed: true }),
+    });
+
+    const skillCandidate = result.candidates.find((candidate) => candidate.targetKind === "skill");
+    expect(skillCandidate?.status).toBe("failed");
+    expect(skillCandidate?.applyResult).toMatchObject({
+      applied: false,
+      phase: "auto_apply",
+      reason: "skill draft is invalid",
+    });
     expect(result.autoApplied.some((candidate) => candidate.targetKind === "skill")).toBe(false);
   });
 
   it("allows background_auto skill apply without explicit confirmation through the tool wrapper", () => {
     const fields = selfIterationToolRuntimeFields("selfIteration.apply");
     const candidate = {
+      id: "skill-1",
+      projectId: "project-1",
       targetKind: "skill",
-      targetRef: { skillProvenance: "background_auto" },
-      proposedChange: { metadata: {} },
+      targetRef: { kind: "skill", id: "skill-1", skillName: "skill-1", skillProvenance: "background_auto" },
+      title: "Create skill",
+      summary: "Create a background skill.",
+      evidence: [{ id: "run-1", label: "Run", target: { kind: "run", id: "run-1", runId: "run-1" } }],
+      proposedChange: {
+        operation: "skills.create",
+        title: "Create skill",
+        summary: "Create a background skill.",
+        metadata: {},
+      },
+      riskLevel: "high",
+      status: "draft",
+      createdAt: 1,
+      updatedAt: 1,
     } as never;
     const registry = {
       getSelfIterationCandidate: () => candidate,
@@ -123,6 +199,8 @@ describe("LocalSelfIterationStore", () => {
           category: "private",
           enabled: true,
           editable: true,
+          allowedPatterns: [],
+          tags: [],
           provenance: "background_auto",
           lifecycle: "active",
           createdAt: 0,
@@ -137,6 +215,8 @@ describe("LocalSelfIterationStore", () => {
           category: "private",
           enabled: true,
           editable: true,
+          allowedPatterns: [],
+          tags: [],
           provenance: "background_auto",
           lifecycle: "active",
           createdAt: 0,
@@ -150,6 +230,8 @@ describe("LocalSelfIterationStore", () => {
           category: "private",
           enabled: true,
           editable: true,
+          allowedPatterns: [],
+          tags: [],
           provenance: "background_auto",
           lifecycle: "stale",
           createdAt: 0,
@@ -163,6 +245,8 @@ describe("LocalSelfIterationStore", () => {
           category: "private",
           enabled: true,
           editable: true,
+          allowedPatterns: [],
+          tags: [],
           provenance: "background_auto",
           lifecycle: "active",
           createdAt: 0,
@@ -184,6 +268,8 @@ describe("LocalSelfIterationStore", () => {
     expect(operations).toContain("skills.transitionLifecycle");
     expect(operations).toContain("skills.merge");
     expect(result.autoApplied.some((candidate) => candidate.proposedChange.operation === "skills.archive")).toBe(false);
+    expect(result.autoApplied.some((candidate) => candidate.proposedChange.operation === "skills.transitionLifecycle")).toBe(false);
+    expect(result.autoApplied.some((candidate) => candidate.proposedChange.operation === "skills.merge")).toBe(false);
   });
 
   it("keeps merge candidates separate from stale/archive candidates", async () => {
@@ -198,6 +284,8 @@ describe("LocalSelfIterationStore", () => {
           category: "private",
           enabled: true,
           editable: true,
+          allowedPatterns: [],
+          tags: [],
           provenance: "background_auto",
           lifecycle: "active",
           createdAt: 0,
@@ -212,6 +300,8 @@ describe("LocalSelfIterationStore", () => {
           category: "private",
           enabled: true,
           editable: true,
+          allowedPatterns: [],
+          tags: [],
           provenance: "background_auto",
           lifecycle: "active",
           createdAt: 0,
