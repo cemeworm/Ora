@@ -43,18 +43,28 @@ export function ProjectSignalsView({ runtimeClient, bridgeStatus, onOpenEvidence
     setLoadState("loading");
     setError(undefined);
     try {
-      const [nextSignals, nextInsights, nextRules, nextCandidates, nextPolicy] = await Promise.all([
+      const [nextSignals, nextInsights] = await Promise.all([
         runtimeClient.listProjectSignals({ projectId: projectIdParam, limit: 200 }),
         runtimeClient.listProjectInsights({ projectId: projectIdParam, limit: 100 }),
+      ]);
+      setSignals(nextSignals);
+      setInsights(nextInsights);
+
+      const [rulesResult, candidatesResult, policyResult] = await Promise.allSettled([
         runtimeClient.listFeedbackLoopRules(projectIdParam ? { projectId: projectIdParam } : {}),
         runtimeClient.listSelfIterationCandidates({ projectId: projectIdParam, limit: 100 }),
         projectIdParam ? runtimeClient.getSelfIterationPolicy(projectIdParam) : Promise.resolve(undefined),
       ]);
-      setSignals(nextSignals);
-      setInsights(nextInsights);
-      setRules(nextRules);
-      setSelfIterationCandidates(nextCandidates);
-      setSelfIterationPolicy(nextPolicy);
+
+      if (rulesResult.status === "fulfilled") {
+        setRules(rulesResult.value);
+      }
+      if (candidatesResult.status === "fulfilled") {
+        setSelfIterationCandidates(candidatesResult.value);
+      }
+      if (policyResult.status === "fulfilled") {
+        setSelfIterationPolicy(policyResult.value);
+      }
       setLoadState("idle");
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : "Failed to load project signals.");
