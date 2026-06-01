@@ -1081,6 +1081,15 @@ internal:    user.clarify, plan.update, agent.spawn, agent.wait, message.send
 computer:    permissionStatus, observe, click, type, press, scroll, window
 ```
 
+### 17.1.1 Computer Target Taxonomy
+
+`computer.*` 的 target 不等于具体网页能力，而是指向不同的可交互桌面/浏览表面：
+
+- `ora_view`：Ora 应用自身的界面验证面，保留当前结构化桌面验证语义。
+- `browser_page`：外部网页目标，继续用于页面级浏览与网页自动化。
+- `builtin_browser`：Ora 内建浏览器页的 screen-level 目标，走 Peekaboo，不是 DOM/CDP 自动化。
+- 内建浏览器页只是 agent 进入 `builtin_browser` 之前的 UI 宿主，不是新的 runtime browser engine。
+
 ### 17.2 已实现的关键机制
 
 **治理链**：

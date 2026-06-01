@@ -160,6 +160,14 @@ Net Lift 不是固定公式，结果信号权重最高，但具体实现会随�
 
 这些指标的解释边界：它们是 resolver-aware / family-aware 的工作流质量信号，不是任务成功率的替代品；当 `repo.explore` 本轮不可见时，部分指标按"允许原子 fallback"处理，不直接记为失败。
 
+### 3.5 KV Cache Efficiency Metric
+
+`kv_cache_hit_ratio` 是成本面新增的效率指标，用来衡量模型请求里可复用前缀缓存的命中质量。它由 runtime 聚合的 KV cache usage 事件计算，和 token / latency / tool cost 一起参与 `kind: "cost"` 的评估。
+
+- **通过线**：`>= 99%`
+- **无 cache 数据**：按 `score = 0.5` 且 `passed = true` 处理，不把单轮无 cache case 当作失败
+- **低于通过线**：标记低 KV cache 命中率问题，帮助定位前缀稳定性、消息拼接和 compaction 造成的 cache 退化
+
 ## 4. Verdict：A/B 与多配置判定
 
 ### 4.1 A/B verdict
@@ -227,7 +235,8 @@ evaluation/
 │   ├── causal-ab-comparison.spec.json   # A/B 对比评估规范
 │   ├── causal-smoke-three-way.json      # record_only / advisory / enforcing 冒烟比较
 │   ├── causal-full-three-way.json       # 三配置完整比较
-│   └── ...                              # 共 11 个 spec 文件
+│   ├── kv-cache-cost-eval.json          # KV Cache 成本评测规范
+│   └── ...                              # 共 15 个 spec 文件
 ├── datasets/
 │   ├── causal-intervention-decision-dataset.json  # 因果干预决策
 │   ├── output-quality-dataset.json                # 输出质量
@@ -243,12 +252,14 @@ evaluation/
 │   ├── mode-studio-dataset.json                   # Mode Studio
 │   ├── observability-replay-dataset.json          # 可观测性回放
 │   ├── token-efficiency-dataset.json              # Token 效率
+│   ├── kv-cache-cause-effect-dataset.json         # KV Cache 回归
+│   ├── kv-cache-real-world-dataset.json           # KV Cache 行为快照
 │   ├── terminal-bench-dataset.json                # Terminal 基准
 │   ├── e2e-task-dataset.json                      # 端到端任务
 │   ├── gaia-dataset.json                          # GAIA 基准
 │   ├── swe-bench-dataset.json                     # SWE-Bench 基准
 │   ├── tau-bench-dataset.json                     # Tau-Bench 基准
-│   └── ...                                        # 共 24 个数据集文件
+│   └── ...                                        # 共 29 个数据集文件
 └── scripts/                                        # 执行脚本
 ```
 
@@ -261,7 +272,7 @@ evaluation/
 | 工具使用 | tool-selection | 工具选择合理性 |
 | 安全性 | safety-gate, approval-resume | 审批门控与恢复 |
 | Memory | memory-reliability, memory-boundary | 记忆检索与边界 |
-| 效率 | token-efficiency | 成本控制 |
+| 效率 | token-efficiency, kv-cache-* | token + KV cache 成本控制 |
 | 鲁棒性 | multi-turn, terminal-bench | 多轮、终态处理 |
 | 外部基准 | swe-bench, tau-bench | 第三方标准评测 |
 

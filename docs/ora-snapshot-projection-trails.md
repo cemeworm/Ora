@@ -401,6 +401,8 @@ projectAssistantTextFromSnapshot(snapshot)
 
 权威顺序很重要：**terminal snapshot 的 `output.text` 是最终 assistant text；只有缺失时才从 `message.delta` 投影。** `message.delta.payload.delta` 表示增量片段时直接追加；只有 `content` 时按累计文本/重复片段/新增片段判断合并，避免 cumulative content 被重复拼接，也避免 chunk-sized content 只留下最后一片。
 
+补一条和 desktop 正文展示有关的规则：当同一 turn 同时存在正文和 timeline/status 碎片时，正文权威高于 timeline 片段；`status_group.summary` 只能作为进度补充，不能因为和正文局部重叠就把正文隐藏，也不能和正文重复播报。
+
 这条规则现在还额外承担父/子协作的可见性边界：
 
 - 正文区只消费父 Agent 的最终叙事文本
@@ -661,7 +663,7 @@ Desktop 在 session 切换时保留非 terminal session 的 turn snapshots，确
 | 主动记忆 | `config.metadata.activeMemory` |
 | 阻塞关卡 | `attention`, `pendingClarifications`, `pendingApprovals`, `actions`, `toolCalls` |
 | 执行地图 | `topology.nodes` (status, kind, agentId) |
-| 上下文窗口 | `contextState.activeTokenUsage`, `contextState.contextWindow` |
+| 上下文窗口 | `contextState.activeTokenUsage`（当前实际估值，压缩后可下降）, `contextState.contextWindow` |
 | 执行计划 | `planList`, `plan` |
 | 任务进度 | `todos` |
 | 策略决策 | `policyDecisions` |
@@ -699,6 +701,8 @@ Desktop 在 session 切换时保留非 terminal session 的 turn snapshots，确
 | 延迟 marks | `latency.marks` (name, source, at, detail)，含跨 5 层标记（provider → runtime → stdio → tauri → desktop） |
 | 首文本证据 | `latency.marks` + `output` + shared assistant text projection + `events` (message.delta fallback) |
 | 分段诊断 | marks 匹配 14 个预定义段定义，desktop 端额外提供 5 段传输/UI 延迟分段 |
+
+`lastCompaction.beforeTokens` 只用于诊断和回溯，不应作为 UI 主展示值；桌面进度环应展示当前 `activeTokenUsage` 的实际估值。
 
 ### 6.6 Evidence（证据）
 

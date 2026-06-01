@@ -25,6 +25,7 @@ Ora 的 runtime loop 不是单一循环，而是几层边界叠在一起：
 - 子 Agent 的流式 delta 会被标记为 `audience/visibility = collaboration`，不再进入正文投影。
 - 子 Agent 的低频结构事实通过 `child_session.updated` / `parent_coordination.updated` 进入 snapshot 与 ledger-backed projection，主要供 desktop 右侧协作区、Trails，以及主聊天区/运行进度里的少量公开协作里程碑消费。
 - `child_session.updated` 现在不仅记录状态，还会写明它是 `mode_stage` 还是 `dynamic_spawn`，以及 child 实际跑在什么 tool preset 上；Trails 应把这视为权限来源事实，而不是普通状态噪音。
+- `child.id` 只是 run-scoped synthetic child identity，不是可直接拿去 `sessions.get(...)` 的真实 `sessionId`。右侧 child page 现在应走 replay-first、session-optional：优先消费 replay / projection 内容，只有显式 session-backed child 才回到真实 session 查询。
 
 主要源码入口：
 

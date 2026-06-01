@@ -132,7 +132,7 @@ flowchart TD
     READY -->|"apply"| APPLIED["applied"]
     READY -->|"reject"| REJECTED["rejected"]
     FAILED -->|"reject"| REJECTED
-    DRAFT -->|"auto-apply (evaluation only)"| APPLIED
+    DRAFT -->|"auto-apply (evaluation / background_auto skill create)"| APPLIED
     APPLIED -->|"rollback"| REJECTED
 ```
 
@@ -141,7 +141,10 @@ flowchart TD
 - **崩溃恢复**：启动时 `recoverOrphanedEvaluations()` 扫描状态为 `evaluating` 的候选，将其重置为 `failed`（附带 "recovered after restart" 信息），防止进程崩溃后候选永久卡在 evaluating。
 - **Draft 可被覆盖**：重新 scan 时如果候选仍为 `draft` 或 `evaluating`，会更新内容。已进入 `ready`/`rejected`/`applied`/`failed` 的候选不会被覆盖。
 - **Evaluation 候选直接 apply**：不经过 evaluating 和 ready 阶段，由 `evaluationAutoApply` 策略控制。
-- **非 evaluation 候选需评测**：prompt/mode/skill 候选需要通过 evaluation gate 才能进入 ready。
+- **background_auto skill create 可 scan 自动落地**：`selfIteration.scan()` 在 `low_risk_auto` / `experimental_auto` 下可自动 apply 由成功 run 派生的 `skills.create` 私有技能候选；prompt/mode/foreground skill/skill governance 变更仍保留 review gate。
+- **自动 apply 失败必须沉到 failed**：低风险 skill create 的自动 apply 如果抛错或明确返回未应用，候选应显式转为 `failed`，而不是停留在 `draft` 或伪装成已应用。
+- **创建型 skill 候选允许不存在 beforeSnapshot**：`skills.create` 的 before snapshot 可以记录 `existed: false`，因为它代表首次创建而非更新。
+- **非 evaluation 候选需评测**：prompt/mode/foreground skill 候选需要通过 evaluation gate 才能进入 ready。
 
 ## 3. 候选生成：五条信号→候选的派生路径
 
@@ -646,11 +649,11 @@ flowchart TD
 
         G1 & G2 & G3 & G4 & G5 --> ENRICH["enrichCandidate (可选)"]
         ENRICH --> UPSERT["upsertCandidate"]
-        UPSERT --> AUTO["auto-apply evaluation (low_risk_auto)"]
+        UPSERT --> AUTO["auto-apply evaluation / background_auto skill create"]
     end
 
     subgraph "评测门控"
-        AUTO --> EVAL_DECISION{"非 evaluation 候选?"}
+        AUTO --> EVAL_DECISION{"仍需评测的候选?"}
         EVAL_DECISION -->|"是"| EVAL["evaluateCandidate()"]
         EVAL -->|"passed"| READY["ready"]
         EVAL -->|"failed"| FAIL["failed"]
@@ -678,11 +681,11 @@ flowchart TD
 
 ### 11.1 "Self-Iteration 是模型自己改自己"
 
-**不是。** Self-Iteration 是一个结构化的候选生成与门控系统。候选是从运行信号中规则化派生的，不是模型自由发挥。prompt/mode/skill 候选需要评测门控和人工确认才能落地。evaluation 候选虽然可以自动应用，但它们只是将审查过的 feedback 转化为评测用例，不修改运行行为。
+**不是。** Self-Iteration 是一个结构化的候选生成与门控系统。候选是从运行信号中规则化派生的，不是模型自由发挥。prompt/mode/foreground skill 候选和治理型 skill 变更仍需要评测或 review gate；evaluation 候选与低风险 `background_auto` skill create 是受策略约束的自动化例外，不等于模型可以无门槛自改行为。
 
 ### 11.2 "Evaluation 候选不需要评测"
 
-**是，但语义不同。** Evaluation 候选的「评测」是用户对 feedback 的 review（已在 feedback 阶段完成），所以直接进入 apply 路径。其他候选的「评测」是通过 Evaluation Studio 运行回归测试。
+**是，但语义不同。** Evaluation 候选的「评测」是用户对 feedback 的 review（已在 feedback 阶段完成），所以直接进入 apply 路径。`background_auto` skill create 候选则是在 `low_risk_auto` / `experimental_auto` 下由 scan 自动落地，不代表 prompt/mode/foreground skill/governance 候选也能跳过评测。
 
 ### 11.3 "环境观察器默认开启"
 
@@ -721,9 +724,9 @@ flowchart TD
 | Enrich 钩子 | `enrichCandidate` 回调可选注入 | 需要外部提供 LLM 调用；失败时 `console.warn` 记录日志，候选以原始内容保留 |
 | 评测门控 | 通过 `SelfIterationEvaluateDeps` 注入，含崩溃恢复 | 启动时自动清理孤立的 evaluating 状态；实际评测由外部 Evaluation Studio 执行 |
 | 状态机完整性 | evaluate/reject 入口增加状态进入验证 | evaluate 仅接受 draft/failed；reject 拒绝 applied（需先回滚） |
-| 自治级别 | 三种级别定义完成 | `human_review` 禁用 curator 自动扫描；`experimental_auto` 行为与 `low_risk_auto` 相同 |
+| 自治级别 | 三种级别定义完成 | `human_review` 禁用 curator 自动扫描；`low_risk_auto` / `experimental_auto` 允许 scan 自动落地 `background_auto` skill create 候选 |
 | 运行历史 | `state.runs` 数组，上限 500 | 超过上限时自动清理最旧记录 |
-| 回滚 | 依赖 `beforeSnapshot` 或 `deps.rollbackSnapshot` | 回滚后的验证状态未自动清除 |
+| 回滚 | 依赖 `beforeSnapshot` 或 `deps.rollbackSnapshot` | skill 包回滚要恢复 supporting files、enabled、lifecycle、telemetry、governance 元数据；回滚后的验证状态未自动清除 |
 | 数据完整性 | `.tmp` 文件回退时验证 `fs.statSync` size > 0 | 防止加载损坏的临时文件 |
 
 ### 12.2 可演进方向
