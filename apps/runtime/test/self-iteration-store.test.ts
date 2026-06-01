@@ -4,7 +4,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { LocalSelfIterationStore } from "../src/self-iteration-store.js";
 import { LocalRunStore } from "../src/run-store.js";
-import type { EvaluationFeedbackRecord, ProjectInsight, ProjectSignal, StateSnapshot } from "@cemeworm/shared";
+import type { EvaluationFeedbackRecord, EvaluationRun, ProjectInsight, ProjectSignal, StateSnapshot } from "@cemeworm/shared";
 
 function tempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "ora-self-iteration-"));
@@ -65,6 +65,58 @@ describe("LocalSelfIterationStore", () => {
     expect(applied.applyResult).toEqual({ modeId: "single_agent" });
   });
 
+  it("creates causal semantic prompt candidates from repeated evaluation failures", async () => {
+    const prev = process.env.ORA_SELF_ITERATION_CAUSAL_SEMANTIC_PROMPT_ENABLED;
+    process.env.ORA_SELF_ITERATION_CAUSAL_SEMANTIC_PROMPT_ENABLED = "true";
+    try {
+      const store = new LocalSelfIterationStore(tempDir(), () => 2300);
+      const evaluationRun = semanticEvaluationRun();
+      const result = await store.scan({ autoApplyEvaluation: false }, {
+        signals: [
+          causalSemanticSignal("case-1", "latent_goal_missing"),
+          causalSemanticSignal("case-2", "under_clarification"),
+        ],
+        insights: [],
+        runs: [],
+        evaluationRuns: [evaluationRun],
+        feedbackRecords: [],
+      }, {
+        applyEvaluationCandidate: () => ({ applied: true }),
+      });
+
+      const candidate = result.candidates.find((item) => item.id === "local-project:self:prompt:causal-semantic:single_agent");
+      expect(candidate).toBeDefined();
+      expect(candidate?.targetKind).toBe("prompt");
+      expect(candidate?.targetRef.modeId).toBe("single_agent");
+      expect(candidate?.proposedChange.after).toContain("Before using tools or drafting a final answer");
+      expect(candidate?.proposedChange.metadata).toMatchObject({
+        modeId: "single_agent",
+        sourceSignalKind: "causal_semantic_gap",
+        causalOrigin: {
+          source: "causal_decision",
+          insightKind: "semantic_gap",
+          evaluationRunId: "eval-causal-1",
+          configId: "causal-config",
+          datasetId: "dataset-1",
+          modeId: "single_agent",
+          failureTags: ["latent_goal_missing", "under_clarification"],
+          caseIds: ["case-1", "case-2"],
+          evidenceCount: 2,
+        },
+        causalProposal: {
+          patchKind: "clarification_prompt",
+          confidence: 0.72,
+        },
+      });
+    } finally {
+      if (prev === undefined) {
+        delete process.env.ORA_SELF_ITERATION_CAUSAL_SEMANTIC_PROMPT_ENABLED;
+      } else {
+        process.env.ORA_SELF_ITERATION_CAUSAL_SEMANTIC_PROMPT_ENABLED = prev;
+      }
+    }
+  });
+
   it("attaches real evaluation outcome metadata before review", async () => {
     const store = new LocalSelfIterationStore(tempDir(), () => 2500);
     const signal = recoverySignal();
@@ -101,6 +153,35 @@ describe("LocalSelfIterationStore", () => {
       applySkillCandidate: () => ({ applied: true }),
       applyModeCandidate: () => ({ applied: true }),
     })).toThrow(/failed evaluation/);
+  });
+
+  it("keeps causal semantic prompt generation disabled by default", async () => {
+    const prev = process.env.ORA_SELF_ITERATION_CAUSAL_SEMANTIC_PROMPT_ENABLED;
+    delete process.env.ORA_SELF_ITERATION_CAUSAL_SEMANTIC_PROMPT_ENABLED;
+    try {
+      const store = new LocalSelfIterationStore(tempDir(), () => 2400);
+      const evaluationRun = semanticEvaluationRun();
+      const result = await store.scan({ autoApplyEvaluation: false }, {
+        signals: [
+          causalSemanticSignal("case-1", "latent_goal_missing"),
+          causalSemanticSignal("case-2", "latent_goal_mismatch"),
+        ],
+        insights: [],
+        runs: [],
+        evaluationRuns: [evaluationRun],
+        feedbackRecords: [],
+      }, {
+        applyEvaluationCandidate: () => ({ applied: true }),
+      });
+
+      expect(result.candidates.some((item) => item.id.includes("causal-semantic"))).toBe(false);
+    } finally {
+      if (prev === undefined) {
+        delete process.env.ORA_SELF_ITERATION_CAUSAL_SEMANTIC_PROMPT_ENABLED;
+      } else {
+        process.env.ORA_SELF_ITERATION_CAUSAL_SEMANTIC_PROMPT_ENABLED = prev;
+      }
+    }
   });
 
   it("runs candidate evaluation through Evaluation Studio", async () => {
@@ -848,5 +929,81 @@ function successfulRun(): StateSnapshot {
     pendingApprovals: [],
     createdAt: 1,
     updatedAt: 2,
+  };
+}
+
+function semanticEvaluationRun(): EvaluationRun {
+  return {
+    id: "eval-causal-1",
+    spec: {
+      datasetId: "dataset-1",
+      profileId: "outcome",
+      configs: [{
+        id: "causal-config",
+        label: "Causal config",
+        runConfig: {
+          pattern: "orchestrator_subagent",
+          modeId: "single_agent",
+        },
+      }],
+      repetitions: 1,
+      concurrency: 1,
+      timeoutMs: 120000,
+      metadata: {},
+    },
+    status: "succeeded",
+    totalAttempts: 2,
+    completedAttempts: 2,
+    failedAttempts: 0,
+    attemptIds: [],
+    caseResults: [],
+    scorecard: {
+      overallScore: 0.4,
+      passRate: 0.5,
+      averageRuntimeMs: 0,
+      averageCostUsd: 0,
+      regressionCount: 0,
+      pendingAnnotationCount: 0,
+      configSummaries: [],
+      reportingViews: [],
+      slices: [],
+    },
+    startedAt: 1,
+    updatedAt: 2,
+    resumable: false,
+  } as EvaluationRun;
+}
+
+function causalSemanticSignal(caseId: string, failureTag: "latent_goal_missing" | "latent_goal_mismatch" | "under_clarification"): ProjectSignal {
+  return {
+    id: `signal-${caseId}-${failureTag}`,
+    projectId: "local-project",
+    source: "evaluation_result",
+    sourceRef: "eval-causal-1",
+    title: "Evaluation case failure pattern",
+    summary: `Case ${caseId} triggered ${failureTag}.`,
+    severity: "warning",
+    confidence: 0.82,
+    createdAt: 1,
+    updatedAt: 1,
+    evidence: [{
+      id: `evidence-${caseId}`,
+      label: "Open Evaluation run",
+      target: {
+        kind: "evaluation",
+        id: "eval-causal-1",
+        evaluationRunId: "eval-causal-1",
+        datasetId: "dataset-1",
+        caseId,
+      },
+    }],
+    metadata: {
+      evaluationRunId: "eval-causal-1",
+      datasetId: "dataset-1",
+      configId: "causal-config",
+      caseId,
+      failureTag,
+      overallScore: 0.4,
+    },
   };
 }

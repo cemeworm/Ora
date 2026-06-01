@@ -3489,7 +3489,17 @@ export class LocalRunStore {
       const mode = this.modeStore.get({ modeId });
       const nodeId = candidate.targetRef.nodeId;
       const targetNode = mode.nodes.find((node) => node.id === nodeId) ?? mode.nodes.find((node) => node.enabled) ?? mode.nodes[0];
-      return { kind: "prompt", modeId, nodeId: targetNode?.id, prompt: targetNode?.prompt ?? targetNode?.instructions ?? "" };
+      const target = targetNode ? selfIterationPromptTarget(targetNode) : undefined;
+      return {
+        kind: "prompt",
+        modeId,
+        nodeId: targetNode?.id,
+        field: target?.field,
+        hasPrompt: typeof targetNode?.prompt === "string",
+        prompt: targetNode?.prompt,
+        hasInstructions: typeof targetNode?.instructions === "string",
+        instructions: targetNode?.instructions,
+      };
     }
     if (candidate.targetKind === "mode") {
       const modeId = candidate.targetRef.modeId ?? SINGLE_AGENT_MODE_ID;
@@ -3544,15 +3554,24 @@ export class LocalRunStore {
       const nodeId = snapshot.nodeId as string | undefined;
       const targetNode = mode.nodes.find((node) => node.id === nodeId);
       if (!targetNode) return; // mode structure changed, cannot safely rollback
-      if (typeof snapshot.prompt === "string") {
-        this.modeStore.update({
-          modeId: snapshot.modeId,
-          spec: modeCreateParamsFromSpec({
-            ...mode,
-            nodes: mode.nodes.map((node) => node.id === targetNode.id ? { ...node, prompt: snapshot.prompt as string } : node),
-          }),
-        });
+      const restoredNode = { ...targetNode };
+      if (snapshot.hasPrompt === true && typeof snapshot.prompt === "string") {
+        restoredNode.prompt = snapshot.prompt as string;
+      } else {
+        delete restoredNode.prompt;
       }
+      if (snapshot.hasInstructions === true && typeof snapshot.instructions === "string") {
+        restoredNode.instructions = snapshot.instructions as string;
+      } else {
+        delete restoredNode.instructions;
+      }
+      this.modeStore.update({
+        modeId: snapshot.modeId,
+        spec: modeCreateParamsFromSpec({
+          ...mode,
+          nodes: mode.nodes.map((node) => node.id === targetNode.id ? restoredNode : node),
+        }),
+      });
     }
     if (snapshot.kind === "skill" && typeof snapshot.skillName === "string") {
       const lifecycle = typeof snapshot.lifecycle === "string" ? snapshot.lifecycle : undefined;
@@ -6217,23 +6236,18 @@ export class LocalRunStore {
       ?? originalMode.nodes[0];
     if (!targetNode) return undefined;
 
-    const addition = typeof candidate.proposedChange.after === "string"
-      ? candidate.proposedChange.after
-      : candidate.proposedChange.summary;
-    const nextPrompt = [targetNode.prompt ?? targetNode.instructions ?? "", addition]
-      .filter(Boolean)
-      .join("\n\nSelf-Iteration guidance: ");
+    const impactDataset = this.selfIterationImpactDataset(candidate);
     const tempModeId = `self-iteration-impact-${safeSelfIterationId(candidate.id)}-${this.now()}`;
     const tempMode = this.modeStore.create(modeCreateParamsFromSpec({
       ...originalMode,
       id: tempModeId,
       label: `${originalMode.label} (Impact)`,
       nodes: originalMode.nodes.map((node) =>
-        node.id === targetNode.id ? { ...node, prompt: nextPrompt } : node),
+        node.id === targetNode.id ? applySelfIterationPromptGuidanceToNode(node, candidate) : node),
     }));
 
     try {
-      return await this.executeImpactEvaluationRun(candidate, originalMode.id, tempMode.id);
+      return await this.executeImpactEvaluationRun(candidate, originalMode.id, tempMode.id, impactDataset);
     } finally {
       try { this.modeStore.delete({ modeId: tempMode.id }); } catch { /* ignore cleanup failures */ }
     }
@@ -6362,10 +6376,11 @@ export class LocalRunStore {
     candidate: SelfIterationCandidate,
     beforeModeId: string,
     afterModeId: string,
+    impactDataset?: SelfIterationImpactDataset,
   ) {
     const beforeMode = this.modeStore.get({ modeId: beforeModeId });
     const modelRef = resolveProfileModelRef(beforeMode);
-    const datasetId = this.selfIterationEvaluationDatasetId(candidate);
+    const datasetId = impactDataset?.datasetId ?? this.selfIterationEvaluationDatasetId(candidate);
 
     const spec = EvaluationSpecSchema.parse({
       datasetId,
@@ -6420,10 +6435,14 @@ export class LocalRunStore {
       this.executeEvaluationRunWithLifecycle({ input, config, signal, onStarted })
     );
 
-    return this.buildImpactEvaluationResult(detail, candidate);
+    return this.buildImpactEvaluationResult(detail, candidate, impactDataset);
   }
 
-  private buildImpactEvaluationResult(detail: Awaited<ReturnType<typeof this.startEvaluationRun>>, candidate: SelfIterationCandidate) {
+  private buildImpactEvaluationResult(
+    detail: Awaited<ReturnType<typeof this.startEvaluationRun>>,
+    candidate: SelfIterationCandidate,
+    impactDataset?: SelfIterationImpactDataset,
+  ) {
     const scorecard = detail.run.scorecard;
     const passed = detail.run.status === "succeeded" && scorecard.passRate >= 1 && scorecard.regressionCount === 0;
     const scoreEvidence = selfIterationScoreEvidence(detail.run.id, scorecard.configSummaries);
@@ -6435,6 +6454,11 @@ export class LocalRunStore {
         : `Impact evaluation ${detail.run.id} shows regression for ${candidate.targetKind} candidate ${candidate.id}.`,
       impactEvaluation: {
         targetKind: candidate.targetKind,
+        datasetScope: impactDataset?.scope ?? "synthetic_fallback",
+        sourceDatasetId: impactDataset?.sourceDatasetId,
+        sourceCaseIds: impactDataset?.sourceCaseIds,
+        sourceConfigId: impactDataset?.sourceConfigId,
+        sourceFailureTags: impactDataset?.sourceFailureTags,
         ...scoreEvidence,
       },
     };
@@ -6449,6 +6473,18 @@ export class LocalRunStore {
         }
       }
     } catch { /* mode listing may not be available */ }
+    try {
+      const referencedDatasetIds = new Set(this.evaluationStore.listRuns().map((run) => run.spec.datasetId));
+      for (const dataset of this.evaluationStore.listDatasets()) {
+        if (!isSelfIterationImpactDataset(dataset)) {
+          continue;
+        }
+        if (referencedDatasetIds.has(dataset.id)) {
+          continue;
+        }
+        try { this.evaluationStore.deleteDataset({ datasetId: dataset.id }); } catch { /* ignore */ }
+      }
+    } catch { /* dataset cleanup is best-effort */ }
   }
 
   private selfIterationEvaluationDatasetId(candidate: SelfIterationCandidate): string {
@@ -6478,6 +6514,101 @@ export class LocalRunStore {
     return dataset.dataset.id;
   }
 
+  private selfIterationImpactDataset(candidate: SelfIterationCandidate): SelfIterationImpactDataset {
+    const causalOrigin = selfIterationCausalOrigin(candidate);
+    if (!causalOrigin) {
+      return {
+        datasetId: this.selfIterationEvaluationDatasetId(candidate),
+        scope: "synthetic_fallback",
+      };
+    }
+
+    const cacheKey = `${candidate.id}:impact:${causalOrigin.datasetId}:${causalOrigin.caseIds.join("|")}`;
+    const cached = this.selfIterationDatasetCache.get(cacheKey);
+    if (cached) {
+      return {
+        datasetId: cached,
+        scope: "causal_subset",
+        sourceDatasetId: causalOrigin.datasetId,
+        sourceCaseIds: causalOrigin.caseIds,
+        sourceConfigId: causalOrigin.configId,
+        sourceFailureTags: causalOrigin.failureTags,
+      };
+    }
+
+    try {
+      const sourceDataset = this.evaluationStore.getDataset({ datasetId: causalOrigin.datasetId });
+      const sourceCaseIds = new Set(causalOrigin.caseIds);
+      const subsetCases = sourceDataset.cases.filter((evaluationCase) => sourceCaseIds.has(evaluationCase.id));
+      if (subsetCases.length === 0) {
+        return {
+          datasetId: this.selfIterationEvaluationDatasetId(candidate),
+          scope: "synthetic_fallback",
+        };
+      }
+      const existingDatasetId = this.findReusableSelfIterationImpactDataset(candidate, causalOrigin, subsetCases);
+      if (existingDatasetId) {
+        this.selfIterationDatasetCache.set(cacheKey, existingDatasetId);
+        return {
+          datasetId: existingDatasetId,
+          scope: "causal_subset",
+          sourceDatasetId: causalOrigin.datasetId,
+          sourceCaseIds: causalOrigin.caseIds,
+          sourceConfigId: causalOrigin.configId,
+          sourceFailureTags: causalOrigin.failureTags,
+        };
+      }
+      const tags = selfIterationImpactDatasetTags(candidate, causalOrigin);
+      const dataset = this.evaluationStore.importDataset({
+        name: `Self-Iteration Impact · ${candidate.targetKind}`,
+        description: `Inline subset dataset materialized from causal semantic failures for ${candidate.id}.`,
+        sourceFormat: "inline",
+        content: JSON.stringify(subsetCases),
+        tags,
+      });
+      this.selfIterationDatasetCache.set(cacheKey, dataset.dataset.id);
+      return {
+        datasetId: dataset.dataset.id,
+        scope: "causal_subset",
+        sourceDatasetId: causalOrigin.datasetId,
+        sourceCaseIds: causalOrigin.caseIds,
+        sourceConfigId: causalOrigin.configId,
+        sourceFailureTags: causalOrigin.failureTags,
+      };
+    } catch {
+      return {
+        datasetId: this.selfIterationEvaluationDatasetId(candidate),
+        scope: "synthetic_fallback",
+      };
+    }
+  }
+
+  private findReusableSelfIterationImpactDataset(
+    candidate: SelfIterationCandidate,
+    causalOrigin: ReturnType<typeof selfIterationCausalOrigin>,
+    subsetCases: readonly { id: string }[],
+  ): string | undefined {
+    if (!causalOrigin) {
+      return undefined;
+    }
+    const tags = new Set(selfIterationImpactDatasetTags(candidate, causalOrigin));
+    const expectedCaseIds = [...new Set(subsetCases.map((evaluationCase) => evaluationCase.id))].sort();
+    for (const dataset of this.evaluationStore.listDatasets()) {
+      if (!dataset.tags || !dataset.tags.every((tag) => typeof tag === "string")) {
+        continue;
+      }
+      if (![...tags].every((tag) => dataset.tags?.includes(tag))) {
+        continue;
+      }
+      const detail = this.evaluationStore.getDataset({ datasetId: dataset.id });
+      const caseIds = [...new Set(detail.cases.map((evaluationCase) => evaluationCase.id))].sort();
+      if (sameStringArray(caseIds, expectedCaseIds)) {
+        return dataset.id;
+      }
+    }
+    return undefined;
+  }
+
   private generateSelfIterationModeDraft(candidate: SelfIterationCandidate): ModeStudioDraftBundle | undefined {
     const bundle = this.generateModeStudioDraft({
       messages: [{ role: "user", content: selfIterationModeDraftPrompt(candidate) }],
@@ -6499,17 +6630,11 @@ export class LocalRunStore {
     const nodeId = candidate.targetRef.nodeId;
     const targetNode = mode.nodes.find((node) => node.id === nodeId) ?? mode.nodes.find((node) => node.enabled) ?? mode.nodes[0];
     if (!targetNode) return { applied: false, reason: "Mode has no editable node." };
-    const addition = typeof candidate.proposedChange.after === "string"
-      ? candidate.proposedChange.after
-      : candidate.proposedChange.summary;
-    const nextPrompt = [targetNode.prompt ?? targetNode.instructions ?? "", addition]
-      .filter(Boolean)
-      .join("\n\nSelf-Iteration guidance: ");
     const nextMode = this.modeStore.update({
       modeId,
       spec: modeCreateParamsFromSpec({
         ...mode,
-        nodes: mode.nodes.map((node) => node.id === targetNode.id ? { ...node, prompt: nextPrompt } : node),
+        nodes: mode.nodes.map((node) => node.id === targetNode.id ? applySelfIterationPromptGuidanceToNode(node, candidate) : node),
       }),
     });
     return { applied: true, modeId: nextMode.id, nodeId: targetNode.id };
@@ -6801,6 +6926,185 @@ function selfIterationScoreSnapshot(summary: EvaluationConfigSummary) {
     caseCount: summary.caseCount,
   };
 }
+
+interface SelfIterationImpactDataset {
+  datasetId: string;
+  scope: "causal_subset" | "synthetic_fallback";
+  sourceDatasetId?: string;
+  sourceCaseIds?: string[];
+  sourceConfigId?: string;
+  sourceFailureTags?: string[];
+}
+
+type SelfIterationPromptField = "instructions" | "prompt";
+
+function applySelfIterationPromptGuidance(existingPrompt: string, candidate: SelfIterationCandidate): string {
+  const block = selfIterationPromptGuidanceBlock(candidate);
+  const current = stripSelfIterationPromptGuidanceArtifacts(existingPrompt ?? "");
+  return [current.trimEnd(), block].filter(Boolean).join("\n\n");
+}
+
+function selfIterationPromptGuidanceBlock(candidate: SelfIterationCandidate): string {
+  const promptPatch = candidate.proposedChange.metadata.promptPatch;
+  const guidanceText = typeof promptPatch === "object" && promptPatch !== null && typeof (promptPatch as Record<string, unknown>).guidanceText === "string"
+    ? String((promptPatch as Record<string, unknown>).guidanceText).trim()
+    : selfIterationPromptGuidanceText(candidate);
+  if (guidanceText.includes(SELF_ITERATION_PROMPT_GUIDANCE_START) && guidanceText.includes(SELF_ITERATION_PROMPT_GUIDANCE_END)) {
+    return guidanceText;
+  }
+  return [
+    SELF_ITERATION_PROMPT_GUIDANCE_START,
+    guidanceText,
+    SELF_ITERATION_PROMPT_GUIDANCE_END,
+  ].join("\n");
+}
+
+function selfIterationPromptGuidanceText(candidate: SelfIterationCandidate): string {
+  if (typeof candidate.proposedChange.after === "string" && candidate.proposedChange.after.trim()) {
+    return candidate.proposedChange.after.trim();
+  }
+  return candidate.proposedChange.summary.trim();
+}
+
+function selfIterationPromptTarget(node: { prompt?: string; instructions?: string }): {
+  field: SelfIterationPromptField;
+  text: string;
+} {
+  if (typeof node.instructions === "string" && node.instructions.trim().length > 0) {
+    return { field: "instructions", text: node.instructions };
+  }
+  if (typeof node.prompt === "string" && node.prompt.trim().length > 0) {
+    return { field: "prompt", text: node.prompt };
+  }
+  return { field: "instructions", text: "" };
+}
+
+function applySelfIterationPromptGuidanceToNode<T extends { prompt?: string; instructions?: string }>(
+  node: T,
+  candidate: SelfIterationCandidate,
+): T {
+  const target = selfIterationPromptTarget(node);
+  const nextText = applySelfIterationPromptGuidance(target.text, candidate);
+  const nextNode = { ...node } as T;
+  if (target.field === "instructions") {
+    nextNode.instructions = nextText;
+  } else {
+    nextNode.prompt = nextText;
+  }
+  if (target.field === "instructions") {
+    const cleanedPrompt = cleanedNonTargetSelfIterationSurface(node.prompt, node.instructions);
+    if (cleanedPrompt === "") {
+      delete nextNode.prompt;
+    } else if (typeof cleanedPrompt === "string") {
+      nextNode.prompt = cleanedPrompt;
+    }
+  } else {
+    const cleanedInstructions = cleanedNonTargetSelfIterationSurface(node.instructions, node.prompt);
+    if (cleanedInstructions === "") {
+      delete nextNode.instructions;
+    } else if (typeof cleanedInstructions === "string") {
+      nextNode.instructions = cleanedInstructions;
+    }
+  }
+  return nextNode;
+}
+
+function cleanedNonTargetSelfIterationSurface(
+  value: string | undefined,
+  baseline: string | undefined,
+): string | undefined {
+  if (typeof value !== "string" || !containsSelfIterationGuidanceArtifacts(value)) {
+    return undefined;
+  }
+  const cleaned = stripSelfIterationPromptGuidanceArtifacts(value);
+  const trimmed = cleaned.trim();
+  if (!trimmed) {
+    return "";
+  }
+  if (typeof baseline === "string" && trimmed === baseline.trim()) {
+    return "";
+  }
+  return cleaned;
+}
+
+function containsSelfIterationGuidanceArtifacts(value: string): boolean {
+  return value.includes(SELF_ITERATION_PROMPT_GUIDANCE_START)
+    || value.includes(SELF_ITERATION_PROMPT_GUIDANCE_END)
+    || value.includes(SELF_ITERATION_PROMPT_GUIDANCE_LEGACY_PREFIX);
+}
+
+function stripSelfIterationPromptGuidanceArtifacts(value: string): string {
+  const withoutMarkers = value.replace(
+    new RegExp(`(?:\\n{0,2})?${escapeRegExp(SELF_ITERATION_PROMPT_GUIDANCE_START)}[\\s\\S]*?${escapeRegExp(SELF_ITERATION_PROMPT_GUIDANCE_END)}`, "g"),
+    "",
+  );
+  return withoutMarkers.replace(new RegExp(`\\n\\n${escapeRegExp(SELF_ITERATION_PROMPT_GUIDANCE_LEGACY_PREFIX)}[\\s\\S]*$`), "").trimEnd();
+}
+
+function selfIterationCausalOrigin(candidate: SelfIterationCandidate): {
+  datasetId: string;
+  caseIds: string[];
+  configId: string;
+  failureTags: string[];
+} | undefined {
+  if (candidate.targetKind !== "prompt") return undefined;
+  const metadata = candidate.proposedChange.metadata as Record<string, unknown>;
+  const origin = metadata.causalOrigin as Record<string, unknown> | undefined;
+  if (!origin) return undefined;
+  const datasetId = typeof origin.datasetId === "string" ? origin.datasetId.trim() : "";
+  const configId = typeof origin.configId === "string" ? origin.configId.trim() : "";
+  const caseIds = Array.isArray(origin.caseIds)
+    ? origin.caseIds.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    : [];
+  const failureTags = Array.isArray(origin.failureTags)
+    ? origin.failureTags.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    : [];
+  if (!datasetId || !configId || caseIds.length === 0) return undefined;
+  return {
+    datasetId,
+    configId,
+    caseIds: [...new Set(caseIds)].sort(),
+    failureTags: [...new Set(failureTags)].sort(),
+  };
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function sameStringArray(left: readonly string[], right: readonly string[]): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+  return left.every((value, index) => value === right[index]);
+}
+
+function selfIterationImpactDatasetTags(
+  candidate: SelfIterationCandidate,
+  causalOrigin: NonNullable<ReturnType<typeof selfIterationCausalOrigin>>,
+): string[] {
+  return [
+    "self-iteration",
+    "prompt",
+    "causal-semantic",
+    "subset",
+    `candidate:${safeSelfIterationId(candidate.id)}`,
+    `source-dataset:${safeSelfIterationId(causalOrigin.datasetId)}`,
+    `source-config:${safeSelfIterationId(causalOrigin.configId)}`,
+  ];
+}
+
+function isSelfIterationImpactDataset(dataset: { tags?: string[] }): boolean {
+  const tags = dataset.tags ?? [];
+  return tags.includes("self-iteration")
+    && tags.includes("prompt")
+    && tags.includes("causal-semantic")
+    && tags.includes("subset");
+}
+
+const SELF_ITERATION_PROMPT_GUIDANCE_START = "[Ora self-iteration: prompt guidance v1]";
+const SELF_ITERATION_PROMPT_GUIDANCE_END = "[/Ora self-iteration: prompt guidance v1]";
+const SELF_ITERATION_PROMPT_GUIDANCE_LEGACY_PREFIX = "Self-Iteration guidance: ";
 
 function roundSelfIterationScore(value: number): number {
   return Math.round(value * 10_000) / 10_000;

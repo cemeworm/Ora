@@ -85,6 +85,18 @@ export interface SelfIterationEvaluateDeps {
   evaluateCandidate(candidate: SelfIterationCandidate): SelfIterationEvaluationOutcome | Promise<SelfIterationEvaluationOutcome>;
 }
 
+const CAUSAL_SEMANTIC_FAILURE_TAGS = new Set([
+  "latent_goal_missing",
+  "latent_goal_mismatch",
+  "under_clarification",
+]);
+
+const CAUSAL_SEMANTIC_PROMPT_GUIDANCE_TEXT = [
+  "Before using tools or drafting a final answer, restate the user's latent goal, success criteria, and key constraints in one concise sentence.",
+  "If more than one plausible interpretation remains, or the success criteria are missing, ask one focused clarification before proceeding.",
+  "Do not continue on conflicting interpretations.",
+].join(" ");
+
 export class LocalSelfIterationStore {
   private readonly statePath: string;
   private state: SelfIterationState;
@@ -506,6 +518,7 @@ function candidateGenerators(projectId: string, input: SelfIterationDerivationIn
   return [
     ...feedbackEvaluationCandidates(projectId, input, now),
     ...runtimePromptCandidates(projectId, input, now),
+    ...causalSemanticPromptCandidates(projectId, input, now),
     ...environmentObserverCandidates(projectId, input, now),
     ...modeCandidates(projectId, input, now),
     ...skillCandidates(projectId, input, now),
@@ -554,7 +567,164 @@ function runtimePromptCandidates(projectId: string, input: SelfIterationDerivati
         title: "Add failure-aware prompt guidance",
         summary: "Append a short evidence-backed instruction to the first editable mode node.",
         after: "Before finalizing, state assumptions, verify tool outcomes, and surface blockers with concrete next steps.",
-        metadata: { modeId, sourceSignalId: signal.id },
+        metadata: {
+          modeId,
+          sourceSignalId: signal.id,
+          promptPatch: {
+            marker: "ora-self-iteration-prompt-guidance",
+            version: 1,
+            guidanceText: "Before finalizing, state assumptions, verify tool outcomes, and surface blockers with concrete next steps.",
+          },
+        },
+      },
+      riskLevel: "high",
+      now,
+    });
+  });
+}
+
+function causalSemanticPromptCandidates(projectId: string, input: SelfIterationDerivationInput, now: number): SelfIterationCandidate[] {
+  if (!causalSemanticPromptFeatureEnabled()) {
+    return [];
+  }
+
+  const evaluationRunsById = new Map(input.evaluationRuns.map((run) => [run.id, run]));
+  const grouped = new Map<string, {
+    evaluationRunId: string;
+    configId: string;
+    datasetId: string;
+    modeId: string;
+    signals: ProjectSignal[];
+    caseIds: Set<string>;
+    failureTags: Set<string>;
+    updatedAt: number;
+  }>();
+
+  for (const signal of input.signals) {
+    const failureTag = typeof signal.metadata.failureTag === "string" ? signal.metadata.failureTag : "";
+    if (
+      signal.projectId !== projectId
+      || signal.source !== "evaluation_result"
+      || !CAUSAL_SEMANTIC_FAILURE_TAGS.has(failureTag)
+    ) {
+      continue;
+    }
+    const evaluationRunId = typeof signal.metadata.evaluationRunId === "string" ? signal.metadata.evaluationRunId : "";
+    const configId = typeof signal.metadata.configId === "string" ? signal.metadata.configId : "";
+    const caseId = typeof signal.metadata.caseId === "string" ? signal.metadata.caseId : "";
+    const evaluationRun = evaluationRunsById.get(evaluationRunId);
+    const config = evaluationRun?.spec.configs.find((candidate) => candidate.id === configId);
+    const modeId = typeof config?.runConfig.modeId === "string" && config.runConfig.modeId.trim()
+      ? config.runConfig.modeId
+      : "";
+    const datasetId = typeof signal.metadata.datasetId === "string" && signal.metadata.datasetId.trim()
+      ? signal.metadata.datasetId
+      : evaluationRun?.spec.datasetId ?? "";
+    if (!evaluationRunId || !configId || !caseId || !modeId || !datasetId) {
+      continue;
+    }
+    const key = `${evaluationRunId}::${configId}::${modeId}`;
+    const existing = grouped.get(key) ?? {
+      evaluationRunId,
+      configId,
+      datasetId,
+      modeId,
+      signals: [],
+      caseIds: new Set<string>(),
+      failureTags: new Set<string>(),
+      updatedAt: 0,
+    };
+    existing.signals.push(signal);
+    existing.caseIds.add(caseId);
+    existing.failureTags.add(failureTag);
+    existing.updatedAt = Math.max(existing.updatedAt, signal.updatedAt);
+    grouped.set(key, existing);
+  }
+
+  const strongestByMode = new Map<string, {
+    evaluationRunId: string;
+    configId: string;
+    datasetId: string;
+    modeId: string;
+    signals: ProjectSignal[];
+    caseIds: Set<string>;
+    failureTags: Set<string>;
+    updatedAt: number;
+  }>();
+  for (const entry of grouped.values()) {
+    if (entry.caseIds.size < 2 || entry.signals.length < 2) {
+      continue;
+    }
+    const existing = strongestByMode.get(entry.modeId);
+    if (!existing) {
+      strongestByMode.set(entry.modeId, entry);
+      continue;
+    }
+    const currentScore = entry.caseIds.size * 10 + entry.signals.length;
+    const existingScore = existing.caseIds.size * 10 + existing.signals.length;
+    if (currentScore > existingScore || (currentScore === existingScore && entry.updatedAt > existing.updatedAt)) {
+      strongestByMode.set(entry.modeId, entry);
+    }
+  }
+
+  return [...strongestByMode.values()].map((entry) => {
+    const caseIds = [...entry.caseIds].sort();
+    const failureTags = [...entry.failureTags].sort();
+    const evidence = uniqueBy(
+      entry.signals.flatMap((signal): ProjectSignalEvidence[] => signal.evidence.length > 0
+        ? signal.evidence
+        : [{
+            id: `${signal.id}:evaluation`,
+            label: "Evaluation evidence",
+            summary: signal.summary,
+            target: {
+              kind: "evaluation",
+              id: entry.evaluationRunId,
+              evaluationRunId: entry.evaluationRunId,
+              datasetId: entry.datasetId,
+              caseId: typeof signal.metadata.caseId === "string" ? signal.metadata.caseId : undefined,
+            },
+          }]),
+      (item: ProjectSignalEvidence) => item.id,
+    ) as ProjectSignalEvidence[];
+    return buildCandidate({
+      id: `${projectId}:self:prompt:causal-semantic:${entry.modeId}`,
+      projectId,
+      targetKind: "prompt",
+      targetRef: { kind: "prompt", id: entry.modeId, modeId: entry.modeId },
+      title: `Tighten semantic clarification guidance for ${entry.modeId}`,
+      summary: "Repeated causal semantic-state failures indicate this mode needs stronger latent-goal and clarification guidance before tool use.",
+      evidence,
+      proposedChange: {
+        operation: "mode.node.prompt.update",
+        title: "Add causal semantic clarification guidance",
+        summary: "Replace or insert a focused clarification guidance block for this mode before tool use.",
+        after: CAUSAL_SEMANTIC_PROMPT_GUIDANCE_TEXT,
+        metadata: {
+          modeId: entry.modeId,
+          sourceSignalKind: "causal_semantic_gap",
+          causalOrigin: {
+            source: "causal_decision",
+            insightKind: "semantic_gap",
+            evaluationRunId: entry.evaluationRunId,
+            configId: entry.configId,
+            datasetId: entry.datasetId,
+            modeId: entry.modeId,
+            failureTags,
+            caseIds,
+            evidenceCount: entry.signals.length,
+          },
+          causalProposal: {
+            patchKind: "clarification_prompt",
+            confidence: causalSemanticConfidence(caseIds.length),
+            rationale: `Evaluation run ${entry.evaluationRunId} / config ${entry.configId} produced repeated semantic-state failures in mode ${entry.modeId}. Strengthen latent-goal restatement and clarification guidance before tool use.`,
+          },
+          promptPatch: {
+            marker: "ora-self-iteration-causal-semantic-guidance",
+            version: 1,
+            guidanceText: CAUSAL_SEMANTIC_PROMPT_GUIDANCE_TEXT,
+          },
+        },
       },
       riskLevel: "high",
       now,
@@ -848,6 +1018,17 @@ function selfIterationEvaluationMetadata(candidate: SelfIterationCandidate): Rec
 
 function firstProjectId(input: SelfIterationDerivationInput): string | undefined {
   return input.signals[0]?.projectId ?? input.insights[0]?.projectId;
+}
+
+function causalSemanticPromptFeatureEnabled(): boolean {
+  const value = process.env.ORA_SELF_ITERATION_CAUSAL_SEMANTIC_PROMPT_ENABLED;
+  return value === "1" || value === "true";
+}
+
+function causalSemanticConfidence(caseCount: number): number {
+  if (caseCount >= 4) return 0.9;
+  if (caseCount === 3) return 0.82;
+  return 0.72;
 }
 
 function uniqueBy<T>(items: T[], key: (item: T) => string): T[] {
