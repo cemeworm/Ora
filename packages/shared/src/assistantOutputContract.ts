@@ -25,6 +25,8 @@ const INLINE_TOOL_JSON_RE =
   /\{"tool"\s*:\s*"[a-z0-9_.-]+"\s*,\s*"args"\s*:\s*\{[\s\S]*?\}\s*\}/gi;
 const INLINE_TOOL_JSON_DETECT_RE =
   /\{"tool"\s*:\s*"[a-z0-9_.-]+"\s*,\s*"args"\s*:\s*\{/i;
+const EMPTY_FENCED_BLOCK_RE =
+  /```(?:json|xml)?\s*(?:\r?\n\s*)+```/gi;
 
 export function isInternalAssistantText(text: string): boolean {
   const trimmed = text.trim();
@@ -67,6 +69,7 @@ export function stripInternalAssistantProtocolText(text: string): string {
   const lines = text
     .replace(INTERNAL_META_TAG_RE, "")
     .replace(INLINE_TOOL_JSON_RE, "")
+    .replace(EMPTY_FENCED_BLOCK_RE, "")
     .split(/\r?\n/)
     .filter((line) => !DSML_PROTOCOL_LINE_RE.test(line))
     .filter((line) => !INTERNAL_PROTOCOL_LINE_RE.test(line));

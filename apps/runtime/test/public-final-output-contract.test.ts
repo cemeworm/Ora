@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { SINGLE_AGENT_MODE_ID, getModePreset } from "@cemeworm/shared";
 import {
+  forcedFinalPublicTextCandidate,
   finalOutputContractViolation,
   incompleteForcedFinalError,
 } from "../src/harness/runtime-output.js";
@@ -56,6 +57,22 @@ describe("public final output contract", () => {
     expect(finalOutputContractViolation({
       text: "已经完成修复，并补充了针对终态输出污染的回归测试。",
     })).toBeUndefined();
+  });
+
+  it("extracts sanitized public text from forced-final responses that still contain internal protocol markers", () => {
+    expect(forcedFinalPublicTextCandidate({
+      text: [
+        "我已经把问题收敛到目录扫描过深。",
+        "",
+        "<｜｜DSML｜｜tool_calls>",
+        '<｜｜DSML｜｜invoke name="file__read">',
+        "</｜｜DSML｜｜invoke>",
+        "</｜｜DSML｜｜tool_calls>",
+      ].join("\n"),
+    })).toEqual({
+      acceptedText: "我已经把问题收敛到目录扫描过深。",
+      source: "sanitized_visible_text",
+    });
   });
 
   it("rejects final output with multiple complete proposed_plan blocks", () => {

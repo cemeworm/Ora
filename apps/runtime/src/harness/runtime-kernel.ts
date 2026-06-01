@@ -6035,7 +6035,13 @@ export async function executeRuntimeKernel(
             { role: "assistant", content: response.text },
             {
               role: "user",
-              content: "Rewrite the final answer in plain user-facing prose only. Do not include any internal protocol text.",
+              content: [
+                "Rewrite the final answer in plain user-facing prose only.",
+                "Do not include any internal protocol text.",
+                "This must be the final answer for the user.",
+                "Do not say that you are about to continue searching, inspect another file, or take another step.",
+                "Summarize only what the existing conversation and tool results already support.",
+              ].join(" "),
             },
           ],
           temperature: 0,

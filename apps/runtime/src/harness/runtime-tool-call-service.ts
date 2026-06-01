@@ -135,6 +135,7 @@ export class RuntimeToolCallService {
     };
     const { action, toolCallRecord } = proposeRuntimeToolAction({
       agentId: this.deps.agentId,
+      nodeId: this.deps.nodeId,
       inputPrompt: this.deps.inputPrompt,
       eventCount: this.deps.eventsLength(),
       planStepId: this.deps.activePlanStepId(),
@@ -149,7 +150,7 @@ export class RuntimeToolCallService {
       action,
       context: {
         agentId: this.deps.agentId,
-        nodeId: this.deps.agentId,
+        nodeId: this.deps.nodeId,
         title: this.deps.title,
       },
       deps: actionDeps,
@@ -171,7 +172,7 @@ export class RuntimeToolCallService {
     transitionRuntimeAction({
       action,
       status: "running",
-      context: { agentId: this.deps.agentId, nodeId: this.deps.agentId },
+      context: { agentId: this.deps.agentId, nodeId: this.deps.nodeId },
       deps: actionDeps,
       toolCallRecord,
     });
@@ -196,7 +197,7 @@ export class RuntimeToolCallService {
       if (isNodeRuntimeTimeoutError(error)) {
         recordRuntimeToolActionFailed({
           action,
-          context: { agentId: this.deps.agentId, nodeId: this.deps.agentId },
+          context: { agentId: this.deps.agentId, nodeId: this.deps.nodeId },
           deps: actionDeps,
           toolCall,
           detail: error instanceof Error ? error.message : String(error),
@@ -209,7 +210,7 @@ export class RuntimeToolCallService {
         transitionRuntimeAction({
           action,
           status: "approval_required",
-          context: { agentId: this.deps.agentId, nodeId: this.deps.agentId },
+          context: { agentId: this.deps.agentId, nodeId: this.deps.nodeId },
           deps: actionDeps,
           toolCallRecord,
         });
@@ -240,7 +241,7 @@ export class RuntimeToolCallService {
     this.deps.completion.markToolResultObserved(toolCall, execution.cacheHit ?? false, this.deps.completionScope);
     const { resultText } = recordRuntimeToolActionSucceeded({
       action,
-      context: { agentId: this.deps.agentId, nodeId: this.deps.agentId },
+      context: { agentId: this.deps.agentId, nodeId: this.deps.nodeId },
       deps: actionDeps,
       toolCall,
       output: execution.output,

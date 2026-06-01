@@ -137,7 +137,7 @@ export class RuntimeToolRecoveryService {
     if (currentState !== "tool_running") {
       const incident = classifyRecoveryError(error, {
         surface: surface === "tool" ? "unknown" : surface,
-        nodeId: this.deps.agentId,
+        nodeId: this.deps.nodeId,
         agentId: this.deps.agentId,
         toolId: toolCall.tool,
         actionId: action.id,
@@ -150,7 +150,7 @@ export class RuntimeToolRecoveryService {
     }
     recordRuntimeToolActionFailed({
       action,
-      context: { agentId: this.deps.agentId, nodeId: this.deps.agentId },
+      context: { agentId: this.deps.agentId, nodeId: this.deps.nodeId },
       deps: this.deps.actionDeps(),
       toolCall,
       detail,
@@ -166,7 +166,7 @@ export class RuntimeToolRecoveryService {
     });
     const incident = classifyRecoveryError(error, {
       surface,
-      nodeId: this.deps.agentId,
+      nodeId: this.deps.nodeId,
       agentId: this.deps.agentId,
       toolId: toolCall.tool,
       actionId: action.id,
@@ -257,6 +257,7 @@ export class RuntimeToolRecoveryService {
     }
     const alternateAction = proposeRuntimeRecoveryToolAction({
       agentId: this.deps.agentId,
+      nodeId: this.deps.nodeId,
       inputPrompt: this.deps.inputPrompt,
       eventCount: this.deps.eventsLength(),
       toolCall: alternateCall,
@@ -268,7 +269,7 @@ export class RuntimeToolRecoveryService {
       action: alternateAction,
       context: {
         agentId: this.deps.agentId,
-        nodeId: this.deps.agentId,
+        nodeId: this.deps.nodeId,
         title: this.deps.title,
       },
       deps: this.deps.actionDeps(),
@@ -276,7 +277,7 @@ export class RuntimeToolRecoveryService {
     transitionRuntimeAction({
       action: alternateAction,
       status: "running",
-      context: { agentId: this.deps.agentId, nodeId: this.deps.agentId },
+      context: { agentId: this.deps.agentId, nodeId: this.deps.nodeId },
       deps: this.deps.actionDeps(),
     });
     if (this.deps.nodeLoopController.state === "degraded") {
@@ -303,14 +304,14 @@ export class RuntimeToolRecoveryService {
       ? this.deps.publishFileChangeArtifact(alternateExecution.fileChange, {
           actionId: alternateAction.id,
           agentId: this.deps.agentId,
-          nodeId: this.deps.agentId,
+          nodeId: this.deps.nodeId,
         })
       : undefined;
     this.deps.completion.markToolResultObserved(alternateCall, false, this.deps.completionScope);
     const { resultText: alternateResultText } =
       recordRuntimeToolActionSucceeded({
         action: alternateAction,
-        context: { agentId: this.deps.agentId, nodeId: this.deps.agentId },
+        context: { agentId: this.deps.agentId, nodeId: this.deps.nodeId },
         deps: this.deps.actionDeps(),
         toolCall: alternateCall,
         output: alternateExecution.output,
@@ -392,7 +393,7 @@ export class RuntimeToolRecoveryService {
           ? "recovery_policy"
           : "tool_error_boundary",
       },
-      { agentId: this.deps.agentId, nodeId: this.deps.agentId },
+      { agentId: this.deps.agentId, nodeId: this.deps.nodeId },
     );
     const fallbackOutput = recoveryDecision.usableOutput ?? {
       degraded: true,

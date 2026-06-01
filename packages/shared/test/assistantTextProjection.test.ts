@@ -381,6 +381,12 @@ describe("assistant output contract", () => {
     expect(resolved.rejectionReason).toBe("internal_protocol");
   });
 
+  it("strips empty fenced shells left behind after inline tool JSON removal", () => {
+    expect(stripInternalAssistantProtocolText(
+      'Visible prefix\n\n```json\n{"tool":"file.write","args":{"path":"notes.txt","content":"x"}}\n```',
+    )).toBe("Visible prefix");
+  });
+
   it("rejects writer file tags as internal protocol text", () => {
     const resolved = resolvePublicAssistantText(
       "Visible prefix\n<file.write path=\"notes.txt\">approved</file.write>",

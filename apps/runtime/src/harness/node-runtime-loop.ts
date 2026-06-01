@@ -18,7 +18,7 @@ import {
 } from "@cemeworm/shared";
 import { buildCommentaryDelta } from "../commentary-delta.js";
 import { invokeRunProvider, invokeRunProviderStream } from "../providers/index.js";
-import type { ModelMessage, ModelRequest, ModelResponse } from "../providers/index.js";
+import type { ModelMessage, ModelRequest, ModelResponse, ModelToolDefinition } from "../providers/index.js";
 import type { ModelStreamEvent } from "../providers/types.js";
 import {
   classifyRecoveryError,
@@ -27,9 +27,13 @@ import {
   type RecoveryDecision,
   type RecoveryIncident,
 } from "./recovery-policy.js";
-import { RUNTIME_TOOL_LOOP_SAFETY_LIMIT, type RuntimeCompletionController } from "./runtime-completion.js";
+import {
+  EVIDENCE_EPISODE_MIN_WARN_LIMIT,
+  RUNTIME_TOOL_LOOP_SAFETY_LIMIT,
+  type RuntimeCompletionController,
+} from "./runtime-completion.js";
 import { evaluateRuntimeCompletionGuards, finalOutputGuard } from "./runtime-completion-guards.js";
-import { forcedFinalSystemPrompt } from "./runtime-output.js";
+import { forcedFinalPublicTextCandidate, forcedFinalSystemPrompt } from "./runtime-output.js";
 import type { RuntimeActionDeps } from "./runtime-action-runner.js";
 import { buildModelRequestCacheDiagnostics } from "../providers/provider-utils.js";
 import {
@@ -199,7 +203,12 @@ export function shouldRepairReadContextDiagnosisWithoutEvidence(params: {
 }
 
 function isDiagnosisReadContextPrompt(prompt: string): boolean {
-  return /连接池|数据库|报错|错误|异常|故障|排查|诊断|日志|堆栈|连接泄漏|连接耗尽/u.test(prompt);
+  if (/连接池|连接泄漏|连接耗尽|报错|故障|日志|堆栈|stack trace|runtime config|deployment/u.test(prompt)) {
+    return true;
+  }
+  const hasIssueTerm = /错误|异常|数据库/u.test(prompt);
+  const hasDiagnosisVerb = /排查|诊断|定位|复现|原因|为什么|日志|堆栈|报错|故障/u.test(prompt);
+  return hasIssueTerm && hasDiagnosisVerb;
 }
 
 function isManifestLikePath(path: string): boolean {
@@ -415,6 +424,111 @@ function isTaskJournalReadAttempt(toolId: string, args?: Record<string, unknown>
   return isTaskJournalPath(path);
 }
 
+function isListLikeReadContextTool(toolId: string): boolean {
+  return toolId === "file.list" || toolId === "file.glob";
+}
+
+function hasSettledTargetedReadContextEvidence(toolCalls: readonly OraToolCallEnvelope[]): boolean {
+  return toolCalls.some((call) => {
+    if (!(call.status === "succeeded" || call.status === "repaired")) {
+      return false;
+    }
+    return call.toolId === "file.read" || call.toolId === "file.grep";
+  });
+}
+
+function extractExplicitContentSearchTerms(prompt: string): string[] {
+  const matches = Array.from(prompt.matchAll(/['"`]([^'"`\n]{2,80})['"`]/g));
+  const seen = new Set<string>();
+  const terms: string[] = [];
+  for (const match of matches) {
+    const term = match[1]?.trim();
+    if (!term || term.length < 2) continue;
+    const key = term.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    terms.push(term);
+  }
+  return terms;
+}
+
+function isExplicitContentSearchPrompt(prompt: string): boolean {
+  const terms = extractExplicitContentSearchTerms(prompt);
+  if (terms.length < 2) return false;
+  const asksForSearch = /搜索|查找|find|search|locate|grep/u.test(prompt);
+  if (!asksForSearch) return false;
+  return /出现位置|定义|引用|emit 点|emit point|all occurrences|definitions?|references?|line\b|行号|上下文|文件路径|path/u.test(prompt);
+}
+
+function countRecentReadContextEpisode(params: {
+  toolCalls: readonly OraToolCallEnvelope[];
+  agentId: string;
+  nodeId: string;
+}): {
+  totalCount: number;
+  listLikeCount: number;
+  targetedCount: number;
+} {
+  const relevantToolCalls = params.toolCalls.filter((call) =>
+    call.agentId === params.agentId && call.nodeId === params.nodeId,
+  );
+  let totalCount = 0;
+  let listLikeCount = 0;
+  let targetedCount = 0;
+  for (let index = relevantToolCalls.length - 1; index >= 0; index -= 1) {
+    const call = relevantToolCalls[index];
+    if (!isReadContextTool(call.toolId)) {
+      break;
+    }
+    if (!(call.status === "proposed" || call.status === "running" || call.status === "succeeded" || call.status === "repaired")) {
+      break;
+    }
+    totalCount += 1;
+    if (isListLikeReadContextTool(call.toolId)) {
+      listLikeCount += 1;
+      continue;
+    }
+    if (call.toolId === "file.read" || call.toolId === "file.grep") {
+      targetedCount += 1;
+    }
+  }
+  return { totalCount, listLikeCount, targetedCount };
+}
+
+export function shouldBlockListHeavyRepoScanForReadContext(params: {
+  toolCalls: readonly OraToolCallEnvelope[];
+  agentId: string;
+  nodeId: string;
+  proposedToolId: string;
+  recommendedAction: string;
+}): boolean {
+  if (params.recommendedAction !== "read_context") return false;
+  if (!isListLikeReadContextTool(params.proposedToolId)) return false;
+  const episode = countRecentReadContextEpisode(params);
+  const nextTotalCount = episode.totalCount + 1;
+  const nextListLikeCount = episode.listLikeCount + 1;
+  return (
+    nextTotalCount >= EVIDENCE_EPISODE_MIN_WARN_LIMIT &&
+    nextListLikeCount >= EVIDENCE_EPISODE_MIN_WARN_LIMIT &&
+    episode.targetedCount === 0
+  );
+}
+
+export function shouldBlockBroadRepoScanForExplicitContentSearch(params: {
+  prompt: string;
+  toolCalls: readonly OraToolCallEnvelope[];
+  proposedToolId: string;
+  recommendedAction: string;
+}): boolean {
+  if (params.recommendedAction !== "read_context") return false;
+  if (!(isListLikeReadContextTool(params.proposedToolId) || params.proposedToolId === "repo.explore")) {
+    return false;
+  }
+  if (!isExplicitContentSearchPrompt(params.prompt)) return false;
+  if (hasSettledTargetedReadContextEvidence(params.toolCalls)) return false;
+  return true;
+}
+
 function shouldBlockWideTaskArchiveReadForReporting(params: {
   prompt: string;
   toolCalls: readonly OraToolCallEnvelope[];
@@ -503,36 +617,71 @@ function buildContextProbePolicyFollowUp(params: {
 
 export function buildReadContextPolicyFollowUp(prompt: string): string {
   const guidance = [
-    "[Read Context Policy] This request likely depends on repository or local context. Before finalizing, inspect the relevant local evidence with a read-context tool such as file.read, file.list, file.grep, or file.glob.",
-    "Treat dependency names, package entries, or config strings as partial clues only, not proof of the active runtime path or root cause.",
-    "Package manifests alone are weak evidence: do not diagnose the active failing component from package.json-style declarations without corroborating code paths, runtime config, logs, or a narrow clarification.",
+    "[Read Context Follow-up] Continue the user's original task by grounding the answer in local evidence first.",
+    "Use file.read, file.list, file.grep, or file.glob as needed, and keep the final answer evidence-bound.",
   ];
   if (/\b(summary|report|weekly update|status update|changelog)\b|周报|汇报|总结|项目报告/u.test(prompt)) {
     guidance.push(
-      "For summaries, reports, changelogs, weekly updates, or status updates, start with the highest-signal artifacts first such as docs/, CHANGELOG, release notes, dated notes, or commit summaries. Only if those are insufficient should you add a few recent dated task journals.",
-      "If you need task journals, target at most 1-2 recent artifacts that match the likely time window or topic instead of sweeping the whole tasks/ archive.",
+      "For summaries, reports, changelogs, weekly updates, or status updates, start with docs/, CHANGELOG, release notes, or the newest topic-relevant task journals before broad archive sweeps.",
     );
   }
   guidance.push(
-    "If the evidence still does not identify the user's real target system, report the repo-grounded finding and ask a narrow clarification instead of generalizing.",
+    "If the local evidence still does not identify the target, report that limitation and ask one narrow clarification.",
   );
   return guidance.join(" ");
 }
 
 export function buildWeakReadContextDiagnosisFollowUp(): string {
-  return "[Read Context Policy] The local evidence here is still weak: dependency declarations, package manifests, and empty grep results are not enough to prove the active failing runtime or to rule out the user's real connection-pool problem. Revise the answer so it stays evidence-bound to this repo, avoid claims that the user's environment definitely is or is not using a pool, and ask for one narrow next artifact such as the exact error log, stack trace, runtime config, or deployment database target.";
+  return "[Read Context Policy] The local evidence here is still weak: dependency declarations, package manifests, and empty grep results are not enough to prove the active failing runtime or to rule out the user's real connection-pool problem. Revise the answer so it stays evidence-bound to this repo, avoid claims that the user's environment definitely is or is not using a pool, ask for one narrow next artifact such as the exact error log, stack trace, runtime config, or deployment database target, and do not call tools.";
 }
 
 export function buildManifestOnlyDiagnosisFollowUp(): string {
-  return "[Read Context Policy] Your current diagnosis still leans on package-manifest dependency names without corroborating code-path or runtime evidence. Do not mention dependencies like better-sqlite3, ioredis, Prisma, or similar package names as if they prove the active runtime path. Limit the answer to the concrete checks you actually ran (for example, empty grep results in inspected code/config paths), say that this repo evidence is insufficient to identify the failing system, and ask for one concrete artifact such as the exact error log, stack trace, runtime config, or deployment target.";
+  return "[Read Context Policy] Your current diagnosis still leans on package-manifest dependency names without corroborating code-path or runtime evidence. Do not mention dependencies like better-sqlite3, ioredis, Prisma, or similar package names as if they prove the active runtime path. Limit the answer to the concrete checks you actually ran (for example, empty grep results in inspected code/config paths), say that this repo evidence is insufficient to identify the failing system, ask for one concrete artifact such as the exact error log, stack trace, runtime config, or deployment target, and do not call tools.";
 }
 
 export function buildReadContextNoEvidenceFinalFollowUp(): string {
-  return "[Read Context Policy] You still have not inspected any local repository evidence for this diagnosis. Do not invent or assume repository-specific databases, ORMs, vendors, connection-pool sizes, file paths, or config values. Revise the answer to say that no matching local evidence has been inspected yet, keep the conclusion evidence-bound, and ask for one concrete next artifact such as the exact error log, stack trace, runtime config, deployment database target, or the file/config path to inspect next.";
+  return "[Read Context Policy] You still have not inspected any local repository evidence for this diagnosis. Do not invent or assume repository-specific databases, ORMs, vendors, connection-pool sizes, file paths, or config values. Revise the answer to say that no matching local evidence has been inspected yet, keep the conclusion evidence-bound, ask for one concrete next artifact such as the exact error log, stack trace, runtime config, deployment database target, or the file/config path to inspect next, and do not call tools.";
 }
 
 export function buildReportingReadContextSurfaceFollowUp(): string {
-  return "[Read Context Policy] For summary/report/week-update requests, first inspect high-signal project artifacts such as docs/, CHANGELOG, release notes, or release metadata. Use workspace-relative file paths, not absolute paths. For discovery, prefer targeted file.glob/file.grep calls over broad file.list on the workspace root (for example, file.glob with patterns like CHANGELOG*, docs/**/*.md, or *release*.json). Prioritize concrete release metadata files when they already exist in the root, such as release.json or latest.json, before broad docs summaries. Only use file.read on a concrete file path such as release.json, latest.json, or docs/weekly-update.md, and do not attach pattern to file.read. Do not start with broad tasks/ archive sweeps; only read 1-2 recent task journals after those higher-signal sources prove insufficient.";
+  return "[Read Context Follow-up] For summary/report/week-update requests, inspect high-signal project artifacts first: docs/, CHANGELOG, release notes, or release metadata. Use workspace-relative paths. Prefer targeted file.glob/file.grep calls over broad file.list on the workspace root, and only read concrete files once you have a clear target. Do not start with broad tasks/ archive sweeps.";
+}
+
+export function buildListHeavyRepoScanFollowUp(): string {
+  return "[Repo Scan Follow-up] You have already spent several local-context steps expanding the directory tree without inspecting concrete source evidence. Stop adding more broad file.list/file.glob calls. Instead, use one or two targeted reads such as the workspace manifest, the most relevant package manifest, or a concrete source/config file inside the directories you already found; if needed, use one narrow file.grep to confirm the suspected code path. Only return to directory listing if a specific read reveals a genuinely new unknown area.";
+}
+
+export function buildExplicitContentSearchFollowUp(): string {
+  return "[Content Search Follow-up] The request already names concrete search terms and asks for code-location evidence. Do not expand the directory tree first. Start with one narrow file.grep over likely source roots to find the quoted terms (batch terms together when practical), then use file.read only on the matched files to capture line numbers, surrounding context, and cross-file relationships.";
+}
+
+function targetedReadContextToolDefinitions(
+  nativeTools: readonly ModelToolDefinition[],
+): readonly ModelToolDefinition[] {
+  const narrowed = nativeTools.filter((tool) => tool.id === "file.read" || tool.id === "file.grep");
+  return narrowed.length > 0 ? narrowed : nativeTools;
+}
+
+export function followUpToolChoiceForReason(
+  followUpReason: string,
+  toolsAllowed: boolean,
+  nativeToolCount: number,
+): "auto" | "none" {
+  if (!toolsAllowed || nativeToolCount === 0) {
+    return "none";
+  }
+  switch (followUpReason) {
+    case "read_context_diagnosis_missing_local_evidence":
+    case "read_context_diagnosis_evidence_weak":
+    case "read_context_diagnosis_manifest_only":
+    case "final_output_empty_follow_up":
+    case "final_output_empty_post_tool_repair":
+    case "final_output_too_short_repair":
+    case "internal_protocol_repair":
+      return "none";
+    default:
+      return "auto";
+  }
 }
 
 function mergeAbortSignals(
@@ -1409,11 +1558,13 @@ export async function runNodeRuntimeLoop(
   let weakReadContextDiagnosisRepairUsed = false;
   let manifestOnlyDiagnosisRepairUsed = false;
   let internalProtocolRepairUsed = false;
+  let listHeavyRepoScanRepairUsed = false;
   const continueOrCompleteNaturally = async (
     currentResponse: ModelResponse,
     iteration: number,
     isPostTool = false,
   ): Promise<{ kind: "continue"; response: ModelResponse } | { kind: "complete"; response: ModelResponse }> => {
+    let candidateResponse = currentResponse;
     const evidenceToolCallIds = lifecycleEvidenceToolCallIds(deps.toolCalls(), params);
     const evidencePlanStepId = lifecycleEvidencePlanStepId(deps.toolCalls(), evidenceToolCallIds);
     const evidenceKey = evidenceToolCallIds.join("|");
@@ -1458,7 +1609,7 @@ export async function runNodeRuntimeLoop(
         toolCallCount: completion.toolAttempts,
         clarificationCount: deps.clarificationCount(),
         hasUnresolvedPlanItems,
-        responseText: currentResponse.text,
+        responseText: candidateResponse.text,
         routerVersion,
       });
       if (shouldBlockForReadContext && !readContextPolicyRepairUsed) {
@@ -1472,7 +1623,7 @@ export async function runNodeRuntimeLoop(
         });
         messages = [
           ...messages,
-          { role: "assistant", content: currentResponse.text },
+          { role: "assistant", content: candidateResponse.text },
           {
             role: "user",
             content: buildReadContextPolicyFollowUp(input.prompt),
@@ -1489,7 +1640,7 @@ export async function runNodeRuntimeLoop(
             maxTokens: config.budget?.maxTokens,
             tools: nativeTools,
             toolChoice: completion.toolsAllowed(completionScope) && nativeTools.length > 0 ? "auto" : "none",
-          }, currentResponse, "read_context_policy_blocked"),
+          }, candidateResponse, "read_context_policy_blocked"),
         };
       }
       const shouldRepairNoEvidenceDiagnosis = shouldRepairReadContextDiagnosisWithoutEvidence({
@@ -1500,7 +1651,7 @@ export async function runNodeRuntimeLoop(
         toolCallCount: completion.toolAttempts,
         clarificationCount: deps.clarificationCount(),
         hasUnresolvedPlanItems,
-        responseText: currentResponse.text,
+        responseText: candidateResponse.text,
         routerVersion,
         readContextPolicyRepairUsed,
       });
@@ -1515,7 +1666,7 @@ export async function runNodeRuntimeLoop(
         });
         messages = [
           ...messages,
-          { role: "assistant", content: currentResponse.text },
+          { role: "assistant", content: candidateResponse.text },
           {
             role: "user",
             content: buildReadContextNoEvidenceFinalFollowUp(),
@@ -1531,8 +1682,12 @@ export async function runNodeRuntimeLoop(
             responseFormat: params.responseFormat,
             maxTokens: config.budget?.maxTokens,
             tools: nativeTools,
-            toolChoice: completion.toolsAllowed(completionScope) && nativeTools.length > 0 ? "auto" : "none",
-          }, currentResponse, "read_context_diagnosis_missing_local_evidence"),
+            toolChoice: followUpToolChoiceForReason(
+              "read_context_diagnosis_missing_local_evidence",
+              completion.toolsAllowed(completionScope),
+              nativeTools.length,
+            ),
+          }, candidateResponse, "read_context_diagnosis_missing_local_evidence"),
         };
       }
       const shouldBlockForFreshness = shouldBlockFinalForFreshnessPolicy({
@@ -1543,7 +1698,7 @@ export async function runNodeRuntimeLoop(
         toolCallCount: completion.toolAttempts,
         clarificationCount: deps.clarificationCount(),
         hasUnresolvedPlanItems,
-        responseText: currentResponse.text,
+        responseText: candidateResponse.text,
         routerVersion,
       });
       if (shouldBlockForFreshness && !freshnessPolicyRepairUsed) {
@@ -1557,7 +1712,7 @@ export async function runNodeRuntimeLoop(
         });
         messages = [
           ...messages,
-          { role: "assistant", content: currentResponse.text },
+          { role: "assistant", content: candidateResponse.text },
           {
             role: "user",
             content: completion.toolsAllowed(completionScope)
@@ -1576,7 +1731,7 @@ export async function runNodeRuntimeLoop(
             maxTokens: config.budget?.maxTokens,
             tools: nativeTools,
             toolChoice: completion.toolsAllowed(completionScope) && nativeTools.length > 0 ? "auto" : "none",
-          }, currentResponse, "freshness_policy_blocked"),
+          }, candidateResponse, "freshness_policy_blocked"),
         };
       }
       const shouldRepairWeakDiagnosis = shouldRepairWeakReadContextDiagnosisCompletion({
@@ -1587,7 +1742,7 @@ export async function runNodeRuntimeLoop(
         toolCallCount: completion.toolAttempts,
         clarificationCount: deps.clarificationCount(),
         hasUnresolvedPlanItems,
-        responseText: currentResponse.text,
+        responseText: candidateResponse.text,
         routerVersion,
       });
       if (shouldRepairWeakDiagnosis && !weakReadContextDiagnosisRepairUsed) {
@@ -1601,7 +1756,7 @@ export async function runNodeRuntimeLoop(
         });
         messages = [
           ...messages,
-          { role: "assistant", content: currentResponse.text },
+          { role: "assistant", content: candidateResponse.text },
           {
             role: "user",
             content: buildWeakReadContextDiagnosisFollowUp(),
@@ -1617,8 +1772,12 @@ export async function runNodeRuntimeLoop(
             responseFormat: params.responseFormat,
             maxTokens: config.budget?.maxTokens,
             tools: nativeTools,
-            toolChoice: completion.toolsAllowed(completionScope) && nativeTools.length > 0 ? "auto" : "none",
-          }, currentResponse, "read_context_diagnosis_evidence_weak"),
+            toolChoice: followUpToolChoiceForReason(
+              "read_context_diagnosis_evidence_weak",
+              completion.toolsAllowed(completionScope),
+              nativeTools.length,
+            ),
+          }, candidateResponse, "read_context_diagnosis_evidence_weak"),
         };
       }
       const shouldRepairManifestOnlyDiagnosis = shouldRepairManifestOnlyDiagnosisCompletion({
@@ -1629,7 +1788,7 @@ export async function runNodeRuntimeLoop(
         toolCallCount: completion.toolAttempts,
         clarificationCount: deps.clarificationCount(),
         hasUnresolvedPlanItems,
-        responseText: currentResponse.text,
+        responseText: candidateResponse.text,
         routerVersion,
         weakDiagnosisRepairUsed: weakReadContextDiagnosisRepairUsed,
       });
@@ -1644,7 +1803,7 @@ export async function runNodeRuntimeLoop(
         });
         messages = [
           ...messages,
-          { role: "assistant", content: currentResponse.text },
+          { role: "assistant", content: candidateResponse.text },
           {
             role: "user",
             content: buildManifestOnlyDiagnosisFollowUp(),
@@ -1660,8 +1819,12 @@ export async function runNodeRuntimeLoop(
             responseFormat: params.responseFormat,
             maxTokens: config.budget?.maxTokens,
             tools: nativeTools,
-            toolChoice: completion.toolsAllowed(completionScope) && nativeTools.length > 0 ? "auto" : "none",
-          }, currentResponse, "read_context_diagnosis_manifest_only"),
+            toolChoice: followUpToolChoiceForReason(
+              "read_context_diagnosis_manifest_only",
+              completion.toolsAllowed(completionScope),
+              nativeTools.length,
+            ),
+          }, candidateResponse, "read_context_diagnosis_manifest_only"),
         };
       }
 
@@ -1673,9 +1836,9 @@ export async function runNodeRuntimeLoop(
           typeof message.content === "string" &&
           message.content.includes("Workspace tool result for ")),
       );
-      const outputGuardResult = finalOutputGuard(currentResponse.text, {
+      const outputGuardResult = finalOutputGuard(candidateResponse.text, {
         isPostTool: isPostTool || hasToolResultContext || completion.toolAttempts > 0,
-        finishReason: currentResponse.finishReason,
+        finishReason: candidateResponse.finishReason,
       });
       if (!outputGuardResult.allowComplete) {
         // Only allow one repair turn for final-output guard failures.
@@ -1690,7 +1853,7 @@ export async function runNodeRuntimeLoop(
           });
           messages = [
             ...messages,
-            { role: "assistant", content: currentResponse.text },
+            { role: "assistant", content: candidateResponse.text },
             { role: "user", content: outputGuardResult.followUpContent },
           ];
           const repairResponse = await invokeFollowUpModel({
@@ -1702,7 +1865,7 @@ export async function runNodeRuntimeLoop(
             maxTokens: config.budget?.maxTokens,
             tools: nativeTools,
             toolChoice: "none",
-          }, currentResponse, outputGuardResult.followUpReason);
+          }, candidateResponse, outputGuardResult.followUpReason);
           // Re-check the repair response via natural completion.
           return continueOrCompleteNaturally(repairResponse, iteration, false);
         }
@@ -1714,7 +1877,30 @@ export async function runNodeRuntimeLoop(
         ].join("\n"));
       }
 
-      if (isInternalProviderAssistantText(currentResponse.text)) {
+      if (isInternalProviderAssistantText(candidateResponse.text)) {
+        const forcedFinalCandidate = completion.forcedFinal
+          ? forcedFinalPublicTextCandidate({ text: candidateResponse.text })
+          : undefined;
+        if (forcedFinalCandidate) {
+          const sanitizedGuardResult = finalOutputGuard(forcedFinalCandidate.acceptedText, {
+            isPostTool: isPostTool || hasToolResultContext || completion.toolAttempts > 0,
+            finishReason: candidateResponse.finishReason,
+          });
+          if (sanitizedGuardResult.allowComplete) {
+            emit("completion.updated", {
+              state: "internal_output_sanitized",
+              reason: "internal_protocol",
+              source: "forced_final_public_text",
+            });
+            candidateResponse = {
+              ...candidateResponse,
+              text: forcedFinalCandidate.acceptedText,
+            };
+          }
+        }
+      }
+
+      if (isInternalProviderAssistantText(candidateResponse.text)) {
         if (!internalProtocolRepairUsed) {
           internalProtocolRepairUsed = true;
           nodeLoopController.emitTransitionResult("model_request", "running_model", {
@@ -1726,10 +1912,16 @@ export async function runNodeRuntimeLoop(
           });
           messages = [
             ...messages,
-            { role: "assistant", content: currentResponse.text },
+            { role: "assistant", content: candidateResponse.text },
             {
               role: "user",
-              content: "Rewrite the final answer in plain user-facing prose only. Do not include JSON tool calls, code-block tool intents, XML-like tool markers, or any other internal protocol text.",
+              content: [
+                "Rewrite the final answer in plain user-facing prose only.",
+                "Do not include JSON tool calls, code-block tool intents, XML-like tool markers, or any other internal protocol text.",
+                "This must be the final answer for the user.",
+                "Do not say that you are about to continue searching, inspect another file, or take another step.",
+                "Summarize only what the existing conversation and tool results already support.",
+              ].join(" "),
             },
           ];
           return {
@@ -1743,7 +1935,7 @@ export async function runNodeRuntimeLoop(
               maxTokens: config.budget?.maxTokens,
               tools: nativeTools,
               toolChoice: "none",
-            }, currentResponse, "internal_protocol_repair"),
+            }, candidateResponse, "internal_protocol_repair"),
           };
         }
         throw new Error("Run cannot complete: final output contains internal protocol text.");
@@ -1759,7 +1951,7 @@ export async function runNodeRuntimeLoop(
         config,
         phase: "completion",
         currentTaskState,
-        modelResponseText: currentResponse.text,
+        modelResponseText: candidateResponse.text,
         toolCallCount: completion.toolAttempts,
         clarificationCount: deps.clarificationCount(),
         hasUnresolvedPlanItems,
@@ -1775,7 +1967,7 @@ export async function runNodeRuntimeLoop(
         hasPendingApprovals: false,
         hasPendingPlanDecisions: false,
         hasUnresolvedPlanItems,
-        modelResponseText: currentResponse.text,
+        modelResponseText: candidateResponse.text,
         routerVersion,
         decisionContext: {
           phase: "completion",
@@ -1790,13 +1982,13 @@ export async function runNodeRuntimeLoop(
         agentId: params.agentId,
         nodeId: params.nodeId,
       });
-      return { kind: "complete", response: currentResponse };
+      return { kind: "complete", response: candidateResponse };
     }
 
     await maybeInterruptBlockedPlanStep({
       guardResultReason: guardResult.reason,
       prompt: input.prompt,
-      currentResponseText: currentResponse.text,
+      currentResponseText: candidateResponse.text,
       planList: deps.planList(),
       config,
       agentId: params.agentId,
@@ -1845,7 +2037,7 @@ export async function runNodeRuntimeLoop(
     });
     messages = [
       ...messages,
-      { role: "assistant", content: currentResponse.text },
+      { role: "assistant", content: candidateResponse.text },
       { role: "user", content: guardResult.followUpContent },
     ];
     return {
@@ -1864,7 +2056,7 @@ export async function runNodeRuntimeLoop(
         maxTokens: config.budget?.maxTokens,
         tools: nativeTools,
         toolChoice: completion.toolsAllowed(completionScope) && nativeTools.length > 0 ? "auto" : "none",
-      }, currentResponse, guardResult.followUpReason),
+      }, candidateResponse, guardResult.followUpReason),
     };
   };
 
@@ -2217,6 +2409,98 @@ export async function runNodeRuntimeLoop(
         tools: nativeTools,
         toolChoice: nativeTools.length > 0 ? "auto" : undefined,
       }, response, "reporting_read_context_surface_blocked");
+      continue;
+    }
+
+    if (
+      shouldBlockBroadRepoScanForExplicitContentSearch({
+        prompt: input.prompt,
+        toolCalls: deps.toolCalls(),
+        proposedToolId: toolCall.tool,
+        recommendedAction: policyResult.action,
+      }) &&
+      !listHeavyRepoScanRepairUsed
+    ) {
+      listHeavyRepoScanRepairUsed = true;
+      emit("completion.updated", {
+        state: "loop_warning",
+        reason: "explicit_content_search_blocked",
+        toolId: toolCall.tool,
+        toolFamily: "local_context",
+      });
+      nodeLoopController.emitTransitionResult("model_request", "running_model", {
+        agentId: params.agentId,
+        title: params.title,
+        toolId: toolCall.tool,
+        reason: "explicit_content_search_blocked",
+        detail: "The request already names concrete search terms and should pivot to file.grep before any broad repo scan.",
+        iteration,
+      });
+      messages = [
+        ...messages,
+        { role: "assistant", content: response.text },
+        {
+          role: "user",
+          content: buildExplicitContentSearchFollowUp(),
+        },
+      ];
+      response = await invokeFollowUpModel({
+        messages,
+        system: params.system,
+        providerCache: params.providerCache,
+        cacheDiagnosticsContext: params.cacheDiagnosticsContext,
+        responseFormat: params.responseFormat,
+        maxTokens: config.budget?.maxTokens,
+        tools: targetedReadContextToolDefinitions(nativeTools),
+        toolChoice: nativeTools.length > 0 ? "auto" : undefined,
+      }, response, "explicit_content_search_blocked");
+      continue;
+    }
+
+    if (
+      shouldBlockListHeavyRepoScanForReadContext({
+        toolCalls: deps.toolCalls(),
+        agentId: params.agentId,
+        nodeId: params.nodeId,
+        proposedToolId: toolCall.tool,
+        recommendedAction: policyResult.action,
+      }) &&
+      !listHeavyRepoScanRepairUsed
+    ) {
+      listHeavyRepoScanRepairUsed = true;
+      emit("completion.updated", {
+        state: "loop_warning",
+        reason: "repo_scan_list_heavy",
+        toolId: toolCall.tool,
+        toolFamily: "local_context",
+        evidenceEpisodeWarnLimit: EVIDENCE_EPISODE_MIN_WARN_LIMIT,
+      });
+      nodeLoopController.emitTransitionResult("model_request", "running_model", {
+        agentId: params.agentId,
+        title: params.title,
+        toolId: toolCall.tool,
+        reason: "repo_scan_list_heavy",
+        detail: "The current repo scan is still expanding directories without concrete source evidence. Read a specific manifest or source file instead of listing more paths.",
+        iteration,
+      });
+      messages = [
+        ...messages,
+        { role: "assistant", content: response.text },
+        {
+          role: "user",
+          content: buildListHeavyRepoScanFollowUp(),
+        },
+      ];
+      response = await invokeFollowUpModel({
+        messages,
+        system: params.system,
+        providerCache: params.providerCache,
+        cacheDiagnosticsContext: params.cacheDiagnosticsContext,
+        responseFormat: params.responseFormat,
+        maxTokens: config.budget?.maxTokens,
+        tools: targetedReadContextToolDefinitions(nativeTools),
+        toolChoice: nativeTools.length > 0 ? "auto" : undefined,
+      }, response, "repo_scan_list_heavy_blocked");
       continue;
     }
 

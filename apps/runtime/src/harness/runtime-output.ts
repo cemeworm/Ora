@@ -25,6 +25,11 @@ export interface FinalOutputContractViolation {
   visibleText: string;
 }
 
+export interface ForcedFinalPublicTextCandidate {
+  acceptedText: string;
+  source: "sanitized_visible_text";
+}
+
 type RuntimeCompletionEmit = (
   type: "completion.updated",
   payload: unknown,
@@ -168,6 +173,30 @@ export function finalOutputContractViolation(
   return {
     reason: resolved.rejectionReason ?? "empty",
     visibleText: resolved.visibleText,
+  };
+}
+
+export function forcedFinalPublicTextCandidate(
+  value: unknown,
+): ForcedFinalPublicTextCandidate | undefined {
+  const text = outputText(value);
+  if (text === undefined) {
+    return undefined;
+  }
+  const resolved = resolvePublicAssistantText(text);
+  if (resolved.rejectionReason !== "internal_protocol") {
+    return undefined;
+  }
+  const acceptedText = resolved.visibleText.trim();
+  if (!acceptedText) {
+    return undefined;
+  }
+  if (finalOutputContractViolation({ text: acceptedText })) {
+    return undefined;
+  }
+  return {
+    acceptedText,
+    source: "sanitized_visible_text",
   };
 }
 

@@ -15,6 +15,7 @@ type RuntimeLoopEmit = (
 
 export function proposeRuntimeToolAction(params: {
   agentId: string;
+  nodeId: string;
   inputPrompt: string;
   eventCount: number;
   planStepId?: string;
@@ -49,18 +50,19 @@ export function proposeRuntimeToolAction(params: {
     actionId: action.id,
     planStepId: params.planStepId,
     agentId: params.agentId,
-    nodeId: params.agentId,
+    nodeId: params.nodeId,
   });
   params.emit(
     "action.updated",
     { actionId: action.id, status: "proposed", record: action },
-    { agentId: params.agentId, nodeId: params.agentId },
+    { agentId: params.agentId, nodeId: params.nodeId },
   );
   return { action, toolCallRecord };
 }
 
 export function proposeRuntimeRecoveryToolAction(params: {
   agentId: string;
+  nodeId: string;
   inputPrompt: string;
   eventCount: number;
   toolCall: RuntimeToolCall;
@@ -87,7 +89,7 @@ export function proposeRuntimeRecoveryToolAction(params: {
       status: "proposed",
       record: action,
     },
-    { agentId: params.agentId, nodeId: params.agentId },
+    { agentId: params.agentId, nodeId: params.nodeId },
   );
   return action;
 }
