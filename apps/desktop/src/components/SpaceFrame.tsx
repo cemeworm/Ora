@@ -12,7 +12,7 @@ interface SpaceFrameProps {
 
 export function SpaceFrame({ activeView, onSelectView, children }: SpaceFrameProps) {
   return (
-    <div className="flex h-full min-h-0 w-full flex-col overflow-hidden bg-[radial-gradient(circle_at_20%_0%,rgba(255,255,255,0.72),transparent_34%),linear-gradient(180deg,rgba(251,250,244,0.94),rgba(243,241,232,0.76))]">
+    <div className="flex h-full min-h-0 w-full flex-col overflow-hidden bg-transparent">
       <PageHeader
         title="空间"
         actions={(
