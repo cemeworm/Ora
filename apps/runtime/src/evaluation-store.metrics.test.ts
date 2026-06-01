@@ -43,6 +43,7 @@ function makeSnapshot(params: {
   events?: Array<Record<string, unknown>>;
   modeId?: string;
   metadata?: Record<string, unknown>;
+  outputText?: string;
 }) {
   const modeId = params.modeId ?? CODE_DEVELOPMENT_MODE_ID;
   return StateSnapshotSchema.parse({
@@ -82,8 +83,40 @@ function makeSnapshot(params: {
     toolCalls: params.toolCalls,
     checkpoints: [],
     events: params.events ?? [],
+    ...(params.outputText ? { output: { text: params.outputText } } : {}),
     updatedAt: 10,
   });
+}
+
+function makeUsageEvent(params: {
+  seq: number;
+  totalTokens: number;
+  outputTokens?: number;
+  cacheHitTokens?: number;
+  cacheMissTokens?: number;
+}) {
+  const outputTokens = params.outputTokens ?? 2_000;
+  const inputTokens = Math.max(0, params.totalTokens - outputTokens);
+  return {
+    id: `evt-usage-${params.seq}`,
+    runId: "run-eval-metrics",
+    seq: params.seq,
+    type: "context.usage.updated",
+    createdAt: params.seq,
+    pattern: "orchestrator_subagent",
+    payload: {
+      usage: {
+        inputTokens,
+        outputTokens,
+        reasoningTokens: 0,
+        totalTokens: params.totalTokens,
+        promptCacheHitTokens: params.cacheHitTokens ?? 0,
+        promptCacheMissTokens: params.cacheMissTokens ?? 0,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
+      },
+    },
+  };
 }
 
 describe("resolver-aware evaluation metrics", () => {
@@ -319,5 +352,248 @@ describe("resolver-aware evaluation metrics", () => {
     expect(byId.get("effective_intervention")?.failureTags).toContain("wrong_intervention");
     expect(byId.get("effective_intervention")?.rationale).toContain("search_web");
     expect(byId.get("effective_intervention")?.rationale).toContain("clarify");
+  });
+
+  it("uses looser real-world budgets than cause-effect budgets for kv cache cost metrics", () => {
+    const snapshot = makeSnapshot({
+      toolCalls: [],
+      events: [
+        makeUsageEvent({ seq: 1, totalTokens: 18_000, cacheHitTokens: 8_240, cacheMissTokens: 1_760 }),
+        makeUsageEvent({ seq: 2, totalTokens: 18_000, cacheHitTokens: 8_240, cacheMissTokens: 1_760 }),
+        makeUsageEvent({ seq: 3, totalTokens: 18_000, cacheHitTokens: 8_240, cacheMissTokens: 1_760 }),
+        makeUsageEvent({ seq: 4, totalTokens: 18_000, cacheHitTokens: 8_240, cacheMissTokens: 1_760 }),
+      ],
+    });
+    const observations = extractEvaluationObservations(snapshot, 2_500);
+    const kvCase = EvaluationCaseSchema.parse({
+      id: "kv-real-world-budget",
+      input: { prompt: "Review a code path with repeated local reads." },
+      metadata: {
+        category: "code_review",
+        difficulty: "medium",
+        cacheExpected: true,
+      },
+    });
+    const realWorldObjective = EvaluationObjectiveSchema.parse({
+      kind: "cost",
+      target: "run.output",
+      metrics: ["token_efficiency", "kv_cache_hit_ratio"],
+      metadata: { evaluationTrack: "real-world" },
+    });
+    const causeEffectObjective = EvaluationObjectiveSchema.parse({
+      kind: "cost",
+      target: "run.output",
+      metrics: ["token_efficiency", "kv_cache_hit_ratio"],
+      metadata: { evaluationTrack: "cause-effect" },
+    });
+
+    const realWorldScores = scoreObjectiveMetrics(realWorldObjective, kvCase, observations);
+    const causeEffectScores = scoreObjectiveMetrics(causeEffectObjective, kvCase, observations);
+    const realWorldById = new Map(realWorldScores.map((score) => [score.metricId, score]));
+    const causeEffectById = new Map(causeEffectScores.map((score) => [score.metricId, score]));
+
+    expect(realWorldById.get("token_efficiency")?.passed).toBe(true);
+    expect(realWorldById.get("kv_cache_hit_ratio")?.passed).toBe(true);
+    expect(causeEffectById.get("token_efficiency")?.passed).toBe(false);
+    expect(causeEffectById.get("kv_cache_hit_ratio")?.passed).toBe(false);
+  });
+
+  it("does not hard-score cache metrics for single-call or cache-not-expected cases", () => {
+    const snapshot = makeSnapshot({
+      toolCalls: [],
+      events: [
+        makeUsageEvent({ seq: 1, totalTokens: 9_000, cacheHitTokens: 0, cacheMissTokens: 2_000 }),
+      ],
+    });
+    const observations = extractEvaluationObservations(snapshot, 900);
+    const kvCase = EvaluationCaseSchema.parse({
+      id: "kv-no-cache-expected",
+      input: { prompt: "Answer directly without multi-turn cache reuse." },
+      metadata: {
+        category: "single_call",
+        difficulty: "easy",
+        cacheExpected: false,
+      },
+    });
+    const objective = EvaluationObjectiveSchema.parse({
+      kind: "cost",
+      target: "run.output",
+      metrics: ["token_efficiency", "kv_cache_hit_ratio"],
+      metadata: { evaluationTrack: "cause-effect" },
+    });
+
+    const scores = scoreObjectiveMetrics(objective, kvCase, observations);
+    const byId = new Map(scores.map((score) => [score.metricId, score]));
+
+    expect(byId.get("token_efficiency")?.passed).toBe(true);
+    expect(byId.get("kv_cache_hit_ratio")?.passed).toBe(true);
+    expect(byId.get("token_efficiency")?.failureTags).toEqual([]);
+    expect(byId.get("kv_cache_hit_ratio")?.failureTags).toEqual([]);
+  });
+
+  it("requires structured assertions to pass for real-world cost objectives", () => {
+    const snapshot = makeSnapshot({
+      toolCalls: [],
+      events: [
+        makeUsageEvent({ seq: 1, totalTokens: 18_000, cacheHitTokens: 8_240, cacheMissTokens: 1_760 }),
+        makeUsageEvent({ seq: 2, totalTokens: 18_000, cacheHitTokens: 8_240, cacheMissTokens: 1_760 }),
+      ],
+    });
+    const observations = extractEvaluationObservations(snapshot, 2_500);
+    const kvCase = EvaluationCaseSchema.parse({
+      id: "kv-real-world-assertion-gate",
+      input: {
+        prompt: "Search the repository and summarize the results.",
+      },
+      expected: {
+        structured: {
+          assertions: [
+            {
+              type: "min",
+              path: "runtime.efficiencyLedger.modelCallCount",
+              value: 4,
+              rationale: "4次搜索+汇总分析应至少有4次模型调用。",
+            },
+          ],
+        },
+      },
+      metadata: {
+        category: "multi_search",
+        difficulty: "medium",
+        cacheExpected: true,
+      },
+    });
+    const objective = EvaluationObjectiveSchema.parse({
+      kind: "cost",
+      target: "run.output",
+      metrics: [
+        "kv_cache_hit_ratio",
+        "agentic_cost_score",
+        "token_efficiency",
+        "tool_efficiency",
+        "assertion_pass_rate",
+      ],
+      metadata: { evaluationTrack: "real-world" },
+    });
+
+    const scores = scoreObjectiveMetrics(objective, kvCase, observations);
+    const byId = new Map(scores.map((score) => [score.metricId, score]));
+
+    expect(byId.get("agentic_cost_score")?.passed).toBe(true);
+    expect(byId.get("token_efficiency")?.passed).toBe(true);
+    expect(byId.get("tool_efficiency")?.passed).toBe(true);
+    expect(byId.get("assertion_pass_rate")?.passed).toBe(false);
+    expect(byId.get("assertion_pass_rate")?.failureTags).toContain("assertion_failed");
+  });
+
+  it("fails real-world multi-search assertions when the answer admits incomplete coverage", () => {
+    const snapshot = makeSnapshot({
+      toolCalls: [
+        {
+          id: "tool-1",
+          runId: "run-eval-metrics",
+          toolId: "file.list",
+          args: { path: "packages/shared/src" },
+          source: "provider_native",
+          status: "succeeded",
+          requestedAt: 1,
+          updatedAt: 2,
+        },
+        {
+          id: "tool-2",
+          runId: "run-eval-metrics",
+          toolId: "file.read",
+          args: { path: "packages/shared/src/runtime.ts" },
+          source: "provider_native",
+          status: "succeeded",
+          requestedAt: 3,
+          updatedAt: 4,
+        },
+      ],
+      events: [
+        makeUsageEvent({ seq: 1, totalTokens: 18_000, cacheHitTokens: 8_240, cacheMissTokens: 1_760 }),
+        makeUsageEvent({ seq: 2, totalTokens: 18_000, cacheHitTokens: 8_240, cacheMissTokens: 1_760 }),
+        makeUsageEvent({ seq: 3, totalTokens: 18_000, cacheHitTokens: 8_240, cacheMissTokens: 1_760 }),
+        makeUsageEvent({ seq: 4, totalTokens: 18_000, cacheHitTokens: 8_240, cacheMissTokens: 1_760 }),
+      ],
+      outputText: [
+        "基于本次搜索中已读取的文件内容，我如实汇报搜索结果如下：",
+        "已读取 `packages/shared/src/runtime.ts`。",
+        "但覆盖不完整，`packages/shared/src/cache/`、`server/` 与其他目录未深入读取。",
+        "建议重新发起一次批量化搜索。",
+      ].join("\n"),
+    });
+    const observations = extractEvaluationObservations(snapshot, 2_500);
+    const kvCase = EvaluationCaseSchema.parse({
+      id: "kv-real-world-coverage-gate",
+      input: {
+        prompt: "Search the repository and summarize the results.",
+      },
+      expected: {
+        structured: {
+          assertions: [
+            {
+              type: "not_equals",
+              path: "run.status",
+              value: "failed",
+              rationale: "多次搜索应正常完成。",
+            },
+            {
+              type: "min",
+              path: "runtime.efficiencyLedger.modelCallCount",
+              value: 4,
+              rationale: "4次搜索+汇总分析应至少有4次模型调用。",
+            },
+            {
+              type: "contains",
+              path: "run.outputText",
+              value: "apps/runtime/src/agentic-efficiency.ts",
+              failureTag: "missing_cache_metric_evidence",
+              rationale: "真实搜索结果应覆盖 cacheHitRatio / AgenticEfficiencyLedger 的核心定义文件。",
+            },
+            {
+              type: "contains",
+              path: "run.outputText",
+              value: "packages/shared/src/runtime.ts",
+              failureTag: "missing_usage_event_evidence",
+              rationale: "真实搜索结果应覆盖 context.usage.updated 的核心事件定义文件。",
+            },
+            {
+              type: "contains",
+              path: "run.outputText",
+              value: "apps/runtime/src/evaluation-store.ts",
+              failureTag: "missing_eval_metric_evidence",
+              rationale: "真实搜索结果应覆盖 kv_cache_hit_ratio 的核心评测实现文件。",
+            },
+          ],
+        },
+      },
+      metadata: {
+        category: "multi_search",
+        difficulty: "medium",
+        cacheExpected: true,
+      },
+    });
+    const objective = EvaluationObjectiveSchema.parse({
+      kind: "cost",
+      target: "run.output",
+      metrics: [
+        "kv_cache_hit_ratio",
+        "agentic_cost_score",
+        "token_efficiency",
+        "tool_efficiency",
+        "assertion_pass_rate",
+      ],
+      metadata: { evaluationTrack: "real-world" },
+    });
+
+    const scores = scoreObjectiveMetrics(objective, kvCase, observations);
+    const byId = new Map(scores.map((score) => [score.metricId, score]));
+
+    expect(byId.get("kv_cache_hit_ratio")?.passed).toBe(true);
+    expect(byId.get("token_efficiency")?.passed).toBe(true);
+    expect(byId.get("assertion_pass_rate")?.passed).toBe(false);
+    expect(byId.get("assertion_pass_rate")?.failureTags).toContain("missing_cache_metric_evidence");
+    expect(byId.get("assertion_pass_rate")?.failureTags).toContain("missing_eval_metric_evidence");
   });
 });

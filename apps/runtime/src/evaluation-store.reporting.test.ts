@@ -196,4 +196,32 @@ describe("evaluation store dual reporting", () => {
     expect(runDetail.attempts[0]?.runtimeMs).toBe(20);
     expect(runDetail.run.caseResults[0]?.traceRunIds).toEqual(["run-timeout-trace-1"]);
   });
+
+  it("allocates unique dataset ids across sqlite-backed store instances", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ora-eval-sqlite-dataset-id-"));
+    tempDirs.push(dir);
+    const dbPath = join(dir, "evaluation.db");
+    const storeA = new LocalEvaluationStore(dbPath);
+    const storeB = new LocalEvaluationStore(dbPath);
+
+    const datasetA = storeA.importDataset({
+      name: "Dataset A",
+      content: JSON.stringify([{ id: "case-a", input: { prompt: "A", context: {} }, expected: { text: "done" } }]),
+      sourceFormat: "json",
+    });
+    const datasetB = storeB.importDataset({
+      name: "Dataset B",
+      content: JSON.stringify([{ id: "case-b", input: { prompt: "B", context: {} }, expected: { text: "done" } }]),
+      sourceFormat: "json",
+    });
+
+    expect(datasetA.dataset.id).toBe("dataset-0001");
+    expect(datasetB.dataset.id).toBe("dataset-0002");
+
+    const reloaded = new LocalEvaluationStore(dbPath);
+    const listed = reloaded.listDatasets();
+    expect(listed).toHaveLength(2);
+    expect(listed.map((dataset) => dataset.id).sort()).toEqual(["dataset-0001", "dataset-0002"]);
+    expect(listed.map((dataset) => dataset.name).sort()).toEqual(["Dataset A", "Dataset B"]);
+  });
 });

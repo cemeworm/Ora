@@ -139,6 +139,13 @@ const PersistedEvaluationRunSchema = z.object({
 
 type EvaluationManifest = z.infer<typeof EvaluationManifestSchema>;
 type PersistedEvaluationRun = z.infer<typeof PersistedEvaluationRunSchema>;
+type EvaluationManifestCounterKey =
+  | "nextDatasetNumber"
+  | "nextEvaluationRunNumber"
+  | "nextBaselineNumber"
+  | "nextFeedbackNumber"
+  | "nextBlueprintNumber"
+  | "nextAnnotationNumber";
 
 const DEFAULT_EVALUATION_FIXTURE_EXCLUDES = [
   ".git",
@@ -480,6 +487,21 @@ export class LocalEvaluationStore {
       throw new Error(`Evaluation dataset not found: ${parsed.datasetId}`);
     }
     return EvaluationDatasetDetailSchema.parse(dataset);
+  }
+
+  deleteDataset(params: unknown): { deleted: true; datasetId: string } {
+    const parsed = EvaluationDatasetGetParamsSchema.parse(params);
+    if (!this.datasets.has(parsed.datasetId)) {
+      throw new Error(`Evaluation dataset not found: ${parsed.datasetId}`);
+    }
+    this.datasets.delete(parsed.datasetId);
+    if (this.storage === "sqlite") {
+      this.requireDb().prepare("DELETE FROM evaluation_datasets WHERE id = ?").run(parsed.datasetId);
+    } else {
+      const filePath = path.join(this.datasetsDir, `${encodeURIComponent(parsed.datasetId)}.json`);
+      fs.rmSync(filePath, { force: true });
+    }
+    return { deleted: true, datasetId: parsed.datasetId };
   }
 
   createBlueprint(params: unknown): EvaluationBlueprint {
@@ -1042,7 +1064,7 @@ export class LocalEvaluationStore {
           metrics: evaluator.metrics,
           assertions: evaluator.assertions,
         });
-        const scores = scoreObjectiveMetrics(objective, evaluationCase, base.observations);
+        const scores = scoreObjectiveMetrics(decorateObjectiveWithSpecMetadata(objective, spec), evaluationCase, base.observations);
         metricScores.push(...scores);
         const aggregate = aggregateMetricScores(scores, spec.profileId, snapshot.status === "failed" || Boolean(snapshot.error));
         evaluatorResults.push(EvaluationEvaluatorResultSchema.parse({
@@ -2007,43 +2029,52 @@ export class LocalEvaluationStore {
   }
 
   private nextDatasetId() {
-    const id = `dataset-${String(this.manifest.nextDatasetNumber).padStart(4, "0")}`;
-    this.manifest.nextDatasetNumber += 1;
-    this.saveManifest();
-    return id;
+    return this.nextManifestId("nextDatasetNumber", "dataset");
   }
 
   private nextEvaluationRunId() {
-    const id = `eval-run-${String(this.manifest.nextEvaluationRunNumber).padStart(4, "0")}`;
-    this.manifest.nextEvaluationRunNumber += 1;
-    this.saveManifest();
-    return id;
+    return this.nextManifestId("nextEvaluationRunNumber", "eval-run");
   }
 
   private nextBaselineId() {
-    const id = `baseline-${String(this.manifest.nextBaselineNumber).padStart(4, "0")}`;
-    this.manifest.nextBaselineNumber += 1;
-    this.saveManifest();
-    return id;
+    return this.nextManifestId("nextBaselineNumber", "baseline");
   }
 
   private nextFeedbackId() {
-    const id = `feedback-${String(this.manifest.nextFeedbackNumber).padStart(4, "0")}`;
-    this.manifest.nextFeedbackNumber += 1;
-    this.saveManifest();
-    return id;
+    return this.nextManifestId("nextFeedbackNumber", "feedback");
   }
 
   private nextBlueprintId() {
-    const id = `blueprint-${String(this.manifest.nextBlueprintNumber).padStart(4, "0")}`;
-    this.manifest.nextBlueprintNumber += 1;
-    this.saveManifest();
-    return id;
+    return this.nextManifestId("nextBlueprintNumber", "blueprint");
   }
 
   private nextAnnotationId() {
-    const id = `annotation-${String(this.manifest.nextAnnotationNumber).padStart(4, "0")}`;
-    this.manifest.nextAnnotationNumber += 1;
+    return this.nextManifestId("nextAnnotationNumber", "annotation");
+  }
+
+  private nextManifestId(field: EvaluationManifestCounterKey, prefix: string): string {
+    if (this.storage === "sqlite") {
+      const db = this.requireDb();
+      const transaction = db.transaction(() => {
+        const manifest = this.readSqliteManifest();
+        const current = manifest[field];
+        const nextManifest = EvaluationManifestSchema.parse({
+          ...manifest,
+          [field]: current + 1,
+        });
+        this.writeSqliteManifest(nextManifest);
+        this.manifest = nextManifest;
+        return `${prefix}-${String(current).padStart(4, "0")}`;
+      });
+      return transaction();
+    }
+
+    const current = this.manifest[field];
+    const id = `${prefix}-${String(current).padStart(4, "0")}`;
+    this.manifest = EvaluationManifestSchema.parse({
+      ...this.manifest,
+      [field]: current + 1,
+    });
     this.saveManifest();
     return id;
   }
@@ -3551,13 +3582,14 @@ function scoreEvaluationAttempt(
     };
   }
 
-  const metricScores = scoreObjectiveMetrics(objective, evaluationCase, observations);
+  const scoringObjective = decorateObjectiveWithSpecMetadata(objective, spec);
+  const metricScores = scoreObjectiveMetrics(scoringObjective, evaluationCase, observations);
   const score = aggregateMetricScores(metricScores, spec.profileId, snapshot.status === "failed" || Boolean(snapshot.error));
   return {
     score,
     metricScores,
     observations,
-    output: outputForObjective(objective, observations, evaluationCase),
+    output: outputForObjective(scoringObjective, observations, evaluationCase),
   };
 }
 
@@ -3818,7 +3850,7 @@ function scoreMetric(
     case "agentic_cost_score":
       return agenticCostMetric(observations);
     case "token_efficiency":
-      return tokenEfficiencyMetric(observations);
+      return tokenEfficiencyMetric(objective, evaluationCase, observations);
     case "tool_efficiency":
       return toolEfficiencyMetric(observations);
     case "coordination_overhead":
@@ -3864,9 +3896,157 @@ function scoreMetric(
     case "shell_explore_restraint":
       return shellExploreRestraintMetric(observations);
     case "kv_cache_hit_ratio":
-      return kvCacheHitRatioMetric(observations);
+      return kvCacheHitRatioMetric(objective, evaluationCase, observations);
   }
   throw new Error(`Unsupported evaluation metric: ${metricId}`);
+}
+
+function objectiveMetadataRecord(objective: EvaluationObjective): Record<string, unknown> {
+  return objective.metadata && typeof objective.metadata === "object" && !Array.isArray(objective.metadata)
+    ? objective.metadata as Record<string, unknown>
+    : {};
+}
+
+function evaluationTrackForObjective(objective: EvaluationObjective): string | undefined {
+  const value = objectiveMetadataRecord(objective).evaluationTrack;
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function evaluationCaseMetadataRecord(evaluationCase: EvaluationCase): Record<string, unknown> {
+  return evaluationCase.metadata && typeof evaluationCase.metadata === "object" && !Array.isArray(evaluationCase.metadata)
+    ? evaluationCase.metadata as Record<string, unknown>
+    : {};
+}
+
+function evaluationCaseMetadataString(evaluationCase: EvaluationCase, key: string): string | undefined {
+  const value = evaluationCaseMetadataRecord(evaluationCase)[key];
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function evaluationCaseMetadataBoolean(evaluationCase: EvaluationCase, key: string): boolean | undefined {
+  const value = evaluationCaseMetadataRecord(evaluationCase)[key];
+  return typeof value === "boolean" ? value : undefined;
+}
+
+function decorateObjectiveWithSpecMetadata(objective: EvaluationObjective, spec: EvaluationSpec): EvaluationObjective {
+  return EvaluationObjectiveSchema.parse({
+    ...objective,
+    metadata: {
+      ...(objective.metadata ?? {}),
+      ...(typeof spec.metadata?.evaluationTrack === "string" ? { evaluationTrack: spec.metadata.evaluationTrack } : {}),
+      ...(typeof spec.metadata?.evaluationFamily === "string" ? { evaluationFamily: spec.metadata.evaluationFamily } : {}),
+    },
+  });
+}
+
+function resolveTokenEfficiencyBudget(objective: EvaluationObjective, evaluationCase: EvaluationCase): {
+  targetTokensPerModelCall: number;
+  zeroTokensPerModelCall: number;
+  track: string;
+  category?: string;
+  difficulty?: string;
+  cacheExpected?: boolean;
+} {
+  const track = evaluationTrackForObjective(objective) ?? "unknown";
+  const category = evaluationCaseMetadataString(evaluationCase, "category");
+  const difficulty = evaluationCaseMetadataString(evaluationCase, "difficulty");
+  const cacheExpected = evaluationCaseMetadataBoolean(evaluationCase, "cacheExpected");
+
+  if (track === "cause-effect") {
+    switch (difficulty) {
+      case "easy":
+        return { targetTokensPerModelCall: 12_000, zeroTokensPerModelCall: 22_000, track, category, difficulty, cacheExpected };
+      case "hard":
+        return { targetTokensPerModelCall: 16_000, zeroTokensPerModelCall: 30_000, track, category, difficulty, cacheExpected };
+      case "medium":
+      default:
+        return { targetTokensPerModelCall: 14_000, zeroTokensPerModelCall: 26_000, track, category, difficulty, cacheExpected };
+    }
+  }
+
+  if (category === "compaction_scenario") {
+    return { targetTokensPerModelCall: 22_000, zeroTokensPerModelCall: 38_000, track, category, difficulty, cacheExpected };
+  }
+  if (category === "multi_search") {
+    return { targetTokensPerModelCall: 20_000, zeroTokensPerModelCall: 34_000, track, category, difficulty, cacheExpected };
+  }
+  if (category === "fix_verify") {
+    return { targetTokensPerModelCall: 19_000, zeroTokensPerModelCall: 32_000, track, category, difficulty, cacheExpected };
+  }
+  if (category === "code_review") {
+    return { targetTokensPerModelCall: 18_000, zeroTokensPerModelCall: 30_000, track, category, difficulty, cacheExpected };
+  }
+
+  switch (difficulty) {
+    case "easy":
+      return { targetTokensPerModelCall: 16_000, zeroTokensPerModelCall: 28_000, track, category, difficulty, cacheExpected };
+    case "hard":
+      return { targetTokensPerModelCall: 20_000, zeroTokensPerModelCall: 36_000, track, category, difficulty, cacheExpected };
+    case "medium":
+    default:
+      return { targetTokensPerModelCall: 18_000, zeroTokensPerModelCall: 32_000, track, category, difficulty, cacheExpected };
+  }
+}
+
+function resolveKvCacheTarget(objective: EvaluationObjective, evaluationCase: EvaluationCase): {
+  targetCacheHitRatio: number;
+  floorCacheHitRatio: number;
+  track: string;
+  category?: string;
+  difficulty?: string;
+  cacheExpected?: boolean;
+} {
+  const track = evaluationTrackForObjective(objective) ?? "unknown";
+  const category = evaluationCaseMetadataString(evaluationCase, "category");
+  const difficulty = evaluationCaseMetadataString(evaluationCase, "difficulty");
+  const cacheExpected = evaluationCaseMetadataBoolean(evaluationCase, "cacheExpected");
+
+  if (track === "cause-effect") {
+    return { targetCacheHitRatio: 0.95, floorCacheHitRatio: 0.75, track, category, difficulty, cacheExpected };
+  }
+
+  if (category === "compaction_scenario") {
+    return { targetCacheHitRatio: 0.84, floorCacheHitRatio: 0.64, track, category, difficulty, cacheExpected };
+  }
+  if (category === "multi_search") {
+    return { targetCacheHitRatio: 0.84, floorCacheHitRatio: 0.65, track, category, difficulty, cacheExpected };
+  }
+  if (category === "fix_verify") {
+    return { targetCacheHitRatio: 0.83, floorCacheHitRatio: 0.64, track, category, difficulty, cacheExpected };
+  }
+  if (category === "code_review") {
+    return { targetCacheHitRatio: 0.83, floorCacheHitRatio: 0.64, track, category, difficulty, cacheExpected };
+  }
+
+  switch (difficulty) {
+    case "easy":
+      return { targetCacheHitRatio: 0.86, floorCacheHitRatio: 0.66, track, category, difficulty, cacheExpected };
+    case "hard":
+      return { targetCacheHitRatio: 0.85, floorCacheHitRatio: 0.65, track, category, difficulty, cacheExpected };
+    case "medium":
+    default:
+      return { targetCacheHitRatio: 0.84, floorCacheHitRatio: 0.64, track, category, difficulty, cacheExpected };
+  }
+}
+
+function linearBudgetScore(value: number, target: number, limit: number): number {
+  if (value <= target) {
+    return 1;
+  }
+  if (limit <= target) {
+    return 0;
+  }
+  return Math.max(0, 1 - (value - target) / (limit - target));
+}
+
+function ratioTargetScore(value: number, target: number, floor: number): number {
+  if (value >= target) {
+    return 1;
+  }
+  if (floor >= target) {
+    return 0;
+  }
+  return Math.max(0, (value - floor) / (target - floor));
 }
 
 function textSimilarityMetric(evaluationCase: EvaluationCase, observations: EvaluationObservation): EvaluationMetricScore {
@@ -4051,18 +4231,41 @@ function agenticCostMetric(observations: EvaluationObservation): EvaluationMetri
   });
 }
 
-function tokenEfficiencyMetric(observations: EvaluationObservation): EvaluationMetricScore {
+function tokenEfficiencyMetric(objective: EvaluationObjective, evaluationCase: EvaluationCase, observations: EvaluationObservation): EvaluationMetricScore {
   const totalTokens = numberValue(getObservationPath(observations, "runtime.efficiencyLedger.totalTokens")) ?? 0;
   const modelCallCount = Math.max(1, numberValue(getObservationPath(observations, "runtime.efficiencyLedger.modelCallCount")) ?? 1);
   const tokensPerModelCall = totalTokens / modelCallCount;
-  const score = Math.max(0, 1 - tokensPerModelCall / 12_000);
+  const { targetTokensPerModelCall, zeroTokensPerModelCall, track, category, difficulty, cacheExpected } = resolveTokenEfficiencyBudget(objective, evaluationCase);
+  if (cacheExpected === false || modelCallCount <= 1) {
+    return EvaluationMetricScoreSchema.parse({
+      metricId: "token_efficiency",
+      score: 1,
+      passed: true,
+      rationale: cacheExpected === false
+        ? "This case does not expect KV cache reuse, so token load is not hard-scored."
+        : "A single model call is not enough to judge token reuse efficiency.",
+      failureTags: [],
+      details: { totalTokens, modelCallCount, tokensPerModelCall: Math.round(tokensPerModelCall), track, category, difficulty, cacheExpected },
+    });
+  }
+  const score = linearBudgetScore(tokensPerModelCall, targetTokensPerModelCall, zeroTokensPerModelCall);
   return EvaluationMetricScoreSchema.parse({
     metricId: "token_efficiency",
     score: roundScore(score),
     passed: score >= 0.70,
-    rationale: "Scored token use per model call.",
+    rationale: `Scored token use per model call against a ${track} budget.`,
     failureTags: score >= 0.70 ? [] : ["high_token_load"],
-    details: { totalTokens, modelCallCount, tokensPerModelCall: Math.round(tokensPerModelCall) },
+    details: {
+      totalTokens,
+      modelCallCount,
+      tokensPerModelCall: Math.round(tokensPerModelCall),
+      targetTokensPerModelCall,
+      zeroTokensPerModelCall,
+      track,
+      category,
+      difficulty,
+      cacheExpected,
+    },
   });
 }
 
@@ -4682,10 +4885,23 @@ function shellExploreRestraintMetric(observations: EvaluationObservation): Evalu
   });
 }
 
-function kvCacheHitRatioMetric(observations: EvaluationObservation): EvaluationMetricScore {
+function kvCacheHitRatioMetric(objective: EvaluationObjective, evaluationCase: EvaluationCase, observations: EvaluationObservation): EvaluationMetricScore {
   const cacheHitRatio = numberValue(getObservationPath(observations, "runtime.efficiencyLedger.cacheHitRatio")) ?? 0;
   const cacheDataAvailable = Boolean(getObservationPath(observations, "runtime.efficiencyLedger.cacheDataAvailable"));
   const modelCallCount = Math.max(1, numberValue(getObservationPath(observations, "runtime.efficiencyLedger.modelCallCount")) ?? 1);
+  const { targetCacheHitRatio, floorCacheHitRatio, track, category, difficulty, cacheExpected } = resolveKvCacheTarget(objective, evaluationCase);
+  if (cacheExpected === false || modelCallCount <= 1) {
+    return EvaluationMetricScoreSchema.parse({
+      metricId: "kv_cache_hit_ratio",
+      score: 1,
+      passed: true,
+      rationale: cacheExpected === false
+        ? "This case does not expect KV cache reuse, so hit ratio is not hard-scored."
+        : "A single model call is not enough to judge KV cache hit ratio.",
+      failureTags: [],
+      details: { cacheDataAvailable, cacheHitRatio, modelCallCount, track, category, difficulty, cacheExpected },
+    });
+  }
   if (!cacheDataAvailable) {
     return EvaluationMetricScoreSchema.parse({
       metricId: "kv_cache_hit_ratio",
@@ -4693,19 +4909,29 @@ function kvCacheHitRatioMetric(observations: EvaluationObservation): EvaluationM
       passed: true,
       rationale: `No KV cache data available (${modelCallCount} model call(s)). Provider may not support cache or all calls were cache-cold.`,
       failureTags: [],
-      details: { cacheDataAvailable: false, modelCallCount },
+      details: { cacheDataAvailable: false, modelCallCount, track, category, difficulty, cacheExpected },
     });
   }
-  const score = Math.min(1, cacheHitRatio / 0.99);
+  const score = ratioTargetScore(cacheHitRatio, targetCacheHitRatio, floorCacheHitRatio);
   return EvaluationMetricScoreSchema.parse({
     metricId: "kv_cache_hit_ratio",
     score: roundScore(score),
-    passed: cacheHitRatio >= 0.99,
-    rationale: cacheHitRatio >= 0.99
-      ? `KV cache hit ratio ${(cacheHitRatio * 100).toFixed(1)}% meets 99% target (${modelCallCount} model calls).`
-      : `KV cache hit ratio ${(cacheHitRatio * 100).toFixed(1)}% below 99% target (${modelCallCount} model calls).`,
-    failureTags: cacheHitRatio >= 0.99 ? [] : ["low_kv_cache_hit_ratio"],
-    details: { cacheHitRatio, modelCallCount, cacheDataAvailable: true },
+    passed: score >= 0.70,
+    rationale: score >= 0.70
+      ? `KV cache hit ratio ${(cacheHitRatio * 100).toFixed(1)}% meets the ${track} target (${modelCallCount} model calls).`
+      : `KV cache hit ratio ${(cacheHitRatio * 100).toFixed(1)}% below the ${track} target (${modelCallCount} model calls).`,
+    failureTags: score >= 0.70 ? [] : ["low_kv_cache_hit_ratio"],
+    details: {
+      cacheHitRatio,
+      modelCallCount,
+      cacheDataAvailable: true,
+      targetCacheHitRatio,
+      floorCacheHitRatio,
+      track,
+      category,
+      difficulty,
+      cacheExpected,
+    },
   });
 }
 
