@@ -1,5 +1,5 @@
 {
-  "datasetId": "<import-kv-cache-real-world-dataset-first>",
+  "datasetId": "<import-kv-cache-cause-effect-dataset-first>",
   "profileId": "orchestration",
   "repetitions": 3,
   "concurrency": 1,
@@ -11,14 +11,13 @@
       "kv_cache_hit_ratio",
       "agentic_cost_score",
       "token_efficiency",
-      "tool_efficiency",
-      "assertion_pass_rate"
+      "tool_efficiency"
     ]
   },
   "configs": [
     {
       "id": "deterministic-cache",
-      "label": "Real-World Cache Path",
+      "label": "Cause-Effect Cache Path",
       "runConfig": {
         "pattern": "single_agent",
         "modeSelection": "manual",
@@ -30,9 +29,9 @@
     }
   ],
   "metadata": {
-    "description": "KV Cache real-world eval: unconstrained tool surface to observe cache behavior under realistic multi-turn work.",
+    "description": "KV Cache cause-effect eval: constrained tool surface (file.read + file.list only) to provide a stable regression guard for multi-turn cache behavior.",
     "evaluationFamily": "kv-cache",
-    "evaluationTrack": "real-world",
+    "evaluationTrack": "cause-effect",
     "retrofitCausalDecisions": false
   }
 }

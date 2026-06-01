@@ -22,7 +22,10 @@
         "structured": {
           "assertions": [
             { "type": "not_equals", "path": "run.status", "value": "failed", "rationale": "多次搜索应正常完成" },
-            { "type": "min", "path": "runtime.efficiencyLedger.modelCallCount", "value": 4, "rationale": "4次搜索+汇总分析，前缀多次复用应产生显著 cache hit" }
+            { "type": "min", "path": "runtime.efficiencyLedger.modelCallCount", "value": 4, "rationale": "4次搜索+汇总分析，前缀多次复用应产生显著 cache hit" },
+            { "type": "contains", "path": "run.outputText", "value": "apps/runtime/src/agentic-efficiency.ts", "failureTag": "missing_cache_metric_evidence", "rationale": "真实搜索结果应覆盖 cacheHitRatio / AgenticEfficiencyLedger 的核心定义文件" },
+            { "type": "contains", "path": "run.outputText", "value": "packages/shared/src/runtime.ts", "failureTag": "missing_usage_event_evidence", "rationale": "真实搜索结果应覆盖 context.usage.updated 的核心事件定义文件" },
+            { "type": "contains", "path": "run.outputText", "value": "apps/runtime/src/evaluation-store.ts", "failureTag": "missing_eval_metric_evidence", "rationale": "真实搜索结果应覆盖 kv_cache_hit_ratio 的核心评测实现文件" }
           ]
         }
       },
