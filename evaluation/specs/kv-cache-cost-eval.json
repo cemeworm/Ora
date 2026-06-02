@@ -23,7 +23,7 @@
         "pattern": "single_agent",
         "modeSelection": "manual",
         "modeId": "single_agent",
-        "toolIds": ["file.read", "file.list"],
+        "toolIds": ["file.read", "file.list", "file.grep", "file.glob"],
         "providerId": "deepseek",
         "modelRef": "deepseek-v4-flash"
       }

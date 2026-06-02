@@ -215,6 +215,7 @@ function isManifestLikePath(path: string): boolean {
   const normalized = path.trim().toLowerCase();
   return normalized.endsWith("package.json")
     || normalized.endsWith("package-lock.json")
+    || normalized.endsWith("pnpm-workspace.yaml")
     || normalized.endsWith("pnpm-lock.yaml")
     || normalized.endsWith("yarn.lock")
     || normalized.endsWith("bun.lock")
@@ -428,6 +429,14 @@ function isListLikeReadContextTool(toolId: string): boolean {
   return toolId === "file.list" || toolId === "file.glob";
 }
 
+function isConcreteRepoMappingReadPath(path: string): boolean {
+  const normalized = path.trim().replace(/^[./]+/, "");
+  if (normalized.length === 0) return false;
+  if (!normalized.includes("/")) return false;
+  if (isManifestLikePath(normalized)) return false;
+  return true;
+}
+
 function hasSettledTargetedReadContextEvidence(toolCalls: readonly OraToolCallEnvelope[]): boolean {
   return toolCalls.some((call) => {
     if (!(call.status === "succeeded" || call.status === "repaired")) {
@@ -460,21 +469,29 @@ function isExplicitContentSearchPrompt(prompt: string): boolean {
   return /出现位置|定义|引用|emit 点|emit point|all occurrences|definitions?|references?|line\b|行号|上下文|文件路径|path/u.test(prompt);
 }
 
+interface ReadContextEpisodeStats {
+  totalCount: number;
+  listLikeCount: number;
+  targetedCount: number;
+  readCount: number;
+  grepCount: number;
+  concreteReadCount: number;
+}
+
 function countRecentReadContextEpisode(params: {
   toolCalls: readonly OraToolCallEnvelope[];
   agentId: string;
   nodeId: string;
-}): {
-  totalCount: number;
-  listLikeCount: number;
-  targetedCount: number;
-} {
+}): ReadContextEpisodeStats {
   const relevantToolCalls = params.toolCalls.filter((call) =>
     call.agentId === params.agentId && call.nodeId === params.nodeId,
   );
   let totalCount = 0;
   let listLikeCount = 0;
   let targetedCount = 0;
+  let readCount = 0;
+  let grepCount = 0;
+  let concreteReadCount = 0;
   for (let index = relevantToolCalls.length - 1; index >= 0; index -= 1) {
     const call = relevantToolCalls[index];
     if (!isReadContextTool(call.toolId)) {
@@ -490,9 +507,18 @@ function countRecentReadContextEpisode(params: {
     }
     if (call.toolId === "file.read" || call.toolId === "file.grep") {
       targetedCount += 1;
+      if (call.toolId === "file.read") {
+        readCount += 1;
+        const path = typeof call.args?.path === "string" ? call.args.path : "";
+        if (isConcreteRepoMappingReadPath(path)) {
+          concreteReadCount += 1;
+        }
+      } else {
+        grepCount += 1;
+      }
     }
   }
-  return { totalCount, listLikeCount, targetedCount };
+  return { totalCount, listLikeCount, targetedCount, readCount, grepCount, concreteReadCount };
 }
 
 export function shouldBlockListHeavyRepoScanForReadContext(params: {
@@ -527,6 +553,87 @@ export function shouldBlockBroadRepoScanForExplicitContentSearch(params: {
   if (!isExplicitContentSearchPrompt(params.prompt)) return false;
   if (hasSettledTargetedReadContextEvidence(params.toolCalls)) return false;
   return true;
+}
+
+function isRepoGroundedArchitectureReportPrompt(prompt: string): boolean {
+  const asksForArchitecture = /架构|architecture|monorepo|packages\/|apps\//iu.test(prompt);
+  const asksForReportShape = /报告|report|章节|chapter|全面.*分析|全面的架构分析/iu.test(prompt);
+  const asksForLocalCodeEvidence = /代码文件|具体的代码文件|文件路径|行号|line numbers?|作为证据|code evidence/iu.test(prompt);
+  return asksForArchitecture && asksForReportShape && asksForLocalCodeEvidence;
+}
+
+function relevantSucceededReadContextCalls(params: {
+  toolCalls: readonly OraToolCallEnvelope[];
+  agentId: string;
+  nodeId: string;
+}): readonly OraToolCallEnvelope[] {
+  return params.toolCalls.filter((call) =>
+    call.agentId === params.agentId &&
+    call.nodeId === params.nodeId &&
+    (call.status === "succeeded" || call.status === "repaired") &&
+    isReadContextTool(call.toolId),
+  );
+}
+
+export function hasExplicitContentSearchCompletionEvidence(params: {
+  toolCalls: readonly OraToolCallEnvelope[];
+  agentId: string;
+  nodeId: string;
+}): boolean {
+  const relevantCalls = relevantSucceededReadContextCalls(params);
+  let sawMatchedGrep = false;
+  let sawRead = false;
+  for (const call of relevantCalls) {
+    if (call.toolId === "file.grep" && grepProducedMatches(call)) {
+      sawMatchedGrep = true;
+      continue;
+    }
+    if (call.toolId === "file.read") {
+      sawRead = true;
+    }
+  }
+  return sawMatchedGrep && sawRead;
+}
+
+export function hasRepoGroundedReportCompletionEvidence(params: {
+  toolCalls: readonly OraToolCallEnvelope[];
+  agentId: string;
+  nodeId: string;
+}): boolean {
+  return relevantSucceededReadContextCalls(params).some((call) => {
+    if (call.toolId === "file.grep") {
+      return grepProducedMatches(call);
+    }
+    if (call.toolId !== "file.read") {
+      return false;
+    }
+    const path = typeof call.args?.path === "string" ? call.args.path : "";
+    return isConcreteRepoMappingReadPath(path);
+  });
+}
+
+export function shouldBlockFinalForExplicitContentSearchEvidence(params: {
+  enabled: boolean;
+  prompt: string;
+  toolCalls: readonly OraToolCallEnvelope[];
+  agentId: string;
+  nodeId: string;
+}): boolean {
+  if (!params.enabled) return false;
+  if (!isExplicitContentSearchPrompt(params.prompt)) return false;
+  return !hasExplicitContentSearchCompletionEvidence(params);
+}
+
+export function shouldBlockFinalForRepoGroundedReportEvidence(params: {
+  enabled: boolean;
+  prompt: string;
+  toolCalls: readonly OraToolCallEnvelope[];
+  agentId: string;
+  nodeId: string;
+}): boolean {
+  if (!params.enabled) return false;
+  if (!isRepoGroundedArchitectureReportPrompt(params.prompt)) return false;
+  return !hasRepoGroundedReportCompletionEvidence(params);
 }
 
 function shouldBlockWideTaskArchiveReadForReporting(params: {
@@ -655,10 +762,84 @@ export function buildExplicitContentSearchFollowUp(): string {
   return "[Content Search Follow-up] The request already names concrete search terms and asks for code-location evidence. Do not expand the directory tree first. Start with one narrow file.grep over likely source roots to find the quoted terms (batch terms together when practical), then use file.read only on the matched files to capture line numbers, surrounding context, and cross-file relationships.";
 }
 
-function targetedReadContextToolDefinitions(
+export function buildExplicitContentSearchEvidenceFloorFollowUp(): string {
+  return "[Content Search Evidence Floor] Do not finalize with inferred or remembered search results. You must first gather real local evidence: use file.grep to locate the named terms, then use file.read on matched files to capture file paths, line numbers, and context. If the repo still does not contain a term, say that explicitly instead of filling gaps with guesses.";
+}
+
+export function buildRepoGroundedReportEvidenceFollowUp(): string {
+  return "[Repo-Grounded Report Evidence Floor] Do not finalize this architecture/report answer from general repo priors or remembered structure. First inspect concrete local evidence: read the most relevant source/schema files (and use narrow grep when needed), then cite those file paths and line numbers in the report. If local evidence is still insufficient for a section, say that explicitly instead of inventing support.";
+}
+
+type ReadContextToolStanceKind = "explicit_content_search" | "targeted_repo_mapping";
+
+interface ReadContextToolStanceState {
+  kind: ReadContextToolStanceKind;
+  enteredReason: string;
+  blockedBroadToolCount: number;
+}
+
+export function initialReadContextToolStanceForPrompt(prompt: string): ReadContextToolStanceKind | undefined {
+  if (isExplicitContentSearchPrompt(prompt)) {
+    return "explicit_content_search";
+  }
+  return undefined;
+}
+
+function readContextToolIdsForStance(kind: ReadContextToolStanceKind): readonly string[] {
+  switch (kind) {
+    case "explicit_content_search":
+      return ["file.read", "file.grep"];
+    case "targeted_repo_mapping":
+      return ["file.read", "file.grep", "file.glob"];
+    default:
+      return [];
+  }
+}
+
+export function readContextStanceAllowsTool(kind: ReadContextToolStanceKind, toolId: string): boolean {
+  return readContextToolIdsForStance(kind).includes(toolId);
+}
+
+export function buildReadContextStanceFollowUp(kind: ReadContextToolStanceKind): string {
+  switch (kind) {
+    case "explicit_content_search":
+      return "[Read Context Stance] Stay in explicit content-search mode. Use only file.grep to find the named terms and file.read to inspect matched files. Do not switch back to broad file.list, repo.explore, web.fetch, or other wide scans unless the user changes the task.";
+    case "targeted_repo_mapping":
+      return "[Read Context Stance] Stay in targeted repo-mapping mode. Use concrete source/schema reads or narrow file.grep/file.glob on the areas already discovered. A workspace manifest alone is not enough to reopen broad repo scans. Do not return to broad file.list or repo.explore sweeps unless a specific targeted read proves there is a genuinely new unresolved area.";
+    default:
+      return "[Read Context Stance] Stay grounded in targeted local evidence and avoid broad repo scans.";
+  }
+}
+
+export function shouldReleaseReadContextToolStance(params: {
+  kind: ReadContextToolStanceKind;
+  toolCalls: readonly OraToolCallEnvelope[];
+  agentId: string;
+  nodeId: string;
+}): boolean {
+  const episode = countRecentReadContextEpisode(params);
+  switch (params.kind) {
+    case "explicit_content_search":
+      // Release once the agent has both located named terms and inspected a matched file.
+      return episode.grepCount > 0 && episode.readCount > 0;
+    case "targeted_repo_mapping":
+      // Release only after the agent has reached concrete source/schema evidence,
+      // not merely a root workspace manifest or other weak mapping clue.
+      return episode.grepCount > 0 || episode.concreteReadCount > 0;
+    default:
+      return false;
+  }
+}
+
+function toolDefinitionsForReadContextStance(
   nativeTools: readonly ModelToolDefinition[],
+  stance: ReadContextToolStanceState | undefined,
 ): readonly ModelToolDefinition[] {
-  const narrowed = nativeTools.filter((tool) => tool.id === "file.read" || tool.id === "file.grep");
+  if (!stance) {
+    return nativeTools;
+  }
+  const allowed = new Set(readContextToolIdsForStance(stance.kind));
+  const narrowed = nativeTools.filter((tool) => allowed.has(tool.id));
   return narrowed.length > 0 ? narrowed : nativeTools;
 }
 
@@ -1121,11 +1302,74 @@ export async function runNodeRuntimeLoop(
     },
   });
   const emitNodeRuntimeStateDirect = nodeLoopController.emit;
-  const completionScope = { agentId: params.agentId, nodeId: params.nodeId };
+  const completionScope = {
+    agentId: params.agentId,
+    nodeId: params.nodeId,
+    readContextToolStanceKind: undefined as ReadContextToolStanceKind | undefined,
+  };
   const enabledTools = runtimeToolExecutor.enabledToolIds(params.toolIds);
   const nativeTools = providerSupportsNativeTools(config)
     ? runtimeToolExecutor.toolDefinitions(params.toolIds)
     : [];
+  let readContextToolStance: ReadContextToolStanceState | undefined = (() => {
+    const kind = initialReadContextToolStanceForPrompt(input.prompt);
+    return kind
+      ? {
+          kind,
+          enteredReason: "prompt_semantics",
+          blockedBroadToolCount: 0,
+        }
+      : undefined;
+  })();
+  const syncCompletionScope = (): void => {
+    completionScope.readContextToolStanceKind = readContextToolStance?.kind;
+  };
+  syncCompletionScope();
+  const enterReadContextToolStance = (kind: ReadContextToolStanceKind, enteredReason: string): void => {
+    if (!readContextToolStance) {
+      readContextToolStance = {
+        kind,
+        enteredReason,
+        blockedBroadToolCount: 0,
+      };
+      syncCompletionScope();
+      return;
+    }
+    if (readContextToolStance.kind === kind) {
+      return;
+    }
+    if (kind === "explicit_content_search") {
+      readContextToolStance = {
+        kind,
+        enteredReason,
+        blockedBroadToolCount: readContextToolStance.blockedBroadToolCount,
+      };
+      syncCompletionScope();
+    }
+  };
+  const recordBlockedBroadToolWhileStanceActive = (): number => {
+    if (!readContextToolStance) return 0;
+    readContextToolStance = {
+      ...readContextToolStance,
+      blockedBroadToolCount: readContextToolStance.blockedBroadToolCount + 1,
+    };
+    return readContextToolStance.blockedBroadToolCount;
+  };
+  const refreshReadContextToolStance = (): void => {
+    if (!readContextToolStance) {
+      return;
+    }
+    if (!shouldReleaseReadContextToolStance({
+      kind: readContextToolStance.kind,
+      toolCalls: deps.toolCalls(),
+      agentId: params.agentId,
+      nodeId: params.nodeId,
+    })) {
+      return;
+    }
+    readContextToolStance = undefined;
+    syncCompletionScope();
+  };
   let messages: ModelMessage[] = [...(options.conversationMessages ?? [])];
   const invokeProvider = options.streamProvider
     ? invokeRunProviderStream
@@ -1135,10 +1379,14 @@ export async function runNodeRuntimeLoop(
   let modelInvocationIndex = 0;
   let activeAssistantMessageId = `${params.runId}:assistant:${params.agentId}:${params.nodeId}:0`;
   let emittedProviderStreamFrameForInvocation = false;
+  let observedProviderFallbackForInvocation = false;
+  let preferDirectCompletionRetryForInvocation = false;
   const nextAssistantMessageId = () => {
     activeAssistantMessageId = `${params.runId}:assistant:${params.agentId}:${params.nodeId}:${modelInvocationIndex}`;
     modelInvocationIndex += 1;
     emittedProviderStreamFrameForInvocation = false;
+    observedProviderFallbackForInvocation = false;
+    preferDirectCompletionRetryForInvocation = false;
     return activeAssistantMessageId;
   };
   const streamCallbacks = options.streamProvider
@@ -1166,6 +1414,9 @@ export async function runNodeRuntimeLoop(
           );
         },
         onStreamEvent: (event: ModelStreamEvent) => {
+          if (event.kind === "fallback_started") {
+            observedProviderFallbackForInvocation = true;
+          }
           if (!shouldEmitProviderStreamEvent(event, emittedProviderStreamFrameForInvocation)) {
             return;
           }
@@ -1213,7 +1464,7 @@ export async function runNodeRuntimeLoop(
 
   const invokeProviderWithRecovery = async (
     request: ModelRequest,
-    options: { emitRetryModelState: boolean },
+    retryOptions: { emitRetryModelState: boolean },
   ): Promise<ModelResponse> => {
     const attemptScope = nextAssistantMessageId();
     let currentRequest = request;
@@ -1237,7 +1488,9 @@ export async function runNodeRuntimeLoop(
           },
           { agentId: params.agentId, nodeId: params.agentId },
         );
-        const response = await invokeProvider(config, currentRequest, streamCallbacks);
+        const response = preferDirectCompletionRetryForInvocation
+          ? await invokeRunProvider(config, currentRequest)
+          : await invokeProvider(config, currentRequest, streamCallbacks);
         lastProviderRequestMessages = [...(currentRequest.messages ?? [])];
         lastRequestCacheDiagnostics = cacheDiagnostics;
         return response;
@@ -1258,14 +1511,24 @@ export async function runNodeRuntimeLoop(
           emitRecoveryDecision(incident, recoveryDecision);
           throw new RecoveryExhaustedError(incident, recoveryDecision);
         }
+        if (
+          options.streamProvider &&
+          observedProviderFallbackForInvocation &&
+          !emittedProviderStreamFrameForInvocation &&
+          incident.errorType === "provider_transient"
+        ) {
+          preferDirectCompletionRetryForInvocation = true;
+        }
         emitRecoveryDecision(incident, recoveryDecision);
         await sleep(recoveryDecision.retryDelayMs ?? 0);
-        if (options.emitRetryModelState) {
+        if (retryOptions.emitRetryModelState) {
           nodeLoopController.emitTransitionResult("model_request", "running_model", {
             agentId: params.agentId,
             title: params.title,
             reason: "provider_retry",
-            detail,
+            detail: preferDirectCompletionRetryForInvocation
+              ? `${detail} [retry_mode=direct_completion]`
+              : detail,
           });
         }
       }
@@ -1295,25 +1558,78 @@ export async function runNodeRuntimeLoop(
       messages: [...(request.messages ?? []), { role: "user", content: externalInputMessage }],
     };
   };
+  const hasSettledLocalToolProgress = (): boolean => deps.toolCalls().some((call) =>
+    call.agentId === params.agentId
+    && call.nodeId === params.nodeId
+    && (call.status === "succeeded" || call.status === "repaired"),
+  );
+  const shouldUseSearchModeProgressedCompletionProfile = (): boolean =>
+    readContextToolStance?.kind === "explicit_content_search";
+  const requestHasToolConversation = (request: ModelRequest): boolean => (request.messages ?? []).some((message) =>
+    message.role === "tool" || (message.role === "assistant" && Array.isArray(message.toolCalls) && message.toolCalls.length > 0),
+  );
+  const withProgressedCompletionRetryProfile = (request: ModelRequest): ModelRequest => {
+    if (
+      !hasSettledLocalToolProgress() &&
+      !requestHasToolConversation(request) &&
+      !shouldUseSearchModeProgressedCompletionProfile()
+    ) {
+      return request;
+    }
+    return {
+      ...request,
+      providerOptions: {
+        ...(request.providerOptions ?? {}),
+        transientRetryProfile: "progressed_completion",
+      },
+    };
+  };
   const invokeModel = (
     request: ModelRequest,
     options: { emitRetryModelState?: boolean } = {},
-  ) =>
-    invokeRuntimeModelCall({
-      request: withAbortSignal(withStablePrefixCacheMetadata(injectPendingExternalInputs(request))),
+  ) => {
+    refreshReadContextToolStance();
+    return invokeRuntimeModelCall({
+      request: withAbortSignal(
+        withProgressedCompletionRetryProfile(
+          withStablePrefixCacheMetadata(
+            injectPendingExternalInputs({
+              ...request,
+              tools: request.tools
+                ? toolDefinitionsForReadContextStance(request.tools, readContextToolStance)
+                : request.tools,
+            }),
+          ),
+        ),
+      ),
       context: middlewareContext,
       middlewares: runtimeMiddlewares,
       terminal: (nextRequest) => invokeProviderWithRecovery(nextRequest, {
         emitRetryModelState: options.emitRetryModelState ?? true,
       }),
     });
+  };
   const invokeFollowUpModel = (
     request: ModelRequest,
     latestResponse: ModelResponse,
     reason: string,
-  ) =>
-    invokeRuntimeModelCall({
-      request: withAbortSignal(withFollowUpCacheMetadata(injectPendingExternalInputs(request), latestResponse, lastProviderRequestMessages)),
+  ) => {
+    refreshReadContextToolStance();
+    return invokeRuntimeModelCall({
+      request: withAbortSignal(
+        withProgressedCompletionRetryProfile(
+          withFollowUpCacheMetadata(
+            injectPendingExternalInputs({
+              ...request,
+              tools: request.tools
+                ? toolDefinitionsForReadContextStance(request.tools, readContextToolStance)
+                : request.tools,
+            }),
+            latestResponse,
+            lastProviderRequestMessages,
+          ),
+        ),
+      ),
       context: middlewareContext,
       middlewares: runtimeMiddlewares,
       terminal: (nextRequest) => invokeProviderWithRecovery(nextRequest, {
@@ -1323,6 +1639,7 @@ export async function runNodeRuntimeLoop(
         compaction: { latestResponse, reason },
       },
     });
+  };
   const formatExternalInputMessage = (inputs: PendingExternalInputs): string | undefined => {
     const sections: string[] = [];
     if (inputs.messages.length > 0) {
@@ -1555,10 +1872,11 @@ export async function runNodeRuntimeLoop(
   let emptyFinalOutputRepairUsed = false;
   let freshnessPolicyRepairUsed = false;
   let readContextPolicyRepairUsed = false;
+  let explicitContentSearchEvidenceRepairUsed = false;
+  let repoGroundedReportEvidenceRepairUsed = false;
   let weakReadContextDiagnosisRepairUsed = false;
   let manifestOnlyDiagnosisRepairUsed = false;
   let internalProtocolRepairUsed = false;
-  let listHeavyRepoScanRepairUsed = false;
   const continueOrCompleteNaturally = async (
     currentResponse: ModelResponse,
     iteration: number,
@@ -1601,6 +1919,90 @@ export async function runNodeRuntimeLoop(
       const planList = deps.planList();
       const hasUnresolvedPlanItems = planList.some(s => s.status !== "completed");
       const currentTaskState = latestCausalTaskState(deps.events());
+      const shouldBlockForExplicitContentSearchEvidence = shouldBlockFinalForExplicitContentSearchEvidence({
+        enabled: completion.toolsAllowed(completionScope),
+        prompt: input.prompt,
+        toolCalls: deps.toolCalls(),
+        agentId: params.agentId,
+        nodeId: params.nodeId,
+      });
+      if (shouldBlockForExplicitContentSearchEvidence && !explicitContentSearchEvidenceRepairUsed) {
+        explicitContentSearchEvidenceRepairUsed = true;
+        nodeLoopController.emitTransitionResult("model_request", "running_model", {
+          agentId: params.agentId,
+          title: params.title,
+          reason: "explicit_content_search_missing_evidence",
+          detail: "The answer still lacks the grep/read evidence floor required for an explicit content-search task.",
+          iteration,
+        });
+        messages = [
+          ...messages,
+          { role: "assistant", content: candidateResponse.text },
+          {
+            role: "user",
+            content: buildExplicitContentSearchEvidenceFloorFollowUp(),
+          },
+        ];
+        return {
+          kind: "continue",
+          response: await invokeFollowUpModel({
+            messages,
+            system: params.system,
+            providerCache: params.providerCache,
+            cacheDiagnosticsContext: params.cacheDiagnosticsContext,
+            responseFormat: params.responseFormat,
+            maxTokens: config.budget?.maxTokens,
+            tools: nativeTools,
+            toolChoice: followUpToolChoiceForReason(
+              "explicit_content_search_missing_evidence",
+              completion.toolsAllowed(completionScope),
+              nativeTools.length,
+            ),
+          }, candidateResponse, "explicit_content_search_missing_evidence"),
+        };
+      }
+      const shouldBlockForRepoGroundedReportEvidence = shouldBlockFinalForRepoGroundedReportEvidence({
+        enabled: completion.toolsAllowed(completionScope),
+        prompt: input.prompt,
+        toolCalls: deps.toolCalls(),
+        agentId: params.agentId,
+        nodeId: params.nodeId,
+      });
+      if (shouldBlockForRepoGroundedReportEvidence && !repoGroundedReportEvidenceRepairUsed) {
+        repoGroundedReportEvidenceRepairUsed = true;
+        nodeLoopController.emitTransitionResult("model_request", "running_model", {
+          agentId: params.agentId,
+          title: params.title,
+          reason: "repo_grounded_report_missing_evidence",
+          detail: "The answer still lacks concrete local source evidence for a repo-grounded report task.",
+          iteration,
+        });
+        messages = [
+          ...messages,
+          { role: "assistant", content: candidateResponse.text },
+          {
+            role: "user",
+            content: buildRepoGroundedReportEvidenceFollowUp(),
+          },
+        ];
+        return {
+          kind: "continue",
+          response: await invokeFollowUpModel({
+            messages,
+            system: params.system,
+            providerCache: params.providerCache,
+            cacheDiagnosticsContext: params.cacheDiagnosticsContext,
+            responseFormat: params.responseFormat,
+            maxTokens: config.budget?.maxTokens,
+            tools: nativeTools,
+            toolChoice: followUpToolChoiceForReason(
+              "repo_grounded_report_missing_evidence",
+              completion.toolsAllowed(completionScope),
+              nativeTools.length,
+            ),
+          }, candidateResponse, "repo_grounded_report_missing_evidence"),
+        };
+      }
       const shouldBlockForReadContext = shouldBlockFinalForReadContextPolicy({
         enabled: completion.toolsAllowed(completionScope),
         prompt: input.prompt,
@@ -2295,6 +2697,71 @@ export async function runNodeRuntimeLoop(
       nodeId: params.nodeId,
     });
 
+    if (
+      !readContextToolStance &&
+      shouldBlockListHeavyRepoScanForReadContext({
+        toolCalls: deps.toolCalls(),
+        agentId: params.agentId,
+        nodeId: params.nodeId,
+        proposedToolId: toolCall.tool,
+        recommendedAction: policyResult.action,
+      })
+    ) {
+      enterReadContextToolStance("targeted_repo_mapping", "list_heavy_repo_scan");
+    }
+
+    if (
+      readContextToolStance &&
+      !readContextStanceAllowsTool(readContextToolStance.kind, toolCall.tool)
+    ) {
+      const blockedBroadToolCount = recordBlockedBroadToolWhileStanceActive();
+      emit("causal.decision.rejected", {
+        toolId: toolCall.tool,
+        recommendedAction: policyResult.action,
+        reason: `read_context_stance:${readContextToolStance.kind}`,
+        level: "context_probe_policy",
+        diagnostic: {
+          recordedAt: now(),
+          promptExcerpt: input.prompt.slice(0, 200),
+          proposedToolId: toolCall.tool,
+          stance: readContextToolStance.kind,
+          enteredReason: readContextToolStance.enteredReason,
+          blockedBroadToolCount,
+          iteration,
+        },
+      }, {
+        agentId: params.agentId,
+        nodeId: params.nodeId,
+      });
+      nodeLoopController.emitTransitionResult("model_request", "running_model", {
+        agentId: params.agentId,
+        title: params.title,
+        toolId: toolCall.tool,
+        reason: "read_context_stance_blocked",
+        detail: `The current read-context stance (${readContextToolStance.kind}) only allows targeted evidence tools.`,
+        iteration,
+      });
+      messages = [
+        ...messages,
+        { role: "assistant", content: response.text },
+        {
+          role: "user",
+          content: buildReadContextStanceFollowUp(readContextToolStance.kind),
+        },
+      ];
+      response = await invokeFollowUpModel({
+        messages,
+        system: params.system,
+        providerCache: params.providerCache,
+        cacheDiagnosticsContext: params.cacheDiagnosticsContext,
+        responseFormat: params.responseFormat,
+        maxTokens: config.budget?.maxTokens,
+        tools: nativeTools,
+        toolChoice: nativeTools.length > 0 ? "auto" : undefined,
+      }, response, "read_context_stance_blocked");
+      continue;
+    }
+
     if (shouldBlockToolForContextProbePolicy({
       enabled: contextProbePolicyEnabled,
       prompt: input.prompt,
@@ -2409,98 +2876,6 @@ export async function runNodeRuntimeLoop(
         tools: nativeTools,
         toolChoice: nativeTools.length > 0 ? "auto" : undefined,
       }, response, "reporting_read_context_surface_blocked");
-      continue;
-    }
-
-    if (
-      shouldBlockBroadRepoScanForExplicitContentSearch({
-        prompt: input.prompt,
-        toolCalls: deps.toolCalls(),
-        proposedToolId: toolCall.tool,
-        recommendedAction: policyResult.action,
-      }) &&
-      !listHeavyRepoScanRepairUsed
-    ) {
-      listHeavyRepoScanRepairUsed = true;
-      emit("completion.updated", {
-        state: "loop_warning",
-        reason: "explicit_content_search_blocked",
-        toolId: toolCall.tool,
-        toolFamily: "local_context",
-      });
-      nodeLoopController.emitTransitionResult("model_request", "running_model", {
-        agentId: params.agentId,
-        title: params.title,
-        toolId: toolCall.tool,
-        reason: "explicit_content_search_blocked",
-        detail: "The request already names concrete search terms and should pivot to file.grep before any broad repo scan.",
-        iteration,
-      });
-      messages = [
-        ...messages,
-        { role: "assistant", content: response.text },
-        {
-          role: "user",
-          content: buildExplicitContentSearchFollowUp(),
-        },
-      ];
-      response = await invokeFollowUpModel({
-        messages,
-        system: params.system,
-        providerCache: params.providerCache,
-        cacheDiagnosticsContext: params.cacheDiagnosticsContext,
-        responseFormat: params.responseFormat,
-        maxTokens: config.budget?.maxTokens,
-        tools: targetedReadContextToolDefinitions(nativeTools),
-        toolChoice: nativeTools.length > 0 ? "auto" : undefined,
-      }, response, "explicit_content_search_blocked");
-      continue;
-    }
-
-    if (
-      shouldBlockListHeavyRepoScanForReadContext({
-        toolCalls: deps.toolCalls(),
-        agentId: params.agentId,
-        nodeId: params.nodeId,
-        proposedToolId: toolCall.tool,
-        recommendedAction: policyResult.action,
-      }) &&
-      !listHeavyRepoScanRepairUsed
-    ) {
-      listHeavyRepoScanRepairUsed = true;
-      emit("completion.updated", {
-        state: "loop_warning",
-        reason: "repo_scan_list_heavy",
-        toolId: toolCall.tool,
-        toolFamily: "local_context",
-        evidenceEpisodeWarnLimit: EVIDENCE_EPISODE_MIN_WARN_LIMIT,
-      });
-      nodeLoopController.emitTransitionResult("model_request", "running_model", {
-        agentId: params.agentId,
-        title: params.title,
-        toolId: toolCall.tool,
-        reason: "repo_scan_list_heavy",
-        detail: "The current repo scan is still expanding directories without concrete source evidence. Read a specific manifest or source file instead of listing more paths.",
-        iteration,
-      });
-      messages = [
-        ...messages,
-        { role: "assistant", content: response.text },
-        {
-          role: "user",
-          content: buildListHeavyRepoScanFollowUp(),
-        },
-      ];
-      response = await invokeFollowUpModel({
-        messages,
-        system: params.system,
-        providerCache: params.providerCache,
-        cacheDiagnosticsContext: params.cacheDiagnosticsContext,
-        responseFormat: params.responseFormat,
-        maxTokens: config.budget?.maxTokens,
-        tools: targetedReadContextToolDefinitions(nativeTools),
-        toolChoice: nativeTools.length > 0 ? "auto" : undefined,
-      }, response, "repo_scan_list_heavy_blocked");
       continue;
     }
 

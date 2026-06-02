@@ -135,4 +135,34 @@ describe("RuntimeCompletionController evidence episodes", () => {
     expect(controller.completionStopReason).toBeUndefined();
     expect(events).toHaveLength(0);
   });
+
+  it("gives explicit content-search grep episodes a wider budget than generic local-context episodes", () => {
+    const { controller, events } = createController();
+    const scope = {
+      agentId: "ora",
+      nodeId: "ora",
+      readContextToolStanceKind: "explicit_content_search" as const,
+    };
+
+    for (const pattern of ["alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta", "iota"]) {
+      expect(controller.registerToolAttempt(toolCall("file.grep", { path: "src", pattern }), scope).allowed).toBe(true);
+    }
+
+    expect(controller.completionStopReason).toBeUndefined();
+    expect(events).toContainEqual(expect.objectContaining({
+      state: "loop_warning",
+      reason: "tool_frequency_exhausted",
+      toolFamily: "explicit_content_search_grep",
+      evidenceEpisodeCount: 6,
+      evidenceEpisodeWarnLimit: 6,
+      evidenceEpisodeHardLimit: 9,
+    }));
+
+    const blocked = controller.registerToolAttempt(toolCall("file.grep", { path: "src", pattern: "kappa" }), scope);
+    expect(blocked).toMatchObject({
+      allowed: false,
+      reason: "tool_frequency_exhausted",
+    });
+    expect(controller.completionStopReason).toBe("tool_frequency_exhausted");
+  });
 });

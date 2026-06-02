@@ -17,15 +17,19 @@ type RuntimeCompletionEmit = (
 export interface RuntimeToolScope {
   agentId?: string;
   nodeId?: string;
+  readContextToolStanceKind?: "explicit_content_search" | "targeted_repo_mapping";
 }
 
-function evidenceEpisodeFamily(toolId: string): string | undefined {
+function evidenceEpisodeFamily(toolId: string, scope?: RuntimeToolScope): string | undefined {
   switch (toolId) {
     case "file.read":
     case "file.list":
     case "file.glob":
-    case "file.grep":
       return "local_context";
+    case "file.grep":
+      return scope?.readContextToolStanceKind === "explicit_content_search"
+        ? "explicit_content_search_grep"
+        : "local_context";
     case "web.search":
     case "web.fetch":
     case "repo.explore":
@@ -209,8 +213,8 @@ export class RuntimeCompletionController {
         toolId: call.tool,
         toolFamily: evidenceEpisodeDecision.family,
         evidenceEpisodeCount: evidenceEpisodeDecision.count,
-        evidenceEpisodeWarnLimit: this.evidenceEpisodeWarnLimit,
-        evidenceEpisodeHardLimit: this.evidenceEpisodeHardLimit,
+        evidenceEpisodeWarnLimit: evidenceEpisodeDecision.warnLimit,
+        evidenceEpisodeHardLimit: evidenceEpisodeDecision.hardLimit,
         scopeKey: evidenceEpisodeDecision.scopeKey,
       });
     }
@@ -220,8 +224,8 @@ export class RuntimeCompletionController {
         toolId: call.tool,
         toolFamily: evidenceEpisodeDecision.family,
         evidenceEpisodeCount: evidenceEpisodeDecision.count,
-        evidenceEpisodeWarnLimit: this.evidenceEpisodeWarnLimit,
-        evidenceEpisodeHardLimit: this.evidenceEpisodeHardLimit,
+        evidenceEpisodeWarnLimit: evidenceEpisodeDecision.warnLimit,
+        evidenceEpisodeHardLimit: evidenceEpisodeDecision.hardLimit,
         scopeKey: evidenceEpisodeDecision.scopeKey,
       }, evidenceEpisodeDecision.scopeKey ? { scope } : {});
       return {
@@ -298,16 +302,20 @@ export class RuntimeCompletionController {
     key: string;
     scopeKey?: string;
     count: number;
+    warnLimit: number;
+    hardLimit: number;
     shouldWarn: boolean;
     shouldBlock: boolean;
   } {
-    const family = evidenceEpisodeFamily(call.tool);
+    const family = evidenceEpisodeFamily(call.tool, scope);
     const scopeKey = this.scopeKey(scope);
     if (!family) {
       return {
         key: scopeKey ? `${scopeKey}:none` : "global:none",
         scopeKey,
         count: 0,
+        warnLimit: this.evidenceEpisodeWarnLimit,
+        hardLimit: this.evidenceEpisodeHardLimit,
         shouldWarn: false,
         shouldBlock: false,
       };
@@ -316,13 +324,29 @@ export class RuntimeCompletionController {
     const current = this.evidenceEpisodeByScope.get(stateKey);
     const count = current?.family === family ? current.count + 1 : 1;
     const key = `${stateKey}:${family}`;
+    const limits = this.evidenceEpisodeLimits(family);
     return {
       family,
       key,
       scopeKey,
       count,
-      shouldWarn: count === this.evidenceEpisodeWarnLimit,
-      shouldBlock: count > this.evidenceEpisodeHardLimit,
+      warnLimit: limits.warnLimit,
+      hardLimit: limits.hardLimit,
+      shouldWarn: count === limits.warnLimit,
+      shouldBlock: count > limits.hardLimit,
+    };
+  }
+
+  private evidenceEpisodeLimits(family: string): { warnLimit: number; hardLimit: number } {
+    if (family === "explicit_content_search_grep") {
+      return {
+        warnLimit: Math.max(this.evidenceEpisodeWarnLimit + 2, this.repeatedToolLimit * 3),
+        hardLimit: Math.max(this.evidenceEpisodeHardLimit + 3, this.repeatedToolLimit * 4),
+      };
+    }
+    return {
+      warnLimit: this.evidenceEpisodeWarnLimit,
+      hardLimit: this.evidenceEpisodeHardLimit,
     };
   }
 

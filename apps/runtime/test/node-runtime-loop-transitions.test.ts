@@ -826,6 +826,9 @@ describe("node runtime loop transition contract", () => {
     expect(toolActionProposalSource).toContain("params.runtimeToolExecutor.approvalRequest(params.toolCall, params.inputPrompt)");
     expect(toolAttemptSource).toContain("registerRuntimeToolAttempt");
     expect(toolAttemptSource).toContain("params.completion.registerToolAttempt(params.toolCall, params.scope)");
+    expect(source).toContain("preferDirectCompletionRetryForInvocation");
+    expect(source).toContain("observedProviderFallbackForInvocation");
+    expect(source).toContain("[retry_mode=direct_completion]");
     expect(source).toContain("codeDevelopmentToolBoundaryError({");
     expect(source).not.toContain("CODE_DEVELOPMENT_ORCHESTRATOR_BLOCKED_TOOLS");
     expect(toolBoundarySource).toContain("CODE_DEVELOPMENT_ORCHESTRATOR_BLOCKED_TOOLS");

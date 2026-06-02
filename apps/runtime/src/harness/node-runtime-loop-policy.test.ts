@@ -2,8 +2,11 @@ import { describe, expect, it } from "vitest";
 import { ORA_ROOT_AGENT_ID, SINGLE_AGENT_MODE_ID, type OraToolCallEnvelope } from "@cemeworm/shared";
 import {
   buildExplicitContentSearchFollowUp,
+  buildExplicitContentSearchEvidenceFloorFollowUp,
   buildManifestOnlyDiagnosisFollowUp,
   buildListHeavyRepoScanFollowUp,
+  buildReadContextStanceFollowUp,
+  buildRepoGroundedReportEvidenceFollowUp,
   followUpToolChoiceForReason,
   buildReportingReadContextSurfaceFollowUp,
   buildReadContextNoEvidenceFinalFollowUp,
@@ -17,7 +20,14 @@ import {
   shouldRepairWeakReadContextDiagnosisCompletion,
   shouldRepairReadContextDiagnosisWithoutEvidence,
   shouldBlockToolForContextProbePolicy,
+  initialReadContextToolStanceForPrompt,
+  hasExplicitContentSearchCompletionEvidence,
+  hasRepoGroundedReportCompletionEvidence,
+  readContextStanceAllowsTool,
+  shouldReleaseReadContextToolStance,
   shouldBlockBroadRepoScanForExplicitContentSearch,
+  shouldBlockFinalForExplicitContentSearchEvidence,
+  shouldBlockFinalForRepoGroundedReportEvidence,
   shouldBlockListHeavyRepoScanForReadContext,
   hasReadContextEvidence,
   shouldContinueAfterCausalBlock,
@@ -479,6 +489,209 @@ describe("node runtime loop policy helpers", () => {
     expect(guidance).toContain("Do not expand the directory tree first");
     expect(guidance).toContain("file.grep");
     expect(guidance).toContain("matched files");
+  });
+
+  it("treats explicit content-search completion evidence as incomplete until both grep matches and file reads exist", () => {
+    expect(hasExplicitContentSearchCompletionEvidence({
+      toolCalls: [
+        readToolCall({
+          toolId: "file.grep",
+          output: { matches: [{ path: "apps/runtime/src/agentic-efficiency.ts", line: 10, text: "cacheHitRatio" }] },
+        }),
+      ],
+      agentId: ORA_ROOT_AGENT_ID,
+      nodeId: ORA_ROOT_AGENT_ID,
+    })).toBe(false);
+
+    expect(hasExplicitContentSearchCompletionEvidence({
+      toolCalls: [
+        readToolCall({
+          toolId: "file.grep",
+          output: { matches: [{ path: "apps/runtime/src/agentic-efficiency.ts", line: 10, text: "cacheHitRatio" }] },
+        }),
+        readToolCall({
+          path: "apps/runtime/src/agentic-efficiency.ts",
+          output: { content: "const cacheHitRatio = 0.9;" },
+        }),
+      ],
+      agentId: ORA_ROOT_AGENT_ID,
+      nodeId: ORA_ROOT_AGENT_ID,
+    })).toBe(true);
+  });
+
+  it("blocks explicit content-search completion when grep/read evidence floor is still missing", () => {
+    expect(shouldBlockFinalForExplicitContentSearchEvidence({
+      enabled: true,
+      prompt: [
+        "在 Ora 项目中搜索以下关键字：'cacheHitRatio'、'AgenticEfficiencyLedger'、'context.usage.updated'。",
+        "请输出文件路径、行号、上下文摘要。",
+      ].join("\n"),
+      toolCalls: [],
+      agentId: ORA_ROOT_AGENT_ID,
+      nodeId: ORA_ROOT_AGENT_ID,
+    })).toBe(true);
+  });
+
+  it("adds explicit content-search evidence-floor guidance that forbids inferred search results", () => {
+    const guidance = buildExplicitContentSearchEvidenceFloorFollowUp();
+
+    expect(guidance).toContain("Do not finalize with inferred or remembered search results");
+    expect(guidance).toContain("file.grep");
+    expect(guidance).toContain("line numbers");
+  });
+
+  it("enters explicit content-search stance from prompt semantics", () => {
+    const stance = initialReadContextToolStanceForPrompt([
+      "在 Ora 项目中搜索以下关键字：'cacheHitRatio'、'AgenticEfficiencyLedger'、'context.usage.updated'。",
+      "请输出文件路径、行号、上下文摘要。",
+    ].join("\n"));
+
+    expect(stance).toBe("explicit_content_search");
+  });
+
+  it("keeps explicit content-search stance limited to grep/read tools", () => {
+    expect(readContextStanceAllowsTool("explicit_content_search", "file.grep")).toBe(true);
+    expect(readContextStanceAllowsTool("explicit_content_search", "file.read")).toBe(true);
+    expect(readContextStanceAllowsTool("explicit_content_search", "file.list")).toBe(false);
+    expect(readContextStanceAllowsTool("explicit_content_search", "web.fetch")).toBe(false);
+  });
+
+  it("allows narrow repo-mapping tools but still blocks broad list scans in targeted mapping stance", () => {
+    expect(readContextStanceAllowsTool("targeted_repo_mapping", "file.read")).toBe(true);
+    expect(readContextStanceAllowsTool("targeted_repo_mapping", "file.grep")).toBe(true);
+    expect(readContextStanceAllowsTool("targeted_repo_mapping", "file.glob")).toBe(true);
+    expect(readContextStanceAllowsTool("targeted_repo_mapping", "file.list")).toBe(false);
+    expect(readContextStanceAllowsTool("targeted_repo_mapping", "repo.explore")).toBe(false);
+  });
+
+  it("adds stance-specific follow-up guidance for explicit content search", () => {
+    const guidance = buildReadContextStanceFollowUp("explicit_content_search");
+
+    expect(guidance).toContain("explicit content-search mode");
+    expect(guidance).toContain("file.grep");
+    expect(guidance).toContain("Do not switch back to broad file.list");
+  });
+
+  it("keeps explicit content-search stance active until both grep and read evidence exist", () => {
+    expect(shouldReleaseReadContextToolStance({
+      kind: "explicit_content_search",
+      toolCalls: [
+        readToolCall({
+          toolId: "file.grep",
+          output: { matches: [{ path: "apps/runtime/src/agentic-efficiency.ts", line: 10, text: "cacheHitRatio" }] },
+        }),
+      ],
+      agentId: ORA_ROOT_AGENT_ID,
+      nodeId: ORA_ROOT_AGENT_ID,
+    })).toBe(false);
+
+    expect(shouldReleaseReadContextToolStance({
+      kind: "explicit_content_search",
+      toolCalls: [
+        readToolCall({
+          toolId: "file.grep",
+          output: { matches: [{ path: "apps/runtime/src/agentic-efficiency.ts", line: 10, text: "cacheHitRatio" }] },
+        }),
+        readToolCall({
+          path: "apps/runtime/src/agentic-efficiency.ts",
+          output: { content: "const cacheHitRatio = 0.9;" },
+        }),
+      ],
+      agentId: ORA_ROOT_AGENT_ID,
+      nodeId: ORA_ROOT_AGENT_ID,
+    })).toBe(true);
+  });
+
+  it("releases targeted repo-mapping stance once the episode pivots to concrete evidence", () => {
+    expect(shouldReleaseReadContextToolStance({
+      kind: "targeted_repo_mapping",
+      toolCalls: [
+        listToolCall("."),
+        listToolCall("apps"),
+        readToolCall({
+          path: "apps/runtime/src/harness/node-runtime-loop.ts",
+          output: { content: "function shouldBlockListHeavyRepoScanForReadContext() {}" },
+        }),
+      ],
+      agentId: ORA_ROOT_AGENT_ID,
+      nodeId: ORA_ROOT_AGENT_ID,
+    })).toBe(true);
+  });
+
+  it("requires concrete local evidence before treating repo-grounded architecture reports as complete", () => {
+    expect(hasRepoGroundedReportCompletionEvidence({
+      toolCalls: [],
+      agentId: ORA_ROOT_AGENT_ID,
+      nodeId: ORA_ROOT_AGENT_ID,
+    })).toBe(false);
+
+    expect(hasRepoGroundedReportCompletionEvidence({
+      toolCalls: [
+        readToolCall({
+          path: "apps/runtime/src/harness/node-runtime-loop.ts",
+          output: { content: "export function runNodeRuntimeLoop() {}" },
+        }),
+      ],
+      agentId: ORA_ROOT_AGENT_ID,
+      nodeId: ORA_ROOT_AGENT_ID,
+    })).toBe(true);
+  });
+
+  it("blocks repo-grounded architecture reports from completing before any concrete local evidence exists", () => {
+    expect(shouldBlockFinalForRepoGroundedReportEvidence({
+      enabled: true,
+      prompt: [
+        "我想深入了解 Ora 项目的技术架构。请帮我做一个全面的架构分析报告。",
+        "每章需要引用具体的代码文件和行号作为证据。",
+      ].join("\n"),
+      toolCalls: [],
+      agentId: ORA_ROOT_AGENT_ID,
+      nodeId: ORA_ROOT_AGENT_ID,
+    })).toBe(true);
+  });
+
+  it("adds repo-grounded report evidence-floor guidance that requires concrete file evidence", () => {
+    const guidance = buildRepoGroundedReportEvidenceFollowUp();
+
+    expect(guidance).toContain("Do not finalize this architecture/report answer from general repo priors");
+    expect(guidance).toContain("read the most relevant source/schema files");
+    expect(guidance).toContain("file paths and line numbers");
+  });
+
+  it("does not release targeted repo-mapping stance after only reading a root workspace manifest", () => {
+    expect(shouldReleaseReadContextToolStance({
+      kind: "targeted_repo_mapping",
+      toolCalls: [
+        listToolCall("."),
+        listToolCall("packages"),
+        readToolCall({
+          path: "pnpm-workspace.yaml",
+          output: { content: "packages:\n  - apps/*\n  - packages/*\n" },
+        }),
+      ],
+      agentId: ORA_ROOT_AGENT_ID,
+      nodeId: ORA_ROOT_AGENT_ID,
+    })).toBe(false);
+  });
+
+  it("keeps targeted repo-mapping stance active while the episode is still only broad scans", () => {
+    expect(shouldReleaseReadContextToolStance({
+      kind: "targeted_repo_mapping",
+      toolCalls: [
+        listToolCall("."),
+        listToolCall("apps"),
+        listToolCall("apps/runtime"),
+      ],
+      agentId: ORA_ROOT_AGENT_ID,
+      nodeId: ORA_ROOT_AGENT_ID,
+    })).toBe(false);
+  });
+
+  it("tells targeted repo-mapping stance not to treat workspace manifests as enough evidence", () => {
+    const guidance = buildReadContextStanceFollowUp("targeted_repo_mapping");
+
+    expect(guidance).toContain("workspace manifest alone is not enough");
+    expect(guidance).toContain("concrete source/schema reads");
   });
 
   it("does not block non-freshness prompts", () => {
