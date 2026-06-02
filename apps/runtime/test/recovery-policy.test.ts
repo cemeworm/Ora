@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_MODE_RECOVERY_POLICY, getModePreset } from "@cemeworm/shared";
-import { ProviderCircuitOpenError } from "../src/providers/provider-health.js";
+import { ProviderCircuitOpenError, ProviderTransientExhaustedError } from "../src/providers/provider-health.js";
 import { ProviderFetchError } from "../src/providers/provider-utils.js";
 import { classifyRecoveryError, RecoveryCoordinator } from "../src/harness/recovery-policy.js";
 
@@ -38,6 +38,7 @@ describe("recovery policy classification", () => {
 
     expect(incident).toMatchObject({
       errorType: "provider_busy",
+      retryAfterMs: 5000,
       nodeId: "solo_agent",
       agentId: "solo_agent",
     });
@@ -167,6 +168,47 @@ describe("recovery policy classification", () => {
       attempt: 3,
       maxAttempts: 3,
       summary: expect.stringContaining("Retry attempts exhausted."),
+    });
+  });
+
+  it("honors provider circuit retry-after windows when scheduling retries", () => {
+    const modeSpec = getModePreset("single_agent")!;
+    const coordinator = new RecoveryCoordinator(modeSpec, []);
+    const incident = classifyRecoveryError(
+      new ProviderCircuitOpenError("deepseek", 750, "ECONNRESET"),
+      { surface: "provider", nodeId: "solo_agent", agentId: "solo_agent" },
+    );
+
+    expect(coordinator.resolve(incident)).toMatchObject({
+      action: "retry",
+      ruleId: "provider-transient-retry",
+      retryDelayMs: 750,
+    });
+  });
+
+  it("honors exhausted-transient retry hints before re-entering the provider", () => {
+    const modeSpec = getModePreset("single_agent")!;
+    const coordinator = new RecoveryCoordinator(modeSpec, []);
+    const incident = classifyRecoveryError(
+      new ProviderTransientExhaustedError(
+        "deepseek",
+        2,
+        750,
+        new Error("fetch failed", {
+          cause: Object.assign(new Error("connect ECONNRESET"), { code: "ECONNRESET" }),
+        }),
+      ),
+      { surface: "provider", nodeId: "solo_agent", agentId: "solo_agent" },
+    );
+
+    expect(incident).toMatchObject({
+      errorType: "provider_transient",
+      retryAfterMs: 750,
+    });
+    expect(coordinator.resolve(incident)).toMatchObject({
+      action: "retry",
+      ruleId: "provider-transient-retry",
+      retryDelayMs: 750,
     });
   });
 

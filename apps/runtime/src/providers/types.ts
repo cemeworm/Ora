@@ -66,6 +66,7 @@ export interface ModelRequest {
   };
   providerOptions?: {
     disableThinking?: boolean;
+    transientRetryProfile?: "default" | "progressed_completion";
   };
   signal?: AbortSignal;
 }

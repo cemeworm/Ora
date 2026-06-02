@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import type { ModelTokenUsage, ProviderConfig } from "@cemeworm/shared";
 import type { DerivedContextBlock, ModelMessage, ModelRequest, ModelToolCall, ModelToolDefinition } from "./types.js";
 import { ProxyAgent } from "undici";
+import { isTransientProviderFailure } from "./provider-health.js";
 
 export interface ProviderFetchContext {
   providerId: string;
@@ -10,6 +11,7 @@ export interface ProviderFetchContext {
   modelId?: string;
   operation: string;
   endpoint: string;
+  transientRetryProfile?: "default" | "progressed_completion";
   timeoutMs?: number;
   signal?: AbortSignal;
   proxyEnv?: NodeJS.ProcessEnv;
@@ -26,6 +28,13 @@ export class ProviderFetchError extends Error {
 }
 
 const DEFAULT_PROVIDER_FETCH_TIMEOUT_MS = 3 * 60 * 1000; // 3 minutes
+const COMPLETION_FETCH_TRANSIENT_RETRY_LIMIT = 1;
+const PROGRESSED_COMPLETION_FETCH_TRANSIENT_RETRY_LIMIT = 2;
+const STREAM_FETCH_TRANSIENT_RETRY_LIMIT = 1;
+const PROVIDER_FETCH_RETRY_BASE_DELAY_MS = 80;
+const PROVIDER_FETCH_RETRY_CAP_DELAY_MS = 250;
+const PROGRESSED_COMPLETION_FETCH_RETRY_BASE_DELAY_MS = 140;
+const PROGRESSED_COMPLETION_FETCH_RETRY_CAP_DELAY_MS = 420;
 
 export async function fetchProviderEndpoint(
   fetchImpl: typeof fetch,
@@ -36,19 +45,40 @@ export async function fetchProviderEndpoint(
   const controller = effectiveTimeoutMs ? new AbortController() : undefined;
   let timeout: ReturnType<typeof setTimeout> | undefined;
   const signal = mergeAbortSignals(init.signal, context.signal, controller?.signal);
+  const retryLimit = providerFetchRetryLimit(context.operation, context.transientRetryProfile);
   if (controller && effectiveTimeoutMs) {
     timeout = setTimeout(() => {
       controller.abort(new Error(`Provider request timed out after ${effectiveTimeoutMs}ms.`));
     }, effectiveTimeoutMs);
   }
   try {
-    return await fetchImpl(context.endpoint, {
-      ...init,
-      signal,
-      ...providerFetchProxyInit(context.endpoint, context.proxyEnv),
-    });
+    let attempt = 0;
+    while (true) {
+      try {
+        return await fetchImpl(context.endpoint, {
+          ...withRetryConnectionClose(init, attempt),
+          signal,
+          ...providerFetchProxyInit(context.endpoint, context.proxyEnv),
+        });
+      } catch (error) {
+        if (
+          attempt >= retryLimit
+          || signal?.aborted
+          || !shouldRetryTransientProviderFetchFailure(error)
+        ) {
+          throw new ProviderFetchError(context, error);
+        }
+        attempt += 1;
+        await resetProviderFetchTransport(context.endpoint, context.proxyEnv);
+        await sleep(providerFetchRetryDelayMs(
+          context.operation,
+          context.transientRetryProfile,
+          attempt,
+        ));
+      }
+    }
   } catch (error) {
-    throw new ProviderFetchError(context, error);
+    throw error instanceof ProviderFetchError ? error : new ProviderFetchError(context, error);
   } finally {
     if (timeout) {
       clearTimeout(timeout);
@@ -74,6 +104,23 @@ function providerFetchProxyInit(endpoint: string, env: NodeJS.ProcessEnv | undef
   return {
     dispatcher: cachedProxy.dispatcher,
   } as RequestInit;
+}
+
+async function resetProviderFetchTransport(endpoint: string, env: NodeJS.ProcessEnv | undefined): Promise<void> {
+  if (!env) {
+    return;
+  }
+  const proxyUrl = providerProxyUrl(endpoint, env);
+  if (!proxyUrl || cachedProxy?.key !== proxyUrl) {
+    return;
+  }
+  const dispatcher = cachedProxy.dispatcher;
+  cachedProxy = undefined;
+  try {
+    await dispatcher.close();
+  } catch {
+    // Best-effort reset: the next retry should still rebuild a fresh dispatcher.
+  }
 }
 
 function providerProxyUrl(endpoint: string, env: NodeJS.ProcessEnv): string | undefined {
@@ -138,6 +185,88 @@ function mergeAbortSignals(...signals: Array<AbortSignal | null | undefined>): A
     signal.addEventListener("abort", () => abort(signal), { once: true });
   }
   return controller.signal;
+}
+
+function providerFetchRetryLimit(
+  operation: string,
+  transientRetryProfile: ProviderFetchContext["transientRetryProfile"],
+): number {
+  if (operation.endsWith(".completion")) {
+    if (transientRetryProfile === "progressed_completion") {
+      return PROGRESSED_COMPLETION_FETCH_TRANSIENT_RETRY_LIMIT;
+    }
+    return COMPLETION_FETCH_TRANSIENT_RETRY_LIMIT;
+  }
+  if (operation.endsWith(".stream")) {
+    return STREAM_FETCH_TRANSIENT_RETRY_LIMIT;
+  }
+  return 0;
+}
+
+function shouldRetryTransientProviderFetchFailure(error: unknown): boolean {
+  const code = providerFetchCauseCode(error);
+  if (typeof code === "string" && code.trim().toUpperCase() === "UND_ERR_SOCKET") {
+    return true;
+  }
+  return isTransientProviderFailure(providerFetchErrorMessage(
+    {
+      providerId: "unknown",
+      providerType: "unknown",
+      operation: "fetch",
+      endpoint: "unknown",
+    },
+    error,
+  ));
+}
+
+function withRetryConnectionClose(init: RequestInit, attempt: number): RequestInit {
+  if (attempt <= 0) {
+    return init;
+  }
+  const headers = new Headers(init.headers);
+  headers.set("connection", "close");
+  return {
+    ...init,
+    headers,
+  };
+}
+
+function providerFetchRetryDelayMs(
+  operation: string,
+  transientRetryProfile: ProviderFetchContext["transientRetryProfile"],
+  attempt: number,
+): number {
+  const { baseDelayMs, capDelayMs } = providerFetchRetryBudget(operation, transientRetryProfile);
+  return Math.min(
+    baseDelayMs * (2 ** Math.max(0, attempt - 1)),
+    capDelayMs,
+  );
+}
+
+function providerFetchRetryBudget(
+  operation: string,
+  transientRetryProfile: ProviderFetchContext["transientRetryProfile"],
+): {
+  baseDelayMs: number;
+  capDelayMs: number;
+} {
+  if (operation.endsWith(".completion") && transientRetryProfile === "progressed_completion") {
+    return {
+      baseDelayMs: PROGRESSED_COMPLETION_FETCH_RETRY_BASE_DELAY_MS,
+      capDelayMs: PROGRESSED_COMPLETION_FETCH_RETRY_CAP_DELAY_MS,
+    };
+  }
+  return {
+    baseDelayMs: PROVIDER_FETCH_RETRY_BASE_DELAY_MS,
+    capDelayMs: PROVIDER_FETCH_RETRY_CAP_DELAY_MS,
+  };
+}
+
+async function sleep(ms: number): Promise<void> {
+  if (ms <= 0) {
+    return;
+  }
+  await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function providerFetchErrorMessage(context: ProviderFetchContext, cause: unknown): string {

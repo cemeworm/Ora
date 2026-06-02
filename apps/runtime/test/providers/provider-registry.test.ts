@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createDefaultProviderRegistry, createModelProvider, createProviderRegistry, fetchProviderModels, invokeRunProvider, verifyProviderConfig } from "../../src/providers/index.js";
+import { createDefaultProviderRegistry, createModelProvider, createProviderRegistry, fetchProviderModels, invokeRunProvider, invokeRunProviderStream, verifyProviderConfig } from "../../src/providers/index.js";
 
 describe("provider adapters", () => {
   it("builds a deterministic local smoke response", async () => {
@@ -150,6 +150,352 @@ describe("provider adapters", () => {
     await expect(provider({ prompt: "hello" })).rejects.toThrow(
       "Provider deepseek chat_completions.completion fetch failed for https://api.deepseek.com/v1/chat/completions: fetch failed (ECONNRESET)",
     );
+  });
+
+  it("retries non-stream completion once after a transient reset", async () => {
+    const cause = Object.assign(new Error("connect ECONNRESET"), { code: "ECONNRESET" });
+    const fetchImpl = vi.fn(async () => {
+      if (fetchImpl.mock.calls.length === 1) {
+        throw new Error("fetch failed", { cause });
+      }
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: "Recovered completion." } }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    });
+
+    const response = await invokeRunProvider({
+      pattern: "single_agent",
+      modeId: "single_agent",
+      modeSelection: "manual",
+      providerId: "deepseek",
+      modelRef: "deepseek-chat",
+      providerConfig: {
+        id: "deepseek",
+        type: "openai_compatible",
+        label: "DeepSeek",
+        modelId: "deepseek-chat",
+        baseUrl: "https://api.deepseek.com",
+        apiKeyEnv: "DEEPSEEK_API_KEY",
+        protocol: "chat_completions",
+        headers: {},
+      },
+      toolIds: [],
+      metadata: {},
+    }, {
+      prompt: "hello",
+    }, {
+      env: { DEEPSEEK_API_KEY: "test-key" },
+      fetchImpl,
+    });
+
+    expect(response.text).toBe("Recovered completion.");
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries transient completion fetches with connection close on the in-request retry", async () => {
+    const cause = Object.assign(new Error("socket closed"), { code: "UND_ERR_SOCKET" });
+    const seenConnectionHeaders: string[] = [];
+    const fetchImpl = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      seenConnectionHeaders.push(headers.get("connection") ?? "");
+      if (fetchImpl.mock.calls.length === 1) {
+        throw new Error("fetch failed", { cause });
+      }
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: "Recovered after transport retry." } }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    });
+
+    const provider = createModelProvider({
+      id: "deepseek",
+      type: "openai_compatible",
+      label: "DeepSeek",
+      modelId: "deepseek-chat",
+      baseUrl: "https://api.deepseek.com",
+      apiKeyEnv: "DEEPSEEK_API_KEY",
+      protocol: "chat_completions",
+      headers: {},
+    }, {
+      env: { DEEPSEEK_API_KEY: "test-key" },
+      fetchImpl,
+    });
+
+    await expect(provider({ prompt: "hello" })).resolves.toMatchObject({
+      text: "Recovered after transport retry.",
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(seenConnectionHeaders).toEqual(["", "close"]);
+  });
+
+  it("gives progressed completion requests one extra in-request transport retry", async () => {
+    const cause = Object.assign(new Error("socket closed"), { code: "UND_ERR_SOCKET" });
+    const seenConnectionHeaders: string[] = [];
+    const fetchImpl = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      seenConnectionHeaders.push(headers.get("connection") ?? "");
+      if (fetchImpl.mock.calls.length <= 2) {
+        throw new Error("fetch failed", { cause });
+      }
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: "Recovered after progressed transport retry." } }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    });
+
+    const provider = createModelProvider({
+      id: "deepseek",
+      type: "openai_compatible",
+      label: "DeepSeek",
+      modelId: "deepseek-chat",
+      baseUrl: "https://api.deepseek.com",
+      apiKeyEnv: "DEEPSEEK_API_KEY",
+      protocol: "chat_completions",
+      headers: {},
+    }, {
+      env: { DEEPSEEK_API_KEY: "test-key" },
+      fetchImpl,
+    });
+
+    await expect(provider({
+      prompt: "hello",
+      providerOptions: { transientRetryProfile: "progressed_completion" },
+    })).resolves.toMatchObject({
+      text: "Recovered after progressed transport retry.",
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    expect(seenConnectionHeaders).toEqual(["", "close", "close"]);
+  });
+
+  it("falls back to a rebuilt non-stream completion attempt after transport retries are exhausted", async () => {
+    const cause = Object.assign(new Error("socket closed"), { code: "UND_ERR_SOCKET" });
+    const fetchImpl = vi.fn(async () => {
+      if (fetchImpl.mock.calls.length <= 2) {
+        throw new Error("fetch failed", { cause });
+      }
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: "Recovered after rebuilt completion." } }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    });
+
+    const response = await invokeRunProvider({
+      pattern: "single_agent",
+      modeId: "single_agent",
+      modeSelection: "manual",
+      providerId: "deepseek",
+      modelRef: "deepseek-chat",
+      providerConfig: {
+        id: "deepseek",
+        type: "openai_compatible",
+        label: "DeepSeek",
+        modelId: "deepseek-chat",
+        baseUrl: "https://api.deepseek.com",
+        apiKeyEnv: "DEEPSEEK_API_KEY",
+        protocol: "chat_completions",
+        headers: {},
+      },
+      toolIds: [],
+      metadata: {},
+    }, {
+      prompt: "hello",
+    }, {
+      env: { DEEPSEEK_API_KEY: "test-key" },
+      fetchImpl,
+    });
+
+    expect(response.text).toBe("Recovered after rebuilt completion.");
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+  });
+
+  it("gives progressed completion requests one extra outer transient retry window", async () => {
+    const cause = Object.assign(new Error("socket closed"), { code: "UND_ERR_SOCKET" });
+    const fetchImpl = vi.fn(async () => {
+      if (fetchImpl.mock.calls.length <= 4) {
+        throw new Error("fetch failed", { cause });
+      }
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: "Recovered after progressed completion retry." } }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    });
+
+    const response = await invokeRunProvider({
+      pattern: "single_agent",
+      modeId: "single_agent",
+      modeSelection: "manual",
+      providerId: "deepseek",
+      modelRef: "deepseek-chat",
+      providerConfig: {
+        id: "deepseek",
+        type: "openai_compatible",
+        label: "DeepSeek",
+        modelId: "deepseek-chat",
+        baseUrl: "https://api.deepseek.com",
+        apiKeyEnv: "DEEPSEEK_API_KEY",
+        protocol: "chat_completions",
+        headers: {},
+      },
+      toolIds: [],
+      metadata: {},
+    }, {
+      prompt: "hello",
+      providerOptions: { transientRetryProfile: "progressed_completion" },
+    }, {
+      env: { DEEPSEEK_API_KEY: "test-key" },
+      fetchImpl,
+    });
+
+    expect(response.text).toBe("Recovered after progressed completion retry.");
+    expect(fetchImpl).toHaveBeenCalledTimes(5);
+  });
+
+  it("falls back to non-stream completion after a transient stream reset before the first frame", async () => {
+    const cause = Object.assign(new Error("connect ECONNRESET"), { code: "ECONNRESET" });
+    const fetchImpl = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      if (body.stream === true) {
+        throw new Error("fetch failed", { cause });
+      }
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: "Fallback completion." } }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    });
+    const events: string[] = [];
+    const chunks: string[] = [];
+
+    const response = await invokeRunProviderStream({
+      pattern: "single_agent",
+      modeId: "single_agent",
+      modeSelection: "manual",
+      providerId: "deepseek",
+      modelRef: "deepseek-chat",
+      providerConfig: {
+        id: "deepseek",
+        type: "openai_compatible",
+        label: "DeepSeek",
+        modelId: "deepseek-chat",
+        baseUrl: "https://api.deepseek.com",
+        apiKeyEnv: "DEEPSEEK_API_KEY",
+        protocol: "chat_completions",
+        headers: {},
+      },
+      toolIds: [],
+      metadata: {},
+    }, {
+      prompt: "hello",
+    }, {
+      onStreamEvent: (event) => { events.push(event.kind); },
+      onTextDelta: (chunk) => { chunks.push(chunk.delta); },
+    }, {
+      env: { DEEPSEEK_API_KEY: "test-key" },
+      fetchImpl,
+    });
+
+    expect(response.text).toBe("Fallback completion.");
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(events).toEqual(["fallback_started", "fallback_response"]);
+    expect(chunks).toEqual(["Fallback completion."]);
+  });
+
+  it("retries fallback completion after a transient pre-first-frame stream reset", async () => {
+    const streamCause = Object.assign(new Error("connect ECONNRESET"), { code: "ECONNRESET" });
+    const completionCause = Object.assign(new Error("socket closed"), { code: "UND_ERR_SOCKET" });
+    const events: string[] = [];
+    const chunks: string[] = [];
+    const fetchImpl = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      if (body.stream === true) {
+        throw new Error("fetch failed", { cause: streamCause });
+      }
+      if (fetchImpl.mock.calls.length === 2) {
+        throw new Error("fetch failed", { cause: completionCause });
+      }
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: "Fallback completion after retry." } }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    });
+
+    const response = await invokeRunProviderStream({
+      pattern: "single_agent",
+      modeId: "single_agent",
+      modeSelection: "manual",
+      providerId: "deepseek",
+      modelRef: "deepseek-chat",
+      providerConfig: {
+        id: "deepseek",
+        type: "openai_compatible",
+        label: "DeepSeek",
+        modelId: "deepseek-chat",
+        baseUrl: "https://api.deepseek.com",
+        apiKeyEnv: "DEEPSEEK_API_KEY",
+        protocol: "chat_completions",
+        headers: {},
+      },
+      toolIds: [],
+      metadata: {},
+    }, {
+      prompt: "hello",
+    }, {
+      onStreamEvent: (event) => { events.push(event.kind); },
+      onTextDelta: (chunk) => { chunks.push(chunk.delta); },
+    }, {
+      env: { DEEPSEEK_API_KEY: "test-key" },
+      fetchImpl,
+    });
+
+    expect(response.text).toBe("Fallback completion after retry.");
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    expect(events).toEqual(["fallback_started", "fallback_response"]);
+    expect(chunks).toEqual(["Fallback completion after retry."]);
+  });
+
+  it("does not fall back to non-stream completion after streaming has already produced a frame", async () => {
+    const encoder = new TextEncoder();
+    const fetchImpl = vi.fn(async () => {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode("data: {\"choices\":[{\"delta\":{\"content\":\"Part\"}}]}\n\n"));
+          setTimeout(() => {
+            controller.error(new Error("stream broke after first frame"));
+          }, 0);
+        },
+      });
+      return new Response(body, {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    });
+    const events: string[] = [];
+    const chunks: string[] = [];
+
+    await expect(invokeRunProviderStream({
+      pattern: "single_agent",
+      modeId: "single_agent",
+      modeSelection: "manual",
+      providerId: "deepseek",
+      modelRef: "deepseek-chat",
+      providerConfig: {
+        id: "deepseek",
+        type: "openai_compatible",
+        label: "DeepSeek",
+        modelId: "deepseek-chat",
+        baseUrl: "https://api.deepseek.com",
+        apiKeyEnv: "DEEPSEEK_API_KEY",
+        protocol: "chat_completions",
+        headers: {},
+      },
+      toolIds: [],
+      metadata: {},
+    }, {
+      prompt: "hello",
+    }, {
+      onStreamEvent: (event) => { events.push(event.kind); },
+      onTextDelta: (chunk) => { chunks.push(chunk.delta); },
+    }, {
+      env: { DEEPSEEK_API_KEY: "test-key" },
+      fetchImpl,
+    })).rejects.toThrow("stream broke after first frame");
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(events).toContain("sse_frame");
+    expect(chunks).toEqual(["Part"]);
   });
 
   it("adds proxy dispatcher only for the default provider fetch", async () => {

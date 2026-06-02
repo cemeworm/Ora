@@ -5,7 +5,10 @@ import {
   type RecoveryErrorType,
   type RecoveryRule,
 } from "@cemeworm/shared";
-import { ProviderCircuitOpenError } from "../providers/provider-health.js";
+import {
+  ProviderCircuitOpenError,
+  isProviderTransientExhaustedError,
+} from "../providers/provider-health.js";
 import { ProviderFetchError } from "../providers/provider-utils.js";
 import { isSpawnContractViolationError } from "./runtime-interrupts.js";
 
@@ -13,6 +16,7 @@ export interface RecoveryIncident {
   surface?: RecoveryFailureSurface;
   errorType: RecoveryErrorType;
   detail: string;
+  retryAfterMs?: number;
   attemptScope?: string;
   nodeId?: string;
   nodeTemplate?: string;
@@ -90,12 +94,13 @@ export class RecoveryCoordinator {
           Math.round(policy.defaults.backoffMs * (policy.defaults.backoffMultiplier ** Math.max(0, attempt - 1))),
           policy.defaults.capDelayMs,
         );
+        const effectiveRetryDelayMs = Math.max(retryDelayMs, incident.retryAfterMs ?? 0);
         return {
           action: "retry",
           attempt,
           maxAttempts,
           ruleId: rule.id,
-          retryDelayMs,
+          retryDelayMs: effectiveRetryDelayMs,
           fallbackArtifact,
           summary: `Retrying ${incident.errorType} after attempt ${attempt}/${maxAttempts}.`,
         };
@@ -204,6 +209,7 @@ export function classifyRecoveryError(error: unknown, context: {
     surface: context.surface,
     errorType,
     detail,
+    retryAfterMs: providerRetryAfterMs(error),
     attemptScope: context.attemptScope,
     nodeId: context.nodeId,
     nodeTemplate: context.nodeTemplate,
@@ -310,6 +316,7 @@ function classifyCode(code: string | undefined): RecoveryErrorType | undefined {
     || normalized === "EAI_AGAIN"
     || normalized === "ENOTFOUND"
     || normalized === "ABORT_ERR"
+    || normalized === "UND_ERR_SOCKET"
     || normalized === "UND_ERR_CONNECT_TIMEOUT"
     || normalized === "UND_ERR_HEADERS_TIMEOUT"
     || normalized === "UND_ERR_BODY_TIMEOUT"
@@ -324,6 +331,20 @@ function isProviderCircuitOpenError(error: unknown): error is ProviderCircuitOpe
     || (typeof error === "object" && error !== null
       && (error as { name?: unknown }).name === "ProviderCircuitOpenError"
       && typeof (error as { providerId?: unknown }).providerId === "string");
+}
+
+function providerRetryAfterMs(error: unknown): number | undefined {
+  if (
+    !isProviderCircuitOpenError(error)
+    && !isProviderTransientExhaustedError(error)
+    && !(typeof error === "object" && error !== null && (error as { retryAfterMs?: unknown }).retryAfterMs !== undefined)
+  ) {
+    return undefined;
+  }
+  const retryAfterMs = (error as { retryAfterMs?: unknown }).retryAfterMs;
+  return typeof retryAfterMs === "number" && Number.isFinite(retryAfterMs) && retryAfterMs > 0
+    ? retryAfterMs
+    : undefined;
 }
 
 function errorCode(error: unknown): string | undefined {

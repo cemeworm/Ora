@@ -8,11 +8,45 @@ import { createOpenAICompatibleProvider } from "./openai-compatible.js";
 import { traceLangfuseGeneration } from "../telemetry/langfuse.js";
 import type { ModelProvider, ModelRequest, ModelStreamCallbacks, ProviderRegistry, ProviderRuntimeOptions } from "./types.js";
 import { streamFallback } from "./streaming.js";
-import { defaultProviderHealthGuard, type ProviderHealthGuard } from "./provider-health.js";
+import { ProviderFetchError } from "./provider-utils.js";
+import {
+  defaultProviderHealthGuard,
+  errorDetail,
+  isTransientProviderFailure,
+  ProviderTransientExhaustedError,
+  type ProviderHealthGuard,
+} from "./provider-health.js";
 
 type ProviderRegistryOptions = ProviderRuntimeOptions & {
   providerHealthGuard?: ProviderHealthGuard;
 };
+
+interface ObservedStreamState {
+  sawTextDelta: boolean;
+  sawStreamFrame: boolean;
+}
+
+const TRANSIENT_PROVIDER_ERROR_CODES = new Set([
+  "ECONNRESET",
+  "ETIMEDOUT",
+  "ECONNREFUSED",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+  "EAI_AGAIN",
+  "ENOTFOUND",
+  "ABORT_ERR",
+  "UND_ERR_SOCKET",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_BODY_TIMEOUT",
+]);
+
+const NON_STREAM_TRANSIENT_RETRY_LIMIT = 1;
+const PROGRESSED_COMPLETION_NON_STREAM_TRANSIENT_RETRY_LIMIT = 2;
+const NON_STREAM_TRANSIENT_RETRY_BASE_DELAY_MS = 120;
+const NON_STREAM_TRANSIENT_RETRY_CAP_DELAY_MS = 400;
+const NON_STREAM_TRANSIENT_OUTER_RETRY_HINT_MS = 750;
+const PROGRESSED_COMPLETION_NON_STREAM_TRANSIENT_OUTER_RETRY_HINT_MS = 1_500;
 
 const RUNTIME_LOCAL_SMOKE_PROVIDER: ProviderConfig = {
   id: "local-smoke",
@@ -116,18 +150,25 @@ export function createProviderRegistry(
     resolve,
     async invoke(providerId: string | undefined, request: ModelRequest) {
       const providerConfig = resolveConfig(providerId);
-      const provider = resolve(providerConfig.id);
       return providerHealthGuard.run(
         providerConfig.id,
-        () => traceLangfuseGeneration(
+        () => retryTransientNonStreamProviderFailure(
+          () => traceLangfuseGeneration(
+            {
+              providerId: providerConfig.id,
+              modelId: providerConfig.modelId,
+              providerType: providerConfig.type,
+              request
+            },
+            () => resolve(providerConfig.id)(request)
+          ),
           {
+            ...nonStreamRetryOptions(providerConfig.id, cache),
             providerId: providerConfig.id,
-            modelId: providerConfig.modelId,
-            providerType: providerConfig.type,
-            request
+            retryLimit: nonStreamRetryLimitForRequest(request),
+            exhaustedRetryAfterMs: nonStreamOuterRetryHintMsForRequest(request),
           },
-          () => provider(request)
-        )
+        ),
       );
     },
     async invokeStream(providerId: string | undefined, request: ModelRequest, callbacks?: ModelStreamCallbacks) {
@@ -143,11 +184,166 @@ export function createProviderRegistry(
             providerType: providerConfig.type,
             request
           },
-          () => stream(request, callbacks)
+          async () => {
+            const observed = createObservedStreamCallbacks(callbacks);
+            try {
+              return await stream(request, observed.callbacks);
+            } catch (error) {
+              if (!provider.stream || !shouldFallbackFromStreamError(error, observed.state)) {
+                throw error;
+              }
+              return retryTransientNonStreamProviderFailure(
+                () => streamFallback(resolve(providerConfig.id))(request, callbacks),
+                {
+                  ...nonStreamRetryOptions(providerConfig.id, cache),
+                  providerId: providerConfig.id,
+                  retryLimit: nonStreamRetryLimitForRequest(request),
+                  exhaustedRetryAfterMs: nonStreamOuterRetryHintMsForRequest(request),
+                },
+              );
+            }
+          }
         )
       );
     },
   };
+}
+
+function createObservedStreamCallbacks(callbacks?: ModelStreamCallbacks): {
+  callbacks: ModelStreamCallbacks | undefined;
+  state: ObservedStreamState;
+} {
+  const state: ObservedStreamState = {
+    sawTextDelta: false,
+    sawStreamFrame: false,
+  };
+  if (!callbacks) {
+    return { callbacks: undefined, state };
+  }
+  return {
+    state,
+    callbacks: {
+      onTextDelta: async (chunk) => {
+        state.sawTextDelta = true;
+        await callbacks.onTextDelta?.(chunk);
+      },
+      onStreamEvent: async (event) => {
+        if (event.kind === "sse_frame") {
+          state.sawStreamFrame = true;
+        }
+        await callbacks.onStreamEvent?.(event);
+      },
+    },
+  };
+}
+
+function shouldFallbackFromStreamError(error: unknown, state: ObservedStreamState): boolean {
+  if (state.sawTextDelta || state.sawStreamFrame) {
+    return false;
+  }
+  return shouldRetryTransientProviderFailure(error);
+}
+
+function shouldRetryTransientProviderFailure(error: unknown): boolean {
+  if (isTransientProviderFailure(errorDetail(error))) {
+    return true;
+  }
+  const code = providerErrorCode(error);
+  if (!code) {
+    return false;
+  }
+  return TRANSIENT_PROVIDER_ERROR_CODES.has(code.trim().toUpperCase()) || isTransientProviderFailure(code);
+}
+
+async function retryTransientNonStreamProviderFailure<T>(
+  invoke: () => Promise<T>,
+  options: {
+    onRetry?: (attempt: number, error: unknown) => Promise<void> | void;
+    providerId?: string;
+    retryLimit?: number;
+    exhaustedRetryAfterMs?: number;
+  } = {},
+): Promise<T> {
+  const retryLimit = options.retryLimit ?? NON_STREAM_TRANSIENT_RETRY_LIMIT;
+  let attempt = 0;
+  while (true) {
+    try {
+      return await invoke();
+    } catch (error) {
+      const retryable = shouldRetryTransientProviderFailure(error);
+      if (attempt >= retryLimit || !retryable) {
+        if (retryable && attempt >= retryLimit && options.providerId) {
+          throw new ProviderTransientExhaustedError(
+            options.providerId,
+            attempt + 1,
+            options.exhaustedRetryAfterMs ?? NON_STREAM_TRANSIENT_OUTER_RETRY_HINT_MS,
+            error,
+          );
+        }
+        throw error;
+      }
+      attempt += 1;
+      await options.onRetry?.(attempt, error);
+    }
+  }
+}
+
+function nonStreamRetryLimitForRequest(request: ModelRequest): number {
+  return request.providerOptions?.transientRetryProfile === "progressed_completion"
+    ? PROGRESSED_COMPLETION_NON_STREAM_TRANSIENT_RETRY_LIMIT
+    : NON_STREAM_TRANSIENT_RETRY_LIMIT;
+}
+
+function nonStreamOuterRetryHintMsForRequest(request: ModelRequest): number {
+  return request.providerOptions?.transientRetryProfile === "progressed_completion"
+    ? PROGRESSED_COMPLETION_NON_STREAM_TRANSIENT_OUTER_RETRY_HINT_MS
+    : NON_STREAM_TRANSIENT_OUTER_RETRY_HINT_MS;
+}
+
+function providerErrorCode(error: unknown): string | undefined {
+  return nestedProviderErrorCode(
+    error instanceof ProviderFetchError ? error.cause : error,
+    0,
+  );
+}
+
+function nonStreamRetryOptions(
+  providerId: string,
+  cache: Map<string, ModelProvider>,
+): {
+  onRetry: (attempt: number) => Promise<void>;
+} {
+  return {
+    onRetry: async (attempt) => {
+      cache.delete(providerId);
+      await sleep(nonStreamProviderRetryDelayMs(attempt));
+    },
+  };
+}
+
+function nonStreamProviderRetryDelayMs(attempt: number): number {
+  return Math.min(
+    NON_STREAM_TRANSIENT_RETRY_BASE_DELAY_MS * (2 ** Math.max(0, attempt - 1)),
+    NON_STREAM_TRANSIENT_RETRY_CAP_DELAY_MS,
+  );
+}
+
+async function sleep(ms: number): Promise<void> {
+  if (ms <= 0) {
+    return;
+  }
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function nestedProviderErrorCode(error: unknown, depth: number): string | undefined {
+  if (!error || typeof error !== "object" || depth > 3) {
+    return undefined;
+  }
+  const direct = (error as { code?: unknown }).code;
+  if (typeof direct === "string" && direct.trim()) {
+    return direct.trim();
+  }
+  return nestedProviderErrorCode((error as { cause?: unknown }).cause, depth + 1);
 }
 
 function resolveDefaultProviderId(providers: ProviderConfig[]): string {
